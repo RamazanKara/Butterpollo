@@ -6,6 +6,7 @@
 #include "src/amf/amf_lifecycle.h"
 #include "src/amf/amf_config_policy.h"
 #include "src/platform/windows/capture_gpu_policy.h"
+#include "src/platform/windows/capture_output_validation.h"
 
 #include <array>
 #include <atomic>
@@ -13,6 +14,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -152,6 +154,56 @@ namespace {
     const bool result = platf::dxgi::capture_policy::submit_cursor_frame(
       true, [](bool) {}, []() {}, []() { return false; }, [&]() { cache_copied = true; });
     return !result && !cache_copied;
+  }
+
+  template<class Predicate>
+  bool wait_until_true(Predicate predicate, std::chrono::steady_clock::duration timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!predicate()) {
+      if (std::chrono::steady_clock::now() >= deadline) {
+        return false;
+      }
+      std::this_thread::sleep_for(1ms);
+    }
+    return true;
+  }
+
+  bool output_validation_runs_off_the_capture_thread_and_latches_changes() {
+    const auto capture_thread = std::this_thread::get_id();
+    std::atomic<int> probes {0};
+    std::atomic<bool> probed_on_capture_thread {false};
+    platf::dxgi::capture_policy::background_output_validator_t validator(1ms, [&]() {
+      if (std::this_thread::get_id() == capture_thread) {
+        probed_on_capture_thread = true;
+      }
+      // Stable display state first, then a structural change.
+      return ++probes >= 3;
+    });
+
+    if (!wait_until_true([&]() { return validator.structural_change_detected(); }, 5s)) {
+      return false;
+    }
+    // A detected change ends probing; the session is about to be rebuilt.
+    std::this_thread::sleep_for(20ms);
+    return probes == 3 && !probed_on_capture_thread && validator.structural_change_detected();
+  }
+
+  bool output_validation_probes_immediately_and_stops_without_waiting_out_its_period() {
+    std::atomic<int> probes {0};
+    std::optional<platf::dxgi::capture_policy::background_output_validator_t> validator;
+    validator.emplace(std::chrono::hours(1), [&]() {
+      ++probes;
+      return false;
+    });
+    if (!wait_until_true([&]() { return probes.load() == 1; }, 5s) ||
+        validator->structural_change_detected()) {
+      return false;
+    }
+
+    const auto teardown_started = std::chrono::steady_clock::now();
+    validator.reset();
+    const auto teardown = std::chrono::steady_clock::now() - teardown_started;
+    return probes == 1 && teardown < 1s;
   }
 
   enum class fake_amf_result_e {
@@ -751,6 +803,8 @@ int main() {
              fresh_cursor_capture_releases_output_before_caching_desktop() &&
              mouse_only_capture_uses_unmodified_cached_desktop() &&
              failed_capture_handoff_is_not_reported_as_a_valid_frame() &&
+             output_validation_runs_off_the_capture_thread_and_latches_changes() &&
+             output_validation_probes_immediately_and_stops_without_waiting_out_its_period() &&
              synchronous_release_during_submit_is_reentrant_safe() &&
              backpressure_retries_the_same_submission_until_accepted() &&
              exhausted_backpressure_reinitializes_without_owned_surfaces() &&
@@ -814,6 +868,14 @@ TEST(WindowsCaptureGpuPolicy, MouseOnlyFramesPreserveCursorFreeBackground) {
 
 TEST(WindowsCaptureGpuPolicy, FailedHandoffRejectsFrame) {
   EXPECT_TRUE(failed_capture_handoff_is_not_reported_as_a_valid_frame());
+}
+
+TEST(WindowsCaptureOutputValidation, RunsOffCaptureThreadAndLatchesChanges) {
+  EXPECT_TRUE(output_validation_runs_off_the_capture_thread_and_latches_changes());
+}
+
+TEST(WindowsCaptureOutputValidation, ProbesImmediatelyAndStopsPromptly) {
+  EXPECT_TRUE(output_validation_probes_immediately_and_stops_without_waiting_out_its_period());
 }
 
 TEST(SunshineNativeAmfReview, SynchronousReleaseDuringSubmitIsReentrantSafe) {
