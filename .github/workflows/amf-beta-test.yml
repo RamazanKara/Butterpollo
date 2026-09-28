@@ -19,7 +19,7 @@ jobs:
     uses: ./.github/workflows/ci-windows.yml
     with:
       release_commit: ${{ github.sha }}
-      release_version: 2.0.0-beta.3-amf.1
+      release_version: 2.0.0-beta.3-amf.2
       build_only: false
       build_tests: true
       release_artifact_retention_days: 14
