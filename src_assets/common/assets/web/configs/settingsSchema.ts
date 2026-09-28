@@ -705,6 +705,7 @@ export const settingsCategories: SettingsCategory[] = [
         fields: [
           select('capture', captureOptions),
           boolean('wgc_pacing_smoothing', { platform: 'windows' }),
+          boolean('wgc_direct_encoder_input', { platform: 'windows' }),
         ],
       },
       {
@@ -809,6 +810,7 @@ export const settingsCategories: SettingsCategory[] = [
         fields: [
           select('encoder', [option('', '_common.auto')]),
           boolean('wgc_pacing_smoothing', { platform: 'windows' }),
+          boolean('wgc_direct_encoder_input', { platform: 'windows' }),
         ],
       },
       {
@@ -1105,6 +1107,7 @@ export const settingsDefaults: Record<string, unknown> = {
   qsv_preset: 'medium',
   amd_quality: 'speed',
   wgc_pacing_smoothing: true,
+  wgc_direct_encoder_input: true,
   hevc_mode: 0,
   av1_mode: 0,
   max_bitrate: 0,

@@ -4746,6 +4746,10 @@ Enables the Vulkan HDR layer used by the display stack when HDR Vulkan capture s
 
 Enables WGC pacing smoothing so capture re-anchors to the pacing grid instead of raw frame-arrival timing.
 
+### wgc_direct_encoder_input
+
+Lets GPU encoders read each Windows Graphics Capture frame directly from the capture helper's shared texture instead of from a host-side snapshot copy. This removes one full-frame GPU copy and one hand-off between the capture and encoder devices per frame, which shortens and steadies host processing latency. Defaults to `enabled`; set `disabled` to restore the previous copy path. Software encoding and DXGI capture are unaffected.
+
 ### auto_capture_sink
 
 Automatically selects the audio capture sink when no explicit virtual sink is configured.
