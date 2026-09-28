@@ -4,6 +4,7 @@ import {
   extendedField,
   playnitePolicyFields,
 } from './extendedSettings.ts';
+import { NETWORK_PORT_MAX, NETWORK_PORT_MIN } from '../utils/network.ts';
 export type SettingsFieldKind =
   | 'boolean'
   | 'number'
@@ -861,7 +862,14 @@ export const settingsCategories: SettingsCategory[] = [
             ],
             { restartRequired: true },
           ),
-          number('port', { min: 1019, max: 65514, restartRequired: true }),
+          number('port', {
+            min: NETWORK_PORT_MIN,
+            max: NETWORK_PORT_MAX,
+            step: 1,
+            restartRequired: true,
+            descriptionKey: 'ui.settings.fields.port.description',
+            stacked: true,
+          }),
           text('bind_address', { monospace: true, stacked: true }),
           text('external_ip', { monospace: true, stacked: true }),
           number('ping_timeout', { min: 0, step: 1 }),
@@ -1035,7 +1043,7 @@ export const settingsDefaults: Record<string, unknown> = {
   remote_monitor_disconnect_on_client_disconnect: false,
   remote_monitor_terminate_on_first_request: false,
   remote_monitor_confirm_app_replacement: true,
-  dd_virtual_display_scale: -1,
+  dd_virtual_display_scale: 0,
   frame_limiter_enable: false,
   frame_limiter_provider: 'auto',
   frame_limiter_fps_limit: 0,

@@ -2948,11 +2948,11 @@ They appear in the Frame Limiter section of the settings UI.
     </tr>
     <tr>
         <td>mangohud-proton</td>
-        <td>Use Proton's DXVK/VKD3D limiter for managed Steam games and keep the MangoHUD overlay visible. This limiter supports frame-generated output.</td>
+        <td>Use Proton's DXVK/VKD3D limiter for managed Steam games and external Proton launches and keep the MangoHUD overlay visible. This limiter supports frame-generated output.</td>
     </tr>
     <tr>
         <td>proton</td>
-        <td>Use Proton's DXVK/VKD3D limiter for managed Steam games without presenting MangoHUD. This limiter supports frame-generated output.</td>
+        <td>Use Proton's DXVK/VKD3D limiter for managed Steam games and external Proton launches without presenting MangoHUD. This limiter supports frame-generated output.</td>
     </tr>
     <tr>
         <td>rtss</td>
@@ -2967,6 +2967,21 @@ They appear in the Frame Limiter section of the settings UI.
         <td>Disable all frame limiter providers.</td>
     </tr>
 </table>
+
+On native Linux, an active stream also prepares launch hooks in writable Proton
+installations discovered through Steam. This applies the selected Proton or
+MangoHUD provider to games started from Steam or another launcher, even when the
+game is not a Vibepollo application. Existing `user_settings.py` code and file
+permissions are preserved. The hook is inert when no stream is active and after
+host shutdown; it does not persist an FPS limit in Proton's configuration.
+
+These are launch-time renderer settings: start the game after the stream connects.
+A game already running retains its previous settings until restarted, including
+when the stream ends. Read-only Proton installations, native Linux games launched
+outside Vibepollo, and containers with a separate network namespace are not
+covered by this Proton hook. Native games launched by Vibepollo retain the
+existing MangoHUD integration. Newly installed Proton versions in known libraries
+are detected during the stream. The host log reports hook readiness or failure.
 
 ### frame_limiter_fps_limit
 
@@ -4424,9 +4439,9 @@ distribution, not only a single maximum. Restore `0` if there is no repeatable b
 
 ### steam_enabled
 
-Enables local Steam library discovery, synchronization, and launch support. This setting is always enabled on Linux. On other platforms it can be combined with `playnite_enabled` or used by itself.
+Enables local Steam library discovery, synchronization, and launch support. Disabled by default on all platforms; it can be combined with `playnite_enabled` or used by itself.
 
-Default: `true`
+Default: `false`
 
 ### steam_auto_sync
 
@@ -4449,7 +4464,8 @@ Default: `false`
 
 Maximum number of installed games to synchronize, ordered by Steam's local
 `LastPlayed` timestamp, when `steam_sync_all_installed` is disabled. Set to `0`
-to disable recent-game synchronization.
+to disable recent-game synchronization. Exclusions and tool filtering apply
+before the limit.
 
 Default: `10`
 
@@ -4660,7 +4676,7 @@ Sets how long a paused virtual display may remain ready before the display helpe
 
 ### dd_virtual_display_scale
 
-Sets the virtual-display scale override. Leave it unset or at the automatic setting to use the recommended scale for the requested display mode.
+Sets the virtual-display scale override. The default, `0` (Retain), keeps your chosen scale for future streams. On Windows, connect to the virtual display and choose **Scale** in **Settings > System > Display**; subsequent streams using that virtual display retain your choice. Choose an explicit percentage to change desktop scaling without changing the requested pixel resolution. On Windows, scaling is applied through the DPI setter without changing the virtual monitor's reported physical size. The optional `-1` setting chooses a scale based on resolution.
 
 ### dd_wa_hdr_toggle
 

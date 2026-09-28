@@ -144,6 +144,7 @@ else()
                 "${SQLITE3_LIBRARIES}")
         add_executable(vibepollo_steam_launch
                 "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-steam-launch.cpp"
+                "${CMAKE_SOURCE_DIR}/src/steam_process_tracker.cpp"
                 "${CMAKE_SOURCE_DIR}/src/provider_scan_protocol.cpp"
                 "${CMAKE_SOURCE_DIR}/src/steam_integration.cpp")
         set_target_properties(vibepollo_steam_launch PROPERTIES
@@ -163,6 +164,7 @@ else()
                 "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-profile-normalize.py"
                 "${CMAKE_SOURCE_DIR}/packaging/linux/steamos/local/pairing_migration.py"
                 "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-controller"
+                "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-global-limiter.py"
                 "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-drm-install"
                 DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
         install(TARGETS vibepollo_session_exec vibepollo_app_supervisor
@@ -361,6 +363,7 @@ set(CPACK_RPM_PACKAGE_REQUIRES "\
             ${CPACK_RPM_PLATFORM_PACKAGE_REQUIRES} \
             /usr/bin/pactl, \
             /usr/bin/parec, \
+            /usr/bin/python3, \
             /usr/bin/wayland-info, \
             /usr/bin/xdpyinfo, \
             libcap >= 2.22, \

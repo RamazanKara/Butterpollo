@@ -954,6 +954,8 @@ namespace proc {
 
 #ifdef _WIN32
   std::atomic<VDISPLAY::DRIVER_STATUS> vDisplayDriverStatus {VDISPLAY::DRIVER_STATUS::UNKNOWN};
+  std::atomic<VDISPLAY::DRIVER_SELECTION> vDisplayDriverSelection {VDISPLAY::DRIVER_SELECTION::UNKNOWN};
+  std::mutex vdisplay_driver_status_mutex;
 
   namespace {
     lifecycle::deferred_action_t deferred_display_revert;
@@ -971,18 +973,44 @@ namespace proc {
     deferred_display_revert.clear();
   }
 
+  vdisplay_driver_status_snapshot_t vDisplayDriverStatusSnapshot() {
+    std::lock_guard<std::mutex> lock(vdisplay_driver_status_mutex);
+    return {
+      vDisplayDriverStatus.load(std::memory_order_acquire),
+      vDisplayDriverSelection.load(std::memory_order_acquire),
+    };
+  }
+
+  void setVDisplayDriverStatus(const VDISPLAY::DRIVER_STATUS status) {
+    std::lock_guard<std::mutex> lock(vdisplay_driver_status_mutex);
+    vDisplayDriverStatus.store(status, std::memory_order_release);
+  }
+
+  void setVDisplayDriverStatus(
+    const VDISPLAY::DRIVER_STATUS status,
+    const VDISPLAY::DRIVER_SELECTION selection
+  ) {
+    std::lock_guard<std::mutex> lock(vdisplay_driver_status_mutex);
+    vDisplayDriverSelection.store(selection, std::memory_order_release);
+    vDisplayDriverStatus.store(status, std::memory_order_release);
+  }
+
   void onVDisplayWatchdogFailed() {
-    vDisplayDriverStatus.store(VDISPLAY::DRIVER_STATUS::WATCHDOG_FAILED, std::memory_order_release);
+    setVDisplayDriverStatus(VDISPLAY::DRIVER_STATUS::WATCHDOG_FAILED);
     VDISPLAY::closeVDisplayDevice();
   }
 
   void initVDisplayDriver() {
     VDISPLAY::ensureVirtualDisplayRegistryDefaults();
+    setVDisplayDriverStatus(
+      VDISPLAY::DRIVER_STATUS::UNKNOWN,
+      VDISPLAY::DRIVER_SELECTION::UNKNOWN
+    );
     if (!VDISPLAY::ensure_driver_is_ready()) {
       BOOST_LOG(warning) << "Sunshine virtual display driver reported unavailable during initialization; attempting to continue.";
     }
-    vDisplayDriverStatus.store(VDISPLAY::openVDisplayDevice(), std::memory_order_release);
-    if (vDisplayDriverStatus.load(std::memory_order_acquire) == VDISPLAY::DRIVER_STATUS::OK) {
+    const auto status = VDISPLAY::openVDisplayDevice();
+    if (status == VDISPLAY::DRIVER_STATUS::OK) {
       if (!VDISPLAY::startPingThread(onVDisplayWatchdogFailed)) {
         onVDisplayWatchdogFailed();
         return;
@@ -2749,9 +2777,12 @@ namespace proc {
     BOOST_LOG(info) << "Session resuming for app [" << _app_name << "].";
 
 #ifdef _WIN32
-    // pause() consumes the prior snapshot after restoring it. Capture a new
-    // baseline before any resume command can change the setting again.
-    platf::cache_screen_saver_state();
+    // Capture a fresh baseline after a completed pause, or retain the original
+    // while an older pause command could still change the setting. Processless
+    // Remote Monitor/Input sessions must not claim application ownership.
+    if (current_app_id() > 0) {
+      platf::cache_screen_saver_state();
+    }
 #endif
 
     if (!_app.state_cmds.empty()) {
@@ -2810,8 +2841,25 @@ namespace proc {
 
     BOOST_LOG(info) << "Session pausing for app [" << _app_name << "].";
 
+    std::function<void()> finish_screen_saver_restore = [] {};
+#ifdef _WIN32
     if (!_app.state_cmds.empty()) {
-      auto exec_thread = std::thread([cmd_list = _app.state_cmds, app_working_dir = _app.working_dir, _env = _env]() mutable {
+      finish_screen_saver_restore = platf::deferred_screen_saver_restore();
+    }
+#endif
+    // Release the registered worker if copying commands or starting its thread
+    // fails. After successful launch the worker owns this completion instead.
+    auto restore_on_launch_failure = util::fail_guard(finish_screen_saver_restore);
+
+#ifdef _WIN32
+    // Preserve immediate restoration even if a pause command runs indefinitely.
+    // The registered worker retains the baseline for a later reassertion.
+    platf::restore_screen_saver_state();
+#endif
+
+    if (!_app.state_cmds.empty()) {
+      auto exec_thread = std::thread([cmd_list = _app.state_cmds, app_working_dir = _app.working_dir, _env = _env, finish_screen_saver_restore]() mutable {
+        auto restore_guard = util::fail_guard(finish_screen_saver_restore);
         _env["APOLLO_APP_STATUS"] = "PAUSING";
 
         std::error_code ec;
@@ -2836,7 +2884,11 @@ namespace proc {
             break;
           }
 
-          child.wait();
+          child.wait(ec);
+          if (ec) {
+            BOOST_LOG(error) << '[' << cmd.undo_cmd << "] wait failed with error code ["sv << ec << ']';
+            break;
+          }
 
           auto ret = child.exit_code();
           if (ret != 0 && ec != std::errc::permission_denied) {
@@ -2847,16 +2899,11 @@ namespace proc {
       });
 
       exec_thread.detach();
+      restore_on_launch_failure.disable();
     }
 
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
     system_tray::update_tray_pausing(proc::proc.get_last_run_app_name());
-#endif
-
-#ifdef _WIN32
-    // A paused app can remain alive for session resume, so restore this global
-    // user setting even when normal application termination does not run.
-    platf::restore_screen_saver_state();
 #endif
   }
 
@@ -3107,8 +3154,9 @@ namespace proc {
 
 #if defined(_WIN32) || defined(__linux__)
     // Release only this app's normal-display role before deciding whether the
-    // process-wide display restore is now allowed. A retained Remote Monitor
-    // role for the same client keeps that display protected.
+    // process-wide display restore is now allowed. The coordinator keeps that
+    // display protected while capture references drain or a retained Remote
+    // Monitor still owns the same client identity.
     if (!_active_client_uuid.empty() && _active_client_vdd_identity_token != 0) {
       remote_display_topology::instance().release_normal_game_identity(
         _active_client_uuid,
@@ -3117,6 +3165,8 @@ namespace proc {
     }
 #endif
 
+    // A draining normal capture or retained Remote Monitor keeps cleanup and
+    // REVERT pending until the final capture reference has been released.
     const bool other_streaming_session_active =
       stream::session::has_shared_runtime_owner();
 

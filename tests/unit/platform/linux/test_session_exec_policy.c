@@ -15,6 +15,21 @@ int vibepollo_session_broker_entrypoint(int argc, char **argv);
 } while (0)
 
 int main(void) {
+  CHECK(!strcmp(steam_big_picture_uri("setsid steam steam://open/bigpicture"), "steam://open/bigpicture"));
+  CHECK(!strcmp(steam_big_picture_uri("setsid steam steam://close/bigpicture"), "steam://close/bigpicture"));
+  CHECK(!steam_big_picture_uri(NULL));
+  CHECK(!steam_big_picture_uri("setsid steam steam://open/bigpicture; touch /tmp/untrusted"));
+  CHECK(!steam_big_picture_uri("setsid steam steam://open/bigpicture\n/bin/true"));
+  CHECK(!steam_big_picture_uri("setsid steam steam://open/bigpicture --extra"));
+  CHECK(!steam_big_picture_uri("setsid steam steam://run/42"));
+  CHECK(!steam_big_picture_uri("/tmp/steam steam://open/bigpicture"));
+  struct session_identity greeter_identity = {0};
+  strcpy(greeter_identity.role, "greeter");
+  char *big_picture_request[] = {"broker", "app", "setsid steam steam://open/bigpicture", NULL};
+  CHECK(execute_request(3, big_picture_request, &greeter_identity, getgid()) == 126);
+  big_picture_request[2] = "setsid steam steam://close/bigpicture";
+  CHECK(execute_request(3, big_picture_request, &greeter_identity, getgid()) == 126);
+
   CHECK(artwork_request_is_safe("provider-steam-artwork:42", "provider-steam-artwork:", UINT32_MAX));
   CHECK(!artwork_request_is_safe("provider-steam-artwork:0", "provider-steam-artwork:", UINT32_MAX));
   CHECK(!artwork_request_is_safe("provider-steam-artwork:4294967296", "provider-steam-artwork:", UINT32_MAX));
@@ -63,6 +78,22 @@ int main(void) {
   valid_steam_direct[4] = "116000";
   valid_steam_direct[2] = "0";
   CHECK(!steam_direct_arguments_are_safe(10, valid_steam_direct));
+
+  char *global_limiter[] = {
+    "vibeshine-session-broker", "global-limiter", "proton", "59940", "custom", "0", "late", NULL
+  };
+  CHECK(global_limiter_arguments_are_safe(7, global_limiter));
+  CHECK(!global_limiter_arguments_are_safe(6, global_limiter));
+  global_limiter[2] = "mangohud";
+  global_limiter[6] = "early";
+  CHECK(global_limiter_arguments_are_safe(7, global_limiter));
+  global_limiter[3] = "59940;touch /tmp/untrusted";
+  CHECK(!global_limiter_arguments_are_safe(7, global_limiter));
+  global_limiter[3] = "0";
+  CHECK(!global_limiter_arguments_are_safe(7, global_limiter));
+  global_limiter[3] = "59940";
+  global_limiter[4] = "/tmp/preset";
+  CHECK(!global_limiter_arguments_are_safe(7, global_limiter));
 
   CHECK(xauthority_mode_is_safe(0600));
   CHECK(xauthority_mode_is_safe(0400));

@@ -16,10 +16,12 @@ extern "C" {
 
 namespace {
 
+  using platf::vhf_gamepad::backend_e;
   using platf::vhf_gamepad::decode_rumble_rgb;
   using platf::vhf_gamepad::make_input_state;
   using platf::vhf_gamepad::normalized_state_t;
   using platf::vhf_gamepad::rumble_rgb_t;
+  using platf::vhf_gamepad::select_automatic_backend;
   using platf::vhf_gamepad::select_automatic_profile;
   using platf::vhf_gamepad::supported_button_mask;
   using platf::vhf_gamepad::to_milli_units;
@@ -42,6 +44,13 @@ namespace {
   }
 
   class VhfGamepadPolicyTest: public testing::Test {};
+
+  TEST_F(VhfGamepadPolicyTest, AutomaticBackendFallsBackToVhfWhenVigemIsUnavailable) {
+    EXPECT_EQ(select_automatic_backend(true, true), backend_e::vigem);
+    EXPECT_EQ(select_automatic_backend(true, false), backend_e::vigem);
+    EXPECT_EQ(select_automatic_backend(false, true), backend_e::vhf);
+    EXPECT_EQ(select_automatic_backend(false, false), backend_e::unavailable);
+  }
 
   TEST_F(VhfGamepadPolicyTest, AutomaticProfilePrefersXinputThenPlaystation) {
     const auto all_public =
@@ -107,7 +116,7 @@ namespace {
   }
 
   TEST_F(VhfGamepadPolicyTest, VerticalAxesGoOverTheWireUnchanged) {
-    // The wire contract is Vibeshine's normalized state, positive-up. Each driver profile
+    // The wire contract is Vibepollo's normalized state, positive-up. Each driver profile
     // converts to its own device's convention, so converting here too inverted both sticks.
     normalized_state_t state {};
     state.left_y = 20000;

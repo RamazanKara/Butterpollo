@@ -30,6 +30,7 @@ broker_socket_unit = (linux / "vibepollo-session-exec.socket").read_text()
 launcher = (linux / "vibepollo-session-exec.c").read_text()
 broker = (linux / "vibepollo-session-broker.c").read_text()
 steam_launcher = (linux / "vibepollo-steam-launch.cpp").read_text()
+provider_scan_protocol = (root / "src/provider_scan_protocol.cpp").read_text()
 session_execution = launcher + "\n" + broker
 private_display = (root / "src/platform/linux/private_display.cpp").read_text()
 display_power = (linux / "vibepollo-display-power.h").read_text()
@@ -295,6 +296,8 @@ for unit_text, label in (
     require(unit_text, "Before=vibepollo.service", f"{label} shutdown drain ordering")
     forbid(unit_text, "BindsTo=vibepollo-session-controller.service", f"{label} ordered controller cleanup")
     forbid(unit_text, "PartOf=vibepollo-session-controller.service", f"{label} ordered controller cleanup")
+require(broker_unit.split("[Service]", 1)[0], "CollectMode=inactive-or-failed",
+        "completed rejected broker requests must not exhaust handoff inventory")
 require(host_unit, "KillMode=control-group", "machine host process-tree shutdown")
 require(host_unit, "SendSIGKILL=no", "GPU-owner graceful shutdown")
 require(host_unit, "Type=notify", "encoder-gated machine host readiness")
@@ -319,6 +322,12 @@ for forbidden in (
 require(host, "trap mark_host_shutdown TERM INT HUP", "single service signal delivery")
 forbid(host, "trap 'forward_host_signal", "duplicate service signal delivery")
 require(host, "((shutting_down)) || terminate_host", "single child termination request")
+
+for variable in ("VIBEPOLLO_MACHINE_HOST", "VIBEPOLLO_SESSION_ROLE"):
+    require(host, variable, "machine-host provider scan environment")
+    require(provider_scan_protocol, f'std::getenv("{variable}")', "provider scan machine-session guard")
+for variable in ("VIBESHINE_MACHINE_HOST", "VIBESHINE_SESSION_ROLE"):
+    forbid(provider_scan_protocol, variable, "provider scan source-only environment")
 
 # API restart of the private child exits back to the readiness-gating wrapper.
 # Ordinary Linux launches retain the historical atexit self-reexec path.
@@ -668,6 +677,7 @@ require(
     "desktop and greeter KWin environment packaging",
 )
 require(packaging, "vibepollo-session-controller.service", "native packaging")
+require(packaging, '"${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-global-limiter.py"', "native packaging")
 require(packaging, "install(TARGETS vibepollo_session_broker", "native packaging")
 require(packaging, "set(CPACK_DEB_COMPONENT_INSTALL OFF)", "monolithic native DEB")
 for deb_arch_contract in (
@@ -974,6 +984,7 @@ for unsafe_stop in (
 require(rpm, "%{_bindir}/vibepollo-mangohud", "RPM deterministic manifest")
 require(rpm, "%attr(0755,root,root) %{_prefix}/libexec/vibeshine/vibepollo-app-supervisor", "RPM deterministic manifest")
 require(rpm, "%attr(0755,root,root) %{_prefix}/libexec/vibeshine/vibepollo-steam-launch", "RPM deterministic manifest")
+require(rpm, "%{_prefix}/libexec/vibeshine/vibepollo-global-limiter.py", "RPM deterministic manifest")
 require(rpm, "%attr(0755,root,root) %{_prefix}/libexec/vibeshine/vibepollo-kwin-session-environment", "RPM deterministic manifest")
 require(rpm, "%attr(0750,root,vibepollo) %caps(cap_sys_admin,cap_sys_nice+p) %{_prefix}/libexec/vibeshine/vibepollo-host", "RPM deterministic manifest")
 require(rpm, "%attr(0700,root,root) %caps(cap_kill,cap_setgid,cap_setuid+p) %{_prefix}/libexec/vibeshine/vibepollo-session-broker", "RPM deterministic manifest")

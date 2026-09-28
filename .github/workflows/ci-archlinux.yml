@@ -5,6 +5,10 @@ permissions: {}
 on:
   workflow_call:
     inputs:
+      build_tests:
+        required: false
+        type: boolean
+        default: false
       artifact_retention_days:
         required: false
         type: number
@@ -21,16 +25,20 @@ jobs:
     name: Archlinux
     env:
       _use_cuda: true
+      # Ninja does not honor MAKEFLAGS; bound both CMake and make builds.
+      CMAKE_BUILD_PARALLEL_LEVEL: 6
       BRANCH: ${{ github.head_ref || github.ref_name }}
       BUILD_VERSION: ${{ inputs.release_version }}
       CLONE_URL: ${{ github.event.repository.clone_url }}
       COMMIT: ${{ inputs.release_commit }}
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    # Trusted builds use the Linux runner registered to this repository.
+    # Pull requests and forks continue to use disposable GitHub-hosted runners.
+    runs-on: ${{ github.repository == 'Nonary/Vibepollo' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && fromJSON('["self-hosted", "Linux", "X64", "linux-release"]') || fromJSON('["ubuntu-latest"]') }}
     container:
       image: archlinux/archlinux:base-devel
-      options: --cpus 4 --memory 8g
+      options: --cpus 8 --memory 16g
     steps:
 
       - name: Update keyring
@@ -52,8 +60,7 @@ jobs:
       - name: Patch build flags
         shell: bash
         run: |
-          # shellcheck disable=SC2016
-          sed -i 's,#MAKEFLAGS="-j2",MAKEFLAGS="-j$(nproc)",g' /etc/makepkg.conf
+          echo "MAKEFLAGS=\"-j${CMAKE_BUILD_PARALLEL_LEVEL}\"" >> /etc/makepkg.conf
 
       - name: Install dependencies
         shell: bash
@@ -98,6 +105,7 @@ jobs:
           submodules: recursive
 
       - name: Verify CUDA release policy
+        if: inputs.build_tests
         shell: bash
         run: python3 tests/unit/test_cuda_release_policy.py
 
@@ -126,7 +134,7 @@ jobs:
           module_build_dir="${RUNNER_TEMP}/vibeshine-drm-${kernel_release}"
           cp -a third-party/libvirtualdisplay/linux/vibeshine-drm "${module_build_dir}"
           write_drm_version_header "${module_build_dir}" "0.0.0"
-          MAKEFLAGS="-j$(nproc)" \
+          MAKEFLAGS="-j${CMAKE_BUILD_PARALLEL_LEVEL}" \
             "${module_build_dir}/build-module" "${kernel_release}" "${module_build_dir}"
           test -s "${module_build_dir}/vibeshine_drm.ko"
 
@@ -156,7 +164,7 @@ jobs:
             "${dkms_source}/dkms.conf.in" >"${dkms_source}/dkms.conf"
           printf 'try_sign_modules=true\n' >/etc/dkms/framework.conf.d/vibepollo-ci.conf
           dkms add -m vibeshine-drm -v "${dkms_ci_version}"
-          MAKEFLAGS="-j$(nproc)" dkms build \
+          MAKEFLAGS="-j${CMAKE_BUILD_PARALLEL_LEVEL}" dkms build \
             -m vibeshine-drm -v "${dkms_ci_version}" -k "${kernel_release}"
           dkms install -m vibeshine-drm -v "${dkms_ci_version}" -k "${kernel_release}"
 
@@ -232,6 +240,8 @@ jobs:
         id: build
         shell: bash
         working-directory: pkg
+        env:
+          _build_tests: ${{ inputs.build_tests && 'ON' || 'OFF' }}
         run: |
           # Add problem matcher
           echo "::add-matcher::.github/matchers/gcc.json"
@@ -247,6 +257,8 @@ jobs:
           # Build the package as builder user (pass through environment variables)
           sudo -u builder env \
             _use_cuda="${_use_cuda}" \
+            _build_tests="${_build_tests}" \
+            CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL}" \
             makepkg -si --noconfirm
 
           # Remove debug package
@@ -364,3 +376,12 @@ jobs:
           path: artifacts/
           if-no-files-found: error
           retention-days: ${{ inputs.artifact_retention_days }}
+
+      - name: Restore self-hosted workspace ownership
+        if: always() && runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          # The container writes as root and builder, but the persistent runner
+          # must be able to clean its workspace and temporary files after a job.
+          runner_owner="$(stat -c '%u:%g' "${RUNNER_TEMP}/..")"
+          chown -R "${runner_owner}" "${GITHUB_WORKSPACE}" "${RUNNER_TEMP}"

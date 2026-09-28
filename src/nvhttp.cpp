@@ -71,6 +71,7 @@
   #include "platform/windows/virtual_display_cleanup.h"
 #elif defined(__linux__)
   #include "platform/linux/private_display.h"
+  #include "platform/linux/mangohud_policy.h"
   #include "src/platform/linux/display_backend.h"
   #include "platform/linux/display_power.h"
   #include "platform/linux/private_display_resume_policy.h"
@@ -539,12 +540,12 @@ namespace nvhttp {
       }
       if (reapply_topology && !remote_display_topology::instance().reapply_composed_topology()) {
         if (reservation.newly_reserved) {
-          remote_display_topology::instance().rollback_normal_game_identity(
+          const bool can_retire = remote_display_topology::instance().rollback_normal_game_identity(
             owner_uuid,
             reservation.token
           );
           const auto protected_clients = remote_display_topology::instance().protected_remote_monitor_client_ids();
-          const bool topology_restored = remote_display_topology::instance().reapply_composed_topology();
+          const bool topology_restored = can_retire && remote_display_topology::instance().reapply_composed_topology();
           if (topology_restored && std::find(protected_clients.begin(), protected_clients.end(), owner_uuid) == protected_clients.end()) {
             (void) platf::linux_private_display::remote_remove_owned_display(owner_uuid);
           }
@@ -557,11 +558,11 @@ namespace nvhttp {
       if (!platf::linux_private_display::publish_current_session_state(*launch_session)) {
         BOOST_LOG(error) << "Linux private display: composed output did not publish verified session state.";
         if (reservation.newly_reserved) {
-          remote_display_topology::instance().rollback_normal_game_identity(
+          const bool can_retire = remote_display_topology::instance().rollback_normal_game_identity(
             owner_uuid,
             reservation.token
           );
-          if (remote_display_topology::instance().reapply_composed_topology()) {
+          if (can_retire && remote_display_topology::instance().reapply_composed_topology()) {
             (void) platf::linux_private_display::remote_remove_owned_display(owner_uuid);
           }
         }
@@ -581,12 +582,12 @@ namespace nvhttp {
       if (!launch_session->normal_vdd_identity_newly_reserved) {
         return;
       }
-      remote_display_topology::instance().rollback_normal_game_identity(
+      const bool can_retire = remote_display_topology::instance().rollback_normal_game_identity(
         owner_uuid,
         launch_session->normal_vdd_identity_token
       );
       const auto protected_clients = remote_display_topology::instance().protected_remote_monitor_client_ids();
-      const bool topology_restored = remote_display_topology::instance().reapply_composed_topology();
+      const bool topology_restored = can_retire && remote_display_topology::instance().reapply_composed_topology();
       if (topology_restored && std::find(protected_clients.begin(), protected_clients.end(), owner_uuid) == protected_clients.end()) {
         (void) platf::linux_private_display::remote_remove_owned_display(owner_uuid);
       }
@@ -1349,7 +1350,7 @@ namespace nvhttp {
                                  (launch_session->height > 0 ? static_cast<uint32_t>(launch_session->height) : 1080u);
           // Virtual-display creation may eagerly enable HDR. Default to no state change so
           // "Do not change HDR" preserves the retained Windows setting.
-          bool virtual_display_hdr_requested = false;
+          std::optional<bool> virtual_display_hdr_requested;
           display_helper_integration::helpers::SessionDisplayConfigurationHelper initial_display_helper(config::video, *launch_session, true);
           if (auto initial_configuration = initial_display_helper.initial_virtual_display_configuration()) {
             if (initial_configuration->m_resolution &&
@@ -3635,6 +3636,34 @@ namespace nvhttp {
       tree.put("root.uniqueid", http::unique_id);
       tree.put("root.HttpsPort", net::map_port(PORT_HTTPS));
       tree.put("root.ExternalPort", net::map_port(PORT_HTTP));
+
+      // Optional Moonlight extension. These describe integration/configuration,
+      // not proof that a particular game's limiter was successfully applied.
+      // Virtual-display limiting is independent of the manual limiter switch.
+      // Report the configured default display path; app/client overrides and
+      // per-game provider success are resolved later at launch.
+      const bool automatic_virtual_limiter =
+        config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled &&
+        config::frame_limiter.virtual_display_limiter_enabled();
+#ifdef _WIN32
+      tree.put("root.FrameLimiterSupported", 1);
+      tree.put("root.FrameLimiterEnabled", automatic_virtual_limiter || (config::frame_limiter.enable &&
+        !boost::iequals(config::frame_limiter.provider, "none") &&
+        !boost::iequals(config::frame_limiter.provider, "disabled")) ? 1 : 0);
+      tree.put("root.VirtualDisplayFrameLimiterEnabled", config::frame_limiter.virtual_display_limiter_enabled() ? 1 : 0);
+      tree.put("root.FrameLimiterFpsLimitMilliHz", config::frame_limiter.fps_limit_millihz);
+#elif defined(__linux__)
+      const bool limiter_provider_selected = platf::mangohud::linux_provider_selected(config::frame_limiter.provider);
+      tree.put("root.FrameLimiterSupported", 1);
+      tree.put("root.FrameLimiterEnabled", limiter_provider_selected && (config::frame_limiter.enable || automatic_virtual_limiter) ? 1 : 0);
+      tree.put("root.VirtualDisplayFrameLimiterEnabled", limiter_provider_selected && config::frame_limiter.virtual_display_limiter_enabled() ? 1 : 0);
+      tree.put("root.FrameLimiterFpsLimitMilliHz", config::frame_limiter.fps_limit_millihz);
+#else
+      tree.put("root.FrameLimiterSupported", 0);
+      tree.put("root.FrameLimiterEnabled", 0);
+      tree.put("root.VirtualDisplayFrameLimiterEnabled", 0);
+      tree.put("root.FrameLimiterFpsLimitMilliHz", 0);
+#endif
 #ifdef _WIN32
       // Artemis checks /serverinfo before it offers virtual-display launches.
       // Publish the Windows capability and its current driver state for both
@@ -5637,10 +5666,26 @@ namespace nvhttp {
       return;
     }
     const auto active_session = proc::proc.active_session_guard();
-    if (!has_running_app || active_session.client_uuid != identity.uuid) {
+    const remote_session::caller_t caller {
+      .uuid = identity.uuid,
+      .paired = !identity.uuid.empty(),
+      .may_terminate = has_client_perm(verified_client, PERM::launch),
+    };
+    const remote_session::game_t game {
+      .running = has_running_app,
+      .owner_uuid = active_session.client_uuid,
+      .generation = active_session_generation(active_session),
+    };
+    const bool remote_sessions_active = remote_role_gate_snapshot_for_client(identity.uuid).active;
+    if (!remote_session::allows_normal_game_cancel(caller, game, remote_sessions_active)) {
       tree.put("root.cancel", 0);
       tree.put("root.<xmlattr>.status_code", 403);
-      tree.put("root.<xmlattr>.status_message", "Only the configured running-game owner may cancel this game");
+      tree.put(
+        "root.<xmlattr>.status_message",
+        remote_sessions_active ?
+          "Only the configured running-game owner may cancel this game while Remote Input or Remote Monitor is active" :
+          "No running app is available to cancel"
+      );
       return;
     }
 

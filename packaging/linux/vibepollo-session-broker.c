@@ -621,6 +621,13 @@ static bool steam_direct_arguments_are_safe(int argc, char **argv) {
          (limited || strcmp(argv[8], "0"));
 }
 
+static bool global_limiter_arguments_are_safe(int argc, char **argv) {
+  if (argc != 7 || !argv) return false;
+  char *validation[] = {"broker", "steam-direct", "1", argv[2], argv[3],
+                        argv[4], argv[5], argv[6], "0", "0"};
+  return steam_direct_arguments_are_safe(10, validation);
+}
+
 static bool parse_channel_mapping(const char *value, size_t channels,
                                   unsigned char mapping[8]) {
   if (!value || !mapping || channels < 1 || channels > 8) return false;
@@ -1176,19 +1183,31 @@ static int exec_user_service(const struct session_identity *identity, const char
   return 126;
 }
 
+static const char *steam_big_picture_uri(const char *command) {
+  // These are the two commands shipped in the default Linux apps.json. Treat
+  // them as fixed Steam actions: a fresh install creates its command manifest
+  // before the host creates that catalog, and upgrades preserve the manifest.
+  // Never interpret shell syntax or pass the original command to an executor.
+  if (!command) return NULL;
+  if (!strcmp(command, "setsid steam steam://open/bigpicture")) return "steam://open/bigpicture";
+  if (!strcmp(command, "setsid steam steam://close/bigpicture")) return "steam://close/bigpicture";
+  return NULL;
+}
+
 static int execute_request(int argc, char **argv,
                            const struct session_identity *identity,
                            gid_t service_gid) {
   if (argc < 2) return 2;
   enum operation {
     DISPLAY_QUERY, DISPLAY_APPLY, DISPLAY_POWER, DISPLAY_WAKE, AUDIO_GET_DEFAULT, AUDIO_LIST_SINKS, AUDIO_SET_DEFAULT,
-    AUDIO_CREATE_NULL, AUDIO_REMOVE_NULL, AUDIO_CAPTURE, STEAM, STEAM_DIRECT, LUTRIS,
+    AUDIO_CREATE_NULL, AUDIO_REMOVE_NULL, AUDIO_CAPTURE, STEAM, STEAM_BIG_PICTURE, STEAM_DIRECT, GLOBAL_LIMITER, LUTRIS,
     PROVIDER_STEAM_SCAN, PROVIDER_LUTRIS_SCAN, PROVIDER_STEAM_ARTWORK, PROVIDER_LUTRIS_ARTWORK, APP
   } operation;
   unsigned long first_number = 0, second_number = 0, third_number = 0;
   unsigned char channel_mapping[8] = {0};
   size_t audio_channel_count = 0;
   char authorized_directory[PATH_MAX] = {0};
+  const char *big_picture_uri = NULL;
   if (!strcmp(argv[1], "display-query") && argc == 2) operation = DISPLAY_QUERY;
   else if (!strcmp(argv[1], "display-power") && argc == 2) operation = DISPLAY_POWER;
   else if (!strcmp(argv[1], "display-wake") && argc == 2) operation = DISPLAY_WAKE;
@@ -1210,6 +1229,9 @@ static int execute_request(int argc, char **argv,
            parse_number(argv[4], 1, 8192, &third_number) &&
            parse_channel_mapping(argv[5], second_number, channel_mapping)) operation = AUDIO_CAPTURE;
   else if (!strcmp(argv[1], "steam") && argc == 3 && numeric_suffix(argv[2], "") && !strcmp(identity->role, "desktop")) operation = STEAM;
+  else if (!strcmp(argv[1], "global-limiter") &&
+           global_limiter_arguments_are_safe(argc, argv) &&
+           !strcmp(identity->role, "desktop")) operation = GLOBAL_LIMITER;
   else if (!strcmp(argv[1], "steam-direct") &&
            steam_direct_arguments_are_safe(argc, argv) &&
            !strcmp(identity->role, "desktop")) operation = STEAM_DIRECT;
@@ -1220,6 +1242,8 @@ static int execute_request(int argc, char **argv,
            artwork_request_is_safe(argv[1], "provider-steam-artwork:", UINT32_MAX)) operation = PROVIDER_STEAM_ARTWORK;
   else if (argc == 2 && !strcmp(identity->role, "desktop") &&
            artwork_request_is_safe(argv[1], "provider-lutris-artwork:", INT64_MAX)) operation = PROVIDER_LUTRIS_ARTWORK;
+  else if (!strcmp(argv[1], "app") && argc == 3 && !strcmp(identity->role, "desktop") &&
+           (big_picture_uri = steam_big_picture_uri(argv[2]))) operation = STEAM_BIG_PICTURE;
   else if (!strcmp(argv[1], "app") && argc == 3 && !strcmp(identity->role, "desktop") &&
            command_is_authorized(identity->role, argv[2], service_gid,
                                  authorized_directory, sizeof(authorized_directory))) operation = APP;
@@ -1311,6 +1335,20 @@ static int execute_request(int argc, char **argv,
       char *const arguments[] = {"/usr/bin/steam", "-applaunch", argv[2], NULL};
       execv("/usr/bin/steam", arguments);
       break;
+    }
+    case STEAM_BIG_PICTURE: {
+      // Capture/consume the game baseline as the desktop user, after the
+      // identity drop and endpoint validation. Never parse it in the broker.
+      char *const arguments[] = {(char *) steam_launch_path, "--big-picture", (char *) big_picture_uri, NULL};
+      execv(steam_launch_path, arguments);
+      break;
+    }
+    case GLOBAL_LIMITER: {
+      char *const arguments[] = {
+        (char *) steam_launch_path, "--global", argv[2], argv[3], argv[4],
+        argv[5], argv[6], "0", "0", NULL
+      };
+      return exec_user_service(identity, NULL, arguments, false);
     }
     case STEAM_DIRECT: {
       char *const arguments[] = {

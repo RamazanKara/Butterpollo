@@ -59,6 +59,7 @@
 
 #endif
 #include "logging.h"
+#include "log_export.h"
 #include "network.h"
 #include "nvhttp.h"
 #include "remote_display_topology.h"
@@ -73,6 +74,7 @@
 
 #ifdef _WIN32
   #include "platform/windows/virtual_display_cleanup.h"
+  #include "platform/windows/virtual_display.h"
 #elif defined(__linux__)
   #include "platform/linux/capture_status.h"
   #include "platform/linux/private_display.h"
@@ -3136,6 +3138,50 @@ namespace confighttp {
     };
 #endif
 #if defined(_WIN32)
+    output_tree["providers"]["playnite_toggle"] = true;
+    const auto driver_snapshot = proc::vDisplayDriverStatusSnapshot();
+    const auto driver_status = driver_snapshot.status;
+    const auto active_driver = driver_snapshot.selection;
+    const auto driver_status_name = [](const VDISPLAY::DRIVER_STATUS status) {
+      switch (status) {
+        case VDISPLAY::DRIVER_STATUS::OK:
+          return "ready";
+        case VDISPLAY::DRIVER_STATUS::FAILED:
+          return "failed";
+        case VDISPLAY::DRIVER_STATUS::VERSION_INCOMPATIBLE:
+          return "version_incompatible";
+        case VDISPLAY::DRIVER_STATUS::WATCHDOG_FAILED:
+          return "watchdog_failed";
+        case VDISPLAY::DRIVER_STATUS::UNKNOWN:
+        default:
+          return "unknown";
+      }
+    };
+    const auto driver_selection_name = [](const VDISPLAY::DRIVER_SELECTION selection) -> const char * {
+      switch (selection) {
+        case VDISPLAY::DRIVER_SELECTION::VIBESHINE:
+          return "vibeshine";
+        case VDISPLAY::DRIVER_SELECTION::SUDOVDA:
+          return "sudovda";
+        case VDISPLAY::DRIVER_SELECTION::UNKNOWN:
+        default:
+          return nullptr;
+      }
+    };
+    const auto configured_driver = config::video.dd.use_sunshine_virtual_display_driver
+                                     ? "vibeshine"
+                                     : "sudovda";
+    nlohmann::json driver_metadata = {
+      {"configured", configured_driver},
+      {"status", driver_status_name(driver_status)},
+      {"status_code", static_cast<int>(driver_status)},
+    };
+    if (const auto active_name = driver_selection_name(active_driver)) {
+      driver_metadata["active"] = active_name;
+    } else {
+      driver_metadata["active"] = nullptr;
+    }
+    output_tree["virtual_display_driver"] = std::move(driver_metadata);
     try {
       const auto gpus = platf::enumerate_gpus();
       if (!gpus.empty()) {
@@ -4516,6 +4562,71 @@ namespace confighttp {
       bad_request(response, request, e.what());
     }
   }
+
+#ifndef _WIN32
+  void downloadLogs(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    try {
+      logging::log_flush();
+      std::vector<std::pair<std::filesystem::path, std::filesystem::file_time_type>> candidates;
+      for (const auto &path : logging::recent_session_logs(30)) {
+        std::error_code ec;
+        const auto mtime = std::filesystem::last_write_time(path, ec);
+        if (!ec) {
+          candidates.emplace_back(path, mtime);
+        }
+      }
+      // Snapshot timestamps before sorting: the active log can change during collection.
+      // Match the Windows support bundle limits, selecting newest files first.
+      std::sort(candidates.begin(), candidates.end(), [](const auto &a, const auto &b) {
+        return a.second != b.second ? a.second > b.second : a.first < b.first;
+      });
+      constexpr std::size_t max_files = 32;
+      constexpr std::size_t max_bytes = 64 * 1024 * 1024;
+      std::size_t bytes = 0;
+      log_export::export_log_sanitizer_t sanitizer;
+      std::vector<log_export::ZipDataEntry> entries;
+      for (const auto &[path, mtime] : candidates) {
+        if (entries.size() >= max_files || bytes >= max_bytes) {
+          break;
+        }
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(std::filesystem::symlink_status(path, ec))) {
+          continue;
+        }
+        const auto size = std::filesystem::file_size(path, ec);
+        if (ec || size > max_bytes - bytes) {
+          continue;
+        }
+        std::ifstream file(path, std::ios::binary);
+        if (!file) {
+          continue;
+        }
+        // Bound reads even if the active file grows during collection.
+        std::string data(static_cast<std::size_t>(size), '\0');
+        file.read(data.data(), static_cast<std::streamsize>(data.size()));
+        data.resize(static_cast<std::size_t>(file.gcount()));
+        bytes += data.size();
+        entries.push_back(log_export::make_export_log_entry(sanitizer, path.filename().string(), std::move(data), mtime));
+      }
+      if (entries.empty()) {
+        bad_request(response, request, "No retained log files are available");
+        return;
+      }
+      SimpleWeb::CaseInsensitiveMultimap headers;
+      headers.emplace("Content-Type", "application/zip");
+      headers.emplace("Content-Disposition", std::string {"attachment; filename=\""} + std::string {log_export::support_bundle_filename} + "\"");
+      headers.emplace("Cache-Control", "no-store");
+      headers.emplace("X-Frame-Options", "DENY");
+      headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
+      response->write(success_ok, log_export::build_zip_from_entries(entries), headers);
+    } catch (const std::exception &e) {
+      bad_request(response, request, e.what());
+    }
+  }
+#endif
 
   /**
    * @brief Get the logs from the log file.
@@ -6115,6 +6226,8 @@ namespace confighttp {
     register_blocking_api_route("^/api/logs/export$", "GET", downloadPlayniteLogs);
     register_blocking_api_route("^/api/logs/export_crash/manifest$", "GET", getCrashBundleManifest);
     register_blocking_api_route("^/api/logs/export_crash$", "GET", downloadCrashBundle);
+#else
+    register_blocking_api_route("^/api/logs/export$", "GET", downloadLogs);
 #endif
     server.resource["^/images/sunshine.ico$"]["GET"] = getFaviconImage;
     server.resource["^/images/logo-apollo-45.png$"]["GET"] = getApolloLogoImage;

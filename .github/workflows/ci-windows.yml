@@ -5,6 +5,10 @@ permissions: {}
 on:
   workflow_call:
     inputs:
+      use_self_hosted:
+        required: false
+        type: boolean
+        default: false
       release_commit:
         required: true
         type: string
@@ -26,7 +30,7 @@ on:
       build_tests:
         required: false
         type: boolean
-        default: true
+        default: false
       release_artifact_retention_days:
         required: false
         type: number
@@ -223,11 +227,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_COMMIT: ${{ inputs.release_commit }}
-          VHF_ARCHIVE_SHA256: 354c11239a91fd9fb2f52d45449de8409d96a4e4ed998f2794b5465eaec2434b
-          VHF_DRIVER_VER: 08/21/2026,0.1.0.30
+          VHF_ARCHIVE_SHA256: 7830a91ba281c44ae9d01e92e9086f72384a07ca1b35ee87150592f8f960361a
+          VHF_DRIVER_VER: 09/13/2026,0.1.0.34
           VHF_PROTOCOL_VERSION: '2'
-          VHF_SOURCE_REVISION: 52cbb8f27cbeb18baec53ca5d7b88081f0787a06
-          VHF_TAG: v0.1.0-beta.2
+          VHF_SOURCE_REVISION: 0b3970e1a8c839f14f20a7c8eaf48ff59b8c1986
+          VHF_TAG: v0.1.0-beta.4
         run: |
           $ErrorActionPreference = 'Stop'
           $gitlink = (git rev-parse "$($env:RELEASE_COMMIT):third-party/libvirtualgamepad").Trim()
@@ -259,7 +263,7 @@ jobs:
     needs:
       - fetch_vhf_gamepad_release
     if: inputs.artifact_source_run_id == '' && needs.fetch_vhf_gamepad_release.result == 'success'
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ inputs.use_self_hosted && github.repository == 'Nonary/Vibepollo' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && fromJSON('["self-hosted", "Windows", "X64", "windows-release"]') || fromJSON('["windows-2022"]') }}
     outputs:
       msi_name: ${{ steps.package-windows-msi.outputs.msi_name }}
       symbol_pack_name: ${{ steps.package-windows-symbols.outputs.symbol_pack_name }}
@@ -269,6 +273,8 @@ jobs:
       versioninfo_artifact_id: ${{ steps.upload-windows-version-metadata.outputs.artifact-id }}
     env:
       NODE_VERSION: 22.22.2
+      # Leave memory for the other release runners sharing this host.
+      CMAKE_BUILD_PARALLEL_LEVEL: 6
       SIGNPATH_ENABLED: ${{ secrets.signpath_api_token != '' }}
       SIGNPATH_ORGANIZATION_ID: ${{ inputs.signpath_organization_id }}
       SIGNPATH_PROJECT_SLUG: ${{ inputs.signpath_project_slug }}
@@ -295,6 +301,22 @@ jobs:
             toolchain: ucrt-x86_64
     steps:
 
+      - name: Prepare self-hosted build tools
+        if: runner.environment == 'self-hosted'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($tool in @('git', 'cmake', '7z')) {
+            Get-Command $tool -ErrorAction Stop | Out-Null
+          }
+          "DOTNET_INSTALL_DIR=$(Join-Path $env:RUNNER_TEMP 'dotnet')" >> $env:GITHUB_ENV
+          $wixRoot = Join-Path ${env:ProgramFiles(x86)} 'WiX Toolset v3.14'
+          if (-not (Test-Path (Join-Path $wixRoot 'bin\candle.exe'))) {
+            throw 'Install WiX 3.14 on the self-hosted runner before building.'
+          }
+          "WIX=$wixRoot\" >> $env:GITHUB_ENV
+          (Join-Path $wixRoot 'bin') >> $env:GITHUB_PATH
+
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
@@ -303,18 +325,22 @@ jobs:
           submodules: recursive
 
       - name: Test VHF publisher trust policy
+        if: inputs.build_tests
         shell: pwsh
         run: .\packaging\windows\virtual_gamepad_driver\tests\test_publisher_trust.ps1
 
       - name: Test VHF manifest channel contract
+        if: inputs.build_tests
         shell: pwsh
         run: .\packaging\windows\virtual_gamepad_driver\tests\test_manifest_channel_contract.ps1
 
       - name: Test VHF CMake release contract
+        if: inputs.build_tests
         shell: pwsh
         run: cmake -P .\packaging\windows\virtual_gamepad_driver\tests\test_release_contract.cmake
 
       - name: Test WiX sortable ProductCode contract
+        if: inputs.build_tests
         shell: pwsh
         run: cmake -P .\packaging\windows\wix\tests\test_sortable_product_guid_contract.cmake
 
@@ -327,11 +353,11 @@ jobs:
       - name: Revalidate VHF producer package for packaging
         shell: pwsh
         env:
-          VHF_ARCHIVE_SHA256: 354c11239a91fd9fb2f52d45449de8409d96a4e4ed998f2794b5465eaec2434b
-          VHF_DRIVER_VER: 08/21/2026,0.1.0.30
+          VHF_ARCHIVE_SHA256: 7830a91ba281c44ae9d01e92e9086f72384a07ca1b35ee87150592f8f960361a
+          VHF_DRIVER_VER: 09/13/2026,0.1.0.34
           VHF_PROTOCOL_VERSION: '2'
-          VHF_SOURCE_REVISION: 52cbb8f27cbeb18baec53ca5d7b88081f0787a06
-          VHF_TAG: v0.1.0-beta.2
+          VHF_SOURCE_REVISION: 0b3970e1a8c839f14f20a7c8eaf48ff59b8c1986
+          VHF_TAG: v0.1.0-beta.4
         run: |
           $ErrorActionPreference = 'Stop'
           $packageRoot = Join-Path $env:RUNNER_TEMP 'vhf-gamepad-producer-release'
@@ -425,6 +451,7 @@ jobs:
           "nodejs-path=$nodePath"
 
       - name: Install WiX Toolset
+        if: runner.environment != 'self-hosted'
         shell: pwsh
         run: |
           choco install wixtoolset -y
@@ -551,13 +578,13 @@ jobs:
           vhf_gamepad_package_arg=(
             -DSUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER=ON
             -DSUNSHINE_LIBVIRTUALGAMEPAD_PREBUILT_DIR="$(cygpath -u "${VHF_PACKAGE_ROOT}")"
-            -DSUNSHINE_VHF_GAMEPAD_RELEASE_TAG=v0.1.0-beta.2
-            -DSUNSHINE_VHF_GAMEPAD_RELEASE_ASSET_SHA256=354c11239a91fd9fb2f52d45449de8409d96a4e4ed998f2794b5465eaec2434b
-            -DSUNSHINE_VHF_GAMEPAD_SOURCE_REVISION=52cbb8f27cbeb18baec53ca5d7b88081f0787a06
-            -DSUNSHINE_VHF_GAMEPAD_DRIVER_VER=08/21/2026,0.1.0.30
+            -DSUNSHINE_VHF_GAMEPAD_RELEASE_TAG=v0.1.0-beta.4
+            -DSUNSHINE_VHF_GAMEPAD_RELEASE_ASSET_SHA256=7830a91ba281c44ae9d01e92e9086f72384a07ca1b35ee87150592f8f960361a
+            -DSUNSHINE_VHF_GAMEPAD_SOURCE_REVISION=0b3970e1a8c839f14f20a7c8eaf48ff59b8c1986
+            -DSUNSHINE_VHF_GAMEPAD_DRIVER_VER=09/13/2026,0.1.0.34
             -DSUNSHINE_VHF_GAMEPAD_PROTOCOL_VERSION=2
           )
-          echo "Using verified VHF producer release v0.1.0-beta.2"
+          echo "Using verified VHF producer release v0.1.0-beta.4"
           truehdr_runtime_arg=()
           if [[ "${REQUIRE_TRUEHDR_RUNTIME}" == "true" ]]; then
             truehdr_runtime_arg=(
@@ -568,7 +595,7 @@ jobs:
           fi
 
           mkdir -p build
-          # Release tag builds omit test targets; ordinary reusable-workflow calls retain them.
+          # Test targets are opt-in for CI builds.
           cmake \
             -B build \
             -G Ninja \
@@ -599,7 +626,7 @@ jobs:
             "${vhf_gamepad_package_arg[@]}" \
             "${truehdr_runtime_arg[@]}"
           echo "::add-matcher::.github/matchers/gcc.json"
-          cmake --build build --target all -j "$(nproc)"
+          cmake --build build --target all --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
           echo "::remove-matcher owner=gcc::"
 
       - name: Test native AMF lifecycle behavior
@@ -779,7 +806,7 @@ jobs:
           # Build only the MSI first. SignPath credentials stay out of this
           # step so the MSI is signed from a GitHub artifact with origin
           # verification, including nested files such as uninstall.exe.
-          cmake --build . --target package_msi -j "$(nproc)"
+          cmake --build . --target package_msi --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
 
           msi_path=$(ls -t ./cpack_artifacts/*.msi 2>/dev/null | head -n 1 || true)
           if [[ -z "${msi_path}" ]]; then
@@ -810,10 +837,10 @@ jobs:
             -ValidateOnly `
             -PrebuiltPackageDir $env:VHF_PACKAGE_ROOT `
             -PackageDir $packageDir `
-            -ReleaseTag v0.1.0-beta.2 `
-            -ExpectedReleaseAssetSha256 354c11239a91fd9fb2f52d45449de8409d96a4e4ed998f2794b5465eaec2434b `
-            -ExpectedSourceRevision 52cbb8f27cbeb18baec53ca5d7b88081f0787a06 `
-            -ExpectedDriverVer '08/21/2026,0.1.0.30' `
+            -ReleaseTag v0.1.0-beta.4 `
+            -ExpectedReleaseAssetSha256 7830a91ba281c44ae9d01e92e9086f72384a07ca1b35ee87150592f8f960361a `
+            -ExpectedSourceRevision 0b3970e1a8c839f14f20a7c8eaf48ff59b8c1986 `
+            -ExpectedDriverVer '09/13/2026,0.1.0.34' `
             -ExpectedProtocolVersion 2
           $expected = @(
             'cleanup.ps1',
@@ -1493,8 +1520,8 @@ jobs:
                   'tools/VibeshineVhfGamepadDeviceSetup.exe'
                 )
                 if ($vhfManifest.schema_version -ne 1 -or
-                    $vhfManifest.source_revision -cne '52cbb8f27cbeb18baec53ca5d7b88081f0787a06' -or
-                    $vhfManifest.driver_ver -cne '08/21/2026,0.1.0.30' -or
+                    $vhfManifest.source_revision -cne '0b3970e1a8c839f14f20a7c8eaf48ff59b8c1986' -or
+                    $vhfManifest.driver_ver -cne '09/13/2026,0.1.0.34' -or
                     [uint16] $vhfManifest.protocol_version -ne 2 -or
                     $vhfManifest.platform -cne 'x64' -or
                     $vhfManifest.signing.channel -cne 'msi-request-signing') {
@@ -1577,9 +1604,9 @@ jobs:
                 $vhfManifestHash = (Get-FileHash -LiteralPath $vhfManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
                 if ($vhfReleaseLock.channel -cne 'production' -or
                     $vhfReleaseLock.repository -cne 'Nonary/libvirtualgamepad' -or
-                    $vhfReleaseLock.release_tag -cne 'v0.1.0-beta.2' -or
-                    $vhfReleaseLock.release_asset_name -cne 'libvirtualgamepad-0.1.0-beta.2-windows-x64.zip' -or
-                    $vhfReleaseLock.release_asset_sha256 -cne '354c11239a91fd9fb2f52d45449de8409d96a4e4ed998f2794b5465eaec2434b' -or
+                    $vhfReleaseLock.release_tag -cne 'v0.1.0-beta.4' -or
+                    $vhfReleaseLock.release_asset_name -cne 'libvirtualgamepad-0.1.0-beta.4-windows-x64.zip' -or
+                    $vhfReleaseLock.release_asset_sha256 -cne '7830a91ba281c44ae9d01e92e9086f72384a07ca1b35ee87150592f8f960361a' -or
                     $vhfReleaseLock.source_revision -cne $vhfManifest.source_revision -or
                     $vhfReleaseLock.driver_ver -cne $vhfManifest.driver_ver -or
                     [uint16] $vhfReleaseLock.protocol_version -ne [uint16] $vhfManifest.protocol_version -or

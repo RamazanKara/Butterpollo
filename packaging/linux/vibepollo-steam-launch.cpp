@@ -9,6 +9,9 @@
 #include "src/platform/linux/mangohud_policy.h"
 #include "src/platform/linux/mangohud_state.h"
 #include "src/steam_integration.h"
+#include "src/steam_big_picture_policy.h"
+
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <charconv>
@@ -23,11 +26,13 @@
 #include <iterator>
 #include <iostream>
 #include <optional>
+#include <set>
 #include <pwd.h>
 #include <string>
 #include <string_view>
 
 #include <sys/prctl.h>
+#include <sys/file.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -160,9 +165,11 @@ namespace {
     char **argv,
     std::uint32_t &app_id
   ) {
-    if (argc != 9 || !parse_u32(argv[1], app_id) || app_id == 0) {
+    if (argc != 9 || (std::string_view(argv[1]) != "--global" &&
+                      (!parse_u32(argv[1], app_id) || app_id == 0))) {
       return std::nullopt;
     }
+    if (std::string_view(argv[1]) == "--global") app_id = 1;
     platf::steam::session_launch_policy_t policy;
     policy.provider = argv[2];
     if (!parse_u32(argv[3], policy.limit_millihz)) {
@@ -362,6 +369,37 @@ namespace {
                           std::to_string(ready_timeout_ms / 1000) + " s; launching anyway");
   }
 
+  int global_limiter(char **argv) {
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 ||
+        !install_clean_environment()) return 126;
+    std::set<std::string> roots;
+    try {
+      scoped_metadata_limits limits;
+      if (!limits.armed()) return 126;
+      const auto libraries = platf::steam::default_library_roots();
+      for (const auto &root : libraries) roots.insert(root.string());
+      for (const auto &game : platf::steam::discover(libraries)) {
+        if (!game.library_path.empty()) roots.insert(game.library_path.string());
+        if (!game.proton_path.empty()) roots.insert(game.proton_path.string());
+      }
+    } catch (...) {
+      report(LOG_ERR, "could not discover Proton installations for global limiting");
+      return 1;
+    }
+    std::vector<std::string> arguments {
+      "/usr/bin/python3", "-I",
+      "/usr/libexec/vibeshine/vibepollo-global-limiter.py",
+      argv[2], argv[3], argv[4], argv[5], argv[6]
+    };
+    arguments.insert(arguments.end(), roots.begin(), roots.end());
+    std::vector<char *> pointers;
+    for (auto &argument : arguments) pointers.push_back(argument.data());
+    pointers.push_back(nullptr);
+    execv(pointers.front(), pointers.data());
+    report(LOG_ERR, "could not execute the global Proton limiter helper");
+    return 126;
+  }
+
   int launch(std::uint32_t app_id,
              const platf::steam::session_launch_policy_t &policy) {
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 ||
@@ -436,8 +474,106 @@ namespace {
   }
 }  // namespace
 
+namespace {
+  std::optional<platf::steam::lifecycle::process_snapshot> big_picture_snapshot() {
+    auto result = platf::steam::lifecycle::snapshot_processes();
+    if (!result) return result;
+    for (auto &[pid, process] : result->processes) {
+      std::ifstream environment("/proc/" + std::to_string(pid) + "/environ", std::ios::binary);
+      // Bound reads and retain only the numeric game ID, never other values.
+      std::string bytes(128 * 1024, '\0');
+      environment.read(bytes.data(), bytes.size());
+      bytes.resize(environment.gcount());
+      process.steam_app_id = platf::steam::lifecycle::big_picture_app_id(bytes);
+    }
+    return result;
+  }
+
+  // Runs as the selected desktop user. The machine host cannot inspect or
+  // signal that user's games, and must never parse this user-owned state.
+  int big_picture(std::string_view uri) {
+    if (!install_clean_environment()) return 126;
+    const bool opening = uri == "steam://open/bigpicture";
+    const auto state_path = fs::path(std::getenv("XDG_RUNTIME_DIR")) / "vibepollo-big-picture.json";
+    const int state = open(state_path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
+    struct stat attributes {};
+    if (state < 0) return 126;
+    if (fstat(state, &attributes) != 0 || !S_ISREG(attributes.st_mode) ||
+        attributes.st_uid != getuid() || (attributes.st_mode & 0777) != 0600 ||
+        attributes.st_nlink != 1 || flock(state, LOCK_EX | LOCK_NB) != 0) {
+      close(state);
+      return 126;
+    }
+    try {
+      if (opening) {
+        // Invalidate a previous session even if configuration or sampling fails.
+        if (ftruncate(state, 0) != 0) throw std::runtime_error("cannot reset baseline");
+        bool close_games = true;
+        std::ifstream settings(fs::path(std::getenv("XDG_CONFIG_HOME")) / "vibepollo/steam-big-picture.json");
+        if (settings) {
+          const auto config = nlohmann::json::parse(settings);
+          close_games = config.value("close-games", true);
+        }
+        if (close_games) {
+          const auto baseline = big_picture_snapshot();
+          if (!baseline || !baseline->complete) throw std::runtime_error("complete baseline unavailable");
+          nlohmann::json saved = {{"version", 1}, {"pids", nlohmann::json::array()}};
+          for (const auto &[pid, process] : baseline->processes) saved["pids"].push_back({pid, process.steam_app_id});
+          const auto bytes = saved.dump();
+          if (bytes.size() > 4 * 1024 * 1024 || write(state, bytes.data(), bytes.size()) != static_cast<ssize_t>(bytes.size())) {
+            throw std::runtime_error("cannot write baseline");
+          }
+        }
+      } else {
+        // Consume once before signalling; repeated Quit requests cannot reuse
+        // a baseline to claim a later game. Missing state means close UI only.
+        std::string bytes;
+        if (attributes.st_size > 0 && attributes.st_size <= 4 * 1024 * 1024) {
+          bytes.resize(attributes.st_size);
+          if (read(state, bytes.data(), bytes.size()) != static_cast<ssize_t>(bytes.size())) bytes.clear();
+        }
+        if (ftruncate(state, 0) != 0) throw std::runtime_error("cannot consume baseline");
+        if (!bytes.empty()) {
+          const auto saved = nlohmann::json::parse(bytes);
+          if (saved.at("version").get<int>() != 1) throw std::runtime_error("unknown baseline version");
+          platf::steam::lifecycle::process_snapshot baseline;
+          for (const auto &value : saved.at("pids")) {
+            const auto pid = value.at(0).get<platf::steam::lifecycle::process_id_t>();
+            baseline.processes[pid].pid = pid;
+            baseline.processes[pid].steam_app_id = value.at(1).get<std::uint32_t>();
+          }
+          if (const auto current = big_picture_snapshot()) {
+            const auto tree = platf::steam::lifecycle::big_picture_tree(baseline, *current);
+            auto controller = platf::steam::lifecycle::native_process_controller();
+            platf::steam::lifecycle::stop_options options;
+            options.grace_period = std::chrono::seconds(5);
+            const auto stopped = platf::steam::lifecycle::stop_tree(tree, *controller, options);
+            syslog(LOG_INFO, "Big Picture game cleanup: TERM=%zu KILL=%zu skipped=%zu complete=%s",
+                   stopped.terminate_sent, stopped.kill_sent, stopped.skipped, stopped.complete ? "yes" : "no");
+          }
+        }
+      }
+    } catch (const std::exception &error) {
+      (void) ftruncate(state, 0);
+      syslog(LOG_WARNING, "Big Picture game cleanup unavailable: %s", error.what());
+    }
+    // Keep the lock until the fixed Steam handoff replaces this process.
+    // Ordinary stream disconnects never execute the app's undo command.
+    const std::string target(uri);
+    execl("/usr/bin/steam", "/usr/bin/steam", target.c_str(), nullptr);
+    (void) ftruncate(state, 0);
+    close(state);
+    return 126;
+  }
+}
+
 int main(int argc, char **argv) {
   openlog("vibepollo-steam-launch", LOG_PID, LOG_USER);
+  if (argc == 3 && std::string_view(argv[1]) == "--big-picture" &&
+      (std::string_view(argv[2]) == "steam://open/bigpicture" ||
+       std::string_view(argv[2]) == "steam://close/bigpicture")) {
+    return big_picture(argv[2]);
+  }
   std::uint32_t app_id = 0;
   const auto policy = parse_policy(argc, argv, app_id);
   if (!policy) {
@@ -445,5 +581,6 @@ int main(int argc, char **argv) {
                  "PRESET GRAPH METHOD SMOOTH QUEUE\n";
     return 2;
   }
+  if (std::string_view(argv[1]) == "--global") return global_limiter(argv);
   return launch(app_id, *policy);
 }
