@@ -5322,11 +5322,9 @@ namespace video {
       // encoder seamlessly; encoders that cannot (avcodec-based) report failure and we rebuild this
       // session by breaking out, so capture_async re-enters with config (held by reference) anew.
       std::optional<int> latest_bitrate;
-      while (bitrate_events->peek()) {
-        if (auto new_bitrate = bitrate_events->pop(0ms)) {
-          latest_bitrate = *new_bitrate;
-        }
-      }
+      policy::drain_ready_control_events(*bitrate_events, [&](int new_bitrate) {
+        latest_bitrate = new_bitrate;
+      });
       if (latest_bitrate) {
         config.bitrate = *latest_bitrate;
         config.client_requested_bitrate = *latest_bitrate;
@@ -5340,15 +5338,12 @@ namespace video {
 
       bool requested_idr_frame = false;
 
-      while (invalidate_ref_frames_events->peek()) {
-        if (auto frames = invalidate_ref_frames_events->pop(0ms)) {
-          session->invalidate_ref_frames(frames->first, frames->second);
-        }
-      }
+      policy::drain_ready_control_events(*invalidate_ref_frames_events, [&](const auto &frames) {
+        session->invalidate_ref_frames(frames.first, frames.second);
+      });
 
-      if (idr_events->peek()) {
+      if (idr_events->pop(0ms)) {
         requested_idr_frame = true;
-        idr_events->pop();
       }
 
       if (requested_idr_frame) {
@@ -5946,18 +5941,15 @@ namespace video {
             continue;
           }
 
-          if (ctx->idr_events->peek()) {
+          if (ctx->idr_events->pop(0ms)) {
             pos->session->request_idr_frame();
-            ctx->idr_events->pop();
           }
           if (ctx->bitrate_events->peek()) {
             // Coalesce rapid ABR updates to the latest requested value.
             std::optional<int> latest_bitrate;
-            while (ctx->bitrate_events->peek()) {
-              if (auto new_bitrate = ctx->bitrate_events->pop(0ms)) {
-                latest_bitrate = *new_bitrate;
-              }
-            }
+            policy::drain_ready_control_events(*ctx->bitrate_events, [&](int new_bitrate) {
+              latest_bitrate = new_bitrate;
+            });
             if (latest_bitrate) {
               ctx->config.bitrate = *latest_bitrate;
               ctx->config.client_requested_bitrate = *latest_bitrate;

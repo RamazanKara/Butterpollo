@@ -4,7 +4,9 @@
 #include "src/thread_safe.h"
 
 #include <array>
+#include <deque>
 #include <map>
+#include <vector>
 
 namespace {
   class FakeEncoderProvider: public video::policy::encoder_capability_provider_t {
@@ -15,6 +17,77 @@ namespace {
       return found == values.end() ? video::policy::encoder_capabilities_t {} : found->second;
     }
   };
+}
+
+TEST(VideoControlPolicy, BusyProducerDefersUpdateWithoutSpinning) {
+  struct mailbox_t {
+    bool busy = true;
+    int polls = 0;
+    std::optional<int> pending = 12000;
+
+    bool peek() = delete;  // Readiness must not drive a retry after a failed pop.
+    std::optional<int> pop(std::chrono::milliseconds delay) {
+      EXPECT_EQ(delay, std::chrono::milliseconds::zero());
+      ++polls;
+      return busy ? std::nullopt : std::exchange(pending, std::nullopt);
+    }
+  } mailbox;
+  std::optional<int> latest;
+  auto consume = [&](int bitrate) { latest = bitrate; };
+  video::policy::drain_ready_control_events(mailbox, consume);
+  EXPECT_EQ(mailbox.polls, 1);
+  EXPECT_FALSE(latest);
+  EXPECT_EQ(mailbox.pending, 12000);
+
+  mailbox.busy = false;
+  video::policy::drain_ready_control_events(mailbox, consume);
+  EXPECT_EQ(mailbox.polls, 3);
+  EXPECT_EQ(latest, 12000);
+  EXPECT_FALSE(mailbox.pending);
+}
+
+TEST(VideoControlPolicy, PartialDrainKeepsNewestConsumedUpdateAndDefersTheRest) {
+  struct mailbox_t {
+    std::deque<std::optional<int>> results {8000, 10000, std::nullopt, 12000};
+    int polls = 0;
+    bool peek() = delete;
+    std::optional<int> pop(std::chrono::milliseconds delay) {
+      EXPECT_EQ(delay, std::chrono::milliseconds::zero());
+      ++polls;
+      if (results.empty()) return std::nullopt;
+      auto result = results.front();
+      results.pop_front();
+      return result;
+    }
+  } mailbox;
+  std::optional<int> latest;
+  auto consume = [&](int bitrate) { latest = bitrate; };
+  video::policy::drain_ready_control_events(mailbox, consume);
+  EXPECT_EQ(mailbox.polls, 3);
+  EXPECT_EQ(latest, 10000);
+  ASSERT_EQ(mailbox.results.size(), 1);
+  video::policy::drain_ready_control_events(mailbox, consume);
+  EXPECT_EQ(latest, 12000);
+  EXPECT_EQ(mailbox.polls, 5);
+}
+
+TEST(VideoControlPolicy, QueuedReferenceUpdatesKeepOrder) {
+  safe::queue_t<int> queue;
+  queue.raise(41);
+  queue.raise(42);
+  std::vector<int> delivered;
+  video::policy::drain_ready_control_events(queue, [&](int index) { delivered.push_back(index); });
+  EXPECT_EQ(delivered, (std::vector<int> {41, 42}));
+  EXPECT_FALSE(queue.peek());
+}
+
+TEST(VideoControlPolicy, IdrSignalIsConsumedOnceByZeroWaitPoll) {
+  using namespace std::chrono_literals;
+  safe::event_t<bool> idr;
+  EXPECT_FALSE(idr.pop(0ms));
+  idr.raise(true);
+  EXPECT_TRUE(idr.pop(0ms));
+  EXPECT_FALSE(idr.pop(0ms));
 }
 
 TEST(CapturePolicy, ExactAndSyntheticSourcesRejectProcessDisplayOverride) {

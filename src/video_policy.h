@@ -10,6 +10,17 @@
 #include <utility>
 
 namespace video::policy {
+  /** Stop on an unavailable poll, including temporary producer contention. */
+  template<class Mailbox, class HandleEvent>
+  void drain_ready_control_events(Mailbox &mailbox, HandleEvent &&handle_event) {
+    // peek() is advisory, not a reservation. Retrying while it remains true
+    // can spin on a busy producer's mutex after pop(0ms) declines that lock.
+    // Leave any unconsumed control update for the next encoder iteration.
+    while (auto event = mailbox.pop(std::chrono::milliseconds::zero())) {
+      handle_event(*event);
+    }
+  }
+
   template<class Queue, class Context, class ShutdownSignal, class JoinSignal>
   bool try_admit_capture_session(
     Queue &queue,
