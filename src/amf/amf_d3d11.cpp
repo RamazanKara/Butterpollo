@@ -1553,11 +1553,13 @@ namespace amf {
     outcome.result = encoder ? encoder->QueryOutput(&output_data) : AMF_FAIL;
 
     if (output_data) {
+      const auto output_ready_at = std::chrono::steady_clock::now();
       outcome.kind = output_query_kind_e::produced;
       // Keep the multi-MB bitstream copy outside state_mutex. output_query_mutex
       // remains held so a direct encode-thread query cannot publish frame N+1
       // before this frame has been copied and queued.
       auto encoded_frame = extract_encoded_frame(output_data);
+      encoded_frame.output_ready_at = output_ready_at;
       // SubmitInput and QueryOutput are allowed to run concurrently, but packet
       // publication must follow the accepted frame's counter/timestamp/RFI commit.
       // The submit side releases this mutex before attempting the direct query.

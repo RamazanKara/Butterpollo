@@ -1525,7 +1525,34 @@ namespace video {
       std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
       std::optional<std::chrono::steady_clock::time_point> capture_timestamp;
       std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp;
+      std::optional<std::chrono::steady_clock::time_point> popped;
+      std::optional<std::chrono::steady_clock::time_point> converted;
+      std::optional<std::chrono::steady_clock::time_point> submitted;
     };
+
+    /// Encode-thread stage stamps for the next submission of a fresh capture.
+    void stage_capture_input(std::chrono::steady_clock::time_point popped, std::chrono::steady_clock::time_point converted) {
+      staged_popped = popped;
+      staged_converted = converted;
+    }
+
+    /// Attach (and consume) staged encode-thread stamps to a real captured frame.
+    frame_timestamps_t with_staged_input(frame_timestamps_t ts) {
+      if (ts.host_processing_timestamp) {
+        ts.popped = staged_popped;
+        ts.converted = staged_converted;
+      }
+      staged_popped.reset();
+      staged_converted.reset();
+      return ts;
+    }
+
+    void note_submitted(uint64_t frame_index, std::chrono::steady_clock::time_point submitted) {
+      auto &slot = pending_timestamps[frame_index & (pending_timestamps.size() - 1)];
+      if (slot.valid && slot.frame_index == frame_index) {
+        slot.ts.submitted = submitted;
+      }
+    }
 
     void store_frame_timestamps(uint64_t frame_index, const frame_timestamps_t &ts) {
       // Fixed ring indexed by frame number: no per-frame heap traffic on the
@@ -1562,6 +1589,8 @@ namespace video {
     bool fresh_conversion_pending = false;
     bool suppress_tail_flush_until_fresh_conversion = false;
     int64_t last_emitted_index = -1;
+    std::optional<std::chrono::steady_clock::time_point> staged_popped;
+    std::optional<std::chrono::steady_clock::time_point> staged_converted;
 
     struct pending_timestamp_slot_t {
       uint64_t frame_index = 0;
@@ -3673,6 +3702,10 @@ namespace video {
       packet->frame_timestamp = ts.frame_timestamp;
       packet->capture_timestamp = ts.capture_timestamp ? ts.capture_timestamp : ts.frame_timestamp;
       packet->host_processing_timestamp = ts.host_processing_timestamp;
+      if (ts.host_processing_timestamp && ts.popped && ts.converted && ts.submitted &&
+          encoded_frame.output_ready_at.time_since_epoch().count() != 0) {
+        packet->stage_timestamps = packet_raw_t::stage_timestamps_t {*ts.popped, *ts.converted, *ts.submitted, encoded_frame.output_ready_at};
+      }
       if (webrtc_stream::has_active_sessions()) {
         webrtc_stream::submit_video_packet(*packet);
       }
@@ -3692,12 +3725,14 @@ namespace video {
   ) {
     // Stash this frame's timestamps before submitting; the encoder is pipelined and
     // emits an earlier frame, so the packet is stamped from this map by emitted index.
-    session.store_frame_timestamps((uint64_t) frame_nr, {frame_timestamp, capture_timestamp, host_processing_timestamp});
+    session.store_frame_timestamps((uint64_t) frame_nr, session.with_staged_input({frame_timestamp, capture_timestamp, host_processing_timestamp}));
 
     auto encode_result = session.encode_frames(frame_nr);
     auto &encoded_frames = encode_result.frames;
     if (!encode_result.input_accepted) {
       session.discard_frame_timestamps((uint64_t) frame_nr);
+    } else if (encode_result.input_accepted_at) {
+      session.note_submitted((uint64_t) frame_nr, *encode_result.input_accepted_at);
     }
     if (encode_result.fatal || std::any_of(encoded_frames.begin(), encoded_frames.end(), [](const auto &frame) { return frame.fatal; })) {
       BOOST_LOG(error) << "AMF encoder entered an unrecoverable state, requesting reinit";
@@ -5422,6 +5457,7 @@ namespace video {
         }
 
         auto img = images->pop(image_wait_budget);
+        const auto image_popped_at = std::chrono::steady_clock::now();
         // Completion can race the pre-wait drain, including when capture and
         // output become ready together. Send the older packet before acquiring
         // the next image's GPU mutex or reserving/converting its input surface.
@@ -5450,6 +5486,9 @@ namespace video {
             break;
           }
           ++loop_stats.converted;
+          if (native_session && !placeholder_input) {
+            native_session->stage_capture_input(image_popped_at, std::chrono::steady_clock::now());
+          }
 
 #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
           if (refresh_rtx_hdr_metadata_if_needed(

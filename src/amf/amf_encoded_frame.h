@@ -20,6 +20,8 @@ namespace amf {
     bool idr = false;
     bool after_ref_frame_invalidation = false;
     bool fatal = false;  // Set when encoder is in unrecoverable state (device lost, repeated failures)
+    /// When QueryOutput returned this bitstream; used for host-latency stage tracing.
+    std::chrono::steady_clock::time_point output_ready_at {};
   };
 
   /**

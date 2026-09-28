@@ -355,6 +355,17 @@ namespace video {
     std::optional<std::chrono::steady_clock::time_point> capture_timestamp;
     std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp;
     std::chrono::steady_clock::time_point packet_enqueue_timestamp = std::chrono::steady_clock::now();
+
+    /// Encode-pipeline stamps for a freshly captured frame (native AMF only),
+    /// used to break host processing latency down by stage.
+    struct stage_timestamps_t {
+      std::chrono::steady_clock::time_point popped;  ///< Encode thread received the captured image.
+      std::chrono::steady_clock::time_point converted;  ///< Colour conversion submitted.
+      std::chrono::steady_clock::time_point submitted;  ///< Encoder accepted the input.
+      std::chrono::steady_clock::time_point output;  ///< Encoder returned the bitstream.
+    };
+
+    std::optional<stage_timestamps_t> stage_timestamps;
   };
 
   struct packet_raw_avcodec: packet_raw_t {

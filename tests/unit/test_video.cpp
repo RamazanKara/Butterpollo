@@ -1,6 +1,7 @@
 #include "../tests_common.h"
 
 #include "src/video_policy.h"
+#include "src/video_latency_trace.h"
 #include "src/thread_safe.h"
 
 #include <array>
@@ -88,6 +89,59 @@ TEST(VideoControlPolicy, IdrSignalIsConsumedOnceByZeroWaitPoll) {
   idr.raise(true);
   EXPECT_TRUE(idr.pop(0ms));
   EXPECT_FALSE(idr.pop(0ms));
+}
+
+namespace {
+  video::latency_trace::frame_sample_t latency_sample(double capture, double convert, double submit, double encode, double deliver) {
+    video::latency_trace::frame_sample_t sample;
+    sample.stage_ms = {capture, convert, submit, encode, deliver};
+    sample.total_ms = capture + convert + submit + encode + deliver;
+    return sample;
+  }
+}  // namespace
+
+TEST(VideoLatencyTrace, SampleSplitsStagesAndClampsCrossThreadSkew) {
+  using namespace std::chrono_literals;
+  const auto t0 = std::chrono::steady_clock::time_point {} + 1s;
+  // Output stamped on the pump thread slightly before the encode thread's
+  // submit stamp must not produce a negative stage.
+  const auto sample = video::latency_trace::make_sample(t0, t0 + 200us, t0 + 500us, t0 + 700us, t0 + 650us, t0 + 3ms);
+  EXPECT_NEAR(sample.stage_ms[0], 0.2, 1e-9);
+  EXPECT_NEAR(sample.stage_ms[1], 0.3, 1e-9);
+  EXPECT_NEAR(sample.stage_ms[2], 0.2, 1e-9);
+  EXPECT_EQ(sample.stage_ms[3], 0.0);
+  EXPECT_NEAR(sample.stage_ms[4], 2.35, 1e-9);
+  EXPECT_NEAR(sample.total_ms, 3.0, 1e-9);
+}
+
+TEST(VideoLatencyTrace, AttributesSpikesToTheStageThatGrew) {
+  video::latency_trace::window_t window(1.0);
+  for (int i = 0; i < 100; ++i) {
+    window.add(latency_sample(0.1, 0.1, 0.1, 2.5, 0.2));
+  }
+  window.add(latency_sample(0.1, 0.1, 0.1, 4.6, 0.2));
+  window.add(latency_sample(0.1, 0.1, 0.1, 4.2, 0.2));
+  window.add(latency_sample(1.7, 0.1, 0.1, 2.5, 0.2));
+  // Below the median + 1 ms threshold: not a spike.
+  window.add(latency_sample(0.1, 0.1, 0.1, 3.0, 0.2));
+
+  const auto summary = window.summarize();
+  EXPECT_EQ(summary.frames, 104u);
+  EXPECT_NEAR(summary.total.median_ms, 3.0, 1e-9);
+  EXPECT_NEAR(summary.spike_threshold_ms, 4.0, 1e-9);
+  EXPECT_EQ(summary.spikes, 3u);
+  EXPECT_EQ(summary.spike_causes[static_cast<std::size_t>(video::latency_trace::stage_e::encode)], 2u);
+  EXPECT_EQ(summary.spike_causes[static_cast<std::size_t>(video::latency_trace::stage_e::capture)], 1u);
+  EXPECT_NEAR(summary.worst.total_ms, 5.1, 1e-9);
+  EXPECT_NEAR(summary.stages[static_cast<std::size_t>(video::latency_trace::stage_e::encode)].max_ms, 4.6, 1e-9);
+
+  const auto line = video::latency_trace::format_summary(summary, 10.0);
+  EXPECT_NE(line.find("104 frames"), std::string::npos);
+  EXPECT_NE(line.find("spikes >= 4.00 ms: 3 (capture 1, encode 2)"), std::string::npos);
+
+  window.reset();
+  EXPECT_EQ(window.size(), 0u);
+  EXPECT_EQ(window.summarize().frames, 0u);
 }
 
 TEST(CapturePolicy, ExactAndSyntheticSourcesRejectProcessDisplayOverride) {

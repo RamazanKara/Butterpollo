@@ -59,6 +59,7 @@ extern "C" {
 #include "update.h"
 #include "utility.h"
 #include "uuid.h"
+#include "video_latency_trace.h"
 #include "webrtc_stream.h"
 #ifdef _WIN32
   #include "platform/windows/frame_limiter.h"
@@ -1986,6 +1987,14 @@ namespace stream {
     };
     std::unordered_map<session_t *, wire_timeline_state_t> wire_timeline_by_session;
 
+    // Host processing latency broken down by encode-pipeline stage, reported
+    // every 10 seconds per session for encoders that provide stage stamps.
+    struct latency_trace_state_t {
+      video::latency_trace::window_t window;
+      std::chrono::steady_clock::time_point window_started;
+    };
+    std::unordered_map<session_t *, latency_trace_state_t> latency_trace_by_session;
+
     while (auto packet = packets->pop()) {
       if (shutdown_event->peek()) {
         break;
@@ -2055,10 +2064,31 @@ namespace stream {
           return (uint16_t) std::clamp<decltype(duration_us)>((duration_us + 50) / 100, 0, std::numeric_limits<uint16_t>::max());
         };
 
-        uint16_t latency = duration_to_latency(std::chrono::steady_clock::now() - *host_processing_timestamp);
+        const auto sending_at = std::chrono::steady_clock::now();
+        uint16_t latency = duration_to_latency(sending_at - *host_processing_timestamp);
         frame_header.frame_processing_latency = latency;
         frame_processing_latency_logger.collect_and_log(latency / 10.);
         session->stats.last_encode_latency_us10.store(latency, std::memory_order_relaxed);
+
+        if (packet->stage_timestamps && packet->host_processing_timestamp) {
+          auto trace_it = latency_trace_by_session.find(session);
+          if (trace_it == latency_trace_by_session.end()) {
+            if (latency_trace_by_session.size() >= 16) {
+              latency_trace_by_session.erase(latency_trace_by_session.begin());
+            }
+            trace_it = latency_trace_by_session.try_emplace(session).first;
+            trace_it->second.window_started = sending_at;
+          }
+          const auto &stages = *packet->stage_timestamps;
+          trace_it->second.window.add(video::latency_trace::make_sample(
+            *packet->host_processing_timestamp,
+            stages.popped,
+            stages.converted,
+            stages.submitted,
+            stages.output,
+            sending_at
+          ));
+        }
       } else {
         frame_header.frame_processing_latency = 0;
         session->stats.last_encode_latency_us10.store(0, std::memory_order_relaxed);
@@ -2496,6 +2526,22 @@ namespace stream {
         auto bytes_per_packet = blocksize + ((session->config.encryptionFlagsEnabled & SS_ENC_VIDEO) ? sizeof(video_packet_enc_prefix_t) : 0);
         session->stats.bytes_sent.fetch_add(ratecontrol_frame_packets_sent * bytes_per_packet, std::memory_order_relaxed);
         session->stats.last_frame_index.store(packet->frame_index(), std::memory_order_relaxed);
+
+        // Summarize after this frame is on the wire so the report never delays it.
+        if (auto trace_it = latency_trace_by_session.find(session); trace_it != latency_trace_by_session.end()) {
+          auto &trace = trace_it->second;
+          const auto now = std::chrono::steady_clock::now();
+          if (now - trace.window_started >= 10s) {
+            if (trace.window.size() != 0) {
+              BOOST_LOG(info) << video::latency_trace::format_summary(
+                trace.window.summarize(),
+                std::chrono::duration<double>(now - trace.window_started).count()
+              );
+            }
+            trace.window.reset();
+            trace.window_started = now;
+          }
+        }
       } catch (const std::exception &e) {
         BOOST_LOG(error) << "Broadcast video failed "sv << e.what();
         std::this_thread::sleep_for(100ms);
