@@ -134,7 +134,8 @@ python ./scripts/update_clang_format.py
 ```
 
 #### Unit Testing
-Unit tests are enabled for every project build. For a bug fix, first demonstrate the failure with a focused test,
+Unit tests are enabled for every project build, and the Windows CI build runs the whole suite
+(`ctest --test-dir build`) before packaging. For a bug fix, first demonstrate the failure with a focused test,
 then make that same test pass with the correction. Run the narrowest relevant test target during local iteration.
 
 Even if your changes cannot be covered in the CI, we still encourage you to write the tests for them. This will allow
