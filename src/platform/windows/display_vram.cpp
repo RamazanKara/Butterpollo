@@ -41,6 +41,10 @@ extern "C" {
 #include "src/nvenc/nvenc_utils.h"
 #include "src/video.h"
 #include "utf_utils.h"
+#ifdef SUNSHINE_ENABLE_PYROWAVE
+  #include "src/pyrowave/pyrowave_d3d11.h"
+  #include "src/pyrowave/pyrowave_rate_control.h"
+#endif
 
 #include <AMF/core/Factory.h>
 #include <boost/algorithm/string/predicate.hpp>
@@ -164,6 +168,17 @@ namespace platf::dxgi {
   blob_t cursor_ps_hlsl;
   blob_t cursor_ps_normalize_white_hlsl;
   blob_t cursor_vs_hlsl;
+
+#ifdef SUNSHINE_ENABLE_PYROWAVE
+  // Full-resolution chroma rendered into a separate two-channel plane (PyroWave 4:4:4).
+  blob_t convert_yuv444_packed_uv_ps_hlsl;
+  blob_t convert_yuv444_packed_uv_ps_linear_hlsl;
+  blob_t convert_yuv444_packed_uv_ps_perceptual_quantizer_hlsl;
+  blob_t convert_yuv444_packed_uv_ps_sdr_to_pq_hlsl;
+  #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+  blob_t convert_yuv444_packed_uv_ps_truehdr_peak_hlsl;
+  #endif
+#endif
 
 #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
   blob_t convert_yuv420_packed_uv_type0_ps_truehdr_peak_hlsl;
@@ -1168,6 +1183,35 @@ namespace platf::dxgi {
       return 0;
     }
 
+#ifdef SUNSHINE_ENABLE_PYROWAVE
+    /**
+     * @brief Render luma and chroma into two separate textures instead of one NV12/P010 surface.
+     * @details The NV12/P010 format chosen at init() still selects the conversion. The
+     *          luma texture takes the R8/R16 view and the chroma texture the R8G8/R16G16
+     *          view. With `full_resolution_chroma`, the chroma texture has the luma extent
+     *          and is rendered without subsampling (4:4:4).
+     */
+    int init_split_output(
+      ID3D11Texture2D *luma_texture,
+      ID3D11Texture2D *chroma_texture,
+      int width,
+      int height,
+      const ::video::sunshine_colorspace_t &colorspace,
+      bool full_resolution_chroma
+    ) {
+      if (!luma_texture || !chroma_texture || dynamic_output_textures ||
+          (format != DXGI_FORMAT_NV12 && format != DXGI_FORMAT_P010)) {
+        BOOST_LOG(error) << "Split luma/chroma output needs fixed NV12 or P010 conversion";
+        return -1;
+      }
+
+      chroma_texture->AddRef();
+      split_chroma_texture.reset(chroma_texture);
+      this->full_resolution_chroma = full_resolution_chroma;
+      return init_output(luma_texture, width, height, colorspace);
+    }
+#endif
+
     int init_output(ID3D11Texture2D *frame_texture, int width, int height, const ::video::sunshine_colorspace_t &colorspace) {
 
       HRESULT status = S_OK;
@@ -1208,6 +1252,15 @@ namespace platf::dxgi {
           create_pixel_shader_helper(convert_yuv420_planar_y_ps_hlsl, convert_Y_or_YUV_ps);
           create_pixel_shader_helper(convert_yuv420_planar_y_ps_linear_hlsl, convert_Y_or_YUV_fp16_ps);
           convert_Y_or_YUV_sdr_to_pq_ps.reset();
+#ifdef SUNSHINE_ENABLE_PYROWAVE
+          if (full_resolution_chroma) {
+            // Chroma samples sit on luma samples, so reuse the luma vertex shader.
+            create_vertex_shader_helper(convert_yuv420_planar_y_vs_hlsl, convert_UV_vs);
+            create_pixel_shader_helper(convert_yuv444_packed_uv_ps_hlsl, convert_UV_ps);
+            create_pixel_shader_helper(convert_yuv444_packed_uv_ps_linear_hlsl, convert_UV_fp16_ps);
+            convert_UV_sdr_to_pq_ps.reset();
+          } else
+#endif
           if (downscaling) {
             create_vertex_shader_helper(convert_yuv420_packed_uv_type0s_vs_hlsl, convert_UV_vs);
             create_pixel_shader_helper(convert_yuv420_packed_uv_type0s_ps_hlsl, convert_UV_ps);
@@ -1235,6 +1288,22 @@ namespace platf::dxgi {
             create_pixel_shader_helper(convert_yuv420_planar_y_ps_linear_hlsl, convert_Y_or_YUV_fp16_ps);
             convert_Y_or_YUV_sdr_to_pq_ps.reset();
           }
+#ifdef SUNSHINE_ENABLE_PYROWAVE
+          if (full_resolution_chroma) {
+            create_vertex_shader_helper(convert_yuv420_planar_y_vs_hlsl, convert_UV_vs);
+            create_pixel_shader_helper(convert_yuv444_packed_uv_ps_hlsl, convert_UV_ps);
+            if (target_hdr) {
+              create_pixel_shader_helper(convert_yuv444_packed_uv_ps_perceptual_quantizer_hlsl, convert_UV_fp16_ps);
+              create_pixel_shader_helper(convert_yuv444_packed_uv_ps_sdr_to_pq_hlsl, convert_UV_sdr_to_pq_ps);
+  #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+              create_pixel_shader_helper(convert_yuv444_packed_uv_ps_truehdr_peak_hlsl, convert_UV_truehdr_peak_ps);
+  #endif
+            } else {
+              create_pixel_shader_helper(convert_yuv444_packed_uv_ps_linear_hlsl, convert_UV_fp16_ps);
+              convert_UV_sdr_to_pq_ps.reset();
+            }
+          } else
+#endif
           if (downscaling) {
             create_vertex_shader_helper(convert_yuv420_packed_uv_type0s_vs_hlsl, convert_UV_vs);
             create_pixel_shader_helper(convert_yuv420_packed_uv_type0s_ps_hlsl, convert_UV_ps);
@@ -1339,8 +1408,13 @@ namespace platf::dxgi {
       out_Y_or_YUV_viewports_for_clear[2] = out_Y_or_YUV_viewports_for_clear[1];  // V plane
       out_Y_or_YUV_viewports_for_clear[2].TopLeftY += out_height;
 
-      out_UV_viewport = {offsetX / 2, offsetY / 2, out_width_f / 2, out_height_f / 2, 0.0f, 1.0f};
-      out_UV_viewport_for_clear = {0, 0, (float) out_width / 2, (float) out_height / 2, 0.0f, 1.0f};
+      if (full_resolution_chroma) {
+        out_UV_viewport = out_Y_or_YUV_viewports[0];
+        out_UV_viewport_for_clear = out_Y_or_YUV_viewports_for_clear[0];
+      } else {
+        out_UV_viewport = {offsetX / 2, offsetY / 2, out_width_f / 2, out_height_f / 2, 0.0f, 1.0f};
+        out_UV_viewport_for_clear = {0, 0, (float) out_width / 2, (float) out_height / 2, 0.0f, 1.0f};
+      }
 
       float subsample_offset_in[16 / sizeof(float)] {1.0f / (float) out_width_f, 1.0f / (float) out_height_f};  // aligned to 16-byte
       subsample_offset = make_buffer(device.get(), subsample_offset_in);
@@ -1408,14 +1482,14 @@ namespace platf::dxgi {
       // dynamic path (TrueHDR live readback dereferences it unconditionally).
       output_texture = frame_texture;
 
-      auto create_fixed_rtv = [&](auto &target, DXGI_FORMAT view_format) -> bool {
+      auto create_fixed_rtv = [&](auto &target, ID3D11Texture2D *texture, DXGI_FORMAT view_format) -> bool {
         if (view_format == DXGI_FORMAT_UNKNOWN) {
           return true;
         }
         D3D11_RENDER_TARGET_VIEW_DESC rtv_desc = {};
         rtv_desc.Format = view_format;
         rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
-        const auto create_status = device->CreateRenderTargetView(fixed_output_texture.get(), &rtv_desc, &target);
+        const auto create_status = device->CreateRenderTargetView(texture, &rtv_desc, &target);
         if (FAILED(create_status)) {
           BOOST_LOG(error) << "Failed to create render target view: " << util::log_hex(create_status);
           return false;
@@ -1423,8 +1497,10 @@ namespace platf::dxgi {
         return true;
       };
 
-      if (!create_fixed_rtv(fixed_out_Y_or_YUV_rtv, output_y_or_yuv_rtv_format) ||
-          !create_fixed_rtv(fixed_out_UV_rtv, output_uv_rtv_format)) {
+      // Split output keeps chroma in its own texture; otherwise both views share the NV12/P010 surface.
+      auto *uv_texture = split_chroma_texture ? split_chroma_texture.get() : fixed_output_texture.get();
+      if (!create_fixed_rtv(fixed_out_Y_or_YUV_rtv, fixed_output_texture.get(), output_y_or_yuv_rtv_format) ||
+          !create_fixed_rtv(fixed_out_UV_rtv, uv_texture, output_uv_rtv_format)) {
         return -1;
       }
       out_Y_or_YUV_rtv = fixed_out_Y_or_YUV_rtv.get();
@@ -1919,6 +1995,9 @@ namespace platf::dxgi {
     texture2d_t fixed_output_texture;
     render_target_t fixed_out_Y_or_YUV_rtv;
     render_target_t fixed_out_UV_rtv;
+    // Set by init_split_output(): chroma lives in its own texture, optionally at full resolution.
+    texture2d_t split_chroma_texture;
+    bool full_resolution_chroma = false;
     DXGI_FORMAT output_y_or_yuv_rtv_format = DXGI_FORMAT_UNKNOWN;
     DXGI_FORMAT output_uv_rtv_format = DXGI_FORMAT_UNKNOWN;
     bool output_rtv_simple_clear = false;
@@ -2406,6 +2485,237 @@ namespace platf::dxgi {
     platf::pix_fmt_e buffer_format = platf::pix_fmt_e::unknown;
     bool registered_active_encoder = false;
   };
+
+#ifdef SUNSHINE_ENABLE_PYROWAVE
+  // PyroWave encode device. The shared d3d_base_encode_device pipeline renders
+  // the frame as limited/full-range YCbCr into two shared textures (luma, and
+  // Cb/Cr either left-cosited 4:2:0 or full-resolution 4:4:4). A Vulkan device
+  // on the same GPU imports them with a shared fence and encodes every frame
+  // intra-only: convert() signals the fence after rendering, the encoder waits
+  // for that value and signals the next one once it no longer reads the textures,
+  // and the following convert() waits for that before rendering again.
+  class d3d_pyrowave_encode_device_t: public pyrowave_encode_device_t {
+  public:
+    bool init_device(std::shared_ptr<platf::display_t> display, adapter_t::pointer adapter_p, pix_fmt_e pix_fmt) {
+      if (pix_fmt != pix_fmt_e::nv12 && pix_fmt != pix_fmt_e::p010) {
+        BOOST_LOG(error) << "PyroWave: unsupported pixel format ["sv << from_pix_fmt(pix_fmt) << ']';
+        return false;
+      }
+      if (!adapter_p || base.init(std::move(display), adapter_p, pix_fmt)) {
+        return false;
+      }
+
+      // Session teardown may run on a watchdog thread.
+      multithread_t mt;
+      auto status = base.device->QueryInterface(IID_ID3D11Multithread, (void **) &mt);
+      if (SUCCEEDED(status)) {
+        mt->SetMultithreadProtected(TRUE);
+      } else {
+        BOOST_LOG(warning) << "Failed to query ID3D11Multithread interface from device [0x"sv << util::hex(status).to_string_view() << ']';
+      }
+
+      if (FAILED(base.device->QueryInterface(__uuidof(ID3D11Device5), (void **) &device5)) ||
+          FAILED(base.device_ctx->QueryInterface(__uuidof(ID3D11DeviceContext4), (void **) &device_ctx4))) {
+        BOOST_LOG(error) << "PyroWave: shared D3D11 fences are unavailable (ID3D11Device5/ID3D11DeviceContext4)"sv;
+        return false;
+      }
+
+      DXGI_ADAPTER_DESC adapter_desc {};
+      adapter_p->GetDesc(&adapter_desc);
+      adapter.luid = adapter_desc.AdapterLuid;
+      adapter.vendor_id = adapter_desc.VendorId;
+      adapter.device_id = adapter_desc.DeviceId;
+      sixteen_bit = pix_fmt == pix_fmt_e::p010;
+      return true;
+    }
+
+    bool init_encoder(const ::video::config_t &client_config, const ::video::sunshine_colorspace_t &colorspace) override {
+      const bool yuv444 = client_config.chromaSamplingType == 1;
+      const int width = client_config.width;
+      const int height = client_config.height;
+      // The bitstream stores dimensions in 14 bits; 4:2:0 needs even sizes.
+      if (width <= 0 || height <= 0 || width > 16384 || height > 16384 || (!yuv444 && (width % 2 || height % 2))) {
+        BOOST_LOG(error) << "PyroWave: unsupported stream size "sv << width << 'x' << height << (yuv444 ? " (4:4:4)"sv : " (4:2:0)"sv);
+        return false;
+      }
+
+      const auto chroma_width = static_cast<UINT>(yuv444 ? width : width / 2);
+      const auto chroma_height = static_cast<UINT>(yuv444 ? height : height / 2);
+      luma = create_shared_texture(width, height, sixteen_bit ? DXGI_FORMAT_R16_UNORM : DXGI_FORMAT_R8_UNORM);
+      chroma = create_shared_texture(chroma_width, chroma_height, sixteen_bit ? DXGI_FORMAT_R16G16_UNORM : DXGI_FORMAT_R8G8_UNORM);
+      if (!luma || !chroma) {
+        return false;
+      }
+
+      auto status = device5->CreateFence(0, D3D11_FENCE_FLAG_SHARED, __uuidof(ID3D11Fence), (void **) &fence);
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "PyroWave: CreateFence failed: "sv << util::log_hex(status);
+        return false;
+      }
+
+      const shared_handle_t luma_handle {share(luma.get())};
+      const shared_handle_t chroma_handle {share(chroma.get())};
+      HANDLE fence_handle_raw = nullptr;
+      status = fence->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr, &fence_handle_raw);
+      const shared_handle_t fence_handle {fence_handle_raw};
+      if (!luma_handle || !chroma_handle || FAILED(status)) {
+        BOOST_LOG(error) << "PyroWave: could not share the encoder input: "sv << util::log_hex(status);
+        return false;
+      }
+
+      encoder = ::pyrowave::d3d11_encoder_t::create(
+        adapter,
+        ::pyrowave::d3d11_input_t {
+          .luma = luma_handle.get(),
+          .chroma = chroma_handle.get(),
+          .fence = fence_handle.get(),
+          .width = width,
+          .height = height,
+          .yuv444 = yuv444,
+          .sixteen_bit = sixteen_bit,
+        }
+      );
+      if (!encoder) {
+        return false;
+      }
+
+      base.apply_colorspace(colorspace, client_config.rtx_hdr_active);
+      if (base.init_split_output(luma.get(), chroma.get(), width, height, colorspace, yuv444)) {
+        return false;
+      }
+
+      hdr10 = ::video::colorspace_is_hdr(colorspace);
+      framerate = client_config.framerate;
+      max_frame_bytes = client_config.max_frame_bytes;
+      set_bitrate(client_config.bitrate);
+      BOOST_LOG(info) << "PyroWave: encoding "sv << width << 'x' << height << (yuv444 ? " 4:4:4"sv : " 4:2:0"sv)
+                      << (hdr10 ? " HDR10"sv : " SDR"sv) << ", "sv << budget.bytes << " bytes per frame"sv;
+      return true;
+    }
+
+    int convert(platf::img_t &img_base) override {
+      if (!encoder) {
+        return -1;
+      }
+
+      // Never overwrite the planes while the encoder may still read the previous frame.
+      if (released_value && FAILED(device_ctx4->Wait(fence.get(), released_value))) {
+        BOOST_LOG(error) << "PyroWave: could not queue the D3D11 fence wait"sv;
+        return -1;
+      }
+      if (base.convert(img_base)) {
+        return -1;
+      }
+
+      const auto value = fence_value + 1;
+      if (FAILED(device_ctx4->Signal(fence.get(), value))) {
+        BOOST_LOG(error) << "PyroWave: could not signal the D3D11 fence"sv;
+        return -1;
+      }
+      fence_value = value;
+      ready_value = value;
+      // Submit now: the encoder waits for this signal on another queue.
+      device_ctx4->Flush();
+      return 0;
+    }
+
+    bool encode_frame(pyrowave_encoded_frame_t &frame) override {
+      if (!encoder || ready_value == 0) {
+        return false;
+      }
+
+      // Re-encoding an unchanged image (minimum frame rate) waits on the value
+      // it already reached, but still needs a fresh release value.
+      const auto release_value = fence_value + 1;
+      ::pyrowave::encode_timing_t timing;
+      if (!encoder->encode(ready_value, release_value, budget.bytes, hdr10, frame.data, timing)) {
+        return false;
+      }
+      fence_value = release_value;
+      released_value = release_value;
+      frame.submitted = timing.submitted;
+      frame.output = timing.packetized;
+      return true;
+    }
+
+    void set_bitrate(int bitrate_kbps) override {
+      budget = ::pyrowave::rate_control::encoder_budget(bitrate_kbps, framerate, max_frame_bytes);
+      if (budget.fec_limited && !fec_limit_logged) {
+        fec_limit_logged = true;
+        const auto effective_kbps = static_cast<std::uint64_t>(budget.bytes) * 8 * static_cast<std::uint64_t>(std::max(framerate, 1)) / 1000;
+        BOOST_LOG(warning) << "PyroWave: "sv << bitrate_kbps << " kbps is more than FEC can protect at the negotiated packet size; frames are capped at "sv
+                           << budget.bytes << " bytes (~"sv << effective_kbps << " kbps)"sv;
+      }
+    }
+
+  private:
+    struct handle_closer_t {
+      void operator()(HANDLE handle) const {
+        if (handle) {
+          CloseHandle(handle);
+        }
+      }
+    };
+
+    using shared_handle_t = std::unique_ptr<void, handle_closer_t>;
+    using device5_t = util::safe_ptr<ID3D11Device5, Release<ID3D11Device5>>;
+    using device_ctx4_t = util::safe_ptr<ID3D11DeviceContext4, Release<ID3D11DeviceContext4>>;
+    using fence_t = util::safe_ptr<ID3D11Fence, Release<ID3D11Fence>>;
+
+    texture2d_t create_shared_texture(UINT width, UINT height, DXGI_FORMAT format) {
+      D3D11_TEXTURE2D_DESC desc {};
+      desc.Width = width;
+      desc.Height = height;
+      desc.MipLevels = 1;
+      desc.ArraySize = 1;
+      desc.Format = format;
+      desc.SampleDesc.Count = 1;
+      desc.Usage = D3D11_USAGE_DEFAULT;
+      desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+      desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
+
+      texture2d_t texture;
+      const auto status = base.device->CreateTexture2D(&desc, nullptr, &texture);
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "PyroWave: could not create a "sv << width << 'x' << height << " shared plane: "sv << util::log_hex(status);
+        return nullptr;
+      }
+      return texture;
+    }
+
+    static HANDLE share(ID3D11Texture2D *texture) {
+      resource1_t resource;
+      HANDLE handle = nullptr;
+      if (FAILED(texture->QueryInterface(__uuidof(IDXGIResource1), (void **) &resource)) ||
+          FAILED(resource->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr, &handle))) {
+        return nullptr;
+      }
+      return handle;
+    }
+
+    // Declared first so it is destroyed last: it owns the D3D11 device.
+    d3d_base_encode_device base;
+    device5_t device5;
+    device_ctx4_t device_ctx4;
+    texture2d_t luma;
+    texture2d_t chroma;
+    fence_t fence;
+    // Destroyed first; waits for the GPU before the planes go away.
+    std::unique_ptr<::pyrowave::d3d11_encoder_t> encoder;
+
+    ::pyrowave::adapter_identity_t adapter;
+    bool sixteen_bit = false;
+    bool hdr10 = false;
+    int framerate = 0;
+    std::size_t max_frame_bytes = 0;
+    ::pyrowave::rate_control::budget_t budget {};
+    bool fec_limit_logged = false;
+
+    std::uint64_t fence_value = 0;  ///< Last value signalled or queued by either side.
+    std::uint64_t ready_value = 0;  ///< Signalled by D3D11 after the last conversion.
+    std::uint64_t released_value = 0;  ///< Signalled by the encoder after the last frame.
+  };
+#endif
 
   bool set_cursor_texture(device_t::pointer device, gpu_cursor_t &cursor, util::buffer_t<std::uint8_t> &&cursor_img, DXGI_OUTDUPL_POINTER_SHAPE_INFO &shape_info) {
     // This cursor image may not be used
@@ -3228,6 +3538,16 @@ namespace platf::dxgi {
     return device;
   }
 
+#ifdef SUNSHINE_ENABLE_PYROWAVE
+  std::unique_ptr<pyrowave_encode_device_t> display_vram_t::make_pyrowave_encode_device(pix_fmt_e pix_fmt) {
+    auto device = std::make_unique<d3d_pyrowave_encode_device_t>();
+    if (!device->init_device(shared_from_this(), adapter.get(), pix_fmt)) {
+      return nullptr;
+    }
+    return device;
+  }
+#endif
+
   int init() {
     BOOST_LOG(info) << "Compiling shaders..."sv;
 
@@ -3271,6 +3591,15 @@ namespace platf::dxgi {
     compile_pixel_shader_helper(convert_yuv420_planar_y_ps_truehdr_peak);
     compile_pixel_shader_helper(convert_yuv444_planar_ps_truehdr_peak);
     compile_pixel_shader_helper(convert_yuv444_packed_y410_ps_truehdr_peak);
+#endif
+#ifdef SUNSHINE_ENABLE_PYROWAVE
+    compile_pixel_shader_helper(convert_yuv444_packed_uv_ps);
+    compile_pixel_shader_helper(convert_yuv444_packed_uv_ps_linear);
+    compile_pixel_shader_helper(convert_yuv444_packed_uv_ps_perceptual_quantizer);
+    compile_pixel_shader_helper(convert_yuv444_packed_uv_ps_sdr_to_pq);
+  #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+    compile_pixel_shader_helper(convert_yuv444_packed_uv_ps_truehdr_peak);
+  #endif
 #endif
     compile_pixel_shader_helper(cursor_ps);
     compile_pixel_shader_helper(cursor_ps_normalize_white);

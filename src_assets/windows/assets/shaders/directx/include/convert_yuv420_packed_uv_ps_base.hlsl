@@ -32,6 +32,9 @@ float2 main_ps(vertex_t input) : SV_Target
     float3 rgb_bottom_left = image.Sample(def_sampler, input.tex_right_left_bottom.xz).rgb;
     float3 rgb_bottom_right = image.Sample(def_sampler, input.tex_right_left_bottom.yz).rgb;
     float3 rgb = CONVERT_FUNCTION((rgb_top_left + rgb_top_right + rgb_bottom_left + rgb_bottom_right) * 0.25);
+#else
+    // No subsampling: full-resolution chroma in its own two-channel plane (4:4:4).
+    float3 rgb = CONVERT_FUNCTION(image.Sample(def_sampler, input.tex_coord).rgb);
 #endif
 
     float u = dot(color_vec_u.xyz, rgb) + color_vec_u.w;

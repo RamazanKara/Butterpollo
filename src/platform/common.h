@@ -16,6 +16,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 // lib includes
 #include <boost/core/noncopyable.hpp>
@@ -508,6 +509,28 @@ namespace platf {
     amf::amf_encoder *amf = nullptr;
   };
 
+#ifdef SUNSHINE_ENABLE_PYROWAVE
+  /// One PyroWave frame, already framed as a PYRW container.
+  struct pyrowave_encoded_frame_t {
+    std::vector<std::uint8_t> data;
+    std::chrono::steady_clock::time_point submitted;  ///< GPU encode queued.
+    std::chrono::steady_clock::time_point output;  ///< Container ready.
+  };
+
+  struct pyrowave_encode_device_t: encode_device_t {
+    virtual bool init_encoder(const video::config_t &client_config, const video::sunshine_colorspace_t &colorspace) = 0;
+
+    /**
+     * @brief Encode the most recently converted image as one intra frame.
+     * @return `false` on encoder failure; the session must be rebuilt.
+     */
+    virtual bool encode_frame(pyrowave_encoded_frame_t &frame) = 0;
+
+    /// Re-derive the per-frame budget for subsequent frames.
+    virtual void set_bitrate(int bitrate_kbps) = 0;
+  };
+#endif
+
   enum class capture_e : int {
     ok,  ///< Success
     reinit,  ///< Need to reinitialize
@@ -621,6 +644,12 @@ namespace platf {
     virtual std::unique_ptr<amf_encode_device_t> make_amf_encode_device(pix_fmt_e pix_fmt) {
       return nullptr;
     }
+
+#ifdef SUNSHINE_ENABLE_PYROWAVE
+    virtual std::unique_ptr<pyrowave_encode_device_t> make_pyrowave_encode_device(pix_fmt_e pix_fmt) {
+      return nullptr;
+    }
+#endif
 
     virtual bool is_hdr() {
       return false;
