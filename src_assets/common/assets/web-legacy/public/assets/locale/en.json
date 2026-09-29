@@ -410,6 +410,8 @@
     "audio_sink_placeholder_macos": "BlackHole 2ch",
     "audio_sink_placeholder_windows": "Speakers (High Definition Audio Device)",
     "av1_mode": "AV1 Support",
+    "pyrowave": "PyroWave",
+    "pyrowave_desc": "Offer the PyroWave codec to PyroWave-enabled Moonlight clients. PyroWave is an intra-only wavelet codec encoded on the GPU through Vulkan: every frame stands alone, so encoding takes well under a millisecond and a lost packet never corrupts later frames, but it needs hundreds of Mbit/s. Use it only on fast wired LANs. Supports 4:4:4 chroma and HDR10. Other clients are unaffected and keep using H.264, HEVC or AV1.",
     "av1_mode_0": "Vibepollo will advertise support for AV1 based on encoder capabilities (recommended)",
     "av1_mode_1": "Vibepollo will not advertise support for AV1",
     "av1_mode_2": "Vibepollo will advertise support for AV1 Main 8-bit profile",

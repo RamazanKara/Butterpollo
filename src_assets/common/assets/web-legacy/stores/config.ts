@@ -200,6 +200,7 @@ const defaultGroups = [
       min_threads: 2,
       hevc_mode: 0,
       av1_mode: 0,
+      pyrowave: 'disabled',
       envvar_compatibility_mode: 'disabled',
       legacy_ordering: 'disabled',
       ignore_encoder_probe_failure: 'disabled',
