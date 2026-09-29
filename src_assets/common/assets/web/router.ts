@@ -3,7 +3,6 @@ import OverviewView from '@/views/OverviewView.vue';
 
 const ApplicationView = () => import('@/views/ApplicationView.vue');
 const ApiTokensView = () => import('@/views/ApiTokensView.vue');
-const BrowserStreamView = () => import('@/views/BrowserStreamView.vue');
 const DevicesView = () => import('@/views/DevicesView.vue');
 const IntegrationsView = () => import('@/views/IntegrationsView.vue');
 const LibraryView = () => import('@/views/LibraryView.vue');
@@ -22,16 +21,6 @@ const router = createRouter({
       name: 'overview',
       component: OverviewView,
       meta: { titleKey: 'ui.nav.overview' },
-    },
-    {
-      path: '/stream',
-      name: 'browser-stream',
-      component: BrowserStreamView,
-      meta: { titleKey: 'ui.nav.browser_stream' },
-    },
-    {
-      path: '/webrtc',
-      redirect: '/stream',
     },
     {
       path: '/library',

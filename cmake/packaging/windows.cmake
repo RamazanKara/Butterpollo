@@ -16,10 +16,6 @@ else()
     message(FATAL_ERROR "zlib1.dll not found in expected locations")
 endif()
 
-if(WEBRTC_RUNTIME_DLL)
-    install(FILES "${WEBRTC_RUNTIME_DLL}" DESTINATION "." COMPONENT application)
-endif()
-
 # NVIDIA TrueHDR runtime. Installer builds stage the pinned runtime at CPack
 # time so RTX HDR cannot be shipped in a silently disabled state. Force the
 # cache value on so older local build trees do not keep the previous optional
@@ -489,10 +485,6 @@ file(COPY "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/assets/"
         DESTINATION "${CMAKE_BINARY_DIR}/assets"
         PATTERN "shaders" EXCLUDE)
 
-if(WEBRTC_RUNTIME_DLL)
-    file(COPY "${WEBRTC_RUNTIME_DLL}"
-            DESTINATION "${CMAKE_BINARY_DIR}")
-endif()
 # use junction for shaders directory
 cmake_path(CONVERT "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/assets/shaders"
         TO_NATIVE_PATH_LIST shaders_in_build_src_native)

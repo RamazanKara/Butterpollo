@@ -55,7 +55,6 @@
     <!-- install root ("Apollo/") -->
     <pe-file path="Apollo/sunshine.exe"><authenticode-sign/></pe-file>
     <pe-file path="Apollo/uninstall.exe"><authenticode-sign/></pe-file>
-    <pe-file path="Apollo/libwebrtc.dll"><authenticode-sign/></pe-file>
     <pe-file path="Apollo/zlib1.dll"><authenticode-sign/></pe-file>
     <pe-file path="Apollo/vibeshine_truehdr.dll"><authenticode-sign/></pe-file>
 

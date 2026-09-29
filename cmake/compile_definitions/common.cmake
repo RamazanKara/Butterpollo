@@ -278,7 +278,6 @@ include_directories(
         "${CMAKE_SOURCE_DIR}/third-party/moonlight-common-c/enet/include"
         "${CMAKE_SOURCE_DIR}/third-party/nanors"
         "${CMAKE_SOURCE_DIR}/third-party/nanors/deps/obl"
-        ${WEBRTC_INCLUDE_DIRS}
         ${SQLITE3_INCLUDE_DIRS}
         ${SUNSHINE_FFMPEG_INCLUDE_DIRS}
         ${OPENSSL_INCLUDE_DIR}

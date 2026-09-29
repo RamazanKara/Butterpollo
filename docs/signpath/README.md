@@ -195,7 +195,6 @@ stripped in CI and never signed on the runner). The `msi-file-apollo` config is 
 | --- | --- |
 | `sunshine.exe` | `Apollo\` |
 | `uninstall.exe` | `Apollo\` |
-| `libwebrtc.dll` | `Apollo\` |
 | `zlib1.dll` | `Apollo\` |
 | `vibeshine_truehdr.dll` | `Apollo\` |
 | `sunshinesvc.exe` | `Apollo\tools\` (bound via the `wix_payload` binder) |

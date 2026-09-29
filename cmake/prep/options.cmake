@@ -11,7 +11,6 @@ option(BUILD_TESTS "Build unit tests." ON)
 option(BUILD_WERROR "Enable -Werror flag." OFF)
 
 option(SUNSHINE_ENABLE_TRAY "Enable system tray icon." ON)
-option(SUNSHINE_ENABLE_WEBRTC "Enable WebRTC streaming support (Windows only)." OFF)
 
 option(BOOST_USE_STATIC "Use static boost libraries." ON)
 

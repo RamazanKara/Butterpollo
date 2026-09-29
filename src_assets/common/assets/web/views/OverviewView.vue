@@ -382,9 +382,6 @@ onBeforeUnmount(() => {
           <RouterLink class="button button--primary" :to="primaryAction.to">
             <UiIcon :name="primaryAction.icon" />{{ primaryAction.label }}
           </RouterLink>
-          <RouterLink v-if="!isStreaming" class="button button--secondary" to="/stream">
-            <UiIcon name="play" />{{ t('ui.overview.actions.startBrowserStream') }}
-          </RouterLink>
         </div>
       </section>
 

@@ -172,7 +172,6 @@ test('all canonical v2 pages render without client-side exceptions', async ({ pa
     'integrations',
     'logs',
     'api-tokens',
-    'stream',
     'maintenance',
   ]) {
     await page.goto(`/v2/${path}`);

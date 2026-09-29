@@ -9,7 +9,6 @@ const SettingsView = () => import('@/views/SettingsView.vue');
 const TroubleshootingView = () => import('@/views/TroubleshootingView.vue');
 const ClientManagementView = () => import('@/views/ClientManagementView.vue');
 const StatsView = () => import('@/views/StatsView.vue');
-const WebRtcClientView = () => import('@/views/WebRtcClientView.vue');
 
 const routes = [
   { path: '/', component: DashboardView, meta: { container: 'xl' } },
@@ -25,7 +24,6 @@ const routes = [
     alias: '/api-tokens/',
     redirect: { path: '/clients', query: { sec: 'tokens' } },
   },
-  { path: '/webrtc', component: WebRtcClientView, meta: { container: 'full' } },
 ];
 
 const CHUNK_RELOAD_FLAG = 'sunshine:chunk-reload';

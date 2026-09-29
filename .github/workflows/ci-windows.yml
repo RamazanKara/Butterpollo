@@ -281,8 +281,6 @@ jobs:
       SIGNPATH_SIGNING_POLICY_SLUG: ${{ inputs.signpath_signing_policy_slug }}
       SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG: ${{ inputs.signpath_msi_artifact_configuration_slug }}
       SIGNPATH_ARTIFACT_CONFIGURATION_SLUG: ${{ inputs.signpath_artifact_configuration_slug }}
-      VIBEPOLLO_DEPS_DIR: ${{ github.workspace }}\.vibepollo-deps
-      WEBRTC_ROOT: ${{ github.workspace }}\.vibepollo-deps\libwebrtc\out
       TRUEHDR_RUNTIME_ROOT: ${{ github.workspace }}\.vibeshine-deps\truehdr-runtime
     defaults:
       run:
@@ -456,42 +454,6 @@ jobs:
         run: |
           choco install wixtoolset -y
 
-      - name: Resolve WebRTC toolchain
-        shell: pwsh
-        env:
-          MATRIX_MSYSTEM: ${{ matrix.msystem }}
-          MSYS2_LOCATION: ${{ steps.setup-msys2.outputs.msys2-location }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-          if (-not (Test-Path -LiteralPath $vswhere)) {
-            throw "vswhere.exe was not found at $vswhere"
-          }
-
-          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if ([string]::IsNullOrWhiteSpace($vsPath) -or -not (Test-Path -LiteralPath $vsPath)) {
-            throw 'Visual Studio with the VC toolchain was not found.'
-          }
-
-          $kitsRoot = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots' -Name KitsRoot10).KitsRoot10
-          if ([string]::IsNullOrWhiteSpace($kitsRoot) -or -not (Test-Path -LiteralPath $kitsRoot)) {
-            throw 'Windows SDK KitsRoot10 was not found.'
-          }
-
-          if ([string]::IsNullOrWhiteSpace($env:MSYS2_LOCATION) -or -not (Test-Path -LiteralPath $env:MSYS2_LOCATION)) {
-            throw "MSYS2 location was not found: $($env:MSYS2_LOCATION)"
-          }
-
-          $msys2Bin = Join-Path $env:MSYS2_LOCATION "$($env:MATRIX_MSYSTEM)\bin"
-          if (-not (Test-Path -LiteralPath $msys2Bin)) {
-            throw "MSYS2 bin directory was not found: $msys2Bin"
-          }
-
-          "WEBRTC_VS_PATH=$vsPath" >> $env:GITHUB_ENV
-          "WEBRTC_WINSDK_DIR=$kitsRoot" >> $env:GITHUB_ENV
-          "WEBRTC_MSYS2_BIN=$msys2Bin" >> $env:GITHUB_ENV
-
       - name: Download virtual display driver package
         shell: pwsh
         env:
@@ -511,18 +473,6 @@ jobs:
             -GitHubToken $env:GH_TOKEN
           "VDD_PREBUILT_PACKAGE_DIR=$downloadDir" >> $env:GITHUB_ENV
           "Using virtual display driver package: $downloadDir"
-
-      - name: Download pinned WebRTC artifacts
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          .\scripts\download_webrtc_release.ps1 `
-            -ManifestPath .\third-party\webrtc-artifacts\windows-x64.json `
-            -OutDir $env:WEBRTC_ROOT `
-            -GitHubToken $env:GH_TOKEN
 
       - name: Download pinned TrueHDR runtime
         if: inputs.require_truehdr_runtime
@@ -609,13 +559,6 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG -g -gdwarf-4" \
             -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -g -gdwarf-4" \
-            -DSUNSHINE_ENABLE_WEBRTC=ON \
-            -DWEBRTC_ROOT="$(cygpath -u "${WEBRTC_ROOT}")" \
-            -DWEBRTC_INCLUDE_DIR="$(cygpath -u "${WEBRTC_ROOT}")/include" \
-            -DWEBRTC_LIBRARY="$(cygpath -u "${WEBRTC_ROOT}")/lib/libwebrtc.dll.a" \
-            -DWEBRTC_MSYS2_BIN="$(cygpath -u "${WEBRTC_MSYS2_BIN}")" \
-            -DWEBRTC_VS_PATH="$(cygpath -u "${WEBRTC_VS_PATH}")" \
-            -DWEBRTC_WINSDK_DIR="$(cygpath -u "${WEBRTC_WINSDK_DIR}")" \
             -DSUNSHINE_NPM_EXECUTABLE="${NPM_PATH}" \
             -DSUNSHINE_ASSETS_DIR=assets \
             -DSUNSHINE_PUBLISHER_NAME="${GITHUB_REPOSITORY_OWNER}" \
@@ -1425,7 +1368,7 @@ jobs:
           }
 
           $firstParty = @(
-            'sunshine.exe','uninstall.exe','libwebrtc.dll','zlib1.dll',
+            'sunshine.exe','uninstall.exe','zlib1.dll',
             'sunshinesvc.exe','dxgi-info.exe','audio-info.exe',
             'playnite-launcher.exe','sunshine_wgc_capture.exe','sunshine_display_helper.exe',
             'virtualdisplay_probe.exe','VkLayer_sunshine_hdr.dll'

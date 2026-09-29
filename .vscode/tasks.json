@@ -133,26 +133,6 @@
       }
     },
     {
-      "label": "webrtc: build libwebrtc (mingw)",
-      "type": "shell",
-      "command": "powershell",
-      "args": [
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        "${workspaceFolder}/scripts/build_mingw_webrtc.ps1"
-      ],
-      "problemMatcher": [],
-      "group": "build",
-      "options": {
-        "env": {
-          "WEBRTC_VS_PATH": "D:/Software/Visual Studio",
-          "WEBRTC_WINSDK_DIR": "D:/Software/WinSDK"
-        }
-      }
-    },
-    {
       "label": "cpack: WIX (msi)",
       "type": "process",
       "command": "D:/Software/MSYS2/ucrt64/bin/cpack.exe",

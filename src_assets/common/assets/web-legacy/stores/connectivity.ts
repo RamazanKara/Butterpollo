@@ -62,17 +62,6 @@ export const useConnectivityStore = defineStore('connectivity', () => {
     window.location.reload();
   }
 
-  function shouldAvoidAutoReload(): boolean {
-    try {
-      const path = window.location?.pathname ?? '';
-      if (path.startsWith('/webrtc')) return true;
-      if ((window as any).__sunshine_webrtc_active) return true;
-    } catch {
-      /* ignore */
-    }
-    return false;
-  }
-
   async function checkOnce(): Promise<void> {
     if (checking.value) return;
     checking.value = true;
@@ -96,12 +85,8 @@ export const useConnectivityStore = defineStore('connectivity', () => {
           const offlineDuration = Date.now() - offlineSince;
           const reloadAfterOfflineMs = 500;
           if (offlineDuration >= reloadAfterOfflineMs) {
-            if (shouldAvoidAutoReload()) {
-              offlineSince = null;
-            } else {
-              const delay = offlineDuration < 200 ? 200 - offlineDuration : 0;
-              later(refreshPage, delay);
-            }
+            const delay = offlineDuration < 200 ? 200 - offlineDuration : 0;
+            later(refreshPage, delay);
           } else {
             offlineSince = null;
           }

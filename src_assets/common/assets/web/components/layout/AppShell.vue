@@ -26,7 +26,6 @@ const navigationGroups = [
       { labelKey: 'ui.nav.overview', icon: 'overview', to: '/' },
       { labelKey: 'ui.nav.library', icon: 'library', to: '/library' },
       { labelKey: 'ui.nav.devices', icon: 'devices', to: '/devices' },
-      { labelKey: 'ui.nav.browser_stream', icon: 'play', to: '/stream' },
     ],
   },
   {

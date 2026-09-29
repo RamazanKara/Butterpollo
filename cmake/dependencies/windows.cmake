@@ -33,7 +33,3 @@ else()
         INTERFACE_INCLUDE_DIRECTORIES "${minhook-detours_SOURCE_DIR}/src"
     )
 endif()
-
-if(SUNSHINE_ENABLE_WEBRTC)
-    include("${CMAKE_MODULE_PATH}/dependencies/webrtc.cmake")
-endif()
