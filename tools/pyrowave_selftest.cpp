@@ -8,7 +8,8 @@
  * PYRW framing. The container is parsed with an independent parser, decoded
  * with PyroWave's own decoder and compared with a CPU reference conversion
  * (BT.709 limited range with left-cosited 4:2:0 chroma for SDR, BT.2020 PQ
- * limited range for HDR10).
+ * limited range for HDR10). It also checks the FEC frame cap and runs the
+ * host's own probe path (validate_config() on a synthetic probe surface).
  *
  * Not registered with ctest because it needs a Vulkan-capable GPU. Run it from
  * the build directory, which provides assets/shaders/directx:
@@ -52,6 +53,16 @@
 namespace platf::dxgi {
   int init();
 }
+
+// Production probe entry points (src/video.cpp) that the host runs for PyroWave.
+namespace video {
+  std::shared_ptr<platf::display_t> make_synthetic_probe_display(
+    platf::mem_type_e type,
+    const config_t &config,
+    const std::optional<platf::adapter_id_t> &required_adapter
+  );
+  int validate_config(std::shared_ptr<platf::display_t> disp, const encoder_t &encoder, const config_t &config);
+}  // namespace video
 
 namespace {
   using namespace std::literals;
@@ -853,6 +864,34 @@ namespace {
     check(frame.data.size() <= limit, "frame fits the FEC limit");
     check(parse_container(frame.data).has_value(), "container well-formed");
   }
+
+  /// The host's own probe path: synthetic probe surface + validate_config() with the PyroWave encoder.
+  void run_probe_path(environment_t &env) {
+    std::printf("\n=== Host probe path (make_synthetic_probe_display + validate_config) ===\n");
+    const platf::adapter_id_t adapter {
+      .high_part = env.adapter_desc.AdapterLuid.HighPart,
+      .low_part = env.adapter_desc.AdapterLuid.LowPart,
+    };
+    struct probe_case_t {
+      std::string_view name;
+      bool yuv444;
+      bool hdr;
+      bool expected;
+    };
+    const std::array cases {
+      probe_case_t {"SDR 4:2:0", false, false, true},
+      probe_case_t {"SDR 4:4:4", true, false, true},
+      probe_case_t {"HDR10 4:2:0", false, true, true},
+      // No pixel format exists for it; the encoder must refuse rather than guess.
+      probe_case_t {"HDR10 4:4:4", true, true, false},
+    };
+    for (const auto &probe : cases) {
+      const auto config = make_config(selftest_mode_t {probe.name, 1920, 1080, probe.yuv444, probe.hdr, false}, 200'000, 0);
+      auto display = video::make_synthetic_probe_display(platf::mem_type_e::dxgi, config, adapter);
+      const bool passed = display && video::validate_config(display, video::pyrowave, config) >= 0;
+      check(passed == probe.expected, std::string(probe.name) + (probe.expected ? " validates" : " is refused"));
+    }
+  }
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -928,6 +967,7 @@ int main(int argc, char **argv) {
     run_mode(env, mode);
   }
   run_fec_cap(env);
+  run_probe_path(env);
   if (run_4k) {
     run_mode(env, selftest_mode_t {"sdr420-4k", 3840, 2160, false, false, false});
   }
