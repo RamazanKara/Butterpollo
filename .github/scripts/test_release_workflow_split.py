@@ -21,21 +21,16 @@ def load_workflow(name: str) -> dict:
 
 class ReleaseWorkflowSplitTest(unittest.TestCase):
     def test_package_compilers_have_bounded_parallelism(self) -> None:
-        for workflow_name in ('ci-windows.yml', 'ci-archlinux.yml'):
-            workflow = load_workflow(workflow_name)
-            build = next(job for job in workflow['jobs'].values()
-                         if 'CMAKE_BUILD_PARALLEL_LEVEL' in job.get('env', {}))
-            self.assertEqual(build['env']['CMAKE_BUILD_PARALLEL_LEVEL'], '6')
-            scripts = '\n'.join(step.get('run', '') for step in build['steps'])
-            self.assertNotIn('$(nproc)', scripts)
-            if workflow_name == 'ci-archlinux.yml':
-                package = next(step for step in build['steps'] if step.get('name') == 'Build PKGBUILD')
-                self.assertIn('CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL}"', package['run'])
-            else:
-                commands = [line for line in scripts.splitlines() if 'cmake --build ' in line]
-                self.assertEqual(len(commands), 2)
-                for command in commands:
-                    self.assertIn('--parallel "$CMAKE_BUILD_PARALLEL_LEVEL"', command)
+        workflow = load_workflow('ci-windows.yml')
+        build = next(job for job in workflow['jobs'].values()
+                     if 'CMAKE_BUILD_PARALLEL_LEVEL' in job.get('env', {}))
+        self.assertEqual(build['env']['CMAKE_BUILD_PARALLEL_LEVEL'], '6')
+        scripts = '\n'.join(step.get('run', '') for step in build['steps'])
+        self.assertNotIn('$(nproc)', scripts)
+        commands = [line for line in scripts.splitlines() if 'cmake --build ' in line]
+        self.assertEqual(len(commands), 2)
+        for command in commands:
+            self.assertIn('--parallel "$CMAKE_BUILD_PARALLEL_LEVEL"', command)
 
     def test_tag_ci_builds_without_publishing(self) -> None:
         workflow = load_workflow("ci.yml")
@@ -47,9 +42,8 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         )
 
         self.assertNotIn("release", jobs)
-        self.assertIn("build-archlinux", jobs)
         self.assertIn("awaiting-signing", jobs)
-        self.assertIn("build-archlinux", awaiting_signing["needs"])
+        self.assertIn("build-windows", awaiting_signing["needs"])
         self.assertIn("should_release", build_inputs["build_only"])
         self.assertNotIn("require_signpath_signing", build_inputs)
         self.assertEqual(
@@ -107,7 +101,7 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
             ("workflow_dispatch", "branch", "false", True),
             ("pull_request", "branch", "false", True),
         )
-        for job in ("build-windows", "build-archlinux"):
+        for job in ("build-windows",):
             for event, ref_type, release, expected in cases:
                 with self.subTest(job=job, event=event, ref_type=ref_type, release=release):
                     expression = jobs[job]["if"].strip().removeprefix("${{").removesuffix("}}")
@@ -120,112 +114,6 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
                     expression = expression.replace("||", "or").replace("&&", "and")
                     expression = " ".join(expression.split())
                     self.assertEqual(eval(expression, {"__builtins__": {}}), expected)
-
-    def test_arch_package_is_built_and_carried_into_release(self) -> None:
-        pkgbuild = (ROOT / "packaging/linux/Arch/PKGBUILD").read_text(encoding="utf-8")
-        self.assertIn("pkgname='vibepollo'", pkgbuild)
-        self.assertIn("conflicts=('sunshine' 'vibeshine')", pkgbuild)
-        ci_workflow = load_workflow("ci.yml")
-        arch_workflow = load_workflow("ci-archlinux.yml")
-        release_workflow = load_workflow("sign-release.yml")
-
-        arch_call = ci_workflow["jobs"]["build-archlinux"]
-        self.assertEqual(arch_call["uses"], "./.github/workflows/ci-archlinux.yml")
-        self.assertEqual(
-            arch_call["with"]["release_commit"],
-            "${{ needs.release-candidate.outputs.release_commit || github.sha }}",
-        )
-        self.assertEqual(
-            arch_call["with"]["artifact_retention_days"],
-            "${{ needs.release-candidate.outputs.should_release == 'true' && 14 || 1 }}",
-        )
-
-        checkout = next(
-            step
-            for step in arch_workflow["jobs"]["build_archlinux"]["steps"]
-            if step["name"] == "Checkout"
-        )
-        self.assertEqual(checkout["with"]["submodules"], "recursive")
-        self.assertEqual(checkout["with"]["ref"], "${{ inputs.release_commit }}")
-
-        arch_text = (ROOT / ".github" / "workflows" / "ci-archlinux.yml").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn('find "/usr/lib/modules/${kernel_release}"', arch_text)
-        self.assertNotIn('modinfo -k "${kernel_release}" -n vibeshine_drm', arch_text)
-        self.assertIn(
-            'write_drm_version_header "${module_build_dir}" "0.0.0"', arch_text
-        )
-        self.assertIn(
-            'write_drm_version_header "${dkms_source}" "${dkms_ci_version}"',
-            arch_text,
-        )
-        self.assertIn('if [[ "${BRANCH}" == "vibe-test" ]]', arch_text)
-        self.assertIn('sub_version=".r${COMMIT}"', arch_text)
-        self.assertIn("makedepends = nodejs", arch_text)
-        self.assertIn("makedepends = npm", arch_text)
-        self.assertIn("makedepends = ninja", arch_text)
-
-        pkgbuild_text = (ROOT / "packaging" / "linux" / "Arch" / "PKGBUILD").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("-G Ninja", pkgbuild_text)
-
-        glad_text = (ROOT / "cmake" / "dependencies" / "glad.cmake").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn('COMMAND "${Python_EXECUTABLE}" -c "import jinja2"', glad_text)
-        self.assertNotIn("import pkg_resources", glad_text)
-
-        resolver = release_workflow["jobs"]["resolve_release"]
-        self.assertIn("arch_artifact_id", resolver["outputs"])
-        release_text = (ROOT / ".github" / "workflows" / "sign-release.yml").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn('"build-Archlinux"', release_text)
-        self.assertIn(".assets[$name] = $hash", release_text)
-        release_steps = release_workflow["jobs"]["release"]["steps"]
-        self.assertIn(
-            "Download Arch Linux artifacts",
-            {step["name"] for step in release_steps},
-        )
-        self.assertIn(
-            "Include Arch Linux package",
-            {step["name"] for step in release_steps},
-        )
-        self.assertIn(
-            r"Download [\`${package_name}\`]("
-            r"https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG_NAME}/${package_name})",
-            release_text,
-        )
-        self.assertIn(
-            "sudo pacman -U ./${package_name}",
-            release_text,
-        )
-        self.assertIn(
-            "Managed virtual displays require Linux 6.16 or newer.", release_text
-        )
-        self.assertIn(
-            "https://github.com/${GITHUB_REPOSITORY}/blob/${TAG_NAME}/docs/linux/install.md",
-            release_text,
-        )
-        self.assertIn("arch_package_version=${RELEASE_VERSION//-/}", release_text)
-        self.assertIn("pkgver = ${arch_package_version}-1", release_text)
-
-        publish_arch_workflow = load_workflow("publish-arch-repository.yml")
-        self.assertIn("publish", publish_arch_workflow["jobs"])
-        publish_arch_text = (
-            ROOT / ".github" / "workflows" / "publish-arch-repository.yml"
-        ).read_text(encoding="utf-8")
-        self.assertIn("arch_package_version=${release_version//-/}", publish_arch_text)
-        self.assertIn("pkgver = ${arch_package_version}-1", publish_arch_text)
-
-        getting_started = (ROOT / "docs" / "getting_started.md").read_text(
-            encoding="utf-8"
-        )
-        self.assertNotIn("vibepollo.pkg.tar.gz", getting_started)
-        self.assertIn("vibepollo-*.pkg.tar.zst", getting_started)
-        self.assertIn("without guessing a package name", getting_started)
 
     def test_prerelease_notes_do_not_claim_to_cover_stable_releases(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:

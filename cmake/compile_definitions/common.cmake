@@ -41,17 +41,7 @@ if(NOT SUNSHINE_ASSETS_DIR)
 endif()
 
 # platform specific compile definitions
-if(WIN32)
-    include(${CMAKE_MODULE_PATH}/compile_definitions/windows.cmake)
-elseif(UNIX)
-    include(${CMAKE_MODULE_PATH}/compile_definitions/unix.cmake)
-
-    if(APPLE)
-        include(${CMAKE_MODULE_PATH}/compile_definitions/macos.cmake)
-    else()
-        include(${CMAKE_MODULE_PATH}/compile_definitions/linux.cmake)
-    endif()
-endif()
+include(${CMAKE_MODULE_PATH}/compile_definitions/windows.cmake)
 
 include_directories(BEFORE SYSTEM "${CMAKE_SOURCE_DIR}/third-party/nv-codec-headers/include")
 file(GLOB NVENC_SOURCES CONFIGURE_DEPENDS "src/nvenc/*.cpp" "src/nvenc/*.h")
@@ -167,7 +157,6 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/config_lutris.h"
         "${CMAKE_SOURCE_DIR}/src/app_framegen_config.cpp"
         "${CMAKE_SOURCE_DIR}/src/app_framegen_config.h"
-        "${CMAKE_SOURCE_DIR}/src/platform/linux/smooth_motion_policy.h"
         "${CMAKE_SOURCE_DIR}/src/deferred_action.h"
         "${CMAKE_SOURCE_DIR}/src/process.cpp"
         "${CMAKE_SOURCE_DIR}/src/process.h"

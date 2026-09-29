@@ -8,6 +8,10 @@ project(Vibepollo VERSION 0.0.0
         DESCRIPTION "Self-hosted game stream host for Moonlight"
         HOMEPAGE_URL "https://github.com/Nonary/Vibepollo")
 
+if(NOT WIN32)
+    message(FATAL_ERROR "Butterpollo builds for Windows only.")
+endif()
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(NOT DEFINED CMAKE_CUDA_STANDARD)
@@ -40,10 +44,6 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Choose the type of build." FORCE)
 endif()
 
-if(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
-    set(FREEBSD ON)
-endif()
-
 # set the module path, used for includes
 set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
@@ -58,28 +58,6 @@ include(${CMAKE_MODULE_PATH}/prep/options.cmake)
 
 # initial prep
 include(${CMAKE_MODULE_PATH}/prep/init.cmake)
-
-# Resolve libvirtualdisplay before platform package templates consume its
-# driver-owned assets. The dependency target itself is added later.
-include(${CMAKE_MODULE_PATH}/dependencies/libvirtualdisplay_source.cmake)
-
-# Native Linux package templates need this value before dependency targets are
-# added. Keep it in the cache so libvirtualdisplay sees the same decision.
-if(SUNSHINE_BUILD_STEAMOS)
-    set(BUILD_VIBESHINE_KWIN_GPU_BRIDGE OFF CACHE BOOL
-            "Build the Vibepollo KWin GPU-association bridge" FORCE)
-else()
-    set(BUILD_VIBESHINE_KWIN_GPU_BRIDGE ON CACHE BOOL
-        "Build the Vibepollo KWin GPU-association bridge" FORCE)
-endif()
-
-# configure special package files, such as sunshine.desktop, Flatpak manifest, Portfile , etc.
-include(${CMAKE_MODULE_PATH}/prep/special_package_configuration.cmake)
-
-# Exit early if END_BUILD is ON, i.e. when only generating package manifests
-if(${END_BUILD})
-    return()
-endif()
 
 # project constants
 include(${CMAKE_MODULE_PATH}/prep/constants.cmake)

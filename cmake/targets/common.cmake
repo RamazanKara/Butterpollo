@@ -1,11 +1,7 @@
 # common target definitions
 # this file will also load platform specific macros
 
-if(APPLE AND NOT SUNSHINE_BUILD_HOMEBREW)
-    add_executable(sunshine MACOSX_BUNDLE ${SUNSHINE_TARGET_FILES})
-else()
-    add_executable(sunshine ${SUNSHINE_TARGET_FILES})
-endif()
+add_executable(sunshine ${SUNSHINE_TARGET_FILES})
 foreach(dep ${SUNSHINE_TARGET_DEPENDENCIES})
     add_dependencies(sunshine ${dep})  # compile these before sunshine
 endforeach()
@@ -14,22 +10,9 @@ include(${CMAKE_MODULE_PATH}/targets/web.cmake)
 add_dependencies(sunshine web_ui)
 
 # platform specific target definitions
-if(WIN32)
-    include(${CMAKE_MODULE_PATH}/targets/windows.cmake)
-elseif(UNIX)
-    include(${CMAKE_MODULE_PATH}/targets/unix.cmake)
-
-    if(APPLE)
-        include(${CMAKE_MODULE_PATH}/targets/macos.cmake)
-    else()
-        include(${CMAKE_MODULE_PATH}/targets/linux.cmake)
-    endif()
-endif()
+include(${CMAKE_MODULE_PATH}/targets/windows.cmake)
 
 target_link_libraries(sunshine ${SUNSHINE_EXTERNAL_LIBRARIES} ${EXTRA_LIBS})
-if(TARGET sunshine_libvirtualdisplay_uapi)
-    target_link_libraries(sunshine sunshine_libvirtualdisplay_uapi)
-endif()
 target_compile_definitions(sunshine PUBLIC ${SUNSHINE_DEFINITIONS})
 # FFmpeg bundles may also ship ffnvcodec headers. The standalone encoder's
 # compatibility checks require the SDK revision pinned by this repository.
@@ -38,11 +21,9 @@ target_include_directories(sunshine SYSTEM BEFORE PRIVATE
 
 # Logging integration flags are provided via SUNSHINE_DEFINITIONS to avoid duplicates
 set_target_properties(sunshine PROPERTIES CXX_STANDARD 23)
-if(NOT SUNSHINE_BUILD_STEAMOS)
-    set_target_properties(sunshine PROPERTIES
-            VERSION ${PROJECT_VERSION}
-            SOVERSION ${PROJECT_VERSION_MAJOR})
-endif()
+set_target_properties(sunshine PROPERTIES
+        VERSION ${PROJECT_VERSION}
+        SOVERSION ${PROJECT_VERSION_MAJOR})
 
 # CLion complains about unknown flags after running cmake, and cannot add symbols to the index for cuda files
 if(CUDA_INHERIT_COMPILE_OPTIONS)

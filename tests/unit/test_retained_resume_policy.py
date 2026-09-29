@@ -16,7 +16,6 @@ with tempfile.TemporaryDirectory(prefix='retained-resume-') as directory:
     (path / 'test.cpp').write_text('''
 #include <cassert>
 #include <initializer_list>
-#include "src/platform/linux/private_display_resume_policy.h"
 struct session {
  bool virtual_display_recreated_on_demand;
  bool virtual_display_needs_resume_apply;
@@ -39,6 +38,7 @@ int main() {
   }
 }
 ''')
-    subprocess.run(['g++', '-std=c++17', '-I', str(root), str(path / 'test.cpp'), '-o', str(path / 'test')], check=True)
+    # The extracted snippet keeps nvhttp.cpp's __linux__ branch; evaluate the Windows one on any host.
+    subprocess.run(['g++', '-std=c++17', '-U__linux__', '-I', str(root), str(path / 'test.cpp'), '-o', str(path / 'test')], check=True)
     subprocess.run([str(path / 'test')], check=True)
 print('PASS: retained-output resume preserves helper topology and failure cleanup')

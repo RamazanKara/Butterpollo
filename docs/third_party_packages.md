@@ -19,7 +19,7 @@
 
 | Previous                      |                                            Next |
 |:------------------------------|------------------------------------------------:|
-| [Docker](../DOCKER_README.md) | [Gamestream Migration](gamestream_migration.md) |
+| [Changelog](changelog.md) | [Gamestream Migration](gamestream_migration.md) |
 
 </div>
 

@@ -40,23 +40,8 @@ include_directories(SYSTEM ${MINIUPNP_INCLUDE_DIRS})
 include("${CMAKE_MODULE_PATH}/dependencies/ffmpeg.cmake")
 
 # Opus
-# Homebrew provides opus as a dynamic library only, so disable static linking for Homebrew builds
-if(SUNSHINE_BUILD_HOMEBREW)
-    set(OPUS_USE_STATIC OFF CACHE BOOL "Static linking for libopus")
-else()
-    set(OPUS_USE_STATIC ON CACHE BOOL "Static linking for libopus")
-endif()
+set(OPUS_USE_STATIC ON CACHE BOOL "Static linking for libopus")
 include("${CMAKE_MODULE_PATH}/dependencies/FindOpus.cmake")
 
 # platform specific dependencies
-if(WIN32)
-    include("${CMAKE_MODULE_PATH}/dependencies/windows.cmake")
-elseif(UNIX)
-    include("${CMAKE_MODULE_PATH}/dependencies/unix.cmake")
-
-    if(APPLE)
-        include("${CMAKE_MODULE_PATH}/dependencies/macos.cmake")
-    else()
-        include("${CMAKE_MODULE_PATH}/dependencies/linux.cmake")
-    endif()
-endif()
+include("${CMAKE_MODULE_PATH}/dependencies/windows.cmake")

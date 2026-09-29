@@ -48,19 +48,9 @@ install(DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/assets/web/"
         COMPONENT assets)
 
 # platform specific packaging
-if(WIN32)
-    include(${CMAKE_MODULE_PATH}/packaging/windows.cmake)
-    # WiX specifics: ensure license is RTF and set stable Upgrade GUID
-    set(CPACK_RESOURCE_FILE_LICENSE ${PROJECT_SOURCE_DIR}/packaging/windows/LICENSE.rtf)
-    set(CPACK_WIX_UPGRADE_GUID "{E3FA501A-85F8-4187-85A7-D6E6BDC7EDA1}")
-elseif(UNIX)
-    include(${CMAKE_MODULE_PATH}/packaging/unix.cmake)
-
-    if(APPLE)
-        include(${CMAKE_MODULE_PATH}/packaging/macos.cmake)
-    else()
-        include(${CMAKE_MODULE_PATH}/packaging/linux.cmake)
-    endif()
-endif()
+include(${CMAKE_MODULE_PATH}/packaging/windows.cmake)
+# WiX specifics: ensure license is RTF and set stable Upgrade GUID
+set(CPACK_RESOURCE_FILE_LICENSE ${PROJECT_SOURCE_DIR}/packaging/windows/LICENSE.rtf)
+set(CPACK_WIX_UPGRADE_GUID "{E3FA501A-85F8-4187-85A7-D6E6BDC7EDA1}")
 
 include(CPack)

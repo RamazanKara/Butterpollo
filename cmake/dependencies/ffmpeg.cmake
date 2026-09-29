@@ -6,14 +6,7 @@ include_guard(GLOBAL)
 # ffmpeg pre-compiled binaries
 if(NOT DEFINED FFMPEG_PREPARED_BINARIES)
     # Set platform-specific libraries
-    if(WIN32)
-        set(FFMPEG_PLATFORM_LIBRARIES mfplat ole32 strmiids mfuuid vpl)
-    elseif(FREEBSD)
-        # numa is not available on FreeBSD
-        set(FFMPEG_PLATFORM_LIBRARIES va va-drm va-x11 X11)
-    elseif(UNIX AND NOT APPLE)
-        set(FFMPEG_PLATFORM_LIBRARIES numa va va-drm va-x11 X11)
-    endif()
+    set(FFMPEG_PLATFORM_LIBRARIES mfplat ole32 strmiids mfuuid vpl)
 
     # Determine download location
     set(FFMPEG_DOWNLOAD_DIR "${CMAKE_BINARY_DIR}/_deps")
@@ -138,13 +131,7 @@ else()
 
     # Set platform-specific libraries
     if(NOT DEFINED FFMPEG_PLATFORM_LIBRARIES)
-        if(WIN32)
-            set(FFMPEG_PLATFORM_LIBRARIES mfplat ole32 strmiids mfuuid vpl)
-        elseif(FREEBSD)
-            set(FFMPEG_PLATFORM_LIBRARIES va va-drm va-x11 X11)
-        elseif(UNIX AND NOT APPLE)
-            set(FFMPEG_PLATFORM_LIBRARIES numa va va-drm va-x11 X11)
-        endif()
+        set(FFMPEG_PLATFORM_LIBRARIES mfplat ole32 strmiids mfuuid vpl)
     endif()
 
     # Set base FFmpeg libraries (always required)
