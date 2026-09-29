@@ -79,10 +79,7 @@ target_link_libraries(sunshine_wgc_capture
 target_compile_options(sunshine_wgc_capture PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
 
 # Display settings helper: detached helper that applies/reverts display settings via IPC.
-# One exe hosts both engines (legacy + v2), selected by --engine= or persisted state.
 add_executable(sunshine_display_helper
-        display_settings_helper_main.cpp
-        display_settings_helper.cpp
         display_settings_helper_v2.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/diagnostics.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/diagnostics_boost.cpp

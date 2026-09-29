@@ -35,10 +35,9 @@ namespace platf::display_helper_client {
     constexpr int kConnectTimeoutMs = 2000;
     constexpr int kSendTimeoutMs = 5000;
     constexpr int kShutdownIpcTimeoutMs = 500;
-    constexpr int kV2ApplyResultTimeoutMs = static_cast<int>(
+    constexpr int kApplyResultTimeoutMs = static_cast<int>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
         display_helper::v2::timing::kApplyStartupBudget).count());
-    constexpr int kLegacyApplyResultTimeoutMs = 5000;
     // A refresh-only mode set on a virtual display serializes against the OS display
     // stack. While an alt-tab is already changing modes, the helper has been measured
     // at ~6s for a single apply, so a 5s budget declared a healthy helper dead and
@@ -86,11 +85,11 @@ namespace platf::display_helper_client {
     Revert = 2,  ///< Revert display settings to the previous state.
     Reset = 3,  ///< Reset helper persistence/state (if supported).
     ExportGolden = 4,  ///< Export current OS settings as golden snapshot
-    LogLevel = 5,  ///< Update helper log level (payload: [u8 min_log_level]); v2 engine only.
+    LogLevel = 5,  ///< Update helper log level (payload: [u8 min_log_level]).
     ApplyResult = 6,  ///< Helper acknowledgement for APPLY (payload: [u8 success][optional message...]).
     Disarm = 7,  ///< Cancel any pending restore/watchdog actions on the helper.
     SnapshotCurrent = 8,  ///< Save current session snapshot (rotate current->previous) without applying config.
-    VerificationResult = 9,  ///< Helper acknowledgement for verification completion (payload: [u8 success]); v2 engine only.
+    VerificationResult = 9,  ///< Helper acknowledgement for verification completion (payload: [u8 success]).
     RefreshRate = 10,  ///< Change only one display's refresh rate.
     RefreshRateResult = 11,  ///< Helper acknowledgement for RefreshRate (payload: [u8 success]).
     SnapshotResult = 12,  ///< Helper acknowledgement for SnapshotCurrent (payload: [u8 success]).
@@ -99,15 +98,11 @@ namespace platf::display_helper_client {
   };
 
   namespace {
+    // A connection is Unknown until the helper acknowledges a tagged APPLY on
+    // it; only a confirmed connection uses the correlated v2 frame formats.
     enum class ApplyResponseProtocol {
       Unknown,
-      Legacy,
       V2,
-    };
-
-    struct ApplyResult {
-      bool success = false;
-      ApplyResponseProtocol protocol = ApplyResponseProtocol::Unknown;
     };
 
     using PipePtr = std::shared_ptr<platf::dxgi::INamedPipe>;
@@ -123,9 +118,9 @@ namespace platf::display_helper_client {
       PipePtr pipe;
       const std::uint64_t generation;
       std::atomic<ApplyResponseProtocol> protocol {ApplyResponseProtocol::Unknown};
-      // An untagged response on an unknown or legacy helper cannot safely
-      // cross a superseding command. The control path retires this session
-      // before it sends the successor, then discovers v1/v2 on the fresh
+      // A response on an unconfirmed connection cannot safely cross a
+      // superseding command. The control path retires this session before it
+      // sends the successor, then confirms the protocol on the fresh
       // connection.
       std::atomic<bool> untagged_response_pending {false};
       std::timed_mutex response_mutex;
@@ -136,32 +131,6 @@ namespace platf::display_helper_client {
     using SessionPtr = std::shared_ptr<ConnectionSession>;
 
     constexpr std::size_t kMaxBufferedResponses = 32;
-    constexpr std::size_t kMaxIssuedApplyRequestIds = 64;
-
-    std::mutex &issued_apply_request_ids_mutex() {
-      static std::mutex m;
-      return m;
-    }
-
-    std::deque<std::uint64_t> &issued_apply_request_ids() {
-      static std::deque<std::uint64_t> ids;
-      return ids;
-    }
-
-    void remember_issued_apply_request_id(std::uint64_t request_id) {
-      std::lock_guard<std::mutex> lock(issued_apply_request_ids_mutex());
-      auto &ids = issued_apply_request_ids();
-      if (ids.size() == kMaxIssuedApplyRequestIds) {
-        ids.pop_front();
-      }
-      ids.push_back(request_id);
-    }
-
-    bool was_issued_apply_request_id(std::uint64_t request_id) {
-      std::lock_guard<std::mutex> lock(issued_apply_request_ids_mutex());
-      const auto &ids = issued_apply_request_ids();
-      return std::find(ids.begin(), ids.end(), request_id) != ids.end();
-    }
 
     bool is_bufferable_response(uint8_t type) {
       return type == static_cast<uint8_t>(MsgType::ApplyResult) ||
@@ -231,45 +200,15 @@ namespace platf::display_helper_client {
       return request_id;
     }
 
-    std::optional<ApplyResult> decode_apply_response(
+    // Returns the success flag of the ApplyResult tagged with expected_request_id.
+    std::optional<bool> decode_apply_response(
       std::span<const uint8_t> bytes,
-      std::uint64_t expected_request_id,
-      ApplyResponseProtocol protocol) {
-      if (bytes.size() < 2) {
-        return std::nullopt;
-      }
-      if (protocol == ApplyResponseProtocol::Legacy) {
-        return ApplyResult {.success = bytes[1] != 0, .protocol = ApplyResponseProtocol::Legacy};
-      }
+      std::uint64_t expected_request_id) {
       const auto request_id = response_request_id(bytes);
-      if (protocol == ApplyResponseProtocol::V2) {
-        if (!request_id || *request_id != expected_request_id) {
-          return std::nullopt;
-        }
-        return ApplyResult {.success = bytes[1] != 0, .protocol = ApplyResponseProtocol::V2};
-      }
-
-      if (!request_id) {
-        return ApplyResult {.success = bytes[1] != 0, .protocol = ApplyResponseProtocol::Legacy};
-      }
-      if (*request_id == expected_request_id) {
-        return ApplyResult {.success = bytes[1] != 0, .protocol = ApplyResponseProtocol::V2};
-      }
-      // A tagged response for an earlier request proves that this is v2
-      // traffic, even when that older request was cancelled. Do not mistake a
-      // stale failed v2 reply for a legacy failure just because its token is
-      // followed by an error string.
-      if (was_issued_apply_request_id(*request_id)) {
+      if (!request_id || *request_id != expected_request_id) {
         return std::nullopt;
       }
-      // A legacy failure may carry a long human-readable error string, which
-      // has no token but can be at least eight bytes long. There is no earlier
-      // v2 request on an unknown transport, so treat that first failure as the
-      // legacy reply rather than waiting for a token that will never arrive.
-      if (bytes[1] == 0) {
-        return ApplyResult {.success = false, .protocol = ApplyResponseProtocol::Legacy};
-      }
-      return std::nullopt;
+      return bytes[1] != 0;
     }
 
     bool matches_verification_response(std::span<const uint8_t> bytes, std::uint64_t expected_request_id) {
@@ -277,10 +216,9 @@ namespace platf::display_helper_client {
       return request_id && *request_id == expected_request_id;
     }
 
-    std::optional<ApplyResult> wait_for_apply_result_locked(
+    std::optional<bool> wait_for_apply_result_locked(
       const SessionPtr &session,
       std::uint64_t expected_request_id,
-      ApplyResponseProtocol protocol,
       int timeout_ms,
       const std::function<bool()> &cancellation_predicate
     ) {
@@ -302,20 +240,19 @@ namespace platf::display_helper_client {
         if (auto buffered = take_buffered_response(
               session,
               MsgType::ApplyResult,
-              [expected_request_id, protocol](std::span<const uint8_t> bytes) {
-                return decode_apply_response(bytes, expected_request_id, protocol).has_value();
+              [expected_request_id](std::span<const uint8_t> bytes) {
+                return decode_apply_response(bytes, expected_request_id).has_value();
               })) {
           const auto result = decode_apply_response(
             std::span<const uint8_t>(buffered->data(), buffered->size()),
-            expected_request_id,
-            protocol);
+            expected_request_id);
           if (!result) {
             continue;
           }
-          remember_apply_response_protocol(session, result->protocol);
+          remember_apply_response_protocol(session, ApplyResponseProtocol::V2);
           session->untagged_response_pending.store(false, std::memory_order_release);
-          const std::size_t message_offset = result->protocol == ApplyResponseProtocol::V2 ? 10 : 2;
-          if (!result->success && buffered->size() > message_offset) {
+          constexpr std::size_t message_offset = 10;
+          if (!*result && buffered->size() > message_offset) {
             std::string helper_msg(
               reinterpret_cast<const char *>(buffered->data() + message_offset),
               reinterpret_cast<const char *>(buffered->data() + buffered->size()));
@@ -351,18 +288,18 @@ namespace platf::display_helper_client {
         const uint8_t msg_type = buffer[0];
         if (msg_type == static_cast<uint8_t>(MsgType::ApplyResult)) {
           const std::span<const uint8_t> frame(buffer.data(), bytes_read);
-          const auto decoded = decode_apply_response(frame, expected_request_id, protocol);
+          const auto decoded = decode_apply_response(frame, expected_request_id);
           if (!decoded) {
             const auto response_id = response_request_id(frame);
             BOOST_LOG(debug) << "Display helper IPC: preserving APPLY result for request="
-                             << (response_id ? std::to_string(*response_id) : std::string {"legacy"});
+                             << (response_id ? std::to_string(*response_id) : std::string {"untagged"});
             buffer_response(session, frame);
             continue;
           }
-          remember_apply_response_protocol(session, decoded->protocol);
+          remember_apply_response_protocol(session, ApplyResponseProtocol::V2);
           session->untagged_response_pending.store(false, std::memory_order_release);
-          const std::size_t message_offset = decoded->protocol == ApplyResponseProtocol::V2 ? 10 : 2;
-          if (!decoded->success && bytes_read > message_offset) {
+          constexpr std::size_t message_offset = 10;
+          if (!*decoded && bytes_read > message_offset) {
             std::string helper_msg(
               reinterpret_cast<const char *>(buffer.data() + message_offset),
               reinterpret_cast<const char *>(buffer.data() + bytes_read));
@@ -545,7 +482,7 @@ namespace platf::display_helper_client {
           if (response_id) {
             buffer_response(session, frame);
           } else {
-            BOOST_LOG(debug) << "Display helper IPC: ignoring uncorrelated legacy refresh-rate result.";
+            BOOST_LOG(debug) << "Display helper IPC: ignoring uncorrelated refresh-rate result.";
           }
           continue;
         }
@@ -625,7 +562,7 @@ namespace platf::display_helper_client {
           if (response_id) {
             buffer_response(session, frame);
           } else {
-            BOOST_LOG(debug) << "Display helper IPC: ignoring uncorrelated legacy SNAPSHOT_CURRENT result.";
+            BOOST_LOG(debug) << "Display helper IPC: ignoring uncorrelated SNAPSHOT_CURRENT result.";
           }
           continue;
         }
@@ -723,11 +660,10 @@ namespace platf::display_helper_client {
     return retired;
   }
 
-  // Called under write_mutex then connection_mutex. An unknown or legacy
-  // helper can have exactly one untagged reply in flight. A superseding
-  // control operation must use a new pipe; otherwise that reply can either be
-  // mistaken for the successor's legacy acknowledgement or keep its response
-  // lane blocked until the old operation times out.
+  // Called under write_mutex then connection_mutex. An unconfirmed connection
+  // can have exactly one reply in flight. A superseding control operation must
+  // use a new pipe; otherwise that reply can keep its response lane blocked
+  // until the old operation times out.
   static SessionPtr retire_untagged_response_session_if_needed_locked() {
     const auto &session = session_singleton();
     if (!session ||
@@ -787,8 +723,8 @@ namespace platf::display_helper_client {
   static int remaining_timeout_ms(const std::chrono::steady_clock::time_point &deadline);
 
   // A cancellation/control generation is ordered with the short command
-  // write lease. If the active helper has not yet identified its protocol,
-  // retire it in the same critical section so an untagged legacy reply cannot
+  // write lease. If the active helper has not yet confirmed its protocol,
+  // retire it in the same critical section so an outstanding reply cannot
   // cross this control boundary.
   static std::optional<std::uint64_t> cancel_or_begin_apply_wait_cancellable(const std::function<bool()> &cancelled) {
     SessionPtr retired;
@@ -1414,11 +1350,8 @@ namespace platf::display_helper_client {
 
     std::vector<uint8_t> payload;
     try {
-      // The token is deliberately backward-compatible: v2 echoes it in the
-      // ApplyResult and supplies a later verification acknowledgement, while
-      // the legacy helper removes/ignores this metadata and returns its normal
-      // untagged synchronous acknowledgement.  The response, not today's
-      // configured helper preference, selects the live wire protocol.
+      // The helper echoes the token in the ApplyResult and in the later
+      // verification acknowledgement.
       auto apply_json = nlohmann::json::parse(json, nullptr, false);
       if (!apply_json.is_object()) {
         BOOST_LOG(error) << "Display helper IPC: APPLY payload is not a JSON object.";
@@ -1437,8 +1370,7 @@ namespace platf::display_helper_client {
     }
 
     // Hold this session's response reader before sending APPLY. A superseded
-    // v2 verification wait releases it in short slices; a known legacy helper
-    // deliberately keeps its untagged lane serial until the old reply arrives.
+    // verification wait releases it in short slices.
     // Every APPLY now arrives with a synthesized deadline predicate, so the
     // predicate can no longer stand in for "this caller is shutting down": only
     // an explicit shutdown-class caller may collapse to the short IPC caps.
@@ -1459,12 +1391,8 @@ namespace platf::display_helper_client {
       BOOST_LOG(warning) << "Display helper IPC: APPLY aborted - no connection";
       return false;
     }
-    const auto protocol = current_apply_response_protocol(session);
-    const int protocol_timeout_ms = protocol == ApplyResponseProtocol::Legacy ?
-                                      kLegacyApplyResultTimeoutMs :
-                                      kV2ApplyResultTimeoutMs;
     const auto protocol_deadline =
-      std::chrono::steady_clock::now() + std::chrono::milliseconds(protocol_timeout_ms);
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(kApplyResultTimeoutMs);
     const auto reader_deadline = std::min(operation_deadline, protocol_deadline);
     const auto response_cancelled = [&operation_cancelled, reader_deadline] {
       return operation_cancelled() || std::chrono::steady_clock::now() >= reader_deadline;
@@ -1495,7 +1423,6 @@ namespace platf::display_helper_client {
           response_cancelled)) {
       return false;
     }
-    remember_issued_apply_request_id(request_id);
     if (wait_generation_out) {
       *wait_generation_out = *wait_generation;
     }
@@ -1505,27 +1432,24 @@ namespace platf::display_helper_client {
 
     const int remaining_response_timeout_ms = remaining_timeout_ms(reader_deadline);
     if (remaining_response_timeout_ms > 0) {
-      if (auto result = wait_for_apply_result_locked(
+      if (auto success = wait_for_apply_result_locked(
             session,
             request_id,
-            protocol,
             remaining_response_timeout_ms,
-            [session, wait_generation = *wait_generation, protocol, response_cancelled] {
+            [session, wait_generation = *wait_generation, response_cancelled] {
               return response_cancelled() ||
                      !session_is_current(session) ||
-                     (protocol != ApplyResponseProtocol::Legacy &&
-                      apply_wait_generation().load(std::memory_order_acquire) != wait_generation);
+                     apply_wait_generation().load(std::memory_order_acquire) != wait_generation;
             }
           )) {
-        if (result->success && request_id_out && result->protocol == ApplyResponseProtocol::V2) {
+        if (*success && request_id_out) {
           *request_id_out = request_id;
         }
-        return result->success;
+        return *success;
       }
     }
 
-    if (protocol != ApplyResponseProtocol::Legacy &&
-        apply_wait_generation().load(std::memory_order_acquire) != *wait_generation) {
+    if (apply_wait_generation().load(std::memory_order_acquire) != *wait_generation) {
       BOOST_LOG(debug) << "Display helper IPC: APPLY result wait superseded by a newer control command.";
       return false;
     }

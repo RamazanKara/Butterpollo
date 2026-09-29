@@ -14,9 +14,8 @@
 
 namespace platf::display_helper_client {
   // Send APPLY with JSON payload (SingleDisplayConfiguration). Every request
-  // carries a backward-compatible token: v2 echoes it for a later verification
-  // acknowledgement, while legacy helpers reply in their original untagged
-  // format and are detected from that response.
+  // carries a token that the helper echoes in its ApplyResult and in the later
+  // verification acknowledgement.
   bool send_apply_json(
     const std::string &json,
     std::uint64_t *request_id_out = nullptr,
@@ -29,7 +28,7 @@ namespace platf::display_helper_client {
     // carry a cancellation predicate now, so it cannot imply this by itself.
     bool shutdown_class_caller = false);
 
-  // Wait for helper verification result after APPLY (v2 engine only).
+  // Wait for helper verification result after APPLY.
   // Returns nullopt on timeout/unavailable.
   // The optional cancellation predicate is checked between short receive waits so a
   // superseded capture gate does not keep the response reader occupied until the
@@ -42,8 +41,8 @@ namespace platf::display_helper_client {
     std::uint64_t expected_connection_generation = 0
   );
 
-  // True only after this live pipe has acknowledged a tagged v2 APPLY. An
-  // unknown/legacy connection must use dispatch-only snapshot semantics.
+  // True only after this live pipe has acknowledged a tagged APPLY. An
+  // unconfirmed connection must use dispatch-only snapshot semantics.
   bool uses_v2_response_protocol();
 
   // Change only one display's refresh rate. This does not alter session snapshots,
@@ -60,7 +59,7 @@ namespace platf::display_helper_client {
     std::chrono::steady_clock::time_point operation_deadline,
     std::function<bool()> cancellation_predicate = {});
 
-  // Update helper log level to match Sunshine's minimum log level (v2 engine only).
+  // Update helper log level to match Sunshine's minimum log level.
   bool send_log_level(int min_log_level);
 
   // Export current OS display settings as a golden restore snapshot
@@ -81,12 +80,12 @@ namespace platf::display_helper_client {
   // Save the current OS display state to session_current (rotate current->previous) without applying config.
   bool send_snapshot_current(const std::string &json_payload = {});
 
-  // Save the current OS display state and wait for the v2 helper's result.
-  // Legacy helpers do not implement this acknowledgement.
+  // Save the current OS display state and wait for the helper's result.
+  // Requires a connection that has confirmed the tagged protocol.
   bool send_snapshot_current_and_wait(const std::string &json_payload = {}, int timeout_ms = 3000);
 
-  // Bounded stream-start snapshot. Connection, write, and any v2 completion
-  // wait all share operation_deadline; legacy/unknown helpers remain
+  // Bounded stream-start snapshot. Connection, write, and any completion
+  // wait all share operation_deadline; unconfirmed connections remain
   // dispatch-only.
   bool send_snapshot_current_within(
     const std::string &json_payload,

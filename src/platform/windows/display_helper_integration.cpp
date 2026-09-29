@@ -70,12 +70,6 @@ namespace {
     return h;
   }
 
-  // The legacy and v2 engines intentionally share one executable and one IPC
-  // pipe. Keep the engine selected for the process owned by this Sunshine
-  // instance so a configuration change cannot reuse the other engine merely
-  // because it answers the common ping frame.
-  static std::optional<bool> g_running_helper_legacy;
-
   struct PendingSessionSnapshot {
     std::uint32_t id = 0;
     std::string unique_id;
@@ -869,26 +863,6 @@ namespace {
   // Used to avoid spamming DISARM frames and to enable a kill-switch if IPC is wedged.
   static std::atomic<bool> g_restore_expected {false};
 
-  // Resolve the effective display helper engine. In automatic mode the v2 engine
-  // only rides pre-release builds; stable releases keep the legacy engine until
-  // v2 has soaked, and users opt in explicitly via dd_display_helper_engine.
-  static bool use_legacy_helper_engine() {
-    using engine_e = config::video_t::dd_t::helper_engine_e;
-    switch (config::video.dd.display_helper_engine) {
-      case engine_e::legacy:
-        return true;
-      case engine_e::v2:
-        return false;
-      case engine_e::automatic:
-      default:
-        break;
-    }
-#ifdef PROJECT_VERSION_PRERELEASE
-    return std::string_view(PROJECT_VERSION_PRERELEASE).empty();
-#else
-    return true;
-#endif
-  }
   static std::atomic<std::uint64_t> g_restore_generation {0};
   static std::atomic<std::uint64_t> g_disarm_generation_sent {0};
   static std::atomic<std::int64_t> g_last_revert_us {0};
@@ -1137,7 +1111,6 @@ namespace {
         operation_deadline_expired(operation_deadline)) {
       return false;
     }
-    const bool legacy_engine = use_legacy_helper_engine();
     // Already started? Verify liveness to avoid stale or wedged state
     if (HANDLE h = helper_proc().get_process_handle(); h != nullptr) {
       BOOST_LOG(debug) << "Display helper: checking existing process handle...";
@@ -1145,52 +1118,7 @@ namespace {
       if (wait == WAIT_TIMEOUT) {
         DWORD pid = GetProcessId(h);
         BOOST_LOG(debug) << "Display helper already running (pid=" << pid << ")";
-        const bool engine_matches = g_running_helper_legacy.has_value() &&
-                                     *g_running_helper_legacy == legacy_engine;
-        if (!engine_matches) {
-          BOOST_LOG(info) << "Display helper engine mismatch: running="
-                          << (g_running_helper_legacy.has_value() ?
-                                (*g_running_helper_legacy ? "legacy" : "v2") : "unknown")
-                          << ", selected=" << (legacy_engine ? "legacy" : "v2")
-                          << "; terminating and relaunching.";
-          if (!platf::display_helper_client::reset_connection_cancellable(
-                cancellation_predicate,
-                operation_deadline)) {
-            return false;
-          }
-          helper_proc().terminate();
-
-          DWORD wait_result = WAIT_TIMEOUT;
-          if (!wait_for_process_with_cancellation(
-                h,
-                kHelperForceKillWaitMs,
-                cancellation_predicate,
-                wait_result,
-                operation_deadline)) {
-            return false;
-          }
-          if (wait_result == WAIT_OBJECT_0) {
-            DWORD exit_code = 0;
-            GetExitCodeProcess(h, &exit_code);
-            BOOST_LOG(info) << "Display helper exited after engine-switch termination (code="
-                            << exit_code << ").";
-          } else if (wait_result == WAIT_TIMEOUT) {
-            BOOST_LOG(warning) << "Display helper: process did not exit within "
-                               << kHelperForceKillWaitMs
-                               << " ms after engine-switch termination; continuing with cleanup.";
-          } else {
-            DWORD wait_err = GetLastError();
-            BOOST_LOG(warning) << "Display helper: wait after engine-switch termination failed (winerr="
-                               << wait_err << "); continuing with cleanup.";
-          }
-          g_running_helper_legacy.reset();
-          if (!sleep_with_cancellation(
-                std::chrono::milliseconds(100),
-                cancellation_predicate,
-                operation_deadline)) {
-            return false;
-          }
-        } else if (!force_restart) {
+        if (!force_restart) {
           // Check IPC liveness with a lightweight ping; if responsive, reuse existing helper
           bool ping_ok = false;
           for (int i = 0; i < 2 && !ping_ok; ++i) {
@@ -1281,7 +1209,6 @@ namespace {
         DWORD exit_code = 0;
         GetExitCodeProcess(h, &exit_code);
         BOOST_LOG(debug) << "Display helper process detected as exited (code=" << exit_code << "); preparing restart.";
-        g_running_helper_legacy.reset();
       }
     }
     if (shutting_down ||
@@ -1317,11 +1244,9 @@ namespace {
     }
 
     const bool allow_system_fallback = platf::is_running_as_system() && !user_session_ready();
-    // Select the helper engine (legacy fallback vs v2) and propagate the log level.
-    std::wstring helper_args = legacy_engine ? L"--engine=legacy" : L"--engine=v2";
-    helper_args += L" --log-level=";
+    // Propagate the log level.
+    std::wstring helper_args = L"--log-level=";
     helper_args += std::to_wstring(std::clamp(config::sunshine.min_log_level, 0, 6));
-    statefile::save_display_helper_engine(legacy_engine ? "legacy" : "v2");
     BOOST_LOG(debug) << "Starting display helper: " << platf::to_utf8(helper.wstring())
                      << " " << platf::to_utf8(helper_args);
     if (cancellation_requested(cancellation_predicate) ||
@@ -1353,8 +1278,6 @@ namespace {
       note_helper_start_failure("missing process handle");
       return false;
     }
-    g_running_helper_legacy = legacy_engine;
-
     DWORD pid = GetProcessId(h);
     BOOST_LOG(info) << "Display helper successfully started (pid=" << pid << ")";
 
@@ -1432,9 +1355,8 @@ namespace {
     } else {
       note_helper_start_failure("IPC readiness timeout");
     }
-    if (ipc_ready && !legacy_engine && !cancellation_predicate) {
-      // Keep the v2 helper's log verbosity in sync with Sunshine (legacy would
-      // log "Unknown message type" for this frame).
+    if (ipc_ready && !cancellation_predicate) {
+      // Keep the helper's log verbosity in sync with Sunshine.
       (void) platf::display_helper_client::send_log_level(std::clamp(config::sunshine.min_log_level, 0, 6));
     }
     return ipc_ready;
@@ -1991,12 +1913,9 @@ namespace display_helper_integration {
           BOOST_LOG(debug) << "Display helper: APPLY completion was cancelled before its session state was published.";
           return false;
         }
-        // The client identifies the live helper protocol from its ApplyResult.
-        // A non-zero id means this specific connection confirmed v2's
-        // token/verification protocol; an untagged legacy acknowledgement
-        // intentionally preserves v1's synchronous completion behavior.
+        // A non-zero id means this connection acknowledged the tagged APPLY
+        // and will send an attributable verification result.
         if (verification_ticket && ok && helper_apply_request_id != 0) {
-          verification_ticket->uses_v2_helper = true;
           verification_ticket->helper_request_id = helper_apply_request_id;
           verification_ticket->client_wait_generation = client_wait_generation;
           verification_ticket->connection_generation = connection_generation;
@@ -2089,9 +2008,7 @@ namespace display_helper_integration {
   ApplyVerificationStatus wait_for_apply_verification(
     const ApplyVerificationTicket &ticket,
     std::chrono::milliseconds timeout) {
-    // Legacy success is acknowledged only after its synchronous verification,
-    // but it does not emit a separately attributable VerificationResult frame.
-    if (!ticket.uses_v2_helper || ticket.generation == 0 || ticket.helper_request_id == 0 ||
+    if (ticket.generation == 0 || ticket.helper_request_id == 0 ||
         ticket.client_wait_generation == 0 || ticket.connection_generation == 0) {
       return ApplyVerificationStatus::Unknown;
     }

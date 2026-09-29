@@ -179,7 +179,7 @@ TEST(StateStorageLoadForRead, BlankFileIsNotTreatedAsANewProfile) {
 namespace {
   constexpr auto auxiliary_path = "vibeshine_state.json";
   constexpr auto auxiliary_backup = "vibeshine_state.json.bak";
-  constexpr auto auxiliary_snapshot = R"({"root":{"api_tokens":[{"hash":"saved-hash","username":"owner","created_at":"10","scopes":[{"path":"/api/apps","methods":["GET"]}]}],"display_helper_engine":"v2","future_setting":{"keep":"yes"}}})";
+  constexpr auto auxiliary_snapshot = R"({"root":{"api_tokens":[{"hash":"saved-hash","username":"owner","created_at":"10","scopes":[{"path":"/api/apps","methods":["GET"]}]}],"last_notified_version":"1.0.0","future_setting":{"keep":"yes"}}})";
 
   policy::load_result_e load_auxiliary(memory_state_store_t &store, pt::ptree &tree) {
     return policy::load_vibeshine_state(
@@ -225,7 +225,7 @@ TEST(StateStorageAuxiliary, CorruptBlankMissingAndInvalidRootRecoverCompleteBack
     store.files[auxiliary_backup] = auxiliary_snapshot;
     pt::ptree tree;
     ASSERT_EQ(load_auxiliary(store, tree), policy::load_result_e::loaded) << damaged;
-    EXPECT_EQ(tree.get<std::string>("root.display_helper_engine"), "v2");
+    EXPECT_EQ(tree.get<std::string>("root.last_notified_version"), "1.0.0");
     EXPECT_EQ(tree.get_child("root.api_tokens").front().second.get<std::string>("hash"), "saved-hash");
     EXPECT_EQ(store.files[auxiliary_backup], auxiliary_snapshot);
     pt::ptree restored;
@@ -482,7 +482,7 @@ TEST(StateStoragePrimary, SharedMetadataUpdateRecoversIdentityAndAuthorization) 
   ASSERT_EQ(load_primary(store, tree), policy::load_result_e::loaded);
   EXPECT_EQ(store.files["shared.json"], paired_snapshot);
   EXPECT_FALSE(tree.get_child("root.named_devices").front().second.get<bool>("enabled"));
-  tree.put("root.display_helper_engine", "v2");
+  tree.put("root.last_notified_version", "1.0.0");
   EXPECT_TRUE(policy::primary_write_allowed(tree, policy::load_result_e::loaded, tree, policy::valid_primary_state));
   EXPECT_EQ(store.files["shared.json.bak"], paired_snapshot);
 }
@@ -501,9 +501,9 @@ TEST(StateStoragePrimary, PartialMetadataCannotReplaceAnExistingIdentityBackup) 
   pt::ptree backup;
   ASSERT_EQ(load_for_read(store, "shared.json.bak", backup), policy::load_result_e::loaded);
   pt::ptree partial;
-  partial.put("root.display_helper_engine", "v2");
+  partial.put("root.last_notified_version", "1.0.0");
   EXPECT_FALSE(policy::primary_write_allowed(partial, policy::load_result_e::loaded, backup, policy::valid_primary_state));
-  store.files["shared.json"] = R"({"root":{"display_helper_engine":"v2"}})";
+  store.files["shared.json"] = R"({"root":{"last_notified_version":"1.0.0"}})";
   EXPECT_EQ(load_primary(store, partial), policy::load_result_e::failed);
   EXPECT_EQ(store.files["shared.json.bak"], paired_snapshot);
 }
@@ -529,7 +529,7 @@ TEST(StateStoragePrimary, BootstrapCredentialsAndMetadataAreAllowedOnlyWithoutPr
   EXPECT_TRUE(policy::primary_write_allowed(tree, policy::load_result_e::missing, {}, policy::valid_primary_state));
   EXPECT_TRUE(policy::valid_primary_state(tree, true));
   EXPECT_FALSE(policy::valid_primary_state(tree, false));
-  tree.put("root.display_helper_engine", "v2");
+  tree.put("root.last_notified_version", "1.0.0");
   EXPECT_TRUE(policy::primary_write_allowed(tree, policy::load_result_e::missing, {}, policy::valid_primary_state));
   EXPECT_FALSE(policy::primary_write_allowed(tree, policy::load_result_e::failed, {}, policy::valid_primary_state));
 }
@@ -567,7 +567,7 @@ namespace {
     const auto save_selected = policy::load_primary_state_for_update("shared.json", saved, read, write, policy::valid_primary_state);
     if (save_selected != policy::load_result_e::loaded && !(new_tls_profile && save_selected == policy::load_result_e::missing)) return false;
     saved.put("root.uniqueid", identity);
-    saved.put("root.display_helper_engine", "v2");
+    saved.put("root.last_notified_version", "1.0.0");
     pt::ptree backup;
     const auto backup_status = policy::load_json_for_read("shared.json.bak", backup, read);
     if (!policy::primary_write_allowed(saved, backup_status, backup, policy::valid_primary_state)) return false;
@@ -602,7 +602,7 @@ TEST(StateStorageComposedStartup, CurrentCredentialOnlyPrimaryNeverRollsBackToPa
 }
 
 TEST(StateStorageComposedStartup, CredentialOrMetadataBootstrapWithoutPriorIdentityStillWorks) {
-  for (const auto initial : {R"({"username":"owner","password":"new-hash","salt":"new-salt"})", R"({"root":{"display_helper_engine":"v2"}})"}) {
+  for (const auto initial : {R"({"username":"owner","password":"new-hash","salt":"new-salt"})", R"({"root":{"last_notified_version":"1.0.0"}})"}) {
     memory_state_store_t store;
     store.files["shared.json"] = initial;
     EXPECT_TRUE(startup_then_save(store, true));

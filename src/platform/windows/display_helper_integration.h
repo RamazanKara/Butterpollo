@@ -29,7 +29,6 @@ namespace display_helper_integration {
     std::uint64_t helper_request_id {0};
     std::uint64_t client_wait_generation {0};
     std::uint64_t connection_generation {0};
-    bool uses_v2_helper {false};
     std::chrono::steady_clock::time_point startup_deadline {};
   };
 
@@ -134,8 +133,8 @@ namespace display_helper_integration {
   inline constexpr auto kApplyVerificationGateWaitTimeout =
     kStreamStartApplyVerificationTimeout + display_helper::v2::timing::kApplyGateConsumerSlack;
 
-  // Wait for helper verification to finish after APPLY (v2 engine only).
-  // Returns Unknown on timeout, legacy engine, or when verification is unavailable.
+  // Wait for helper verification to finish after APPLY.
+  // Returns Unknown on timeout or when verification is unavailable.
   ApplyVerificationStatus wait_for_apply_verification(
     const ApplyVerificationTicket &ticket,
     std::chrono::milliseconds timeout);

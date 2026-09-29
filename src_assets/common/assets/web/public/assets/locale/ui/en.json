@@ -1508,10 +1508,6 @@
           "hdr_ten_bit": "8-bit and 10-bit HDR"
         },
         "current": "{value} · Currently configured",
-        "display_engine": {
-          "current": "Current engine",
-          "legacy": "Legacy engine"
-        },
         "display_preparation": {
           "ensure_active": "Activate it",
           "ensure_only": "Use only this display",

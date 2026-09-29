@@ -404,7 +404,7 @@ TEST(PairedStateRecovery, PrimaryWriterGuardIncludesApolloPermissionsAndCommands
   snapshot = paired_snapshot();
   snapshot["root"]["named_devices"][0]["do"][0]["elevated"] = "invalid";
   EXPECT_FALSE(statefile::policy::primary_write_allowed(convert(snapshot), statefile::policy::load_result_e::loaded, backup, nvhttp::state_policy::valid_primary_tree));
-  const auto partial = convert(nlohmann::json::parse(R"({"root":{"display_helper_engine":"v2"}})"));
+  const auto partial = convert(nlohmann::json::parse(R"({"root":{"last_notified_version":"1.0.0"}})"));
   EXPECT_FALSE(statefile::policy::primary_write_allowed(partial, statefile::policy::load_result_e::loaded, backup, nvhttp::state_policy::valid_primary_tree));
   EXPECT_TRUE(statefile::policy::primary_write_allowed(partial, statefile::policy::load_result_e::missing, {}, nvhttp::state_policy::valid_primary_tree));
 }

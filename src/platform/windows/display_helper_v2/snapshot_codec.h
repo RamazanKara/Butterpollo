@@ -10,10 +10,9 @@
 
 /**
  * @file snapshot_codec.h
- * @brief Pure snapshot serialization/parsing/filtering logic shared with the legacy
- *        display helper. The on-disk JSON format and all filtering rules are ported
- *        verbatim from tools/display_settings_helper.cpp so snapshots written by either
- *        engine round-trip through the other.
+ * @brief Pure snapshot serialization/parsing/filtering logic. The on-disk JSON
+ *        format is unchanged from the original display helper, so snapshots
+ *        written by earlier releases still load.
  */
 namespace display_helper::v2::codec {
   using layout_rotation_map_t = std::map<std::string, int>;

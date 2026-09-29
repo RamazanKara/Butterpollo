@@ -2,12 +2,10 @@
 
 /**
  * @file tools/display_helper_paths.h
- * @brief Shared path/singleton helpers for the display helper engines.
- *
- * Both the legacy engine and the v2 engine must agree on snapshot file locations,
- * the search order for state files, and the single-instance mutex so that either
- * engine can pick up the other's persisted state (drop-in engine switching).
- * Bodies are ported verbatim from tools/display_settings_helper.cpp.
+ * @brief Path/singleton helpers for the display helper: snapshot file
+ *        locations, the search order for state files, and the single-instance
+ *        mutex. Locations are unchanged from earlier releases so their
+ *        persisted state is picked up after an upgrade.
  */
 
 #ifdef _WIN32

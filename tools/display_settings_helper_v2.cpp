@@ -1,7 +1,7 @@
 /**
  * @file tools/display_settings_helper_v2.cpp
- * @brief Display helper v2 engine: modern FSM-based engine with the legacy
- *        helper's battle-tested restore semantics.
+ * @brief Entry point for sunshine_display_helper.exe: the FSM-based display
+ *        helper engine (v2).
  */
 #ifdef _WIN32
 
@@ -541,7 +541,7 @@ namespace {
   };
 
   /// Validate a snapshot file found in a search root; remove it when it has no
-  /// usable restore payload (legacy validate_session_snapshot).
+  /// usable restore payload.
   bool validate_snapshot_file(const std::filesystem::path &path, const char *label) {
     display_helper::v2::AtomicFileTextStorage files;
     const auto text = files.read(path.string());
@@ -597,7 +597,7 @@ namespace {
   }
 }  // namespace
 
-int run_v2_helper(int argc, char *argv[]) {
+int main(int argc, char *argv[]) {
   bool restore_mode = false;
   std::optional<int> log_level_override;
   constexpr const char *kLogLevelPrefix = "--log-level=";
@@ -693,7 +693,7 @@ int run_v2_helper(int argc, char *argv[]) {
 
   std::atomic<bool> running {true};
 
-  // Adopt snapshots written by other contexts (SYSTEM vs user) or the legacy engine.
+  // Adopt snapshots written by other contexts (SYSTEM vs user) or earlier releases.
   adopt_snapshots_from_search_roots(search_roots, paths.current, paths.previous);
 
   // A payload-less golden file (e.g. a crash-truncated overwrite) makes the
@@ -1152,7 +1152,7 @@ int run_v2_helper(int argc, char *argv[]) {
         }
         // Sunshine disconnected or crashed. Arm the autonomous restore now (the
         // FSM applies a 5s grace and the restore-on-disconnect policy; a fast
-        // reconnect supersedes it via DISARM/APPLY like the legacy engine), but
+        // reconnect supersedes it via DISARM/APPLY), but
         // only when this helper actually changed something or a restore is
         // already being worked on.
         if (state_machine.begin_transient_disconnect_settlement()) {
