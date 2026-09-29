@@ -943,30 +943,6 @@ namespace confighttp {
   }
 
   /**
-   * @brief Health check for ViGEm (Virtual Gamepad) installation on Windows.
-   * @api_examples{/api/health/vigem| GET| {"installed":true,"version":"<hint>"}}
-   */
-  void getVigemHealth(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) {
-      return;
-    }
-    try {
-      std::string version;
-      bool installed = platf::is_vigem_installed(&version);
-      nlohmann::json out;
-      out["installed"] = installed;
-      // ViGEmBus is only a requirement when nothing else can provide a virtual controller.
-      out["required"] = !platf::is_virtual_gamepad_driver_available();
-      if (!version.empty()) {
-        out["version"] = version;
-      }
-      send_response(response, out);
-    } catch (...) {
-      bad_request(response, request, "Failed to evaluate ViGEm health");
-    }
-  }
-
-  /**
    * @brief Health check for the Sunshine Vulkan HDR implicit layer (virtual-display HDR support).
    * @details `installed` reflects the actual HKLM registration; `enabled` reflects the configured
    *          desired state. The web UI warns when the layer is desired but not installed.
@@ -4437,124 +4413,6 @@ namespace confighttp {
     }
   }
 
-  /**
-   * @brief Get ViGEmBus driver version and installation status.
-   * @param response The HTTP response object.
-   * @param request The HTTP request object.
-   */
-  void getViGEmBusStatus(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) {
-      return;
-    }
-
-    print_req(request);
-    nlohmann::json output_tree;
-
-#ifdef _WIN32
-    std::string version_str;
-    bool installed = false;
-    bool version_compatible = false;
-
-    std::filesystem::path driver_path = std::filesystem::path(std::getenv("SystemRoot") ? std::getenv("SystemRoot") : "C:\\Windows") / "System32" / "drivers" / "ViGEmBus.sys";
-
-    if (std::filesystem::exists(driver_path)) {
-      installed = platf::getFileVersionInfo(driver_path, version_str);
-      if (installed) {
-        std::vector<std::string> version_parts;
-        std::stringstream ss(version_str);
-        std::string part;
-        while (std::getline(ss, part, '.')) {
-          version_parts.push_back(part);
-        }
-
-        if (version_parts.size() >= 2) {
-          int major = std::stoi(version_parts[0]);
-          int minor = std::stoi(version_parts[1]);
-          version_compatible = (major > 1) || (major == 1 && minor >= 17);
-        }
-      }
-    }
-
-    output_tree["installed"] = installed;
-    output_tree["version"] = version_str;
-    output_tree["version_compatible"] = version_compatible;
-    output_tree["packaged_version"] = VIGEMBUS_PACKAGED_VERSION;
-    // Drives whether the UI presents a missing ViGEmBus as a problem or as an
-    // unused option: Vibeshine's own driver provides controllers without it.
-    output_tree["required"] = !platf::is_virtual_gamepad_driver_available();
-#else
-    output_tree["error"] = "ViGEmBus is only available on Windows";
-    output_tree["installed"] = false;
-    output_tree["version"] = "";
-    output_tree["version_compatible"] = false;
-    output_tree["packaged_version"] = "";
-    output_tree["required"] = false;
-#endif
-
-    send_response(response, output_tree);
-  }
-
-  /**
-   * @brief Install ViGEmBus driver with elevated permissions.
-   * @param response The HTTP response object.
-   * @param request The HTTP request object.
-   */
-  void installViGEmBus(resp_https_t response, req_https_t request) {
-    if (!check_content_type(response, request, "application/json")) {
-      return;
-    }
-    if (!authenticate(response, request)) {
-      return;
-    }
-
-    print_req(request);
-    nlohmann::json output_tree;
-
-#ifdef _WIN32
-    const std::filesystem::path installer_path = platf::appdata().parent_path() / "scripts" / "vigembus_installer.exe";
-
-    if (!std::filesystem::exists(installer_path)) {
-      output_tree["status"] = false;
-      output_tree["error"] = "ViGEmBus installer not found";
-      send_response(response, output_tree);
-      return;
-    }
-
-    std::error_code ec;
-    boost::filesystem::path working_dir = boost::filesystem::path(installer_path.string()).parent_path();
-    platf::bp::environment env = platf::bp::this_process::env();
-
-    const std::string install_cmd = std::format("{} /quiet", installer_path.string());
-    auto child = platf::run_command(true, false, install_cmd, working_dir, env, nullptr, ec, nullptr);
-
-    if (ec) {
-      output_tree["status"] = false;
-      output_tree["error"] = "Failed to start installer: " + ec.message();
-      send_response(response, output_tree);
-      return;
-    }
-
-    child.wait(ec);
-
-    if (ec) {
-      output_tree["status"] = false;
-      output_tree["error"] = "Installer failed: " + ec.message();
-    } else {
-      int exit_code = child.exit_code();
-      output_tree["status"] = (exit_code == 0);
-      output_tree["exit_code"] = exit_code;
-      if (exit_code != 0) {
-        output_tree["error"] = std::format("Installer exited with code {}", exit_code);
-      }
-    }
-#else
-    output_tree["status"] = false;
-    output_tree["error"] = "ViGEmBus installation is only available on Windows";
-#endif
-
-    send_response(response, output_tree);
-  }
-
   bool is_browsable_executable(const std::filesystem::directory_entry &entry, const std::filesystem::file_status &status) {
     if (!std::filesystem::is_regular_file(status)) {
       return false;
@@ -4772,7 +4630,6 @@ namespace confighttp {
     register_blocking_api_route("^/api/display-devices$", "GET", getDisplayDevices);
 #ifdef _WIN32
     register_blocking_api_route("^/api/framegen/edid-refresh$", "GET", getFramegenEdidRefresh);
-    register_api_route("^/api/health/vigem$", "GET", getVigemHealth);
     register_api_route("^/api/health/vulkan-hdr-layer$", "GET", getVulkanHdrLayerHealth);
     register_api_route("^/api/health/vulkan-hdr-layer/register$", "POST", postVulkanHdrLayerRegister);
     register_api_route("^/api/health/crashdump$", "GET", getCrashDumpStatus);
@@ -4795,8 +4652,6 @@ namespace confighttp {
     // Keep legacy cover upload endpoint present in upstream master
     register_api_route("^/api/covers/upload$", "POST", uploadCover);
     register_api_route("^/api/covers/([0-9]+)$", "GET", getCover);
-    register_api_route("^/api/vigembus/status$", "GET", getViGEmBusStatus);
-    register_api_route("^/api/vigembus/install$", "POST", installViGEmBus);
 #if defined(_WIN32) || defined(__linux__)
     register_api_route("^/api/frame-limiter/status$", "GET", getFrameLimiterStatus);
 #endif

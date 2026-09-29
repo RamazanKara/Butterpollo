@@ -18,10 +18,6 @@
     <Property Id="ALLOW_LOCAL_VIRTUAL_GAMEPAD_TEST_PACKAGE" Value="$(var.VhfGamepadAllowLocalTest)" Secure="yes"/>
     <Property Id="SKIP_REMOVE_CONFLICTING_PRODUCTS" Value="0" Secure="yes"/>
     <Condition Message="Administrator privileges are required.">Privileged</Condition>
-    <Property Id="VIGEMBUS_PRESENT">
-      <RegistrySearch Id="Search_ViGEmBus_Service64" Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\ViGEmBus" Name="DisplayName" Type="raw" Win64="yes"/>
-      <RegistrySearch Id="Search_ViGEmBus_Service32" Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\ViGEmBus" Name="DisplayName" Type="raw"/>
-    </Property>
     <Feature Id="VibepolloExtras" Title="Vibepollo Components" Level="1" Absent="disallow">
       <ComponentRef Id="CtlStopApolloLegacy"/>
       <ComponentRef Id="ApolloSvc"/>

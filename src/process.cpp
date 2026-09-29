@@ -561,7 +561,7 @@ namespace proc {
         config::input.controller = false;
       } else {
         config::input.controller = true;
-        config::input.gamepad = app.gamepad;
+        config::input.gamepad = platf::resolve_gamepad_option(app.gamepad);
       }
     }
 

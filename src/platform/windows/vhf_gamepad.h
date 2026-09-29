@@ -26,9 +26,9 @@ namespace platf {
 
   /**
    * @brief Drives virtual controllers through Vibeshine's own UMDF/VHF gamepad driver.
-   * @details This is the alternative to the ViGEmBus backend. Which controller a slot presents
-   *          depends on the profile chosen at allocation; the PlayStation profiles additionally
-   *          carry a touchpad, motion sensors, a battery, and a lightbar.
+   * @details Which controller a slot presents depends on the profile chosen at allocation; the
+   *          PlayStation profiles additionally carry a touchpad, motion sensors, a battery, and a
+   *          lightbar.
    */
   class vhf_gamepad_t {
   public:

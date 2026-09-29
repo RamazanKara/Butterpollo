@@ -3500,10 +3500,10 @@ namespace stream {
       system_tray::update_tray_playing(proc::proc.get_last_run_app_name());
       update::on_stream_started();
   #if defined(_WIN32)
-      // Notify only when neither virtual-gamepad backend is installed and usable.
+      // Notify when the virtual gamepad driver is not installed and usable.
       try {
-        if (!platf::is_vigem_installed(nullptr) && !platf::is_virtual_gamepad_driver_available()) {
-          system_tray::update_tray_vigem_missing();
+        if (!platf::is_virtual_gamepad_driver_available()) {
+          system_tray::update_tray_gamepad_driver_missing();
         }
       } catch (...) {
         // best-effort: ignore any unexpected errors while checking

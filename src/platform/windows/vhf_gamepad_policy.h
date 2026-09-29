@@ -1,6 +1,6 @@
 /**
  * @file src/platform/windows/vhf_gamepad_policy.h
- * @brief Declarations for translating normalized gamepad state into the VHF driver protocol.
+ * @brief Declarations for translating gamepad options and normalized state into the VHF driver protocol.
  */
 #pragma once
 
@@ -8,37 +8,37 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <string_view>
 
 // lib includes
 #include <libvirtualgamepad/protocol.h>
 
 namespace platf::vhf_gamepad {
 
-  enum class backend_e {
-    unavailable,
-    vigem,
-    vhf
-  };
-
   /**
-   * @brief Selects the backend used by the Automatic gamepad setting.
-   * @details ViGEm remains preferred when usable. Vibepollo's VHF driver is the fallback when
-   *          ViGEmBus is absent or cannot be opened.
-   * @param vigem_available Whether a connection to ViGEmBus succeeded.
-   * @param vhf_available Whether Vibepollo's VHF driver exposes a usable controller profile.
-   * @return The selected backend, or `unavailable` when neither backend can create controllers.
+   * @brief Maps a configured `gamepad` value to the option the VHF driver implements.
+   * @details `vhf` (the automatic VHF profile) is the same as `auto`. The former ViGEmBus types
+   *          map to the closest VHF controller: `ds4` to `vhf_ds4` and `x360` to `vhf_xbox_one`,
+   *          the XInput pad without a Share button.
+   * @param value The configured value.
+   * @return The canonical option, or no value when the value names no known gamepad type.
    */
-  [[nodiscard]] constexpr backend_e select_automatic_backend(
-    const bool vigem_available,
-    const bool vhf_available
-  ) noexcept {
-    if (vigem_available) {
-      return backend_e::vigem;
+  [[nodiscard]] constexpr std::optional<std::string_view> canonical_gamepad_option(const std::string_view value) noexcept {
+    for (const std::string_view option : {"auto", "vhf_xbox", "vhf_xbox_one", "vhf_ds4", "vhf_ds5", "vhf_switch"}) {
+      if (value == option) {
+        return option;
+      }
     }
-    if (vhf_available) {
-      return backend_e::vhf;
+    if (value == "vhf") {
+      return "auto";
     }
-    return backend_e::unavailable;
+    if (value == "ds4") {
+      return "vhf_ds4";
+    }
+    if (value == "x360") {
+      return "vhf_xbox_one";
+    }
+    return std::nullopt;
   }
 
   /**

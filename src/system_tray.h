@@ -89,8 +89,8 @@ namespace system_tray {
 
   void update_tray_client_connected(std::string client_name);
   /**
-   * @brief Spawns a notification when ViGEm is missing.
-   * Clicking it opens the Web UI Dashboard for more information.
+   * @brief Spawns a notification when the virtual gamepad driver is missing.
+   * Clicking it opens the Web UI Dashboard.
    */
-  void update_tray_vigem_missing();
+  void update_tray_gamepad_driver_missing();
 }  // namespace system_tray

@@ -27,17 +27,6 @@ interface RtssStatus {
   message?: string;
 }
 
-interface VigemStatus {
-  installed?: boolean;
-  version?: string;
-  version_compatible?: boolean;
-  packaged_version?: string;
-  error?: string;
-  // False when Vibepollo's own virtual gamepad driver is available, so a missing
-  // ViGEmBus is an unused option rather than a problem.
-  required?: boolean;
-}
-
 interface VulkanStatus {
   installed?: boolean;
   enabled?: boolean;
@@ -48,8 +37,8 @@ interface MutationResult {
   error?: string;
 }
 
-type IntegrationId = 'rtss' | 'vigem' | 'vulkan';
-type PendingAction = 'vigem-install' | 'vulkan-register';
+type IntegrationId = 'rtss' | 'vulkan';
+type PendingAction = 'vulkan-register';
 
 interface IntegrationSummary {
   id: IntegrationId;
@@ -63,7 +52,6 @@ interface IntegrationSummary {
 const { t } = useI18n();
 const system = useSystemStore();
 const rtss = ref<RtssStatus | null>(null);
-const vigem = ref<VigemStatus | null>(null);
 const vulkan = ref<VulkanStatus | null>(null);
 const loading = ref(true);
 const refreshing = ref(false);
@@ -94,19 +82,14 @@ async function load(preserveNotice = false): Promise<void> {
   const windowsResults = isWindows.value
     ? await Promise.allSettled([
         apiGet<RtssStatus>('/api/rtss/status'),
-        apiGet<VigemStatus>('/api/vigembus/status'),
         apiGet<VulkanStatus>('/api/health/vulkan-hdr-layer'),
       ])
     : [];
-  const [rtssResult, vigemResult, vulkanResult] = windowsResults;
+  const [rtssResult, vulkanResult] = windowsResults;
 
   if (rtssResult?.status === 'fulfilled') rtss.value = rtssResult.value;
   else if (rtssResult)
     nextErrors.rtss = message(rtssResult.reason, t('ui.integrations.errors.rtssStatus'));
-
-  if (vigemResult?.status === 'fulfilled') vigem.value = vigemResult.value;
-  else if (vigemResult)
-    nextErrors.vigem = message(vigemResult.reason, t('ui.integrations.errors.vigemStatus'));
 
   if (vulkanResult?.status === 'fulfilled') vulkan.value = vulkanResult.value;
   else if (vulkanResult)
@@ -146,44 +129,6 @@ function rtssSummary(): IntegrationSummary {
         : '',
       value.process_running ? t('ui.integrations.rtss.processRunning') : '',
       value.message || '',
-    ].filter(Boolean),
-  };
-}
-
-function vigemSummary(): IntegrationSummary {
-  const value = vigem.value;
-  const name = t('ui.integrations.vigem.name');
-  const shortDescription = t('ui.integrations.vigem.shortDescription');
-  if (!isWindows.value) return unavailableSummary('vigem', name, shortDescription);
-  if (!value) return failedSummary('vigem', name, shortDescription);
-  const compatible = Boolean(value.installed && value.version_compatible);
-  // The server reports required=false when another driver is already providing
-  // controllers. Flagging ViGEmBus in that case sends people off installing a
-  // dependency the host does not use.
-  const required = value.required !== false;
-  const notNeeded = !compatible && !required;
-  return {
-    id: 'vigem',
-    name,
-    description: notNeeded
-      ? t('ui.integrations.vigem.supersededDescription')
-      : t('ui.integrations.vigem.description'),
-    status: compatible
-      ? t('ui.integrations.status.ready')
-      : notNeeded
-        ? t('ui.integrations.status.notRequired')
-        : value.installed
-          ? t('ui.integrations.status.updateRequired')
-          : t('ui.integrations.status.notInstalled'),
-    tone: compatible ? 'success' : notNeeded ? 'neutral' : 'warning',
-    details: [
-      value.version
-        ? t('ui.integrations.details.installedVersion', { version: value.version })
-        : '',
-      value.packaged_version
-        ? t('ui.integrations.details.bundledVersion', { version: value.packaged_version })
-        : '',
-      value.error || '',
     ].filter(Boolean),
   };
 }
@@ -241,25 +186,12 @@ function failedSummary(id: IntegrationId, name: string, description: string): In
   };
 }
 
-const summaries = computed(() =>
-  isWindows.value ? [rtssSummary(), vigemSummary(), vulkanSummary()] : [],
-);
+const summaries = computed(() => (isWindows.value ? [rtssSummary(), vulkanSummary()] : []));
 
 const errorCount = computed(() => Object.keys(errors.value).length);
 
 const dialogCopy = computed(() => {
   switch (pendingAction.value) {
-    case 'vigem-install':
-      return {
-        title: vigem.value?.installed
-          ? t('ui.integrations.confirm.vigemRepairTitle')
-          : t('ui.integrations.confirm.vigemInstallTitle'),
-        description: t('ui.integrations.confirm.vigemDescription'),
-        confirm: vigem.value?.installed
-          ? t('ui.integrations.actions.repairDriver')
-          : t('ui.integrations.actions.installDriver'),
-        tone: 'default' as const,
-      };
     case 'vulkan-register':
       return {
         title: t('ui.integrations.confirm.vulkanRegisterTitle'),
@@ -293,14 +225,8 @@ async function runConfirmedAction(): Promise<void> {
   actionBusy.value = true;
   notice.value = '';
   try {
-    let result: MutationResult;
-    if (action === 'vigem-install') {
-      result = await apiPost<MutationResult>('/api/vigembus/install', {});
-      notice.value = t('ui.integrations.notices.vigemCompleted');
-    } else {
-      result = await apiPost<MutationResult>('/api/health/vulkan-hdr-layer/register', {});
-      notice.value = t('ui.integrations.notices.vulkanRefreshed');
-    }
+    const result = await apiPost<MutationResult>('/api/health/vulkan-hdr-layer/register', {});
+    notice.value = t('ui.integrations.notices.vulkanRefreshed');
     if (result.status === false) {
       throw new Error(result.error || t('ui.integrations.errors.actionIncomplete'));
     }
@@ -309,10 +235,7 @@ async function runConfirmedAction(): Promise<void> {
     notice.value = '';
     errors.value = {
       ...errors.value,
-      [action === 'vigem-install' ? 'vigem' : 'vulkan']: message(
-        cause,
-        t('ui.integrations.errors.actionFailed'),
-      ),
+      vulkan: message(cause, t('ui.integrations.errors.actionFailed')),
     };
   } finally {
     actionBusy.value = false;
@@ -367,7 +290,7 @@ onMounted(() => void load());
     </InlineAlert>
 
     <div v-if="loading" class="integration-list" :aria-label="t('ui.integrations.loadingStatus')">
-      <LoadingSkeleton v-for="index in 3" :key="index" variant="block" height="112px" />
+      <LoadingSkeleton v-for="index in 2" :key="index" variant="block" height="112px" />
     </div>
 
     <section
@@ -382,7 +305,7 @@ onMounted(() => void load());
         :aria-labelledby="`integration-${summary.id}`"
       >
         <span class="integration-row__icon" aria-hidden="true">
-          <UiIcon :name="summary.id === 'vigem' ? 'gamepad' : 'integrations'" :size="20" />
+          <UiIcon name="integrations" :size="20" />
         </span>
         <div class="integration-row__main">
           <div class="integration-row__title">
@@ -395,22 +318,7 @@ onMounted(() => void load());
         </div>
         <div class="integration-row__actions">
           <AppButton
-            v-if="
-              summary.id === 'vigem' &&
-              vigem?.required !== false &&
-              (!vigem?.installed || !vigem?.version_compatible)
-            "
-            :label="
-              vigem?.installed
-                ? t('ui.integrations.actions.repair')
-                : t('ui.integrations.actions.install')
-            "
-            variant="secondary"
-            size="compact"
-            @click="requestAction('vigem-install')"
-          />
-          <AppButton
-            v-else-if="summary.id === 'vulkan' && vulkan?.enabled && !vulkan?.installed"
+            v-if="summary.id === 'vulkan' && vulkan?.enabled && !vulkan?.installed"
             :label="t('ui.integrations.actions.repairRegistration')"
             variant="secondary"
             size="compact"

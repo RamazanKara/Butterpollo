@@ -340,7 +340,11 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            The type of gamepad to emulate on the host.
+            The type of gamepad to emulate on the host. Gamepads are created by the Vibepollo virtual
+            gamepad driver, which the installer adds.
+            @note{The former values @code{}x360@endcode, @code{}ds4@endcode and @code{}vhf@endcode map to
+            @code{}vhf_xbox_one@endcode, @code{}vhf_ds4@endcode and @code{}auto@endcode. Any other unknown
+            value falls back to @code{}auto@endcode with a warning in the log.}
         </td>
     </tr>
     <tr>
@@ -357,106 +361,46 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
     <tr>
         <td rowspan="6">Choices</td>
-        <td>ds4</td>
-        <td>DualShock 4 controller (PS4)
-            @note{This option applies to Windows and Linux. On Linux it uses UHID and includes
-            rumble, the touchpad, motion sensors, battery reporting, and the lightbar.}</td>
-    </tr>
-    <tr>
-        <td>ds5</td>
-        <td>DualShock 5 controller (PS5)
-            @note{This option applies to FreeBSD and Linux only.}</td>
-    </tr>
-    <tr>
-        <td>switch</td>
-        <td>Switch Pro controller
-            @note{This option applies to FreeBSD and Linux only.}</td>
-    </tr>
-    <tr>
-        <td>vhf</td>
-        <td>Vibepollo's own virtual gamepad driver, instead of ViGEmBus, choosing the controller
-            automatically
-            @note{This option applies to Windows only and requires the Vibepollo virtual gamepad
-            driver to be installed. It presents a DualSense to clients that report a PlayStation
-            controller, or when motion_as_ds4 or touchpad_as_ds4 applies, and an Xbox Series
-            controller otherwise. On an older driver it falls back to a generic HID pad that
-            publishes the DirectInput Physical Interface Device report set, so force feedback still
-            works in DirectInput games.}</td>
+        <td>auto</td>
+        <td>Choose the controller automatically
+            @note{Presents a DualSense to clients that report a PlayStation controller, or when
+            motion_as_ds4 or touchpad_as_ds4 applies, a Switch Pro controller to clients that report a
+            Nintendo controller, and an Xbox Series controller otherwise. On an older driver it falls
+            back to a generic HID pad that publishes the DirectInput Physical Interface Device report
+            set, so force feedback still works in DirectInput games.}</td>
     </tr>
     <tr>
         <td>vhf_switch</td>
-        <td>Switch Pro Controller on Vibepollo's own virtual gamepad driver
-            @note{This option applies to Windows only and requires the Vibepollo virtual gamepad
-            driver to be installed. Includes motion sensors, battery reporting, rumble, and the
-            Capture button. This controller has no analog triggers, so trigger travel is reported
-            as ZL and ZR presses, and it has no touchpad.}</td>
+        <td>Switch Pro Controller
+            @note{Includes motion sensors, battery reporting, rumble, and the Capture button. This
+            controller has no analog triggers, so trigger travel is reported as ZL and ZR presses, and
+            it has no touchpad.}</td>
     </tr>
     <tr>
         <td>vhf_xbox</td>
-        <td>Xbox Series controller on Vibepollo's own virtual gamepad driver
-            @note{This option applies to Windows only and requires the Vibepollo virtual gamepad
-            driver to be installed. Along with vhf_xbox_one, this is a virtual gamepad option
-            Windows places on the XInput path, so it is one of the two that games supporting only
-            XInput can see. It has rumble and impulse triggers, but no touchpad, motion, or
-            battery reporting.}</td>
+        <td>Xbox Series controller
+            @note{Along with vhf_xbox_one, this is a virtual gamepad option Windows places on the
+            XInput path, so it is one of the two that games supporting only XInput can see. It has
+            rumble and impulse triggers, but no touchpad, motion, or battery reporting.}</td>
     </tr>
     <tr>
         <td>vhf_xbox_one</td>
-        <td>Xbox One controller on Vibepollo's own virtual gamepad driver
-            @note{This option applies to Windows only and requires the Vibepollo virtual gamepad
-            driver to be installed. It reaches the XInput path the same way vhf_xbox does, and is
-            recognised by Windows on its own product ID rather than a generic one, which can help
-            with software that identifies controllers by generation. It is otherwise identical to
-            vhf_xbox except that an Xbox One pad has no Share button.}</td>
+        <td>Xbox One controller
+            @note{It reaches the XInput path the same way vhf_xbox does, and is recognised by Windows
+            on its own product ID rather than a generic one, which can help with software that
+            identifies controllers by generation. It is otherwise identical to vhf_xbox except that an
+            Xbox One pad has no Share button.}</td>
     </tr>
     <tr>
         <td>vhf_ds4</td>
-        <td>DualShock 4 on Vibepollo's own virtual gamepad driver
-            @note{This option applies to Windows only and requires the Vibepollo virtual gamepad
-            driver to be installed. Includes the touchpad, motion sensors, battery reporting, and
-            the lightbar.}</td>
+        <td>DualShock 4
+            @note{Includes the touchpad, motion sensors, battery reporting, and the lightbar.}</td>
     </tr>
     <tr>
         <td>vhf_ds5</td>
-        <td>DualSense on Vibepollo's own virtual gamepad driver
-            @note{This option applies to Windows only and requires the Vibepollo virtual gamepad
-            driver to be installed. Includes the touchpad, motion sensors, battery reporting, the
-            lightbar, the player and microphone LEDs, and the adaptive triggers.}</td>
-    </tr>
-    <tr>
-        <td>x360</td>
-        <td>Xbox 360 controller
-            @note{This option applies to Windows only.}</td>
-    </tr>
-    <tr>
-        <td>xone</td>
-        <td>Xbox One controller
-            @note{This option applies to FreeBSD and Linux only.}</td>
-    </tr>
-</table>
-
-### ds4_back_as_touchpad_click
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            Allow Select/Back inputs to also trigger DS4 touchpad click. Useful for clients looking to
-            emulate touchpad click on Xinput devices.
-            @hint{Only applies when gamepad is set to ds4 manually. Unused in other gamepad modes.}
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}
-            enabled
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            ds4_back_as_touchpad_click = enabled
-            @endcode</td>
+        <td>DualSense
+            @note{Includes the touchpad, motion sensors, battery reporting, the lightbar, the player
+            and microphone LEDs, and the adaptive triggers.}</td>
     </tr>
 </table>
 
@@ -467,7 +411,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td>Description</td>
         <td colspan="2">
             If a client reports that a connected gamepad has motion sensor support, emulate it on the
-            host as a DS4 controller.
+            host as a PlayStation controller (DualSense).
             <br>
             <br>
             When disabled, motion sensors will not be taken into account during gamepad type selection.
@@ -495,7 +439,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td>Description</td>
         <td colspan="2">
             If a client reports that a connected gamepad has a touchpad, emulate it on the host
-            as a DS4 controller.
+            as a PlayStation controller (DualSense).
             <br>
             <br>
             When disabled, touchpad presence will not be taken into account during gamepad type selection.

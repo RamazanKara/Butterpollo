@@ -15,6 +15,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -1070,6 +1071,15 @@ namespace platf {
    * @return Vector of gamepad options and status.
    */
   std::vector<supported_gamepad_t> &supported_gamepads(input_t *input);
+
+  /**
+   * @brief Maps a configured `gamepad` value to a supported gamepad option.
+   * @details Values of removed gamepad types map to the closest supported type, and unknown
+   *          values map to `auto`. Each value that is replaced is logged once.
+   * @param value The configured value.
+   * @return A value from `supported_gamepads()`.
+   */
+  std::string_view resolve_gamepad_option(std::string_view value);
 
   struct high_precision_timer: private boost::noncopyable {
     virtual ~high_precision_timer() = default;

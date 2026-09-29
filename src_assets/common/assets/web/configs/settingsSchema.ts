@@ -52,7 +52,6 @@ export interface SettingsField {
 export const clientOverrideableKeys = new Set([
   'controller',
   'gamepad',
-  'ds4_back_as_touchpad_click',
   'motion_as_ds4',
   'touchpad_as_ds4',
   'back_button_timeout',
@@ -256,12 +255,10 @@ export function captureOptionsForPlatform(platform: string): SettingsOption[] {
 
 const gamepadOptions = [
   option('auto', '_common.auto'),
-  option('x360', 'config.gamepad_x360'),
   option('xone', 'config.gamepad_xone'),
   option('ds4', 'config.gamepad_ds4'),
   option('ds5', 'config.gamepad_ds5'),
   option('switch', 'config.gamepad_switch'),
-  option('vhf', 'config.gamepad_vhf'),
   option('vhf_xbox', 'config.gamepad_vhf_xbox'),
   option('vhf_xbox_one', 'config.gamepad_vhf_xbox_one'),
   option('vhf_ds4', 'config.gamepad_vhf_ds4'),
@@ -272,17 +269,7 @@ const gamepadOptions = [
 export function gamepadOptionsForPlatform(platform: string): SettingsOption[] {
   const normalized = platform.toLocaleLowerCase();
   const supportedValues = normalized.includes('windows')
-    ? new Set([
-        'auto',
-        'x360',
-        'ds4',
-        'vhf',
-        'vhf_xbox',
-        'vhf_xbox_one',
-        'vhf_ds4',
-        'vhf_ds5',
-        'vhf_switch',
-      ])
+    ? new Set(['auto', 'vhf_xbox', 'vhf_xbox_one', 'vhf_ds4', 'vhf_ds5', 'vhf_switch'])
     : normalized.includes('linux')
       ? new Set(['auto', 'xone', 'ds4', 'ds5', 'switch'])
       : new Set(['auto']);
@@ -724,7 +711,6 @@ export const settingsCategories: SettingsCategory[] = [
           select('gamepad', gamepadOptions, { platform: ['windows', 'linux'] }),
           boolean('motion_as_ds4'),
           boolean('touchpad_as_ds4'),
-          boolean('ds4_back_as_touchpad_click', { platform: ['windows', 'linux'] }),
           boolean('always_send_scancodes', { platform: 'windows' }),
           boolean('high_resolution_scrolling'),
           boolean('native_pen_touch', { platform: 'windows' }),
@@ -1024,7 +1010,6 @@ export const settingsDefaults: Record<string, unknown> = {
   mouse: true,
   motion_as_ds4: true,
   touchpad_as_ds4: true,
-  ds4_back_as_touchpad_click: true,
   always_send_scancodes: true,
   high_resolution_scrolling: true,
   native_pen_touch: true,

@@ -309,7 +309,6 @@ namespace config {
     std::chrono::duration<double> key_repeat_period;
 
     std::string gamepad;
-    bool ds4_back_as_touchpad_click;
     bool motion_as_ds4;
     bool touchpad_as_ds4;
     // When forcing DS5 emulation via Inputtino, randomize the virtual controller MAC

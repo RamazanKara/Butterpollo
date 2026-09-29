@@ -49,8 +49,6 @@ async function setupHost(page: Page, options: HostOptions = {}) {
       body = { apps: [] };
     } else if (path === '/api/rtss/status') {
       body = { enabled: false, path_exists: false };
-    } else if (path === '/api/vigembus/status') {
-      body = { installed: true, version_compatible: true };
     } else if (path === '/api/health/vulkan-hdr-layer') {
       body = { installed: true, enabled: false };
     } else if (path === '/api/config' && method === 'GET') {

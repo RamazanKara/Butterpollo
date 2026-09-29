@@ -29,7 +29,7 @@ Use Moonlight, including two connected clients:
 4. Hold controller buttons, Back (before its Home timer expires), triggers and
    both sticks off-center. Disconnect the stream, and separately unplug one
    controller while another keeps sending packets. Verify neutral state/device
-   removal and no delayed Home press. Repeat for ViGEm and VHF.
+   removal and no delayed Home press.
 5. Disconnect during a touch drag, pen contact/hover with barrel buttons, and a
    controller touchpad contact. Verify that contacts and devices are removed.
 6. Hold the same key from two clients. Disconnect one; the other must retain its

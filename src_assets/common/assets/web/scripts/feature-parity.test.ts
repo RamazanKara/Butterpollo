@@ -72,15 +72,8 @@ test('gamepad options follow the host platform', () => {
   );
   assert.deepEqual(
     gamepadOptionsForPlatform('windows').map((option) => option.value),
-    ['auto', 'x360', 'ds4', 'vhf', 'vhf_xbox', 'vhf_xbox_one', 'vhf_ds4', 'vhf_ds5', 'vhf_switch'],
+    ['auto', 'vhf_xbox', 'vhf_xbox_one', 'vhf_ds4', 'vhf_ds5', 'vhf_switch'],
   );
-});
-
-test('Linux exposes DS4 touchpad mapping', () => {
-  assert.deepEqual(settingsFields.get('ds4_back_as_touchpad_click')?.platform, [
-    'windows',
-    'linux',
-  ]);
 });
 
 test('Linux hides Windows-only input and audio installation controls', () => {

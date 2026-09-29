@@ -449,35 +449,23 @@
     },
     "integrations": {
       "actions": {
-        "install": "Install",
-        "installDriver": "Install driver",
         "refreshStatus": "Refresh status",
         "registerLayer": "Register layer",
-        "repair": "Repair",
-        "repairDriver": "Repair driver",
         "repairRegistration": "Repair registration"
       },
       "applying": "Applying",
       "checksFailed": "Some integration checks failed",
       "confirm": {
         "defaultTitle": "Confirm integration action",
-        "vigemDescription": "The bundled elevated installer will modify the virtual controller driver on this host.",
-        "vigemInstallTitle": "Install ViGEmBus?",
-        "vigemRepairTitle": "Repair ViGEmBus?",
         "vulkanRegisterDescription": "Vibepollo will repair the system registration for its bundled implicit Vulkan layer.",
         "vulkanRegisterTitle": "Register the Vulkan HDR layer?"
       },
       "description": "Optional host components and their current operational state.",
-      "details": {
-        "bundledVersion": "Bundled {version}",
-        "installedVersion": "Installed {version}"
-      },
       "errors": {
         "actionFailed": "The integration action failed.",
         "actionIncomplete": "The integration action did not complete.",
         "rtssStatus": "RTSS status is unavailable.",
         "statusLoad": "Status could not be loaded.",
-        "vigemStatus": "ViGEmBus status is unavailable.",
         "vulkanStatus": "Vulkan HDR layer status is unavailable."
       },
       "failedCount": {
@@ -487,7 +475,6 @@
       "installedIntegrations": "Installed integrations",
       "loadingStatus": "Loading integration status",
       "notices": {
-        "vigemCompleted": "The ViGEmBus installer completed.",
         "vulkanRefreshed": "The Vulkan HDR layer registration was refreshed."
       },
       "mangohud": {
@@ -517,22 +504,13 @@
       },
       "status": {
         "notDetected": "Not detected",
-        "notInstalled": "Not installed",
-        "notRequired": "Not required",
         "ready": "Ready",
         "repairNeeded": "Repair needed",
         "unavailable": "Unavailable",
-        "updateRequired": "Update required",
         "windowsOnly": "Windows only"
       },
       "title": "Integrations",
       "updated": "Integration updated",
-      "vigem": {
-        "description": "Provides virtual Xbox and DualShock controllers to streamed applications.",
-        "name": "ViGEmBus",
-        "shortDescription": "Virtual controller driver support.",
-        "supersededDescription": "Not in use: the Vibepollo virtual gamepad driver is providing virtual controllers. Install ViGEmBus only if you want the Xbox 360 or DualShock 4 options that depend on it."
-      },
       "vulkan": {
         "description": "Registers the implicit Vulkan layer used by virtual-display HDR workflows.",
         "disabledInConfiguration": "Disabled in configuration",

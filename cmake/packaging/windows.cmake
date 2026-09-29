@@ -67,8 +67,6 @@ if(SUNSHINE_ENABLE_PYROWAVE)
             COMPONENT application)
 endif()
 
-# ViGEmBus installer is no longer bundled or managed by the installer
-
 # Adding tools
 install(TARGETS dxgi-info RUNTIME DESTINATION "tools" COMPONENT dxgi)
 install(TARGETS audio-info RUNTIME DESTINATION "tools" COMPONENT audio)

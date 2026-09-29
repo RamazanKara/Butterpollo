@@ -1012,7 +1012,6 @@ namespace config {
       platf::supported_gamepads(nullptr).front().name.size(),
 #endif
     },  // Default gamepad
-    true,  // back as touchpad click enabled (manual DS4 only)
     true,  // client gamepads with motion events are emulated as DS4
     true,  // client gamepads with touchpads are emulated as DS4
     true,  // ds5_inputtino_randomize_mac
@@ -1667,22 +1666,6 @@ namespace config {
     return ret;
   }
 
-  std::vector<std::string_view> &get_supported_gamepad_options() {
-    // The names are owned by a function-local static inside the platform layer, so these views
-    // stay valid. Build the list once: copying the vector per call left every view dangling and
-    // appended another full set of options on each parse.
-    static std::vector<std::string_view> opts = [] {
-      const auto &options = platf::supported_gamepads(nullptr);
-      std::vector<std::string_view> names;
-      names.reserve(options.size());
-      for (const auto &opt : options) {
-        names.emplace_back(opt.name);
-      }
-      return names;
-    }();
-    return opts;
-  }
-
   void log_config_settings(const std::unordered_map<std::string, std::string> &vars, bool save) {
     for (auto &[name, val] : vars) {
       bool is_redacted = std::ranges::find(config::redacted_config, name) != config::redacted_config.end();
@@ -2184,8 +2167,13 @@ namespace config {
       input.key_repeat_delay = std::chrono::milliseconds {to};
     }
 
-    string_restricted_f(vars, "gamepad"s, input.gamepad, get_supported_gamepad_options());
-    bool_f(vars, "ds4_back_as_touchpad_click", input.ds4_back_as_touchpad_click);
+    {
+      std::string gamepad;
+      string_f(vars, "gamepad"s, gamepad);
+      if (!gamepad.empty()) {
+        input.gamepad = platf::resolve_gamepad_option(gamepad);
+      }
+    }
     bool_f(vars, "motion_as_ds4", input.motion_as_ds4);
     bool_f(vars, "touchpad_as_ds4", input.touchpad_as_ds4);
 
@@ -2281,6 +2269,7 @@ namespace config {
     static constexpr std::array retired_keys {
       "dd_display_helper_engine"sv,
       "dd_use_sunshine_virtual_display_driver"sv,
+      "ds4_back_as_touchpad_click"sv,
     };
     std::erase_if(vars, [](const auto &entry) {
       const std::string_view key = entry.first;
@@ -2599,7 +2588,6 @@ namespace config {
         // Input behavior
         "controller",
         "gamepad",
-        "ds4_back_as_touchpad_click",
         "motion_as_ds4",
         "touchpad_as_ds4",
         "back_button_timeout",
