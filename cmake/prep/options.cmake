@@ -12,6 +12,10 @@ option(BUILD_WERROR "Enable -Werror flag." OFF)
 
 option(SUNSHINE_ENABLE_TRAY "Enable system tray icon." ON)
 
+option(SUNSHINE_ENABLE_PYROWAVE
+        "Build the PyroWave codec for PyroWave-enabled Moonlight clients. Needs the PyroWave C API
+        (scripts/build_pyrowave.sh) found through SUNSHINE_PYROWAVE_ROOT and the Vulkan headers." OFF)
+
 option(BOOST_USE_STATIC "Use static boost libraries." ON)
 
 option(CUDA_INHERIT_COMPILE_OPTIONS

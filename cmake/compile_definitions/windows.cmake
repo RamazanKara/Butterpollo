@@ -283,6 +283,16 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/amf/amf_d3d11.cpp"
         ${NVPREFS_FILES})
 
+# PyroWave encoder (D3D11 -> Vulkan interop). The protocol, negotiation and
+# rate-control headers are header-only and always available.
+if(SUNSHINE_ENABLE_PYROWAVE)
+    list(APPEND PLATFORM_TARGET_FILES
+            "${CMAKE_SOURCE_DIR}/src/pyrowave/pyrowave_container.h"
+            "${CMAKE_SOURCE_DIR}/src/pyrowave/pyrowave_container.cpp"
+            "${CMAKE_SOURCE_DIR}/src/pyrowave/pyrowave_d3d11.h"
+            "${CMAKE_SOURCE_DIR}/src/pyrowave/pyrowave_d3d11.cpp")
+endif()
+
 set(OPENSSL_LIBRARIES
         libssl.a
         libcrypto.a)

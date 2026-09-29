@@ -34,6 +34,14 @@ endif()
 # Enable libdisplaydevice logging in the main Sunshine binary only
 target_compile_definitions(sunshine PRIVATE SUNSHINE_USE_DISPLAYDEVICE_LOGGING)
 
+# sunshine.exe imports the PyroWave runtime; keep a copy next to it so the
+# build tree runs without an install.
+if(SUNSHINE_ENABLE_PYROWAVE)
+    add_custom_command(TARGET sunshine POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${PYROWAVE_RUNTIME_DLL}" "$<TARGET_FILE_DIR:sunshine>"
+        COMMENT "Copying the PyroWave runtime next to sunshine")
+endif()
+
 # Build lightweight uninstall UI executable (same UX as installer, no embedded MSI payload)
 set(SUNSHINE_UNINSTALL_UI_EXE "${CMAKE_BINARY_DIR}/uninstall.exe")
 add_custom_command(

@@ -58,6 +58,15 @@ if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64" AND DEFINED _MINHOOK_DLL)
     install(FILES "${_MINHOOK_DLL}" DESTINATION "." COMPONENT application)
 endif()
 
+# PyroWave runtime: sunshine.exe links it, so it must sit next to the executable.
+# Its MIT notices (PyroWave, Granite, volk) ship alongside.
+if(SUNSHINE_ENABLE_PYROWAVE)
+    install(FILES "${PYROWAVE_RUNTIME_DLL}" DESTINATION "." COMPONENT application)
+    install(DIRECTORY "${PYROWAVE_LICENSE_DIR}/"
+            DESTINATION "licenses/pyrowave"
+            COMPONENT application)
+endif()
+
 # ViGEmBus installer is no longer bundled or managed by the installer
 
 # Adding tools

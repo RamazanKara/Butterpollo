@@ -77,3 +77,24 @@ if("${BUILD_TYPE}" STREQUAL "XDEBUG")
 else()
     add_definitions(-DNDEBUG)
 endif()
+
+# GPU self-test of the PyroWave encode path (tools/pyrowave_selftest.cpp). It
+# links the sunshine objects minus main.cpp so the production conversion and
+# encoder run unmodified. Not a ctest: it needs a Vulkan-capable GPU.
+if(SUNSHINE_ENABLE_PYROWAVE AND BUILD_TESTS)
+    add_executable(pyrowave_selftest
+            "${CMAKE_SOURCE_DIR}/tools/pyrowave_selftest.cpp"
+            "$<FILTER:$<TARGET_OBJECTS:sunshine>,EXCLUDE,/src/main\\.cpp\\.obj$>")
+    add_dependencies(pyrowave_selftest sunshine)
+    target_link_libraries(pyrowave_selftest ${SUNSHINE_EXTERNAL_LIBRARIES} ${EXTRA_LIBS})
+    target_compile_definitions(pyrowave_selftest PRIVATE ${SUNSHINE_DEFINITIONS})
+    target_include_directories(pyrowave_selftest SYSTEM BEFORE PRIVATE
+            "${CMAKE_SOURCE_DIR}/third-party/nv-codec-headers/include")
+    target_compile_options(pyrowave_selftest PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${SUNSHINE_COMPILE_OPTIONS}>)
+    set_target_properties(pyrowave_selftest PROPERTIES
+            CXX_STANDARD 23
+            LINK_SEARCH_START_STATIC 1
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+    add_custom_command(TARGET pyrowave_selftest POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${PYROWAVE_RUNTIME_DLL}" "$<TARGET_FILE_DIR:pyrowave_selftest>")
+endif()
