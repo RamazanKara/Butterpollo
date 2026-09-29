@@ -69,14 +69,14 @@ This matrix turns the UX specification into implementation ownership and observa
 4. Loading, empty, partial, unavailable, and failure states preserve context and provide the next useful action.
 5. Live updates do not cause unexpected focus movement, row reordering, layout shift, or excessive announcements.
 
-## v2 completion coverage
+## Feature coverage
 
 The field catalog is the common source for global settings and application/device overrides.
 `settingsDestinations` indexes settings owned by Integrations. `adapter_pnp_id` is edited
 with the Windows adapter selector rather than as an independent field. Existing configuration
 values are preserved when platform rules hide their controls.
 
-| Workflow                                                                         | v2 destination                                 | Verification                                                                                     |
+| Workflow                                                                         | Destination                                    | Verification                                                                                     |
 | -------------------------------------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | Linux virtual-screen selection, local monitors, resolution/refresh, HDR, scaling | Settings → Everyday                            | Browser fixtures cover recommendations, unavailability, physical selection and responsive layout |
 | Automatic Windows smoothness                                                     | Settings → Everyday                            | Windows fixture retains the platform-specific control                                            |

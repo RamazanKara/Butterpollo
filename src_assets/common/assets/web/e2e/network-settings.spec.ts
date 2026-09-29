@@ -64,7 +64,7 @@ test('custom network ports show all listeners, update WAN warning before save, a
   };
   const patches = await host(page, config);
   await page.setViewportSize({ width: 1440, height: 1100 });
-  await page.goto('/v2/settings?category=network#setting-port');
+  await page.goto('/settings?category=network#setting-port');
 
   await expect(page.locator('#setting-port')).toBeVisible();
   await expect(rowPorts(page)).toHaveText(['49995', '50000', '50001', '50021', '50009 - 50011']);
@@ -94,7 +94,7 @@ test('network details remain readable at narrow width and contain no page overfl
 }) => {
   await host(page, { port: 50000, origin_web_ui_allowed: 'wan' });
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto('/v2/settings?category=network');
+  await page.goto('/settings?category=network');
   await expect(rowPorts(page)).toHaveCount(5);
   await expect(
     page.locator('.network-port-details__table td[data-label="Note"]:visible'),
@@ -113,7 +113,7 @@ test('invalid network drafts show a clear error, no derived rows, and cannot be 
   page,
 }) => {
   const patches = await host(page, { port: 47989, origin_web_ui_allowed: 'lan' });
-  await page.goto('/v2/settings?category=network');
+  await page.goto('/settings?category=network');
   const port = page.locator('#setting-port');
 
   await port.fill('1028');
@@ -158,7 +158,7 @@ test('fractional and empty port drafts remain unsaveable after changing category
   page,
 }) => {
   const patches = await host(page, { port: 47989, origin_web_ui_allowed: 'lan' });
-  await page.goto('/v2/settings?category=network');
+  await page.goto('/settings?category=network');
   const port = page.locator('#setting-port');
 
   await port.fill('1029.5');
@@ -177,7 +177,7 @@ test('fractional and empty port drafts remain unsaveable after changing category
 
 test('network search and the port deep link retain contextual warnings', async ({ page }) => {
   await host(page, { port: 47989, origin_web_ui_allowed: 'wan' });
-  await page.goto('/v2/settings?category=network#setting-port');
+  await page.goto('/settings?category=network#setting-port');
   await expect(page.locator('#setting-port')).toBeFocused();
   await expect(
     page.getByText('Exposing the Web UI to the internet is a security risk!'),

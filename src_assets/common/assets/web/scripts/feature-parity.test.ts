@@ -76,13 +76,8 @@ test('gamepad options follow the host platform', () => {
   );
 });
 
-test('Linux exposes DS4 touchpad mapping in both settings UIs', () => {
+test('Linux exposes DS4 touchpad mapping', () => {
   assert.deepEqual(settingsFields.get('ds4_back_as_touchpad_click')?.platform, ['windows', 'linux']);
-  const legacyOptions = readFileSync(
-    new URL('../../web-legacy/configs/configSelectOptions.ts', import.meta.url),
-    'utf8',
-  );
-  assert.match(legacyOptions, /linux:\s*\['xone', 'ds4', 'ds5', 'switch'\]/);
 });
 
 test('Linux hides Windows-only input and audio installation controls', () => {
@@ -95,7 +90,7 @@ test('Linux hides Windows-only input and audio installation controls', () => {
   }
 });
 
-test('Linux Proton and MangoHUD limiter choices stay aligned with legacy UI', () => {
+test('Linux Proton and MangoHUD limiter choices are available', () => {
   assert.equal(settingsDefaults.frame_limiter_provider, 'auto');
   assert.equal(settingsDefaults.mangohud_limiter_method, 'late');
 
@@ -119,14 +114,6 @@ test('Linux Proton and MangoHUD limiter choices stay aligned with legacy UI', ()
   assert.match(messages.ui.integrations.mangohud.providerAuto, /Proton.*MangoHUD/i);
   assert.match(messages.ui.integrations.mangohud.limiterMethodDescription, /latency/i);
   assert.match(messages.ui.integrations.mangohud.limiterMethodDescription, /frame generation/i);
-
-  const legacyStep = readFileSync(
-    new URL('../../web-legacy/configs/tabs/audiovideo/FrameLimiterStep.vue', import.meta.url),
-    'utf8',
-  );
-  assert.match(legacyStep, /value: 'mangohud-proton'/);
-  assert.match(legacyStep, /value: 'proton'/);
-  assert.match(legacyStep, /setting-key="mangohud_limiter_method"/);
 });
 
 test('Linux maintenance omits Windows-only support and recovery sections', () => {
@@ -161,15 +148,11 @@ test('Settings explains unavailable host metadata and virtual-display readiness'
   assert.equal(typeof messages.ui.settings.virtual_display_unavailable.description, 'string');
 });
 
-test('AMD speed default agrees across backend, settings UI and legacy fallbacks', () => {
-  for (const path of [
-    '../configs/settingsSchema.ts',
-    '../config.html',
-    '../../web-legacy/config.html',
-    '../../web-legacy/stores/config.ts',
-  ]) {
-    assert.match(readFileSync(new URL(path, import.meta.url), 'utf8'), /amd_quality:\s*'speed'/);
-  }
+test('AMD speed default agrees across backend and settings UI', () => {
+  assert.match(
+    readFileSync(new URL('../configs/settingsSchema.ts', import.meta.url), 'utf8'),
+    /amd_quality:\s*'speed'/,
+  );
   const backend = readFileSync(new URL('../../../../../src/config.cpp', import.meta.url), 'utf8');
   for (const codec of ['h264', 'hevc', 'av1']) {
     assert.ok(backend.includes(`amd::quality_${codec}_e::speed,  // quality (${codec})`));
@@ -189,7 +172,7 @@ test('global command rows preserve order, verbatim text, and Windows elevation',
   ]);
 });
 
-test('persisted command JSON is available to the v2 editor', () => {
+test('persisted command JSON is available to the command editor', () => {
   const persisted = JSON.stringify([{ do: 'connect', undo: 'disconnect', elevated: true }]);
   assert.deepEqual(normalizeCommandRows(persisted, 'windows'), [
     { do: 'connect', undo: 'disconnect', elevated: true },

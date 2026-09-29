@@ -807,13 +807,13 @@ namespace confighttp {
    * @brief Send a redirect response.
    * @param response The HTTP response object.
    * @param request The HTTP request object.
-   * @param path The path to redirect to.
+   * @param location The same-origin address to redirect to.
    */
-  void send_redirect(resp_https_t response, req_https_t request, const char *path) {
+  void send_redirect(resp_https_t response, req_https_t request, const std::string &location) {
     auto address = net::addr_to_normalized_string(request->remote_endpoint().address());
-    BOOST_LOG(info) << "Web UI: ["sv << address << "] -- redirecting"sv;
+    BOOST_LOG(info) << "Web UI: ["sv << address << "] -- redirecting "sv << request->path << " to "sv << location;
     const SimpleWeb::CaseInsensitiveMultimap headers {
-      {"Location", path},
+      {"Location", location},
       {"X-Frame-Options", "DENY"},
       {"Content-Security-Policy", "frame-ancestors 'none';"}
     };
@@ -1372,123 +1372,30 @@ namespace confighttp {
 
   /**
    * @brief Serve the Vue application shell for browser navigation routes.
+   *
+   * Addresses of former pages are redirected to their current routes first.
    */
   void getWebUi(resp_https_t response, req_https_t request) {
     print_req(request);
 
-    const std::string &path = request->path;
-    const std::string_view path_view {path};
-    static constexpr std::array reserved_prefixes {"/api"sv, "/assets"sv, "/covers"sv, "/images"sv};
-    if (std::ranges::any_of(reserved_prefixes, [&path](std::string_view prefix) {
-          return std::string_view {path}.starts_with(prefix);
-        })) {
-      not_found(response, request);
+    const std::string_view path {request->path};
+    if (const auto location = policy::web_ui_redirect(path, request->query_string)) {
+      send_redirect(std::move(response), std::move(request), *location);
       return;
     }
 
-    const bool is_v2_route = path_view == "/v2" || path_view.starts_with("/v2/");
-    const bool is_v2_static_path = path_view == "/v2/assets" || path_view.starts_with("/v2/assets/") ||
-                                   path_view == "/v2/images" || path_view.starts_with("/v2/images/");
-    if (is_v2_static_path) {
-      not_found(response, request);
-      return;
-    }
+    static constexpr std::array reserved_prefixes {"/api"sv, "/assets"sv, "/covers"sv, "/images"sv};
+    const bool reserved = std::ranges::any_of(reserved_prefixes, [path](std::string_view prefix) {
+      return path.starts_with(prefix) && (path.size() == prefix.size() || path[prefix.size()] == '/');
+    });
 
     // Missing files should remain 404s. Extension-free paths are client-side
     // navigation routes and receive the single application shell.
-    if (fs::path {path}.has_extension()) {
+    if (reserved || fs::path {path}.has_extension()) {
       not_found(response, request);
       return;
     }
-    serve_web_file(std::move(response), std::move(request), is_v2_route ? "v2/index.html" : "index.html");
-  }
-
-  /**
-   * @brief Get the favicon image.
-   * @param response The HTTP response object.
-   * @param request The HTTP request object.
-   */
-  void getFaviconImage(resp_https_t response, req_https_t request) {
-    print_req(request);
-
-    std::ifstream in(WEB_DIR "images/apollo.ico", std::ios::binary);
-    SimpleWeb::CaseInsensitiveMultimap headers;
-    headers.emplace("Content-Type", "image/x-icon");
-    headers.emplace("X-Frame-Options", "DENY");
-    headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-    response->write(success_ok, in, headers);
-  }
-
-  /**
-   * @brief Get the Apollo logo image.
-   * @param response The HTTP response object.
-   * @param request The HTTP request object.
-   *
-   * @todo combine function with getFaviconImage and possibly getNodeModules
-   * @todo use mime_types map
-   */
-  void getApolloLogoImage(resp_https_t response, req_https_t request) {
-    print_req(request);
-
-    std::ifstream in(WEB_DIR "images/logo-apollo-45.png", std::ios::binary);
-    SimpleWeb::CaseInsensitiveMultimap headers;
-    headers.emplace("Content-Type", "image/png");
-    headers.emplace("X-Frame-Options", "DENY");
-    headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-    response->write(success_ok, in, headers);
-  }
-
-  /**
-   * @brief Check if a path is a child of another path.
-   * @param base The base path.
-   * @param query The path to check.
-   * @return True if the path is a child of the base path, false otherwise.
-   */
-  bool isChildPath(fs::path const &base, fs::path const &query) {
-    auto relPath = fs::relative(base, query);
-    return *(relPath.begin()) != fs::path("..");
-  }
-
-  /**
-   * @brief Get an asset from the node_modules directory.
-   * @param response The HTTP response object.
-   * @param request The HTTP request object.
-   */
-  void getNodeModules(resp_https_t response, req_https_t request) {
-    print_req(request);
-
-    fs::path webDirPath(WEB_DIR);
-    fs::path nodeModulesPath(webDirPath / "assets");
-
-    // .relative_path is needed to shed any leading slash that might exist in the request path
-    auto filePath = fs::weakly_canonical(webDirPath / fs::path(request->path).relative_path());
-
-    // Don't do anything if file does not exist or is outside the assets directory
-    if (!isChildPath(filePath, nodeModulesPath)) {
-      BOOST_LOG(warning) << "Someone requested a path " << filePath << " that is outside the assets folder";
-      bad_request(response, request);
-      return;
-    }
-
-    if (!fs::exists(filePath)) {
-      not_found(response, request);
-      return;
-    }
-
-    auto relPath = fs::relative(filePath, webDirPath);
-    // get the mime type from the file extension mime_types map
-    // remove the leading period from the extension
-    auto mimeType = mime_types.find(relPath.extension().string().substr(1));
-    if (mimeType == mime_types.end()) {
-      bad_request(response, request);
-      return;
-    }
-    SimpleWeb::CaseInsensitiveMultimap headers;
-    headers.emplace("Content-Type", mimeType->second);
-    headers.emplace("X-Frame-Options", "DENY");
-    headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-    std::ifstream in(filePath.string(), std::ios::binary);
-    response->write(success_ok, in, headers);
+    serve_web_file(std::move(response), std::move(request), "index.html");
   }
 
   /**
@@ -5483,8 +5390,7 @@ namespace confighttp {
     // Static browser assets are public; every state-changing API below still
     // passes through the existing authentication and CSRF gates.
     server.resource["^/(assets|images)/.+$"]["GET"] = getWebAsset;
-    server.resource["^/v2/(assets|images)/.+$"]["GET"] = getWebAsset;
-    server.resource["^/v2/[^/]+\\.webmanifest$"]["GET"] = getWebAsset;
+    server.resource["^/[^/]+\\.webmanifest$"]["GET"] = getWebAsset;
     server.default_resource["GET"] = getWebUi;
     thread_pool_util::ThreadPool blocking_route_pool;
     blocking_route_pool.start(1);
@@ -5607,16 +5513,10 @@ namespace confighttp {
 #else
     register_blocking_api_route("^/api/logs/export$", "GET", downloadLogs);
 #endif
-    server.resource["^/images/sunshine.ico$"]["GET"] = getFaviconImage;
-    server.resource["^/images/logo-apollo-45.png$"]["GET"] = getApolloLogoImage;
-    server.resource["^/images/logo-sunshine-45.png$"]["GET"] = getApolloLogoImage;  // legacy alias
-    server.resource["^/assets\\/.+$"]["GET"] = getNodeModules;
     register_api_route("^/api/token$", "POST", generateApiToken);
     register_api_route("^/api/tokens$", "GET", listApiTokens);
     register_api_route("^/api/token/routes$", "GET", listApiTokenRoutes);
     register_api_route("^/api/token/([a-fA-F0-9]+)$", "DELETE", revokeApiToken);
-    // Session validation endpoint used by the web UI to detect HttpOnly session cookies
-    server.resource["^/api-tokens/?$"]["GET"] = getTokenPage;
     register_api_route("^/api/auth/login$", "POST", loginUser);
     register_api_route("^/api/auth/refresh$", "POST", refreshSession);
     register_api_route("^/api/auth/logout$", "POST", logoutUser);
@@ -5665,27 +5565,6 @@ namespace confighttp {
     blocking_route_pool.stop();
     blocking_route_pool.join();
     // std::jthread (cleanup_thread) auto-joins on destruction, no need for joinable/join
-  }
-
-  /**
-   * @brief Handles the HTTP request to serve the API token management page.
-   *
-   * This function authenticates the incoming request and, if successful,
-   * reads the "api-tokens.html" file from the web directory and sends its
-   * contents as an HTTP response with the appropriate content type.
-   *
-   * @param response The HTTP response object used to send data back to the client.
-   * @param request The HTTP request object containing client request data.
-   */
-  void getTokenPage(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) {
-      return;
-    }
-    print_req(request);
-    std::string content = file_handler::read_file(WEB_DIR "api-tokens.html");
-    SimpleWeb::CaseInsensitiveMultimap headers;
-    headers.emplace("Content-Type", "text/html; charset=utf-8");
-    response->write(content, headers);
   }
 
   /**

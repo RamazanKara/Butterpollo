@@ -73,7 +73,7 @@ for (const [name, status] of [
 ] as const) {
   test(`Windows display driver ${name} fixture remains actionable`, async ({ page }) => {
     await setupWindowsHost(page, { driverStatus: status });
-    await page.goto('/v2/settings?category=display');
+    await page.goto('/settings?category=display');
     await expect(page.locator('#windows-display-status')).toBeVisible();
     await expect(page.locator('#windows-display-status .vs-status-badge')).toContainText(
         name === 'incompatible'
@@ -98,7 +98,7 @@ test('Windows display status keeps observed and configured drivers distinct', as
     configuredDriver: 'vibeshine',
     driverStatus: 'ready',
   });
-  await page.goto('/v2/settings?category=display');
+  await page.goto('/settings?category=display');
   await expect(page.locator('#windows-display-status')).toContainText('Observed by host: SudoVDA');
   await expect(page.locator('#windows-display-status')).toContainText('Settings select Vibepollo');
 });
@@ -114,7 +114,7 @@ test('active dummy-plug HDR dependency is visible on desktop and narrow layouts'
     },
   });
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto('/v2/settings?q=VSYNC');
+  await page.goto('/settings?q=VSYNC');
   await expect(page.locator('#setting-dd_wa_dummy_plug_hdr10')).toBeChecked();
   await expect(page.locator('#setting-frame_limiter_disable_vsync')).toBeChecked();
   await expect(page.locator('#setting-frame_limiter_disable_vsync')).toBeDisabled();
@@ -147,7 +147,7 @@ test('persisted forced VSYNC is not dirty on load and returns to its saved value
     }
     await route.fallback();
   });
-  await page.goto('/v2/settings?q=VSYNC');
+  await page.goto('/settings?q=VSYNC');
   await expect(page.locator('.save-bar')).toHaveCount(0);
   await page.locator('#setting-dd_wa_dummy_plug_hdr10').uncheck();
   await expect(page.locator('#setting-frame_limiter_disable_vsync')).not.toBeChecked();
@@ -180,7 +180,7 @@ test('dummy-plug dependency survives disable and only changed settings are saved
     }
     await route.fallback();
   });
-  await page.goto('/v2/settings?q=VSYNC');
+  await page.goto('/settings?q=VSYNC');
   await page.locator('#setting-frame_limiter_disable_vsync').check();
   await page.locator('#setting-dd_wa_dummy_plug_hdr10').check();
   await expect(page.locator('#setting-frame_limiter_disable_vsync')).toBeChecked();

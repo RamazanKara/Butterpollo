@@ -54,7 +54,6 @@ namespace confighttp::policy {
 
   AuthResult RequestAuthPolicy::check(const std::string &remote_address, const std::string &auth_header, const std::string &path, const std::string &method) const {
     auto base_path = path.substr(0, path.find('?'));
-    if (base_path == "/welcome" || base_path == "/welcome/") return {true, StatusCode::success_ok, {}, {}};
     if (!_dependencies.remote_allowed(remote_address)) return make_error(StatusCode::client_error_forbidden, "Forbidden");
     const bool is_api = base_path.starts_with("/api/");
     if (!is_api || base_path == "/api/auth/login" || base_path == "/api/auth/logout" || base_path == "/api/csrf-token") return {true, StatusCode::success_ok, {}, {}};

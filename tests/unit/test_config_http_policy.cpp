@@ -48,4 +48,33 @@ namespace confighttp::policy {
     EXPECT_EQ(make_web_ui_url("[2001:db8::154]", 47990, "/login"),
               "https://[2001:db8::154]:47990/login");
   }
+
+  TEST(ConfigHttpPolicyTest, RedirectsFormerV2AddressesToTheRoot) {
+    EXPECT_EQ(web_ui_redirect("/v2", ""), "/");
+    EXPECT_EQ(web_ui_redirect("/v2/", ""), "/");
+    EXPECT_EQ(web_ui_redirect("/v2/settings", "category=display"), "/settings?category=display");
+    EXPECT_EQ(web_ui_redirect("/v2/library/abc", ""), "/library/abc");
+    EXPECT_EQ(web_ui_redirect("/v2/images/apollo.ico", ""), "/images/apollo.ico");
+    EXPECT_EQ(web_ui_redirect("/v2/pin", ""), "/pin");
+    EXPECT_EQ(web_ui_redirect("/v20", ""), std::nullopt);
+  }
+
+  TEST(ConfigHttpPolicyTest, RedirectsOldPagesToTheirReplacements) {
+    EXPECT_EQ(web_ui_redirect("/pin", ""), "/pair");
+    EXPECT_EQ(web_ui_redirect("/clients/", "sec=tokens"), "/devices?sec=tokens");
+    EXPECT_EQ(web_ui_redirect("/applications", ""), "/library");
+    EXPECT_EQ(web_ui_redirect("/troubleshooting", ""), "/maintenance");
+    EXPECT_EQ(web_ui_redirect("/index.html", ""), "/");
+    EXPECT_EQ(web_ui_redirect("/welcome", ""), "/");
+    for (const auto *current : {"/", "/settings", "/logs", "/api-tokens", "/pair", "/pin/extra"}) {
+      EXPECT_EQ(web_ui_redirect(current, ""), std::nullopt) << current;
+    }
+  }
+
+  TEST(ConfigHttpPolicyTest, RedirectsStayOnTheSameOrigin) {
+    EXPECT_EQ(web_ui_redirect("/v2//evil.example", ""), "/evil.example");
+    EXPECT_EQ(web_ui_redirect("/v2/\\evil.example", ""), std::nullopt);
+    EXPECT_EQ(web_ui_redirect("/v2/\t/evil.example", ""), std::nullopt);
+    EXPECT_EQ(web_ui_redirect("/pin", "a=\tb"), std::nullopt);
+  }
 }  // namespace confighttp::policy

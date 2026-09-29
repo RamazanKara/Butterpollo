@@ -3283,7 +3283,7 @@ namespace nvhttp {
       if (verified_client) {
         BOOST_LOG(log_target) << "Permission " << action << " denied for client [" << verified_client->name << "]: it lacks the \"" << perm_label
                               << "\" permission (current permission mask 0x" << std::hex << (uint32_t) perm << std::dec
-                              << "). Grant it in the Web UI under Client Management.";
+                              << "). Grant it in the Web UI under Devices.";
       } else {
         BOOST_LOG(log_target) << "Permission " << action << " denied: HTTPS client certificate not recognized. The device may need to be re-paired.";
       }
@@ -3299,7 +3299,7 @@ namespace nvhttp {
       msg.reserve(160);
       msg += "Permission denied: this device lacks the \"";
       msg += perm_label;
-      msg += "\" permission. Enable it on the host in the Vibepollo Web UI under Client Management.";
+      msg += "\" permission. Enable it on the host in the Vibepollo Web UI under Devices.";
       return msg;
     }
 

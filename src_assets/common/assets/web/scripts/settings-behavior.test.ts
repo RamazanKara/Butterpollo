@@ -127,17 +127,26 @@ test('every runtime override has an editor or belongs to the adapter pair', asyn
     assert.ok(key === 'adapter_pnp_id' || settingsFields.has(key), key);
 });
 
-test('legacy global configuration is covered by v2 fields or a dedicated integration destination', async () => {
+test('every backend option has a settings field or a dedicated integration destination', async () => {
   const { readFileSync } = await import('node:fs');
   const { settingsDestinations } = await import('../configs/settingsSchema.ts');
-  const source = readFileSync(
-    new URL('../../web-legacy/stores/config.ts', import.meta.url),
-    'utf8',
-  ).split('] as const satisfies')[0];
-  for (const match of source.matchAll(/^      (\w+):/gm)) {
-    const key = match[1];
+  // Deprecated aliases and tuning knobs that are only set in the configuration file.
+  const fileOnly = new Set([
+    'amd_av1_tiles',
+    'dd_wa_hdr_toggle',
+    'dd_wa_hdr_toggle_delay',
+    'nvenc_temporal_aq',
+    'packetsize',
+    'pacing_max_bitrate_kbps',
+    'rtss_disable_vsync_ullm',
+  ]);
+  const source = readFileSync(new URL('../../../../../src/config.cpp', import.meta.url), 'utf8');
+  const keys = [...source.matchAll(/\b\w+_f\s*\(\s*vars\s*,\s*"(\w+)"/g)].map((match) => match[1]);
+  assert.ok(keys.length > 100);
+  for (const key of keys) {
     assert.ok(
       key === 'adapter_pnp_id' ||
+        fileOnly.has(key) ||
         settingsFields.has(key) ||
         settingsDestinations.some((destination) => destination.keys.includes(key)),
       key,

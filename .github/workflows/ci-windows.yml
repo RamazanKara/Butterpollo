@@ -251,7 +251,6 @@ jobs:
           cache: npm
           cache-dependency-path: |
             src_assets/common/assets/web/package-lock.json
-            src_assets/common/assets/web-legacy/package-lock.json
 
       - name: NodeJS Path
         shell: pwsh

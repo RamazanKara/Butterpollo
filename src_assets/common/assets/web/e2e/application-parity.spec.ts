@@ -60,7 +60,7 @@ async function setupHost(page: Page, options: HostOptions = {}) {
 
 test('new application keeps v1 lifecycle defaults and saves launch controls', async ({ page }) => {
   const saves = await setupHost(page);
-  await page.goto('/v2/library/new');
+  await page.goto('/library/new');
   await expect(page.locator('#app-auto-detach')).toBeChecked();
   await expect(page.locator('#app-wait-all')).toBeChecked();
   await expect(page.locator('#app-exit-timeout')).toHaveValue('5');
@@ -82,7 +82,7 @@ test('existing application without lifecycle keys gets v1 defaults and saves cha
   const saves = await setupHost(page, {
     apps: [{ uuid: appUuid, name: 'Absent-key app', cmd: 'C:\\Games\\game.exe' }],
   });
-  await page.goto(`/v2/library/${appUuid}`);
+  await page.goto(`/library/${appUuid}`);
   await expect(page.locator('#app-auto-detach')).toBeChecked();
   await expect(page.locator('#app-wait-all')).toBeChecked();
   await expect(page.locator('#app-exit-timeout')).toHaveValue('5');
@@ -122,7 +122,7 @@ test('existing application preserves explicit false and zero, and retired fields
       },
     ],
   });
-  await page.goto(`/v2/library/${appUuid}`);
+  await page.goto(`/library/${appUuid}`);
   await expect(page.locator('#app-auto-detach')).not.toBeChecked();
   await expect(page.locator('#app-wait-all')).not.toBeChecked();
   await expect(page.locator('#app-exit-timeout')).toHaveValue('0');
@@ -147,7 +147,7 @@ test('Linux applications hide Windows-only controls', async ({ page }) => {
     platform: 'linux',
     apps: [{ uuid: appUuid, name: 'Linux app' }],
   });
-  await page.goto(`/v2/library/${appUuid}`);
+  await page.goto(`/library/${appUuid}`);
   await expect(page.locator('#app-auto-detach')).toBeVisible();
   await expect(page.locator('#app-elevated')).toHaveCount(0);
 });

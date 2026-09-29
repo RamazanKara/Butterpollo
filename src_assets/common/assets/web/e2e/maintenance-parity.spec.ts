@@ -94,7 +94,7 @@ test('Windows maintenance exposes every crash part and recovers a failed part', 
   page,
 }) => {
   const calls = await setupHost(page);
-  await page.goto('/v2/maintenance');
+  await page.goto('/maintenance');
   await expect(page.getByRole('button', { name: 'Download crash bundle' })).toBeVisible();
   await page.getByRole('button', { name: 'Download crash bundle' }).click();
   await expect(page.getByText('Crash bundle parts', { exact: true })).toBeVisible();

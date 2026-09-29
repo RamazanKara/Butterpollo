@@ -6,6 +6,7 @@
 #include <boost/asio/ip/address_v4.hpp>
 #include <boost/system/error_code.hpp>
 #include <stdexcept>
+#include <utility>
 
 namespace confighttp::policy {
   bool is_token_route_eligible(std::string_view path) {
@@ -63,6 +64,53 @@ namespace confighttp::policy {
 
   std::string make_web_ui_url(std::string_view host, std::uint16_t port, std::string_view path) {
     return "https://" + std::string(host) + ":" + std::to_string(port) + std::string(path);
+  }
+
+  std::optional<std::string> web_ui_redirect(std::string_view path, std::string_view query) {
+    // Browsers drop tabs and newlines from URLs and read '\' as '/', which
+    // could turn the Location into a protocol-relative URL to another host.
+    const auto unsafe = [](unsigned char ch) {
+      return ch <= ' ' || ch == 0x7f || ch == '\\';
+    };
+    if (std::ranges::any_of(path, unsafe) || std::ranges::any_of(query, unsafe)) {
+      return std::nullopt;
+    }
+
+    std::string target;
+    if (path == "/v2" || path.starts_with("/v2/")) {
+      // The current interface was served under /v2 while the old one owned the root.
+      const auto rest = path.substr(3);
+      target = "/" + std::string(rest.substr(std::min(rest.find_first_not_of('/'), rest.size())));
+    } else {
+      // Pages of the old interface and of upstream Sunshine/Apollo.
+      static constexpr std::array<std::pair<std::string_view, std::string_view>, 11> old_pages {{
+        {"/index.html", "/"},
+        {"/welcome", "/"},
+        {"/login", "/"},
+        {"/pin", "/pair"},
+        {"/apps", "/library"},
+        {"/applications", "/library"},
+        {"/clients", "/devices"},
+        {"/config", "/settings"},
+        {"/password", "/maintenance"},
+        {"/troubleshooting", "/maintenance"},
+        {"/changelog", "/maintenance"},
+      }};
+      if (path.size() > 1 && path.ends_with('/')) {
+        path.remove_suffix(1);
+      }
+      const auto page = std::ranges::find(old_pages, path, &std::pair<std::string_view, std::string_view>::first);
+      if (page == old_pages.end()) {
+        return std::nullopt;
+      }
+      target = page->second;
+    }
+
+    if (!query.empty()) {
+      target += '?';
+      target += query;
+    }
+    return target;
   }
 
   TokenScope scope_from_string(std::string_view scope) {

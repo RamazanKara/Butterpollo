@@ -67,7 +67,7 @@ test('settings deep links open advanced encoders and back navigation preserves d
   page,
 }) => {
   await host(page, 'linux', { encoder: 'vaapi' });
-  await page.goto('/v2/settings?category=video#setting-vaapi_strict_rc_buffer');
+  await page.goto('/settings?category=video#setting-vaapi_strict_rc_buffer');
   await expect(page.locator('#setting-vaapi_strict_rc_buffer')).toBeVisible();
   await page.locator('#setting-vaapi_strict_rc_buffer').check();
   await page.getByRole('button', { name: 'Everyday setup', exact: true }).click();
@@ -77,10 +77,10 @@ test('settings deep links open advanced encoders and back navigation preserves d
 
 test('Windows keeps automatic smoothness and platform-specific controls', async ({ page }) => {
   await host(page, 'windows');
-  await page.goto('/v2/settings');
+  await page.goto('/settings');
   await expect(page.locator('#setting-frame_limiter_auto_virtual_framegen')).toBeVisible();
   await expect(page.getByText('Display readiness')).toHaveCount(0);
-  await page.goto('/v2/settings?category=display');
+  await page.goto('/settings?category=display');
   await expect(page.locator('#setting-dd_use_sunshine_virtual_display_driver')).toBeVisible();
 });
 
@@ -90,7 +90,7 @@ test('HTTP save rejection retains the draft', async ({ page }) => {
     if (route.request().method() === 'PATCH') await route.fulfill({ json: { status: false } });
     else await route.fallback();
   });
-  await page.goto('/v2/settings');
+  await page.goto('/settings');
   await page.locator('#setting-stream_audio').uncheck();
   await page.getByRole('button', { name: 'Save changes', exact: true }).click();
   await expect(page.locator('#setting-stream_audio')).not.toBeChecked();
@@ -101,7 +101,7 @@ for (const width of [390, 768, 1100, 1440]) {
   test(`settings and save bar fit at ${width}px`, async ({ page }) => {
     await host(page);
     await page.setViewportSize({ width, height: 1000 });
-    await page.goto('/v2/settings');
+    await page.goto('/settings');
     await expect(page.locator('#setting-stream_audio')).toBeVisible();
     await page.locator('#setting-stream_audio').uncheck();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
@@ -126,7 +126,7 @@ test('bulk unpair requires a confirmation and calls the existing endpoint', asyn
     calls++;
     await route.fulfill({ json: { status: true } });
   });
-  await page.goto('/v2/devices');
+  await page.goto('/devices');
   await page.getByRole('button', { name: 'Unpair all devices' }).click();
   expect(calls).toBe(0);
   await page.getByRole('dialog').getByRole('button', { name: 'Unpair all devices' }).click();
@@ -135,7 +135,7 @@ test('bulk unpair requires a confirmation and calls the existing endpoint', asyn
 
 test('Linux maintenance offers logs and display setup', async ({ page }) => {
   await host(page);
-  await page.goto('/v2/maintenance');
+  await page.goto('/maintenance');
   await expect(page.getByRole('link', { name: 'Open and download logs' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Display settings' })).toBeVisible();
   await expect(page.getByText('Updates and release notes', { exact: true })).toBeVisible();
@@ -145,7 +145,7 @@ for (const theme of ['dark', 'light']) {
   test(`${theme} theme and keyboard switches remain usable`, async ({ page }) => {
     await host(page);
     await page.addInitScript((theme) => localStorage.setItem('vibeshine.theme', theme), theme);
-    await page.goto('/v2/settings');
+    await page.goto('/settings');
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
     await page.locator('#setting-stream_audio').focus();
     await page.keyboard.press('Space');
@@ -158,7 +158,7 @@ for (const theme of ['dark', 'light']) {
   });
 }
 
-test('all canonical v2 pages render without client-side exceptions', async ({ page }) => {
+test('all canonical pages render without client-side exceptions', async ({ page }) => {
   await host(page);
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -173,7 +173,7 @@ test('all canonical v2 pages render without client-side exceptions', async ({ pa
     'api-tokens',
     'maintenance',
   ]) {
-    await page.goto(`/v2/${path}`);
+    await page.goto(`/${path}`);
     await expect(page.locator('main')).toBeVisible();
     await expect(page.locator('main h1')).toBeVisible();
   }
@@ -184,7 +184,7 @@ test('Linux adapters remain editable while unsupported provider destinations sta
   page,
 }) => {
   const patches = await host(page);
-  await page.goto('/v2/settings?category=display#setting-adapter_name');
+  await page.goto('/settings?category=display#setting-adapter_name');
   await page.locator('#setting-adapter_name').fill('/dev/dri/renderD129');
   await page.getByRole('button', { name: 'Save changes', exact: true }).click();
   await expect.poll(() => patches.length).toBe(1);
@@ -196,7 +196,7 @@ test('Linux adapters remain editable while unsupported provider destinations sta
 test('mobile navigation traps focus and returns it to the menu button', async ({ page }) => {
   await host(page);
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto('/v2/settings');
+  await page.goto('/settings');
   // Wait for the settings route to finish loading; a route change closes the drawer.
   await expect(page.locator('[id^="setting-"]').first()).toBeVisible();
   const menu = page.getByRole('button', { name: 'Open navigation' });
@@ -215,7 +215,7 @@ test('failed configuration load keeps editing unavailable until retry succeeds',
     if (failed) await route.fulfill({ status: 503, json: { status: false } });
     else await route.fallback();
   });
-  await page.goto('/v2/settings');
+  await page.goto('/settings');
   await expect(page.getByRole('alert')).toBeVisible();
   await expect(page.locator('#setting-stream_audio')).toHaveCount(0);
   failed = false;
@@ -239,7 +239,7 @@ test('edits made during a settings save remain unsaved', async ({ page }) => {
     await pending;
     await route.fulfill({ json: { status: true } });
   });
-  await page.goto('/v2/settings');
+  await page.goto('/settings');
   await page.locator('#setting-stream_audio').uncheck();
   await page.getByRole('button', { name: 'Save changes', exact: true }).click();
   await expect.poll(() => started).toBe(true);
@@ -259,7 +259,7 @@ test('physical screen controls fit with long output names at intermediate widths
       'An unusually long display name with a persistent device identifier - ' + 'a'.repeat(100),
   });
   await page.setViewportSize({ width: 1100, height: 900 });
-  await page.goto('/v2/settings');
+  await page.goto('/settings');
   await expect(page.locator('#setting-output_name')).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   const row = page.locator('#setting-output_name');
@@ -274,7 +274,7 @@ test('settings reflow at a 200% zoom-equivalent viewport with forced colors and 
   await page.emulateMedia({ forcedColors: 'active', reducedMotion: 'reduce' });
   // Browser zoom halves the CSS viewport; CSS zoom alone does not update media queries.
   await page.setViewportSize({ width: 640, height: 450 });
-  await page.goto('/v2/settings');
+  await page.goto('/settings');
   await page.locator('#setting-stream_audio').focus();
   await page.keyboard.press('Space');
   await expect(page.locator('#setting-stream_audio')).not.toBeChecked();
@@ -288,7 +288,7 @@ test('mobile navigation keeps hidden controls out of the tab order and releases 
 }) => {
   await host(page);
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto('/v2/');
+  await page.goto('/');
   const menu = page.getByRole('button', { name: 'Open navigation' });
   const navigation = page.locator('#app-navigation');
   await menu.focus();
@@ -314,7 +314,7 @@ test('appearance controls persist the chosen theme and follow system appearance'
 }) => {
   await host(page);
   await page.emulateMedia({ colorScheme: 'dark' });
-  await page.goto('/v2/');
+  await page.goto('/');
   const appearance = page.getByRole('group', { name: 'Appearance' });
   await appearance.getByRole('button', { name: 'Light', exact: true }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
@@ -333,7 +333,7 @@ test('appearance controls persist the chosen theme and follow system appearance'
 test('unknown readiness does not render as ready', async ({ page }) => {
   await host(page);
   await page.route('**/api/metadata', (route) => route.fulfill({ json: { platform: 'linux' } }));
-  await page.goto('/v2/');
+  await page.goto('/');
   await expect(page.locator('.readiness-panel')).toHaveAttribute('data-tone', 'neutral');
   await expect(page.getByRole('link', { name: 'Review setup', exact: true })).toBeVisible();
 });
@@ -362,7 +362,7 @@ test('library placeholders preserve search, keyboard selection, and list prefere
 }) => {
   await host(page);
   await libraryWithMissingCovers(page);
-  await page.goto('/v2/library');
+  await page.goto('/library');
   await expect(page.locator('.library-item__artwork-fallback')).toHaveCount(3);
   await page.getByRole('searchbox', { name: 'Search applications' }).fill('dolphin');
   await expect(page.locator('[data-library-item]')).toHaveCount(1);
@@ -386,7 +386,7 @@ for (const width of [320, 390, 768, 1100, 1440]) {
     await libraryWithMissingCovers(page);
     await page.setViewportSize({ width, height: 900 });
     for (const path of ['', 'library', 'library/new', 'devices']) {
-      await page.goto(`/v2/${path}`);
+      await page.goto(`/${path}`);
       await expect(page.locator('main h1')).toBeVisible();
       await expect(page.locator('.vs-loading-skeleton')).toHaveCount(0);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
@@ -410,12 +410,9 @@ test('encoder failures direct the overview to diagnostics', async ({ page }) => 
       },
     }),
   );
-  await page.goto('/v2/');
+  await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Needs attention', exact: true })).toBeVisible();
-  await expect(page.locator('.readiness-panel .button--primary')).toHaveAttribute(
-    'href',
-    '/v2/logs',
-  );
+  await expect(page.locator('.readiness-panel .button--primary')).toHaveAttribute('href', '/logs');
 });
 
 test('overview stops a running application only after confirmation', async ({ page }) => {
@@ -437,10 +434,10 @@ test('overview stops a running application only after confirmation', async ({ pa
     closeCalls += 1;
     return route.fulfill({ json: { status: true } });
   });
-  await page.goto('/v2/');
+  await page.goto('/');
   await expect(page.locator('.readiness-panel .button--primary')).toHaveAttribute(
     'href',
-    '/v2/devices',
+    '/devices',
   );
   await page.locator('.readiness-panel').getByRole('button', { name: 'Stop stream' }).click();
   const dialog = page.getByRole('dialog');
@@ -460,9 +457,9 @@ test('unmigrated Linux services are neither offered nor called', async ({ page }
   page.on('request', (request) => {
     if (/\/api\/frame-limiter\//.test(request.url())) providerRequests.push(request.url());
   });
-  await page.goto('/v2/integrations');
+  await page.goto('/integrations');
   await expect(page.locator('#integration-mangohud')).toHaveCount(0);
-  await page.goto('/v2/settings');
+  await page.goto('/settings');
   await expect(
     page.locator('#setting-virtual_display_mode, #setting-frame_limiter_provider'),
   ).toHaveCount(0);
@@ -497,7 +494,7 @@ for (const width of [390, 1440]) {
         await route.fulfill({ json: { status: true } });
       } else await route.fulfill({ json: { apps: [original] } });
     });
-    await page.goto(`/v2/library/${uuid}`);
+    await page.goto(`/library/${uuid}`);
     await expect(page.locator('#app-allow-client-commands')).toHaveValue('false');
     await expect(page.locator('#app-use-app-identity')).toHaveValue('false');
     await expect(page.locator('#app-gamepad')).toHaveValue('legacy-custom-controller');
@@ -539,7 +536,7 @@ test('app behavior validates edited scaling and can return explicit options to d
         json: { apps: [{ uuid, name: 'Defaults', cmd: '', 'allow-client-commands': false }] },
       });
   });
-  await page.goto(`/v2/library/${uuid}`);
+  await page.goto(`/library/${uuid}`);
   await page.locator('#app-allow-client-commands').selectOption('');
   await page.locator('#app-scale-factor').fill('0');
   await page.getByRole('button', { name: 'Save application', exact: true }).first().click();
@@ -572,7 +569,7 @@ for (const platform of ['linux', 'windows'] as const) {
         headers: { 'Content-Disposition': 'attachment; filename="vibepollo_logs.zip"' },
       }),
     );
-    await page.goto('/v2/logs');
+    await page.goto('/logs');
     const download = page.waitForEvent('download');
     await page.getByRole('button', { name: 'Download logs bundle' }).click();
     expect((await download).suggestedFilename()).toBe('vibepollo_logs.zip');
@@ -599,7 +596,7 @@ test('Linux shows an automatic update notice across pages and retries failed che
           },
     );
   });
-  await page.goto('/v2/');
+  await page.goto('/');
   const notice = page.locator('.update-notice');
   await expect(
     notice.getByText('Release information is unavailable. Try again later.'),
@@ -621,7 +618,7 @@ test('Linux stable install does not advertise a prerelease without opt-in', asyn
     await route.fulfill({ json: [{ tag_name: 'v2.0.0-beta.1', prerelease: true }] });
   });
   const response = page.waitForResponse('https://api.github.com/repos/Nonary/Vibepollo/releases');
-  await page.goto('/v2/');
+  await page.goto('/');
   await response;
   await expect(page.locator('.update-notice')).toHaveCount(0);
 });

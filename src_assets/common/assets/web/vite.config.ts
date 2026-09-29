@@ -8,7 +8,6 @@ const configuredOutputDirectory = process.env.SUNSHINE_WEB_OUTPUT_DIR;
 
 export default defineConfig({
   plugins: [vue()],
-  base: '/v2/',
   resolve: {
     dedupe: ['vue', 'vue-i18n'],
     alias: {
@@ -18,7 +17,7 @@ export default defineConfig({
   build: {
     outDir: configuredOutputDirectory
       ? resolve(configuredOutputDirectory)
-      : fileURLToPath(new URL('../../../../build/assets/web/v2', import.meta.url)),
+      : fileURLToPath(new URL('../../../../build/assets/web', import.meta.url)),
     emptyOutDir: true,
     target: 'es2022',
   },

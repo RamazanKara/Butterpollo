@@ -13,7 +13,7 @@ const PairView = () => import('@/views/PairView.vue');
 const SettingsView = () => import('@/views/SettingsView.vue');
 
 const router = createRouter({
-  history: createWebHistory('/v2/'),
+  history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
     {
       path: '/',

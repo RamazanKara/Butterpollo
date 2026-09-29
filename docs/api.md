@@ -175,7 +175,7 @@ All session metadata is stored hashed and persisted in the same state file as AP
 
 ### Host readiness metadata
 
-`GET /api/metadata` includes optional status fields for the v2 interface. Existing fields
+`GET /api/metadata` includes optional status fields for the web interface. Existing fields
 and configuration write formats remain compatible.
 
 - `encoder_status`: `state` (`ready`, `failed`, or `unknown`) and `h264`, `hevc`, `av1`

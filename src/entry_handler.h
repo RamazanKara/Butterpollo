@@ -17,7 +17,7 @@
  * @param path Optional path to append to the base URL.
  * @examples
  * launch_ui();
- * launch_ui("/pin");
+ * launch_ui("/pair");
  * @examples_end
  */
 void launch_ui(const std::optional<std::string> &path = std::nullopt);
