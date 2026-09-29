@@ -48,6 +48,13 @@ if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
             PROPERTIES COMPILE_FLAGS "-Wa,-mbig-obj")
 endif()
 
+# Per-commit build metadata (see build_version.cmake) reaches only the sources
+# that report it, so a new commit does not invalidate every object.
+set_source_files_properties(
+        "${CMAKE_SOURCE_DIR}/src/main.cpp"
+        "${CMAKE_SOURCE_DIR}/src/confighttp.cpp"
+        PROPERTIES COMPILE_DEFINITIONS "${SUNSHINE_BUILD_METADATA_DEFINITIONS}")
+
 # third-party/nanors
 set_source_files_properties("${CMAKE_SOURCE_DIR}/src/rswrapper.c"
         DIRECTORY "${CMAKE_SOURCE_DIR}" "${TEST_DIR}"
