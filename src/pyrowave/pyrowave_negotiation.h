@@ -20,6 +20,7 @@ namespace pyrowave {
     unavailable,  ///< PyroWave requested while it is disabled or unsupported.
     yuv444_unavailable,  ///< PyroWave 4:4:4 requested but not supported.
     hdr_yuv444,  ///< PyroWave HDR combined with 4:4:4, which PyroWave clients never request.
+    unsupported_size,  ///< PyroWave stream size it cannot code (odd 4:2:0 size, or above 16384).
   };
 
   struct announce_decision_t {
@@ -32,10 +33,13 @@ namespace pyrowave {
    * @brief Validate the client's format request against the host's PyroWave support.
    * @details Unknown formats are rejected instead of silently falling back to
    *          H.264, which a PyroWave client would fail to decode. H.264, HEVC and
-   *          AV1 requests pass through unchanged.
+   *          AV1 requests pass through unchanged. PyroWave streams at exactly the
+   *          negotiated size, which 4:2:0 needs to be even.
    */
   constexpr announce_decision_t negotiate_announce(
     int video_format,
+    int width,
+    int height,
     int chroma_sampling_type,
     int dynamic_range,
     const capabilities_t &caps
@@ -58,6 +62,10 @@ namespace pyrowave {
     }
     if (yuv444 && !caps.yuv444) {
       return {announce_status_e::yuv444_unavailable, dynamic_range, false};
+    }
+    if (width <= 0 || height <= 0 || width > MAX_DIMENSION || height > MAX_DIMENSION ||
+        (!yuv444 && (width % 2 != 0 || height % 2 != 0))) {
+      return {announce_status_e::unsupported_size, dynamic_range, false};
     }
     if (hdr && !caps.hdr) {
       // Every container carries its own HDR flag, so an SDR stream is still

@@ -17,6 +17,9 @@ namespace pyrowave {
   /// `x-nv-vqos[0].bitStreamFormat` value (and video::config_t::videoFormat) for PyroWave.
   constexpr int VIDEO_FORMAT_PYROWAVE = 3;
 
+  /// Largest width/height the bitstream can signal (14-bit "minus one" fields).
+  constexpr int MAX_DIMENSION = 16384;
+
   /// serverinfo ServerCodecModeSupport bits (next to the SCM_* bits in Limelight.h).
   constexpr std::uint32_t SCM_PYROWAVE = 0x00800000;
   constexpr std::uint32_t SCM_PYROWAVE_444 = 0x01000000;

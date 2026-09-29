@@ -188,12 +188,19 @@ TEST(PyroWaveRateControl, ContainerOverheadBoundsWorstCasePacketization) {
   EXPECT_GE(container_overhead_bytes(bitstream), 8u + 8u + worst_packets * 4u);
 }
 
+namespace {
+  pyrowave::announce_decision_t negotiate(int format, int chroma, int dynamic_range, const pyrowave::capabilities_t &caps, int width = 1920, int height = 1080) {
+    return pyrowave::negotiate_announce(format, width, height, chroma, dynamic_range, caps);
+  }
+}  // namespace
+
 TEST(PyroWaveNegotiation, ExistingCodecsPassThrough) {
   using pyrowave::announce_status_e;
   const pyrowave::capabilities_t none {};
 
   for (int format = 0; format <= 2; ++format) {
-    const auto decision = pyrowave::negotiate_announce(format, 1, 1, none);
+    // Odd sizes are fine for H.264/HEVC/AV1; their encoders pad.
+    const auto decision = negotiate(format, 1, 1, none, 1366, 767);
     EXPECT_EQ(decision.status, announce_status_e::accepted);
     EXPECT_EQ(decision.dynamic_range, 1);
     EXPECT_FALSE(decision.hdr_downgraded);
@@ -204,15 +211,15 @@ TEST(PyroWaveNegotiation, UnknownFormatsAreRejected) {
   using pyrowave::announce_status_e;
   const pyrowave::capabilities_t all {true, true, true};
 
-  EXPECT_EQ(pyrowave::negotiate_announce(4, 0, 0, all).status, announce_status_e::unknown_video_format);
-  EXPECT_EQ(pyrowave::negotiate_announce(-1, 0, 0, all).status, announce_status_e::unknown_video_format);
+  EXPECT_EQ(negotiate(4, 0, 0, all).status, announce_status_e::unknown_video_format);
+  EXPECT_EQ(negotiate(-1, 0, 0, all).status, announce_status_e::unknown_video_format);
 }
 
 TEST(PyroWaveNegotiation, PyroWaveRequiresAvailability) {
   using pyrowave::announce_status_e;
 
-  EXPECT_EQ(pyrowave::negotiate_announce(3, 0, 0, {}).status, announce_status_e::unavailable);
-  const auto sdr = pyrowave::negotiate_announce(3, 0, 0, {true, false, false});
+  EXPECT_EQ(negotiate(3, 0, 0, {}).status, announce_status_e::unavailable);
+  const auto sdr = negotiate(3, 0, 0, {true, false, false});
   EXPECT_EQ(sdr.status, announce_status_e::accepted);
   EXPECT_EQ(sdr.dynamic_range, 0);
 }
@@ -220,23 +227,38 @@ TEST(PyroWaveNegotiation, PyroWaveRequiresAvailability) {
 TEST(PyroWaveNegotiation, Yuv444NeedsSupportAndExcludesHdr) {
   using pyrowave::announce_status_e;
 
-  EXPECT_EQ(pyrowave::negotiate_announce(3, 1, 0, {true, false, true}).status, announce_status_e::yuv444_unavailable);
-  EXPECT_EQ(pyrowave::negotiate_announce(3, 1, 0, {true, true, false}).status, announce_status_e::accepted);
-  EXPECT_EQ(pyrowave::negotiate_announce(3, 1, 1, {true, true, true}).status, announce_status_e::hdr_yuv444);
+  EXPECT_EQ(negotiate(3, 1, 0, {true, false, true}).status, announce_status_e::yuv444_unavailable);
+  EXPECT_EQ(negotiate(3, 1, 0, {true, true, false}).status, announce_status_e::accepted);
+  EXPECT_EQ(negotiate(3, 1, 1, {true, true, true}).status, announce_status_e::hdr_yuv444);
 }
 
 TEST(PyroWaveNegotiation, HdrFallsBackToSdrWhenUnsupported) {
   using pyrowave::announce_status_e;
 
-  const auto downgraded = pyrowave::negotiate_announce(3, 0, 1, {true, true, false});
+  const auto downgraded = negotiate(3, 0, 1, {true, true, false});
   EXPECT_EQ(downgraded.status, announce_status_e::accepted);
   EXPECT_EQ(downgraded.dynamic_range, 0);
   EXPECT_TRUE(downgraded.hdr_downgraded);
 
-  const auto hdr = pyrowave::negotiate_announce(3, 0, 1, {true, false, true});
+  const auto hdr = negotiate(3, 0, 1, {true, false, true});
   EXPECT_EQ(hdr.status, announce_status_e::accepted);
   EXPECT_EQ(hdr.dynamic_range, 1);
   EXPECT_FALSE(hdr.hdr_downgraded);
+}
+
+TEST(PyroWaveNegotiation, StreamSizeMustBeCodable) {
+  using pyrowave::announce_status_e;
+  const pyrowave::capabilities_t all {true, true, true};
+
+  // 4:2:0 subsamples by two in both directions.
+  EXPECT_EQ(negotiate(3, 0, 0, all, 1921, 1080).status, announce_status_e::unsupported_size);
+  EXPECT_EQ(negotiate(3, 0, 0, all, 1920, 1081).status, announce_status_e::unsupported_size);
+  EXPECT_EQ(negotiate(3, 1, 0, all, 1921, 1081).status, announce_status_e::accepted);
+
+  EXPECT_EQ(negotiate(3, 0, 0, all, 16384, 16384).status, announce_status_e::accepted);
+  EXPECT_EQ(negotiate(3, 0, 0, all, 16386, 1080).status, announce_status_e::unsupported_size);
+  EXPECT_EQ(negotiate(3, 0, 0, all, 0, 1080).status, announce_status_e::unsupported_size);
+  EXPECT_EQ(negotiate(3, 1, 0, all, 1920, -2).status, announce_status_e::unsupported_size);
 }
 
 static_assert(pyrowave::rate_control::frame_budget_bytes(100000, 60) == 208332);

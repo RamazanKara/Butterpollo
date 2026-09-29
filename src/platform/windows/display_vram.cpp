@@ -2533,8 +2533,9 @@ namespace platf::dxgi {
       const bool yuv444 = client_config.chromaSamplingType == 1;
       const int width = client_config.width;
       const int height = client_config.height;
-      // The bitstream stores dimensions in 14 bits; 4:2:0 needs even sizes.
-      if (width <= 0 || height <= 0 || width > 16384 || height > 16384 || (!yuv444 && (width % 2 || height % 2))) {
+      // 4:2:0 needs even sizes.
+      constexpr int max_dimension = ::pyrowave::MAX_DIMENSION;
+      if (width <= 0 || height <= 0 || width > max_dimension || height > max_dimension || (!yuv444 && (width % 2 || height % 2))) {
         BOOST_LOG(error) << "PyroWave: unsupported stream size "sv << width << 'x' << height << (yuv444 ? " (4:4:4)"sv : " (4:2:0)"sv);
         return false;
       }

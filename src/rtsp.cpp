@@ -1900,6 +1900,8 @@ namespace rtsp_stream {
       // client cannot decode.
       const auto decision = pyrowave::negotiate_announce(
         config.monitor.videoFormat,
+        config.monitor.width,
+        config.monitor.height,
         config.monitor.chromaSamplingType,
         config.monitor.dynamicRange,
         pyrowave::capabilities_t {
@@ -1924,9 +1926,13 @@ namespace rtsp_stream {
         case pyrowave::announce_status_e::hdr_yuv444:
           rejection = "PyroWave HDR is only available with 4:2:0 chroma"sv;
           break;
+        case pyrowave::announce_status_e::unsupported_size:
+          rejection = "PyroWave needs a stream size up to 16384 pixels, even for 4:2:0"sv;
+          break;
       }
       if (!rejection.empty()) {
         BOOST_LOG(warning) << "Rejecting client video request (bitStreamFormat=" << config.monitor.videoFormat
+                           << ", " << config.monitor.width << 'x' << config.monitor.height
                            << ", chromaSamplingType=" << config.monitor.chromaSamplingType
                            << ", dynamicRangeMode=" << config.monitor.dynamicRange << "): " << rejection;
         respond(socket->sock, *session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
