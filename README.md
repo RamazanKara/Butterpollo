@@ -21,7 +21,7 @@ Hardware encoding alone takes about 2.4 ms at this resolution, so most of what i
 
 ## What is different from Vibepollo 2.0.0-beta.3
 
-Encoder (native AMF, `encoder = amdvce_experimental`):
+Encoder (native AMF, `encoder = amdvce`):
 - The encode thread queries output directly on the low-latency path. Nothing sleeps on a fixed poll while a frame is due.
 - Finished packets go out before the next capture wait and before the next colour conversion, so a frame never waits behind newer work.
 - The input backlog is bounded, and a surface is reused only after the driver releases it.
@@ -75,7 +75,7 @@ VibepolloSetup.exe /qn INSTALL_VIRTUAL_GAMEPAD_DRIVER=0
 Settings I stream with on AMD:
 
 ```
-encoder = amdvce_experimental
+encoder = amdvce
 amd_usage = ultralowlatency
 amd_quality = speed
 amd_preanalysis = disabled

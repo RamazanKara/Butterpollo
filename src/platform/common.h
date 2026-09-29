@@ -419,18 +419,6 @@ namespace platf {
     void *data {};
     AVFrame *frame {};
 
-    virtual bool initialize_hardware_device() {
-      return true;
-    }
-
-    virtual std::shared_ptr<display_t> release_display_lease_for_initialization() {
-      return {};
-    }
-
-    virtual void restore_display_lease_after_initialization(std::shared_ptr<display_t> display) {
-      (void) display;
-    }
-
     virtual bool is_codec_supported(std::string_view name, const video::config_t &config) {
       (void) name;
       (void) config;
@@ -629,12 +617,6 @@ namespace platf {
     }
 
     virtual std::unique_ptr<avcodec_encode_device_t> make_avcodec_encode_device(pix_fmt_e pix_fmt) {
-      return nullptr;
-    }
-
-    // Windows legacy AMF alone needs D3D creation deferred into its watchdog.
-    // Other AVCodec backends retain their established synchronous behavior.
-    virtual std::unique_ptr<avcodec_encode_device_t> make_deferred_avcodec_encode_device(pix_fmt_e pix_fmt) {
       return nullptr;
     }
 

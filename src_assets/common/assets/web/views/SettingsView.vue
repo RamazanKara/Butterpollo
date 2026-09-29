@@ -205,7 +205,7 @@ const automaticEncoderLabel = computed(() => {
       : family === 'intel'
         ? 'ui.settings.options.encoder.quicksync'
         : family === 'amd'
-          ? 'ui.settings.options.encoder.amdvce_ffmpeg'
+          ? 'ui.settings.options.encoder.amdvce'
           : '';
   if (!encoderKey || !gpuName) return t('ui.settings.options.encoder.auto');
   return t('ui.settings.options.encoder.auto_selected', {

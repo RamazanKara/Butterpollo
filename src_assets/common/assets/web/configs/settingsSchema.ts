@@ -1083,7 +1083,7 @@ export function encoderFamilyFor(encoder: string): SettingsField['encoderFamily'
 export function encoderOptionsForPlatform(platform: string): SettingsOption[] {
   const p = platform.toLowerCase();
   const encoders = p.includes('windows')
-    ? ['nvenc', 'quicksync', 'amdvce_ffmpeg', 'amdvce_experimental', 'mediafoundation', 'software']
+    ? ['nvenc', 'quicksync', 'amdvce', 'software']
     : p.includes('linux')
       ? ['nvenc', 'nvenc_legacy', 'vulkan', 'vaapi', 'software']
       : p.includes('mac')

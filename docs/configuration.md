@@ -2733,7 +2733,8 @@ this option to replace the running app immediately. The default is `true`.
     </tr>
     <tr>
         <td>Default</td>
-        <td colspan="2">Sunshine will use the first encoder that is available.</td>
+        <td colspan="2">Vibepollo tries @code{}nvenc@endcode, @code{}quicksync@endcode, @code{}amdvce@endcode
+            and @code{}software@endcode in that order and uses the first one that works.</td>
     </tr>
     <tr>
         <td>Example</td>
@@ -2759,20 +2760,11 @@ this option to replace the running app immediately. The default is `true`.
         <td>For Intel graphics cards</td>
     </tr>
     <tr>
-        <td>amdvce_ffmpeg</td>
-        <td>For AMD graphics cards. This is the supported FFmpeg-based AMF encoder and the
-            implementation used by automatic selection on Windows.
-            @note{Existing configurations using @code{}amdvce_legacy@endcode are accepted as
-            a compatibility alias for @code{}amdvce_ffmpeg@endcode. The former native
-            @code{}amdvce@endcode value is accepted as an alias for
-            @code{}amdvce_experimental@endcode.}</td>
-    </tr>
-    <tr>
-        <td>amdvce_experimental</td>
-        <td>Experimental native AMD AMF encoder. It is not selected automatically, has limited
-            hardware test coverage, and may not work with older GPUs or driver versions. Explicit
-            selection fails closed instead of silently changing encoder implementations.
-            @note{Applies to Windows only.}</td>
+        <td>amdvce</td>
+        <td>For AMD graphics cards. Uses Vibepollo's native AMF encoder. If it cannot initialize,
+            the AMD GPU has no hardware encoder and Vibepollo encodes in software.
+            @note{The former values @code{}amdvce_experimental@endcode, @code{}amdvce_ffmpeg@endcode
+            and @code{}amdvce_legacy@endcode are accepted as aliases for @code{}amdvce@endcode.}</td>
     </tr>
     <tr>
         <td>vaapi</td>
@@ -3556,17 +3548,8 @@ directly to the NVIDIA Video Codec SDK and is preferred during automatic probing
 
 ## AMD AMF Encoder
 
-@note{HDR (HEVC Main10) encoding through AMF requires the AMF runtime shipped with Adrenalin 23.30
-or newer, which reports AMF 1.4.32. FFmpeg refuses 10-bit P010 surfaces on any older runtime, so HDR
-is not offered to clients even though Vibepollo's own AMF check only needs 1.4.23. Update your
-graphics drivers if HDR is unavailable on an AMD GPU. This limitation applies to the
-@code{amdvce_ffmpeg} encoder only; the experimental native @code{amdvce_experimental} encoder talks to AMF
-directly and is not subject to FFmpeg's 10-bit refusal. Vibepollo carries one narrow exception for the
-FFmpeg-based encoder: on a Radeon Pro 5500 XT (PCI @code{1002:7340}) running AMF 1.4.31.x, it presents 1.4.32 to
-FFmpeg for the duration of codec validation so HEVC Main10 is not refused. The exception is applied
-automatically, has no configuration option, and does not apply to any other adapter. The detected AMF
-runtime version is written to the log on every AMD HDR HEVC attempt (search for
-@code{AMF Main10 override}).}
+@note{HDR (HEVC Main10) encoding requires AMF 1.4.23 (Adrenalin 21.12.1) or newer, and AV1 requires AMF
+1.4.30 (Adrenalin 23.5.2) or newer. Update your graphics drivers if HDR or AV1 is unavailable on an AMD GPU.}
 
 ### amd_usage
 
@@ -3679,7 +3662,7 @@ runtime version is written to the log on every AMD HDR HEVC attempt (search for
         <td colspan="2">
             The target quality level used by the `qvbr` rate control method, where 1 is the lowest quality and 51
             is the highest. Higher values spend more bits to preserve quality.
-            @note{This option only applies to AMD [encoders](#encoder) with `amd_rc` set to `qvbr`. Native `amdvce_experimental` automatically enables PreAnalysis with a one-frame low-latency lookahead for `qvbr`, `hqvbr`, and `hqcbr`.}
+            @note{This option only applies to AMD [encoders](#encoder) with `amd_rc` set to `qvbr`. The encoder automatically enables PreAnalysis with a one-frame low-latency lookahead for `qvbr`, `hqvbr`, and `hqcbr`.}
             @note{Leave this at `0` to keep the encoder default.}
         </td>
     </tr>
@@ -3775,9 +3758,8 @@ runtime version is written to the log on every AMD HDR HEVC attempt (search for
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Preanalysis can increase encoding quality at the cost of latency. Native `amdvce_experimental` uses a one-frame
-            low-latency lookahead; it is enabled automatically by `qvbr`, `hqvbr`, and `hqcbr`. The setting is
-            also forwarded to `amdvce_ffmpeg`.
+            Preanalysis can increase encoding quality at the cost of latency. The encoder uses a one-frame
+            low-latency lookahead; it is enabled automatically by `qvbr`, `hqvbr`, and `hqcbr`.
         </td>
     </tr>
     <tr>
@@ -3879,7 +3861,7 @@ runtime version is written to the log on every AMD HDR HEVC attempt (search for
         <td colspan="2">
             Enable AV1 screen-content coding tools, which can improve efficiency and text/UI clarity for desktop and
             screen-heavy content.
-            @note{AV1 only. This option only applies to the native amdvce_experimental [encoder](#encoder) (not amdvce_ffmpeg).}
+            @note{AV1 only.}
             @note{Leave at `auto` to use the driver default.}
         </td>
     </tr>
@@ -3912,7 +3894,7 @@ runtime version is written to the log on every AMD HDR HEVC attempt (search for
 
 ### amd_av1_tiles
 
-Experimental AV1 tile-count override for the native `amdvce` encoder only. Set this in `sunshine.conf`.
+Experimental AV1 tile-count override for the `amdvce` encoder. Set this in `sunshine.conf`.
 
 | Value | Behavior |
 | --- | --- |
@@ -3920,7 +3902,7 @@ Experimental AV1 tile-count override for the native `amdvce` encoder only. Set t
 | `1`, `2`, `4` | Request this many AV1 tiles, overriding the client request. |
 
 Example: `amd_av1_tiles = 2`. Reconnect the stream after changing this setting.
-Invalid values fall back to `0`. This does not affect H.264, HEVC or `amdvce_legacy`.
+Invalid values fall back to `0`. This does not affect H.264 or HEVC.
 
 AMF may adjust the requested tile count for its supported layout. The session log reports the request and
 the driver-reported count **after encoder initialization**; these are not a bitstream inspection or proof
@@ -3940,7 +3922,7 @@ distribution, not only a single maximum. Restore `0` if there is no repeatable b
         <td>Description</td>
         <td colspan="2">
             AV1 encoding-latency tier. Lower tiers finish each frame faster at the cost of higher power draw.
-            @note{AV1 only. This option only applies to the native amdvce_experimental [encoder](#encoder) (not amdvce_ffmpeg).}
+            @note{AV1 only.}
             @note{Leave at `auto` to use the driver default.}
         </td>
     </tr>

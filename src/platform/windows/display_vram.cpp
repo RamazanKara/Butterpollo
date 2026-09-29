@@ -2058,36 +2058,13 @@ namespace platf::dxgi {
   class d3d_avcodec_encode_device_t: public avcodec_encode_device_t {
   public:
     int init(std::shared_ptr<platf::display_t> display, adapter_t::pointer adapter_p, pix_fmt_e pix_fmt) {
-      if (!prepare_device(std::move(display), adapter_p, pix_fmt)) return -1;
-      return initialize_hardware_device() ? 0 : -1;
-    }
-
-    bool prepare_device(std::shared_ptr<platf::display_t> display, adapter_t::pointer adapter_p, pix_fmt_e pix_fmt) {
-      if (!adapter_p || !base.prepare_display_lease(std::move(display))) return false;
+      if (!adapter_p || !base.prepare_display_lease(std::move(display))) return -1;
       adapter_p->GetDesc(&adapter_desc);
-      adapter_p->AddRef();
-      initialization_adapter.reset(adapter_p);
-      buffer_format = pix_fmt;
-      return true;
-    }
-
-    bool initialize_hardware_device() override {
-      if (data) return true;
-      if (!initialization_adapter || base.init(nullptr, initialization_adapter.get(), buffer_format) != 0) {
-        return false;
+      if (base.init(nullptr, adapter_p, pix_fmt) != 0) {
+        return -1;
       }
       data = base.device.get();
-      initialization_adapter.reset();
-      return true;
-    }
-
-    std::shared_ptr<platf::display_t> release_display_lease_for_initialization() override {
-      return base.release_display_lease_for_initialization();
-    }
-
-    void restore_display_lease_after_initialization(std::shared_ptr<platf::display_t> display) override {
-      base.restore_display_lease_after_initialization(
-        std::dynamic_pointer_cast<display_base_t>(std::move(display)));
+      return 0;
     }
 
     bool is_codec_supported(std::string_view name, const ::video::config_t &config) override {
@@ -2174,9 +2151,7 @@ namespace platf::dxgi {
   private:
     d3d_base_encode_device base;
     frame_t hwframe;
-    adapter_t initialization_adapter;
     DXGI_ADAPTER_DESC adapter_desc {};
-    pix_fmt_e buffer_format = pix_fmt_e::unknown;
   };
 
   class d3d_nvenc_encode_device_t: public nvenc_encode_device_t {
@@ -2318,8 +2293,7 @@ namespace platf::dxgi {
                       << '@' << client_config.framerate << " codec=" << client_config.videoFormat
                       << " bitrate=" << client_config.bitrate << "kbps (active=" << active_encoder_count << ')';
 
-      // AMF SDK integer values are passed straight through from the existing
-      // amd_* config (shared with the FFmpeg amdvce_ffmpeg path).
+      // AMF SDK integer values are passed straight through from the amd_* config.
       if (client_config.videoFormat == 0) {
         amf_cfg.usage = config::video.amd.amd_usage_h264;
         amf_cfg.quality_preset = config::video.amd.amd_quality_h264;
@@ -3486,12 +3460,6 @@ namespace platf::dxgi {
       if (!boost::algorithm::ends_with(name, "_nvenc")) {
         return false;
       }
-    } else if (adapter_desc.VendorId == 0x4D4F4351 ||  // Qualcomm (QCOM as MOQC reversed)
-               adapter_desc.VendorId == 0x5143) {  // Qualcomm alternate ID
-      // If it's not a MediaFoundation encoder, it's not compatible with a Qualcomm GPU
-      if (!boost::algorithm::ends_with(name, "_mf")) {
-        return false;
-      }
     } else {
       BOOST_LOG(warning) << "Unknown GPU vendor ID: " << util::hex(adapter_desc.VendorId).to_string_view();
     }
@@ -3508,14 +3476,6 @@ namespace platf::dxgi {
   std::unique_ptr<avcodec_encode_device_t> display_vram_t::make_avcodec_encode_device(pix_fmt_e pix_fmt) {
     auto device = std::make_unique<d3d_avcodec_encode_device_t>();
     if (device->init(shared_from_this(), adapter.get(), pix_fmt) != 0) {
-      return nullptr;
-    }
-    return device;
-  }
-
-  std::unique_ptr<avcodec_encode_device_t> display_vram_t::make_deferred_avcodec_encode_device(pix_fmt_e pix_fmt) {
-    auto device = std::make_unique<d3d_avcodec_encode_device_t>();
-    if (!device->prepare_device(shared_from_this(), adapter.get(), pix_fmt)) {
       return nullptr;
     }
     return device;

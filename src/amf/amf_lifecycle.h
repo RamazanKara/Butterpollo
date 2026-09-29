@@ -226,32 +226,16 @@ namespace amf::lifecycle {
     bool release_notified = false;
   };
 
-  struct encoder_selection_policy_t {
-    bool include_experimental = false;
-    bool fail_closed = false;
-  };
-
+  // Native AMF is the only AMD encoder. The names of the retired FFmpeg AMF
+  // encoder and of the former experimental native encoder select it.
   inline constexpr std::string_view canonical_encoder_name(
     std::string_view requested_encoder) noexcept {
-    if (requested_encoder == "amdvce_legacy") {
-      return "amdvce_ffmpeg";
-    }
-    if (requested_encoder == "amdvce") {
-      return "amdvce_experimental";
+    if (requested_encoder == "amdvce_experimental" ||
+        requested_encoder == "amdvce_ffmpeg" ||
+        requested_encoder == "amdvce_legacy") {
+      return "amdvce";
     }
     return requested_encoder;
-  }
-
-  inline constexpr encoder_selection_policy_t encoder_selection_policy(
-    std::string_view requested_encoder) noexcept {
-    // The FFmpeg AMF implementation is the supported default. The native AMF
-    // implementation has limited hardware coverage and is only considered when
-    // the user explicitly opts into the experimental encoder.
-    const auto canonical_encoder = canonical_encoder_name(requested_encoder);
-    return {
-      canonical_encoder == "amdvce_experimental",
-      canonical_encoder == "amdvce_experimental",
-    };
   }
 
   inline constexpr int hevc_gdr_gop_frames = 120;

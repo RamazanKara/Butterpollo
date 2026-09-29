@@ -66,21 +66,6 @@ extern "C" {
   #include "src/platform/windows/virtual_display.h"
   #include "uuid.h"
 
-  #include <AMF/core/Context.h>
-  #include <AMF/core/Debug.h>
-  #include <AMF/core/Factory.h>
-  #include <AMF/core/Trace.h>
-
-  // These using-declarations must sit between the AMF headers above and
-  // hwcontext_amf.h below, and must stay outside the extern "C" block. hwcontext_amf.h
-  // refers to the AMF types unqualified, but the AMF headers that define them are C++
-  // (namespace amf), so they cannot be pulled in with C linkage. Do not reorder.
-  using amf::AMFContext;
-  using amf::AMFFactory;
-  using amf::AMF_MEMORY_TYPE;
-  using amf::AMF_SURFACE_FORMAT;
-  #include <libavutil/hwcontext_amf.h>
-
 extern "C" {
   #include <libavutil/hwcontext_d3d11va.h>
 }
@@ -801,9 +786,9 @@ namespace video {
       append_optional("amd_av1_screen", config::video.amd.amd_av1_screen_content);
       append_optional("amd_av1_latency", config::video.amd.amd_av1_latency_mode);
       // Quarantine changes encoder selection, so it belongs in the key. Once the
-      // gate latches, `amdvce_experimental` can no longer build a session; a cached success
+      // gate latches, `amdvce` can no longer build a session; a cached success
       // from before the quarantine would keep handing back `chosen_encoder =
-      // &amdvce_experimental` and every later stream would end before its first packet, even
+      // &amdvce` and every later stream would end before its first packet, even
       // though the software encoder would have validated. Re-key so the next
       // probe re-runs and selection can degrade to software as designed.
       oss << "|amf_quarantined=" << (native_amf_lifecycle_gate.is_quarantined() ? 1 : 0);
@@ -1177,7 +1162,6 @@ namespace video {
     ALWAYS_REPROBE = 1 << 9,  ///< This is an encoder of last resort and we want to aggressively probe for a better one
     YUV444_SUPPORT = 1 << 10,  ///< Encoder may support 4:4:4 chroma sampling depending on hardware
     ASYNC_TEARDOWN = 1 << 11,  ///< Encoder supports async teardown on a different thread
-    FIXED_GOP_SIZE = 1 << 12,  ///< Use fixed small GOP size (encoder doesn't support on-demand IDR frames)
     OWNER_THREAD_TEARDOWN = 1 << 13,  ///< Conversion resources require their current graphics context during destruction
   };
 
@@ -1195,9 +1179,9 @@ namespace video {
 
     ~avcodec_encode_session_t() {
       // Don't drain the encoder before freeing it. The drained packets are discarded anyway,
-      // and FFmpeg's AMF backend waits on the driver without a deadline while draining — a
-      // wedged AMF runtime turns that into a permanent hang on the session teardown path
-      // (vibeshine#187). avcodec_free_context() is documented to be safe without a drain.
+      // and a wedged driver can make the drain wait without a deadline, turning the
+      // session teardown path into a permanent hang (vibeshine#187).
+      // avcodec_free_context() is documented to be safe without a drain.
 
       // Order matters here because the context relies on the hwdevice still being valid
       avcodec_ctx.reset();
@@ -1276,14 +1260,6 @@ namespace video {
         clm->MaxCLL = metadata.maxContentLightLevel;
         clm->MaxFALL = metadata.maxFrameAverageLightLevel;
       }
-    }
-
-    void restore_display_lease_after_initialization(std::shared_ptr<platf::display_t> display) {
-      if (device) device->restore_display_lease_after_initialization(std::move(display));
-    }
-
-    std::shared_ptr<platf::display_t> release_display_lease_for_driver_work() {
-      return device ? device->release_display_lease_for_initialization() : nullptr;
     }
 
     avcodec_ctx_t avcodec_ctx;
@@ -2260,14 +2236,12 @@ namespace video {
     PARALLEL_ENCODING | CBR_WITH_VBR | RELAXED_COMPLIANCE | NO_RC_BUF_LIMIT | YUV444_SUPPORT
   };
 
-  // Experimental native AMD AMF encoder (src/amf/amf_d3d11.cpp). Bypasses the
-  // FFmpeg AMF wrapper for direct AMF SDK access: D3D11 zero-copy input, reference-frame
-  // invalidation and HDR metadata. Selecting amdvce_experimental is a strict native-AMF
-  // contract: feature, initialization, or runtime failures are reported instead
-  // of silently changing encoder implementations. It is excluded from automatic
-  // probing because hardware and driver coverage is currently limited.
-  encoder_t amdvce_experimental {
-    "amdvce_experimental"sv,
+  // Native AMD AMF encoder (src/amf/amf_d3d11.cpp): direct AMF SDK access with
+  // D3D11 zero-copy input, reference-frame invalidation and HDR metadata. It is the
+  // only AMD encoder. When it cannot initialize, AMD has no hardware encoder and
+  // probing falls back to software.
+  encoder_t amdvce {
+    "amdvce"sv,
     std::make_unique<encoder_platform_formats_amf>(
       platf::mem_type_e::dxgi,
       platf::pix_fmt_e::nv12,
@@ -2310,207 +2284,6 @@ namespace video {
     PARALLEL_ENCODING | REF_FRAMES_INVALIDATION | ASYNC_TEARDOWN  // flags
   };
 
-  // Supported FFmpeg-based AMF encoder. Its explicit name identifies the
-  // implementation, and it is the AMD encoder selected by automatic probing.
-  encoder_t amdvce_ffmpeg {
-    "amdvce_ffmpeg"sv,
-    std::make_unique<encoder_platform_formats_avcodec>(
-      AV_HWDEVICE_TYPE_D3D11VA,
-      AV_HWDEVICE_TYPE_NONE,
-      AV_PIX_FMT_D3D11,
-      AV_PIX_FMT_NV12,
-      AV_PIX_FMT_P010,
-      AV_PIX_FMT_NONE,
-      AV_PIX_FMT_NONE,
-      dxgi_init_avcodec_hardware_input_buffer
-    ),
-    {
-      // Common options
-      {
-        {"filler_data"s, false},
-        {"forced_idr"s, 1},
-        {"latency"s, "lowest_latency"s},
-        {"async_depth"s, 1},
-        {"skip_frame"s, 0},
-        {"log_to_dbg"s, []() {
-           return config::sunshine.min_log_level < 2 ? 1 : 0;
-         }},
-        {"preanalysis"s, []() {
-           return amf::lifecycle::resolve_preanalysis(
-                    config::video.amd.amd_rc_av1,
-                    config::video.amd.amd_preanalysis)
-             .enabled ? 1 : 0;
-         }},
-        {"quality"s, &config::video.amd.amd_quality_av1},
-        {"rc"s, &config::video.amd.amd_rc_av1},
-        {"aq_mode"s, encoder_t::option_t::optional_int_function_t {[]() -> std::optional<int> {
-           if (!amf::lifecycle::rate_control_supports_adaptive_quantization(config::video.amd.amd_rc_av1)) {
-             return 0;
-           }
-           if (!config::video.amd.amd_vbaq) return std::nullopt;
-           return *config::video.amd.amd_vbaq ? 1 : 0;  // AMF AV1 CAQ / none
-         }}},
-        {"qvbr_quality_level"s, &config::video.amd.amd_qvbr_quality_level},
-        {"usage"s, &config::video.amd.amd_usage_av1},
-        {"enforce_hrd"s, &config::video.amd.amd_enforce_hrd},
-      },
-      {},  // SDR-specific options
-      {},  // HDR-specific options
-      {},  // YUV444 SDR-specific options
-      {},  // YUV444 HDR-specific options
-      {},  // Fallback options
-      "av1_amf"s,
-    },
-    {
-      // Common options
-      {
-        {"filler_data"s, false},
-        {"forced_idr"s, 1},
-        {"latency"s, 1},
-        {"async_depth"s, 1},
-        {"skip_frame"s, 0},
-        {"log_to_dbg"s, []() {
-           return config::sunshine.min_log_level < 2 ? 1 : 0;
-         }},
-        {"gops_per_idr"s, 1},
-        {"header_insertion_mode"s, "idr"s},
-        {"preanalysis"s, []() {
-           return amf::lifecycle::resolve_preanalysis(
-                    config::video.amd.amd_rc_hevc,
-                    config::video.amd.amd_preanalysis)
-             .enabled ? 1 : 0;
-         }},
-        {"quality"s, &config::video.amd.amd_quality_hevc},
-        {"rc"s, &config::video.amd.amd_rc_hevc},
-        {"qvbr_quality_level"s, &config::video.amd.amd_qvbr_quality_level},
-        {"usage"s, &config::video.amd.amd_usage_hevc},
-        {"vbaq"s, encoder_t::option_t::optional_int_function_t {[]() -> std::optional<int> {
-           if (!amf::lifecycle::rate_control_supports_adaptive_quantization(config::video.amd.amd_rc_hevc)) {
-             return 0;
-           }
-           return config::video.amd.amd_vbaq;
-         }}},
-        {"enforce_hrd"s, &config::video.amd.amd_enforce_hrd},
-        {"level"s, [](const config_t &cfg) {
-           auto size = cfg.width * cfg.height;
-           // For 4K and below, try to use level 5.1 or 5.2 if possible
-           if (size <= 8912896) {
-             if (size * cfg.framerate <= 534773760) {
-               return "5.1"s;
-             } else if (size * cfg.framerate <= 1069547520) {
-               return "5.2"s;
-             }
-           }
-           return "auto"s;
-         }},
-      },
-      {},  // SDR-specific options
-      {},  // HDR-specific options
-      {},  // YUV444 SDR-specific options
-      {},  // YUV444 HDR-specific options
-      {},  // Fallback options
-      "hevc_amf"s,
-    },
-    {
-      // Common options
-      {
-        {"filler_data"s, false},
-        {"forced_idr"s, 1},
-        {"latency"s, 1},
-        {"async_depth"s, 1},
-        {"frame_skipping"s, 0},
-        {"log_to_dbg"s, []() {
-           return config::sunshine.min_log_level < 2 ? 1 : 0;
-         }},
-        {"preanalysis"s, []() {
-           return amf::lifecycle::resolve_preanalysis(
-                    config::video.amd.amd_rc_h264,
-                    config::video.amd.amd_preanalysis)
-             .enabled ? 1 : 0;
-         }},
-        {"quality"s, &config::video.amd.amd_quality_h264},
-        {"rc"s, &config::video.amd.amd_rc_h264},
-        {"qvbr_quality_level"s, &config::video.amd.amd_qvbr_quality_level},
-        {"usage"s, &config::video.amd.amd_usage_h264},
-        {"vbaq"s, encoder_t::option_t::optional_int_function_t {[]() -> std::optional<int> {
-           if (!amf::lifecycle::rate_control_supports_adaptive_quantization(config::video.amd.amd_rc_h264)) {
-             return 0;
-           }
-           return config::video.amd.amd_vbaq;
-         }}},
-        {"enforce_hrd"s, &config::video.amd.amd_enforce_hrd},
-      },
-      {},  // SDR-specific options
-      {},  // HDR-specific options
-      {},  // YUV444 SDR-specific options
-      {},  // YUV444 HDR-specific options
-      {
-        // Fallback options
-        {"usage"s, 2 /* AMF_VIDEO_ENCODER_USAGE_LOW_LATENCY */},  // Workaround for https://github.com/GPUOpen-LibrariesAndSDKs/AMF/issues/410
-      },
-      "h264_amf"s,
-    },
-    // ASYNC_TEARDOWN: like NVENC, a hung AMF session must not stall the encoder thread on
-    // mid-stream reinit; the bounded sync teardown in encode_run covers shutdown/reinit.
-    PARALLEL_ENCODING | ASYNC_TEARDOWN
-  };
-
-  encoder_t mediafoundation {
-    "mediafoundation"sv,
-    std::make_unique<encoder_platform_formats_avcodec>(
-      AV_HWDEVICE_TYPE_D3D11VA,
-      AV_HWDEVICE_TYPE_NONE,
-      AV_PIX_FMT_D3D11,
-      AV_PIX_FMT_NV12,  // SDR 4:2:0 8-bit (only format Qualcomm supports)
-      AV_PIX_FMT_NONE,  // No HDR - Qualcomm MF only supports 8-bit
-      AV_PIX_FMT_NONE,  // No YUV444 SDR
-      AV_PIX_FMT_NONE,  // No YUV444 HDR
-      dxgi_init_avcodec_hardware_input_buffer
-    ),
-    {
-      // Common options for AV1 - Qualcomm MF encoder
-      {
-        {"hw_encoding"s, 1},
-        {"rate_control"s, "cbr"s},
-        {"scenario"s, "display_remoting"s},
-      },
-      {},  // SDR-specific options
-      {},  // HDR-specific options
-      {},  // YUV444 SDR-specific options
-      {},  // YUV444 HDR-specific options
-      {},  // Fallback options
-      "av1_mf"s,
-    },
-    {
-      // Common options for HEVC - Qualcomm MF encoder
-      {
-        {"hw_encoding"s, 1},
-        {"rate_control"s, "cbr"s},
-        {"scenario"s, "display_remoting"s},
-      },
-      {},  // SDR-specific options
-      {},  // HDR-specific options
-      {},  // YUV444 SDR-specific options
-      {},  // YUV444 HDR-specific options
-      {},  // Fallback options
-      "hevc_mf"s,
-    },
-    {
-      // Common options for H.264 - Qualcomm MF encoder
-      {
-        {"hw_encoding"s, 1},
-        {"rate_control"s, "cbr"s},
-        {"scenario"s, "display_remoting"s},
-      },
-      {},  // SDR-specific options
-      {},  // HDR-specific options
-      {},  // YUV444 SDR-specific options
-      {},  // YUV444 HDR-specific options
-      {},  // Fallback options
-      "h264_mf"s,
-    },
-    PARALLEL_ENCODING | FIXED_GOP_SIZE  // MF encoder doesn't support on-demand IDR frames
-  };
 #endif
 
   encoder_t software {
@@ -2827,9 +2600,7 @@ namespace video {
 #endif
 #ifdef _WIN32
     &quicksync,
-    &amdvce_ffmpeg,
-    &amdvce_experimental,
-    &mediafoundation,
+    &amdvce,
 #endif
 #if defined(__linux__) || defined(linux) || defined(__linux) || defined(__FreeBSD__)
   #ifdef SUNSHINE_BUILD_VULKAN
@@ -4009,152 +3780,6 @@ namespace video {
   }
 #endif
 
-#ifdef _WIN32
-  struct amf_main10_compatibility_override_t {
-    avcodec_buffer_t device_ref;
-    AVAMFDeviceContext *device_context;
-    std::int64_t runtime_version;
-  };
-
-  // AMF packs a version as major << 48 | minor << 32 | release << 16 | build, with each
-  // field 16 bits wide (see AMF/core/Version.h). Decode it so logs are human-readable.
-  static std::string describe_amf_version(std::int64_t version) {
-    std::ostringstream description;
-    description << AMF_GET_MAJOR_VERSION(version) << '.'
-                << AMF_GET_MINOR_VERSION(version) << '.'
-                << AMF_GET_SUBMINOR_VERSION(version) << '.'
-                << AMF_GET_BUILD_VERSION(version);
-    return description.str();
-  }
-
-  // FFmpeg exposes the AMF runtime version only once a device context exists, and that
-  // context is derived for the validated adapter alone. Query the runtime directly so
-  // every AMD HEVC Main10 attempt records the version the decision was made against,
-  // whichever way the decision goes.
-  static void log_amf_runtime_version(const DXGI_ADAPTER_DESC &adapter_desc) {
-    HMODULE amfrt = LoadLibraryW(AMF_DLL_NAME);
-    if (!amfrt) {
-      BOOST_LOG(info) << "AMF Main10 override: " << AMF_DLL_NAMEA << " could not be loaded; AMF runtime version unknown.";
-      return;
-    }
-
-    auto unload_amfrt = util::fail_guard([amfrt]() {
-      FreeLibrary(amfrt);
-    });
-
-    auto query_version = (AMFQueryVersion_Fn) GetProcAddress(amfrt, AMF_QUERY_VERSION_FUNCTION_NAME);
-    amf_uint64 version = 0;
-    if (!query_version || query_version(&version) != AMF_OK) {
-      BOOST_LOG(info) << "AMF Main10 override: " << AMF_QUERY_VERSION_FUNCTION_NAME
-                      << "() unavailable or failed; AMF runtime version unknown.";
-      return;
-    }
-
-    BOOST_LOG(info) << "AMF Main10 override: AMF runtime version "
-                    << describe_amf_version(static_cast<std::int64_t>(version)) << " on adapter "
-                    << std::hex << adapter_desc.VendorId << ':' << adapter_desc.DeviceId << std::dec << '.';
-  }
-
-  static std::optional<amf_main10_compatibility_override_t> enable_amf_main10_compatibility_override(
-    AVCodecContext *codec_context,
-    AVBufferRef *d3d_device_ref
-  ) {
-    constexpr UINT kAmdVendorId = 0x1002;
-    constexpr UINT kRadeonPro5500XtDeviceId = 0x7340;
-    // Only the low 16 bits of the packed version hold the build number, so masking them
-    // off compares major.minor.release alone. FFmpeg's amfenc P010 guard is a blanket
-    // ">= 1.4.32" check, so every 1.4.31.x build is refused identically and needs the
-    // same override; masking keeps 1.4.31.5 from silently falling through. Runtimes at
-    // 1.4.32.0 or newer mask to a different value and are correctly left alone.
-    constexpr std::int64_t kBuildFieldMask = 0xFFFF;
-    constexpr std::int64_t kCompatibleRuntime = AMF_MAKE_FULL_VERSION(1, 4, 31, 0);
-    constexpr std::int64_t kFfmpegMain10Minimum = AMF_MAKE_FULL_VERSION(1, 4, 32, 0);
-
-    if (!codec_context || !d3d_device_ref || !d3d_device_ref->data) {
-      return std::nullopt;
-    }
-
-    auto *device_context = reinterpret_cast<AVHWDeviceContext *>(d3d_device_ref->data);
-    if (device_context->type != AV_HWDEVICE_TYPE_D3D11VA) {
-      return std::nullopt;
-    }
-
-    auto *d3d_context = reinterpret_cast<AVD3D11VADeviceContext *>(device_context->hwctx);
-    if (!d3d_context || !d3d_context->device) {
-      return std::nullopt;
-    }
-
-    platf::dxgi::dxgi_t dxgi_device;
-    using dxgi_adapter_t = util::safe_ptr<IDXGIAdapter, platf::dxgi::Release<IDXGIAdapter>>;
-    dxgi_adapter_t dxgi_adapter;
-    if (FAILED(d3d_context->device->QueryInterface(IID_PPV_ARGS(&dxgi_device))) ||
-        FAILED(dxgi_device->GetAdapter(&dxgi_adapter))) {
-      return std::nullopt;
-    }
-
-    DXGI_ADAPTER_DESC adapter_desc {};
-    if (FAILED(dxgi_adapter->GetDesc(&adapter_desc))) {
-      return std::nullopt;
-    }
-
-    log_amf_runtime_version(adapter_desc);
-
-    // Fail closed on anything but the one adapter this workaround has been validated
-    // against, before an AMF device context is derived.
-    if (adapter_desc.VendorId != kAmdVendorId || adapter_desc.DeviceId != kRadeonPro5500XtDeviceId) {
-      BOOST_LOG(info) << "AMF Main10 override: adapter " << std::hex << adapter_desc.VendorId << ':'
-                      << adapter_desc.DeviceId << std::dec
-                      << " is not the validated Radeon Pro 5500 XT (1002:7340); leaving FFmpeg's AMF Main10 gate untouched.";
-      return std::nullopt;
-    }
-
-    avcodec_buffer_t amf_device_ref;
-    if (auto status = av_hwdevice_ctx_create_derived(&amf_device_ref, AV_HWDEVICE_TYPE_AMF, d3d_device_ref, 0)) {
-      char err_str[AV_ERROR_MAX_STRING_SIZE] {0};
-      BOOST_LOG(warning) << "AMF Main10 override: failed to derive AMF device context for Radeon Pro 5500 XT Main10 compatibility: "
-                         << av_make_error_string(err_str, AV_ERROR_MAX_STRING_SIZE, status);
-      return std::nullopt;
-    }
-
-    auto *amf_hw_device = reinterpret_cast<AVHWDeviceContext *>(amf_device_ref->data);
-    if (!amf_hw_device || amf_hw_device->type != AV_HWDEVICE_TYPE_AMF) {
-      return std::nullopt;
-    }
-
-    auto *amf_context = reinterpret_cast<AVAMFDeviceContext *>(amf_hw_device->hwctx);
-    if (!amf_context) {
-      return std::nullopt;
-    }
-
-    const auto runtime_version = amf_context->version;
-    if ((runtime_version & ~kBuildFieldMask) != kCompatibleRuntime) {
-      BOOST_LOG(info) << "AMF Main10 override: AMF runtime " << describe_amf_version(runtime_version)
-                      << " is outside the targeted 1.4.31.x range (FFmpeg requires "
-                      << describe_amf_version(kFfmpegMain10Minimum)
-                      << " for P010); leaving FFmpeg's AMF Main10 gate untouched.";
-      return std::nullopt;
-    }
-
-    codec_context->hw_device_ctx = av_buffer_ref(amf_device_ref.get());
-    if (!codec_context->hw_device_ctx) {
-      return std::nullopt;
-    }
-
-    // FFmpeg applies its 1.4.32 guard to every P010 encoder, but issue artifacts
-    // prove this exact adapter/runtime tuple can stream HEVC Main10. Present the
-    // guarded version only during codec validation, then restore the real value.
-    amf_context->version = kFfmpegMain10Minimum;
-    BOOST_LOG(info) << "AMF Main10 override: reporting AMF " << describe_amf_version(kFfmpegMain10Minimum)
-                    << " to FFmpeg during codec validation (real runtime " << describe_amf_version(runtime_version)
-                    << ") so HEVC Main10/HDR is not refused.";
-    return amf_main10_compatibility_override_t {
-      std::move(amf_device_ref),
-      amf_context,
-      runtime_version
-    };
-  }
-#endif
-
   std::unique_ptr<avcodec_encode_session_t> make_avcodec_encode_session(
     platf::display_t *disp,
     const encoder_t &encoder,
@@ -4194,10 +3819,6 @@ namespace video {
     }
 
     auto colorspace = encode_device->colorspace;
-    if (!encode_device->initialize_hardware_device()) {
-      BOOST_LOG(error) << encoder.name << ": failed to initialize the hardware encode device"sv;
-      return nullptr;
-    }
     auto sw_fmt = (colorspace.bit_depth == 8 && config.chromaSamplingType == 0)  ? platform_formats->avcodec_pix_fmt_8bit :
                   (colorspace.bit_depth == 8 && config.chromaSamplingType == 1)  ? platform_formats->avcodec_pix_fmt_yuv444_8bit :
                   (colorspace.bit_depth == 10 && config.chromaSamplingType == 0) ? platform_formats->avcodec_pix_fmt_10bit :
@@ -4211,20 +3832,6 @@ namespace video {
     // to try applying each set.
     avcodec_ctx_t ctx;
     for (int retries = 0; retries < 2; retries++) {
-#ifdef _WIN32
-      std::optional<amf_main10_compatibility_override_t> amf_main10_compatibility_override;
-      // The override mutates AMF runtime state that must be handed back before this
-      // iteration ends, and avcodec_open2() is several hundred lines away with option
-      // handling in between. Tie the restore to the iteration scope so the fallback
-      // retry, the early return and any exception all restore the real version.
-      auto restore_amf_main10_compatibility_override = util::fail_guard([&amf_main10_compatibility_override]() {
-        if (amf_main10_compatibility_override) {
-          amf_main10_compatibility_override->device_context->version =
-            amf_main10_compatibility_override->runtime_version;
-          amf_main10_compatibility_override.reset();
-        }
-      });
-#endif
       ctx.reset(avcodec_alloc_context3(codec));
       ctx->width = config.width;
       ctx->height = config.height;
@@ -4263,17 +3870,10 @@ namespace video {
       ctx->max_b_frames = 0;
 
       // Use an infinite GOP length since I-frames are generated on demand
-      // Exception: encoders with FIXED_GOP_SIZE flag don't support on-demand IDR
-      if (encoder.flags & FIXED_GOP_SIZE) {
-        // Fixed GOP for encoders that don't support on-demand IDR (e.g. Media Foundation)
-        ctx->gop_size = 120;  // ~2 seconds at 60 FPS - larger to reduce oversized IDR frame frequency
-        ctx->keyint_min = 120;
-      } else {
-        ctx->gop_size = encoder.flags & LIMITED_GOP_SIZE ?
-                          std::numeric_limits<std::int16_t>::max() :
-                          std::numeric_limits<int>::max();
-        ctx->keyint_min = std::numeric_limits<int>::max();
-      }
+      ctx->gop_size = encoder.flags & LIMITED_GOP_SIZE ?
+                        std::numeric_limits<std::int16_t>::max() :
+                        std::numeric_limits<int>::max();
+      ctx->keyint_min = std::numeric_limits<int>::max();
 
       // Some client decoders have limits on the number of reference frames
       if (config.numRefFrames) {
@@ -4352,18 +3952,6 @@ namespace video {
 
           ctx->hw_frames_ctx = av_buffer_ref(frame_ref.get());
         }
-
-#ifdef _WIN32
-        // Only the FFmpeg-based rollback encoder reaches this function; native
-        // "amdvce_experimental" builds on encoder_platform_formats_amf and never gets here.
-        if (encoder.name == "amdvce_ffmpeg"sv &&
-            config.videoFormat == 1 &&
-            config.dynamicRange &&
-            sw_fmt == AV_PIX_FMT_P010) {
-          amf_main10_compatibility_override =
-            enable_amf_main10_compatibility_override(ctx.get(), encoding_stream_context.get());
-        }
-#endif
 
         ctx->slices = config.slicesPerFrame;
       } else /* software */ {
@@ -4812,13 +4400,6 @@ namespace video {
     return nullptr;
   }
 
-  std::unique_ptr<platf::encode_device_t> make_encode_device(
-    platf::display_t &disp,
-    const encoder_t &encoder,
-    const config_t &config,
-    hdr_latch_t *hdr_latch,
-    bool deferred_avcodec);
-
   void abandon_quarantined_session(
     std::unique_ptr<encode_session_t> &session,
     std::shared_ptr<platf::display_t> display_lease = {}) {
@@ -4907,155 +4488,6 @@ namespace video {
       (void) deferred->owned.release();
     }
   }
-
-#ifdef _WIN32
-  struct legacy_amf_session_bundle_t {
-    std::unique_ptr<encode_session_t> session;
-    bool hdr_metadata_valid = false;
-    SS_HDR_METADATA hdr_metadata {};
-    hdr_latch_t hdr_latch {};
-  };
-
-  std::optional<legacy_amf_session_bundle_t> make_legacy_amf_session_bounded(
-    std::shared_ptr<platf::display_t> disp,
-    const config_t &config,
-    int width,
-    int height,
-    hdr_latch_t *hdr_latch,
-    std::chrono::steady_clock::time_point deadline,
-    const initialization_cancel_t &cancelled,
-    bool &operation_cancelled,
-    bool &gate_contended) {
-    operation_cancelled = false;
-    gate_contended = false;
-    if (!disp || native_amf_lifecycle_gate.is_quarantined()) {
-      return std::nullopt;
-    }
-
-    const auto gate_deadline = std::min(deadline, std::chrono::steady_clock::now() + 1s);
-    if (!acquire_amf_initialization_fence_until(gate_deadline, cancelled)) {
-      operation_cancelled = cancelled();
-      gate_contended = !operation_cancelled && !native_amf_lifecycle_gate.is_quarantined();
-      BOOST_LOG(error) << "AMF: FFmpeg initialization could not acquire the AMD runtime fence before the session deadline"sv;
-      return std::nullopt;
-    }
-    if (cancelled()) {
-      operation_cancelled = true;
-      native_amf_lifecycle_gate.cancel_initialization();
-      return std::nullopt;
-    }
-    if (deadline - std::chrono::steady_clock::now() < 1s) {
-      gate_contended = true;
-      native_amf_lifecycle_gate.cancel_initialization();
-      BOOST_LOG(warning) << "AMF: FFmpeg initialization skipped because gate contention left less than one second of vendor budget"sv;
-      return std::nullopt;
-    }
-
-    auto local_latch = hdr_latch ? *hdr_latch : hdr_latch_t {};
-    auto base_device = make_encode_device(*disp, amdvce_ffmpeg, config, &local_latch, true);
-    auto prepared_device = boost::dynamic_pointer_cast<platf::avcodec_encode_device_t>(std::move(base_device));
-    if (!prepared_device) {
-      native_amf_lifecycle_gate.cancel_initialization();
-      return std::nullopt;
-    }
-
-    legacy_amf_session_bundle_t prepared_bundle;
-    prepared_bundle.hdr_metadata_valid = prepared_device->hdr_metadata_valid;
-    prepared_bundle.hdr_metadata = prepared_device->hdr_metadata;
-    prepared_bundle.hdr_latch = local_latch;
-    auto display_lease = prepared_device->release_display_lease_for_initialization();
-    auto handoff = std::make_shared<amf::lifecycle::worker_handoff_t<legacy_amf_session_bundle_t>>();
-    std::thread initialization_thread;
-    try {
-      initialization_thread = std::thread {
-        [config, width, height, prepared_device = std::move(prepared_device), prepared_bundle = std::move(prepared_bundle), handoff]() mutable {
-          bool gate_finished = false;
-          auto gate_cleanup = util::fail_guard([&gate_finished]() {
-            if (!gate_finished) {
-              native_amf_lifecycle_gate.cancel_initialization();
-            }
-          });
-          try {
-            if (prepared_device->is_codec_supported(amdvce_ffmpeg.codec_from_config(config).name, config)) {
-              prepared_bundle.session = make_encode_session(
-                nullptr, amdvce_ffmpeg, config, width, height, std::move(prepared_device));
-            }
-            const bool initialized = static_cast<bool>(prepared_bundle.session);
-            const bool accepted = handoff->publish(std::move(prepared_bundle));
-            gate_finished = initialized && accepted;
-          } catch (...) {
-            handoff->publish(legacy_amf_session_bundle_t {});
-          }
-        }
-      };
-    } catch (const std::system_error &err) {
-      native_amf_lifecycle_gate.cancel_initialization();
-      BOOST_LOG(error) << "AMF: could not start FFmpeg initialization worker: " << err.what();
-      return std::nullopt;
-    }
-
-    bool handoff_cancelled = false;
-    auto accepted = handoff->accept_until(deadline, cancelled, &handoff_cancelled);
-    if (!accepted) {
-      operation_cancelled = handoff_cancelled;
-      if (!handoff_cancelled) {
-        native_amf_lifecycle_gate.quarantine_initialization();
-        BOOST_LOG(error) << "AMF: complete D3D/FFmpeg initialization exceeded the vendor deadline; worker will reap ownership"sv;
-      } else {
-        BOOST_LOG(info) << "AMF: FFmpeg initialization cancelled; worker will reap ownership without quarantining AMD"sv;
-      }
-      initialization_thread.detach();
-      return std::nullopt;
-    }
-
-    initialization_thread.join();
-    auto bundle = std::move(*accepted);
-    if (!bundle.session) return std::nullopt;
-    if (!native_amf_lifecycle_gate.finish_initialization()) {
-      // The caller owns the accepted value, but publication was fenced. Avoid
-      // entering a quarantined runtime from this thread.
-      bundle.session.release();
-      return std::nullopt;
-    }
-    if (auto *legacy_session = dynamic_cast<avcodec_encode_session_t *>(bundle.session.get())) {
-      legacy_session->restore_display_lease_after_initialization(std::move(display_lease));
-    }
-    if (hdr_latch) *hdr_latch = bundle.hdr_latch;
-    return bundle;
-  }
-
-  bool destroy_legacy_amf_session_bounded(std::unique_ptr<encode_session_t> &session, std::string_view reason) {
-    if (!session) return true;
-    auto display_lease = static_cast<avcodec_encode_session_t *>(session.get())->release_display_lease_for_driver_work();
-    const auto gate_deadline = std::chrono::steady_clock::now() + 5s;
-    switch (native_amf_lifecycle_gate.begin_teardown_until(gate_deadline)) {
-      case amf::lifecycle::teardown_admission_e::granted:
-        break;
-      case amf::lifecycle::teardown_admission_e::quarantined:
-        BOOST_LOG(error) << "AMF: abandoning the FFmpeg " << reason
-                         << " session because the AMD runtime is quarantined"sv;
-        abandon_quarantined_session(session, std::move(display_lease));
-        return false;
-      case amf::lifecycle::teardown_admission_e::contended:
-        defer_contended_amf_teardown(std::move(session), std::move(display_lease), reason);
-        return false;
-    }
-    // Fresh destruction budget once the fence is held — gate contention is
-    // not driver teardown time.
-    const bool completed = amf::lifecycle::run_with_timeout(
-      [session = std::move(session), display_lease = std::move(display_lease)]() mutable {
-        std::lock_guard lock {encode_session_teardown_mutex};
-        session.reset();
-        (void) display_lease;
-      },
-      5s);
-    native_amf_lifecycle_gate.finish_teardown(completed);
-    if (!completed) {
-      BOOST_LOG(error) << "AMF: FFmpeg " << reason << " teardown exceeded 5 seconds; quarantining AMD encoding"sv;
-    }
-    return completed;
-  }
-#endif
 
   bool destroy_encode_session_bounded(std::unique_ptr<encode_session_t> &session, std::string_view reason) {
     if (!session) {
@@ -5151,8 +4583,8 @@ namespace video {
                        &initialization_was_cancelled, &initialization_gate_contended);
 #ifdef _WIN32
     if (initialization_was_cancelled) return encode_run_result_e::completed;
-    if (!session && &encoder == &amdvce_experimental) {
-      BOOST_LOG(error) << "AMF: native session initialization failed; refusing silent amdvce_ffmpeg fallback"sv;
+    if (!session && &encoder == &amdvce) {
+      BOOST_LOG(error) << "AMF: native session initialization failed"sv;
     }
 #endif
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
@@ -5171,11 +4603,6 @@ namespace video {
 #ifdef SUNSHINE_ENABLE_PYROWAVE
     auto *const pyrowave_session = dynamic_cast<pyrowave_encode_session_t *>(session.get());
 #endif
-#ifdef _WIN32
-    const bool legacy_amf_session = session_encoder == &amdvce_ffmpeg;
-#else
-    const bool legacy_amf_session = false;
-#endif
     bool native_amf_runtime_failed = false;
     const auto session_encoder_flags = session_encoder->flags;
 
@@ -5189,7 +4616,7 @@ namespace video {
     // to restart encoding as soon as possible. For cases where the NVENC driver
     // hang occurs, this thread may probably never exit, but it will allow
     // streaming to continue without requiring a full restart of Sunshine.
-    auto fail_guard = util::fail_guard([session_encoder_flags, legacy_amf_session, &session, &force_sync_teardown, &reinit_event, shutdown_event] {
+    auto fail_guard = util::fail_guard([session_encoder_flags, &session, &force_sync_teardown, &reinit_event, shutdown_event] {
       if (session_encoder_flags & OWNER_THREAD_TEARDOWN) {
         // Linux GL conversion devices keep EGL current on this encoding
         // thread. A watchdog worker cannot unregister their CUDA resources or
@@ -5212,16 +4639,14 @@ namespace video {
         const bool native_amf_session = dynamic_cast<amf_encode_session_t *>(session.get()) != nullptr;
         auto display_lease = native_amf_session ?
                                static_cast<amf_encode_session_t *>(session.get())->release_display_lease_for_driver_work() :
-                             legacy_amf_session ?
-                               static_cast<avcodec_encode_session_t *>(session.get())->release_display_lease_for_driver_work() :
                                nullptr;
-        std::thread encoder_teardown_thread {[session = std::move(session), native_amf_session, legacy_amf_session, display_lease = std::move(display_lease)]() mutable {
+        std::thread encoder_teardown_thread {[session = std::move(session), native_amf_session, display_lease = std::move(display_lease)]() mutable {
           BOOST_LOG(info) << "Starting async encoder teardown";
           if (native_amf_session) {
             // Supervise the vendor destructor from this already-asynchronous path.
             // On timeout, the inner worker retains ownership while future sessions
-            // refuse to re-enter either AMF backend instead of accumulating more
-            // calls into the same wedged AMD runtime.
+            // refuse to re-enter AMF instead of accumulating more calls into the
+            // same wedged AMD runtime.
             const auto gate_deadline = std::chrono::steady_clock::now() + 5s;
             switch (native_amf_lifecycle_gate.begin_teardown_until(gate_deadline)) {
               case amf::lifecycle::teardown_admission_e::granted:
@@ -5245,32 +4670,6 @@ namespace video {
             native_amf_lifecycle_gate.finish_teardown(completed);
             if (!completed) {
               BOOST_LOG(error) << "AMF: async teardown exceeded 5 seconds; quarantining native AMF until host restart"sv;
-            }
-          } else if (legacy_amf_session) {
-            const auto gate_deadline = std::chrono::steady_clock::now() + 5s;
-            switch (native_amf_lifecycle_gate.begin_teardown_until(gate_deadline)) {
-              case amf::lifecycle::teardown_admission_e::granted:
-                break;
-              case amf::lifecycle::teardown_admission_e::quarantined:
-                BOOST_LOG(error) << "AMF: abandoning the FFmpeg session in async teardown because the AMD runtime is quarantined"sv;
-                abandon_quarantined_session(session, std::move(display_lease));
-                return;
-              case amf::lifecycle::teardown_admission_e::contended:
-                defer_contended_amf_teardown(std::move(session), std::move(display_lease), "async FFmpeg AMF"sv);
-                return;
-            }
-            // Fresh destruction budget once the fence is held — gate contention
-            // is not driver teardown time.
-            const bool completed = amf::lifecycle::run_with_timeout(
-              [session = std::move(session), display_lease = std::move(display_lease)]() mutable {
-                std::lock_guard lg {encode_session_teardown_mutex};
-                session.reset();
-                (void) display_lease;
-              },
-              5s);
-            native_amf_lifecycle_gate.finish_teardown(completed);
-            if (!completed) {
-              BOOST_LOG(error) << "AMF: FFmpeg async teardown exceeded 5 seconds; quarantining AMD encoding until host restart"sv;
             }
           } else {
             std::lock_guard lg {encode_session_teardown_mutex};
@@ -5303,43 +4702,9 @@ namespace video {
           // (VIDEO_MEMORY_MANAGEMENT_INTERNAL 0x10e bugcheck).
           std::promise<void> done;
           auto done_future = done.get_future();
-          auto legacy_display_lease = legacy_amf_session ?
-                                        static_cast<avcodec_encode_session_t *>(session.get())->release_display_lease_for_driver_work() :
-                                        nullptr;
-          if (legacy_amf_session) {
-            const auto gate_deadline = std::chrono::steady_clock::now() + 5s;
-            switch (native_amf_lifecycle_gate.begin_teardown_until(gate_deadline)) {
-              case amf::lifecycle::teardown_admission_e::granted:
-                break;
-              case amf::lifecycle::teardown_admission_e::quarantined:
-                BOOST_LOG(error) << "AMF: abandoning the FFmpeg session in sync teardown because the AMD runtime is quarantined"sv;
-                abandon_quarantined_session(session, std::move(legacy_display_lease));
-                return;
-              case amf::lifecycle::teardown_admission_e::contended:
-                defer_contended_amf_teardown(std::move(session), std::move(legacy_display_lease), "sync FFmpeg AMF"sv);
-                return;
-            }
-            std::thread teardown_thread {[session = std::move(session), done = std::move(done), display_lease = std::move(legacy_display_lease)]() mutable {
-              std::lock_guard lg {encode_session_teardown_mutex};
-              session.reset();
-              (void) display_lease;
-              done.set_value();
-            }};
-            // Fresh destruction budget once the fence is held — gate contention
-            // is not driver teardown time.
-            const bool completed = done_future.wait_for(5s) == std::future_status::ready;
-            native_amf_lifecycle_gate.finish_teardown(completed);
-            if (completed) teardown_thread.join();
-            else {
-              BOOST_LOG(error) << "Encoder teardown did not finish within its 5 second destruction budget; abandoning the session"sv;
-              teardown_thread.detach();
-            }
-            return;
-          }
-          std::thread teardown_thread {[session = std::move(session), done = std::move(done), display_lease = std::move(legacy_display_lease)]() mutable {
+          std::thread teardown_thread {[session = std::move(session), done = std::move(done)]() mutable {
             std::lock_guard lg {encode_session_teardown_mutex};
             session.reset();
-            (void) display_lease;
             done.set_value();
           }};
           const bool completed = done_future.wait_for(5s) == std::future_status::ready;
@@ -5781,16 +5146,9 @@ namespace video {
     platf::display_t &disp,
     const encoder_t &encoder,
     const config_t &config,
-    hdr_latch_t *hdr_latch = nullptr,
-    bool deferred_avcodec = false) {
+    hdr_latch_t *hdr_latch = nullptr) {
     std::unique_ptr<platf::encode_device_t> result;
 
-#ifdef _WIN32
-    if (&encoder == &amdvce_ffmpeg && native_amf_lifecycle_gate.is_quarantined()) {
-      BOOST_LOG(error) << "AMF: refusing FFmpeg initialization while the AMD runtime is quarantined"sv;
-      return nullptr;
-    }
-#endif
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
     if (&encoder == &nvenc && native_nvenc_runtime_quarantined.load(std::memory_order_acquire)) {
       BOOST_LOG(error) << "NvEnc: native runtime is quarantined after an unsafe teardown; refusing to create another native session until host restart"sv;
@@ -5869,9 +5227,7 @@ namespace video {
     }
 
     if (dynamic_cast<const encoder_platform_formats_avcodec *>(encoder.platform_formats.get())) {
-      result = deferred_avcodec ?
-                 disp.make_deferred_avcodec_encode_device(pix_fmt) :
-                 disp.make_avcodec_encode_device(pix_fmt);
+      result = disp.make_avcodec_encode_device(pix_fmt);
     } else if (dynamic_cast<const encoder_platform_formats_nvenc *>(encoder.platform_formats.get())) {
       result = disp.make_nvenc_encode_device(pix_fmt);
     } else if (dynamic_cast<const encoder_platform_formats_amf *>(encoder.platform_formats.get())) {
@@ -5942,28 +5298,10 @@ namespace video {
     std::unique_ptr<encode_session_t> session;
     bool session_hdr_metadata_valid = false;
     SS_HDR_METADATA session_hdr_metadata {};
-#ifdef _WIN32
-    if (&encoder == &amdvce_ffmpeg) {
-      bool legacy_cancelled = false;
-      bool legacy_gate_contended = false;
-      auto legacy = make_legacy_amf_session_bounded(
-        disp, ctx.config, img.width, img.height, &ctx.hdr_latch,
-        initialization_deadline, initialization_cancelled,
-        legacy_cancelled, legacy_gate_contended);
-      if (legacy_cancelled || legacy_gate_contended) return std::nullopt;
-      if (legacy) {
-        session = std::move(legacy->session);
-        session_hdr_metadata_valid = legacy->hdr_metadata_valid;
-        session_hdr_metadata = legacy->hdr_metadata;
-      }
-    } else
-#endif
-    {
-      encode_device = make_encode_device(*disp, encoder, ctx.config, &ctx.hdr_latch);
-      if (encode_device) {
-        session_hdr_metadata_valid = encode_device->hdr_metadata_valid;
-        session_hdr_metadata = encode_device->hdr_metadata;
-      }
+    encode_device = make_encode_device(*disp, encoder, ctx.config, &ctx.hdr_latch);
+    if (encode_device) {
+      session_hdr_metadata_valid = encode_device->hdr_metadata_valid;
+      session_hdr_metadata = encode_device->hdr_metadata;
     }
     if (!encode_device && !session) return std::nullopt;
 
@@ -6432,30 +5770,15 @@ namespace video {
       SS_HDR_METADATA session_hdr_metadata {};
       bool initialization_was_cancelled = false;
       bool initialization_gate_contended = false;
-#ifdef _WIN32
-      if (&encoder == &amdvce_ffmpeg) {
-        auto legacy = make_legacy_amf_session_bounded(
-          display, config, display->width, display->height, &hdr_latch,
-          initialization_deadline, initialization_cancelled,
-          initialization_was_cancelled, initialization_gate_contended);
-        if (legacy) {
-          prepared_session = std::move(legacy->session);
-          session_hdr_metadata_valid = legacy->hdr_metadata_valid;
-          session_hdr_metadata = legacy->hdr_metadata;
-        }
-      } else
-#endif
-      {
-        encode_device = make_encode_device(*display, encoder, config, &hdr_latch);
-        if (encode_device) {
-          session_hdr_metadata_valid = encode_device->hdr_metadata_valid;
-          session_hdr_metadata = encode_device->hdr_metadata;
-        }
+      encode_device = make_encode_device(*display, encoder, config, &hdr_latch);
+      if (encode_device) {
+        session_hdr_metadata_valid = encode_device->hdr_metadata_valid;
+        session_hdr_metadata = encode_device->hdr_metadata;
       }
 #ifdef _WIN32
       if (initialization_was_cancelled) continue;
-      if (!encode_device && !prepared_session && &encoder == &amdvce_experimental) {
-        BOOST_LOG(error) << "AMF: native device creation failed; refusing silent amdvce_ffmpeg fallback"sv;
+      if (!encode_device && !prepared_session && &encoder == &amdvce) {
+        BOOST_LOG(error) << "AMF: native device creation failed"sv;
       }
 #endif
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
@@ -6510,12 +5833,11 @@ namespace video {
         rtx_hdr_metadata_refresh
       );
 #ifdef _WIN32
-      if (encode_result == encode_run_result_e::native_amf_failed && &session_encoder == &amdvce_experimental) {
+      if (encode_result == encode_run_result_e::native_amf_failed && &session_encoder == &amdvce) {
         // Runtime fatals (TDR, sustained backpressure, output stalls) are
         // classified by the encoder layer as reinit requests. Rebuild the same
-        // native session like every other encoder does — never a silent
-        // amdvce_ffmpeg fallback — but stay bounded so a wedged driver cannot
-        // busy-loop the stream.
+        // native session like every other encoder does, but stay bounded so a
+        // wedged driver cannot busy-loop the stream.
         if (native_amf_lifecycle_gate.is_quarantined()) {
           BOOST_LOG(error) << "AMF: native runtime failed while quarantined; ending the stream. Host restart is required before retrying AMD encoding"sv;
           return;
@@ -6539,7 +5861,7 @@ namespace video {
   #else
         constexpr bool pyrowave_session = false;
   #endif
-        if (&session_encoder != &amdvce_experimental && &session_encoder != &amdvce_ffmpeg && !pyrowave_session) {
+        if (&session_encoder != &amdvce && !pyrowave_session) {
           continue;
         }
         if (!pyrowave_session && native_amf_lifecycle_gate.is_quarantined()) {
@@ -6643,7 +5965,7 @@ namespace video {
     // INPUT_FULL; probing for every other encoder keeps the pre-existing limits
     // so this AMD-only change cannot alter NVENC/QSV/software negotiation.
 #ifdef _WIN32
-    const bool amf_probe = &encoder == &amdvce_experimental || &encoder == &amdvce_ffmpeg;
+    const bool amf_probe = &encoder == &amdvce;
 #else
     const bool amf_probe = false;
 #endif
@@ -6669,27 +5991,11 @@ namespace video {
     for (int attempt = 1; attempt <= max_attempts; ++attempt) {
       auto validate_once = [&]() -> util::optional_t<int> {
         std::unique_ptr<encode_session_t> session;
-#ifdef _WIN32
-        if (&encoder == &amdvce_ffmpeg) {
-          bool legacy_cancelled = false;
-          bool legacy_gate_contended = false;
-          auto legacy = make_legacy_amf_session_bounded(
-            disp, config, disp->width, disp->height, nullptr,
-            probe_deadline, []() { return false; },
-            legacy_cancelled, legacy_gate_contended);
-          if (legacy_cancelled || legacy_gate_contended) {
-            return util::false_v<util::optional_t<int>>;
-          }
-          if (legacy) session = std::move(legacy->session);
-        } else
-#endif
-        {
-          auto encode_device = make_encode_device(*disp, encoder, config);
-          if (encode_device) {
-            session = make_encode_session(
-              disp.get(), encoder, config, disp->width, disp->height,
-              std::move(encode_device), probe_deadline, []() { return false; });
-          }
+        auto encode_device = make_encode_device(*disp, encoder, config);
+        if (encode_device) {
+          session = make_encode_session(
+            disp.get(), encoder, config, disp->width, disp->height,
+            std::move(encode_device), probe_deadline, []() { return false; });
         }
         if (!session) {
           return util::false_v<util::optional_t<int>>;
@@ -6702,12 +6008,6 @@ namespace video {
             session.reset();
             return;
           }
-#ifdef _WIN32
-          if (&encoder == &amdvce_ffmpeg) {
-            destroy_legacy_amf_session_bounded(session, "probe"sv);
-            return;
-          }
-#endif
           destroy_encode_session_bounded(session, "probe"sv);
         });
 
@@ -7255,13 +6555,6 @@ namespace video {
       encoder_list.erase(std::remove(encoder_list.begin(), encoder_list.end(), &nvenc), encoder_list.end());
     }
 #endif
-#ifdef _WIN32
-    const auto amf_selection_policy = amf::lifecycle::encoder_selection_policy(config::video.encoder);
-    // The native encoder is experimental and must never be selected implicitly.
-    if (!amf_selection_policy.include_experimental) {
-      encoder_list.erase(std::remove(encoder_list.begin(), encoder_list.end(), &amdvce_experimental), encoder_list.end());
-    }
-#endif
 
     // Use a local variable for encoder selection during probing so that
     // chosen_encoder is never null while concurrent capture threads may read it.
@@ -7333,12 +6626,6 @@ namespace video {
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
         if (nvenc_selection_policy.fail_closed) {
           BOOST_LOG(error) << "Native NVENC was explicitly selected; refusing automatic fallback to legacy FFmpeg NVENC or another encoder"sv;
-          return -1;
-        }
-#endif
-#ifdef _WIN32
-        if (amf_selection_policy.fail_closed) {
-          BOOST_LOG(error) << "Experimental native AMF was explicitly selected; refusing automatic fallback to amdvce_ffmpeg or another encoder"sv;
           return -1;
         }
 #endif
@@ -7428,7 +6715,7 @@ namespace video {
       // including native AMF — failed validation. Make the degradation loud:
       // an AMD user should never discover software encoding from stutter alone.
       BOOST_LOG(error) << "No hardware encoder passed validation; the SOFTWARE encoder was selected."sv;
-      BOOST_LOG(error) << "If this system has an AMD GPU, hardware encoding is NOT active. Check the AMD driver and FFmpeg AMF availability; the native AMF encoder is experimental and is not selected automatically."sv;
+      BOOST_LOG(error) << "If this system has an AMD GPU, hardware encoding is NOT active. Check the AMD driver and the log above for why the AMF encoder failed."sv;
     }
 #endif
 

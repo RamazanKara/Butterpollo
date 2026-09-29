@@ -1489,11 +1489,9 @@
           "verify_only": "Verify it is active"
         },
         "encoder": {
-          "amdvce_ffmpeg": "AMD AMF (FFmpeg)",
-          "amdvce_experimental": "AMD AMF (Experimental)",
+          "amdvce": "AMD AMF",
           "auto": "Automatic · Recommended",
           "auto_selected": "Automatic · {encoder}",
-          "mediafoundation": "Windows Media Foundation",
           "nvenc": "NVIDIA NVENC (Native)",
           "nvenc_ffmpeg": "NVIDIA NVENC (Legacy FFmpeg)",
           "nvenc_experimental": "NVIDIA NVENC (Native)",

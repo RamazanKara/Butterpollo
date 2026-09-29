@@ -1805,7 +1805,7 @@ namespace config {
     int_f(vars, "amd_vbaq", video.amd.amd_vbaq, amd::tristate_from_view);
     bool_f(vars, "amd_enforce_hrd", (bool &) video.amd.amd_enforce_hrd);
 
-    // Native AMF encoder (amdvce_experimental) tuning knobs.
+    // Native AMF encoder (amdvce) tuning knobs.
     int_f(vars, "amd_ltr_frames", video.amd.amd_ltr_frames);
     if (video.amd.amd_ltr_frames < 0 || video.amd.amd_ltr_frames > 2) {
       BOOST_LOG(warning) << "config: amd_ltr_frames must be between 0 and 2, clamping: "sv << video.amd.amd_ltr_frames;
@@ -1857,8 +1857,11 @@ namespace config {
     video.encoder = std::string(nvenc::canonical_encoder_name(video.encoder));
     video.encoder = std::string(amf::lifecycle::canonical_encoder_name(video.encoder));
     if (video.encoder != configured_encoder) {
-      BOOST_LOG(info) << "config: encoder = " << configured_encoder
-                      << " is deprecated; using " << video.encoder << '.';
+      static std::set<std::string> logged_aliases;
+      if (logged_aliases.insert(configured_encoder).second) {
+        BOOST_LOG(info) << "config: encoder = " << configured_encoder
+                        << " is deprecated; using " << video.encoder << '.';
+      }
     }
     string_f(vars, "adapter_name", video.adapter_name);
     string_f(vars, "adapter_pnp_id", video.adapter_pnp_id);

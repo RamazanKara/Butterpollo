@@ -383,18 +383,13 @@ namespace {
     return !automatic && cabac && *cabac == 1 && cavlc && *cavlc == 0;
   }
 
-  bool experimental_selection_is_explicit_only() {
-    const auto automatic = amf::lifecycle::encoder_selection_policy("");
-    const auto stable = amf::lifecycle::encoder_selection_policy("amdvce_ffmpeg");
-    const auto experimental = amf::lifecycle::encoder_selection_policy("amdvce_experimental");
-    const auto stable_alias = amf::lifecycle::encoder_selection_policy("amdvce_legacy");
-    const auto experimental_alias = amf::lifecycle::encoder_selection_policy("amdvce");
-
-    return !automatic.include_experimental && !automatic.fail_closed &&
-           !stable.include_experimental && !stable.fail_closed &&
-           experimental.include_experimental && experimental.fail_closed &&
-           !stable_alias.include_experimental && !stable_alias.fail_closed &&
-           experimental_alias.include_experimental && experimental_alias.fail_closed;
+  bool former_amd_encoder_names_select_native_amf() {
+    return amf::lifecycle::canonical_encoder_name("amdvce") == "amdvce" &&
+           amf::lifecycle::canonical_encoder_name("amdvce_experimental") == "amdvce" &&
+           amf::lifecycle::canonical_encoder_name("amdvce_ffmpeg") == "amdvce" &&
+           amf::lifecycle::canonical_encoder_name("amdvce_legacy") == "amdvce" &&
+           amf::lifecycle::canonical_encoder_name("nvenc") == "nvenc" &&
+           amf::lifecycle::canonical_encoder_name("").empty();
   }
 
   bool xbox_intra_refresh_maps_to_native_amf() {
@@ -812,7 +807,7 @@ int main() {
              preanalysis_dependent_rate_control_is_planned_natively() &&
              preanalysis_pipeline_primes_and_drains_in_order() &&
              automatic_h264_coder_preserves_driver_default() &&
-             experimental_selection_is_explicit_only() &&
+             former_amd_encoder_names_select_native_amf() &&
              xbox_intra_refresh_maps_to_native_amf() &&
              hevc_gdr_uses_negotiated_codec_and_dimensions() &&
              effective_reference_frame_limit_matches_configure_and_verify() &&
@@ -906,8 +901,8 @@ TEST(SunshineNativeAmfReview, AutomaticH264CoderPreservesDriverDefault) {
   EXPECT_TRUE(automatic_h264_coder_preserves_driver_default());
 }
 
-TEST(SunshineNativeAmfReview, ExperimentalSelectionIsExplicitOnly) {
-  EXPECT_TRUE(experimental_selection_is_explicit_only());
+TEST(SunshineNativeAmfReview, FormerAmdEncoderNamesSelectNativeAmf) {
+  EXPECT_TRUE(former_amd_encoder_names_select_native_amf());
 }
 
 TEST(SunshineNativeAmfReview, XboxIntraRefreshMapsToNativeAmf) {
