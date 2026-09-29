@@ -1022,12 +1022,7 @@ const editableKeys = new Set([
   'detached',
   'config-overrides',
 ]);
-const transientKeys = new Set([
-  'id',
-  'index',
-  'image-version',
-  'remote-session',
-]);
+const transientKeys = new Set(['id', 'index', 'image-version', 'remote-session']);
 
 function newUuid(): string {
   return crypto.randomUUID();

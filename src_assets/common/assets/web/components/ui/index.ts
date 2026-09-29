@@ -8,10 +8,4 @@ export { default as PageHeader } from './PageHeader.vue';
 export { default as SettingRow } from './SettingRow.vue';
 export { default as StatusBadge } from './StatusBadge.vue';
 export { default as UiIcon } from './UiIcon.vue';
-export type {
-  AlertTone,
-  ButtonSize,
-  ButtonVariant,
-  StatusTone,
-  UiIconName,
-} from './types';
+export type { AlertTone, ButtonSize, ButtonVariant, StatusTone, UiIconName } from './types';

@@ -1,27 +1,27 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from 'node:fs/promises';
 
-const sourceUrl = new URL("../design/tokens.json", import.meta.url);
-const cssUrl = new URL("../styles/tokens.css", import.meta.url);
-const typescriptUrl = new URL("../generated/tokens.ts", import.meta.url);
-const checkOnly = process.argv.includes("--check");
-const printTarget = process.argv.find((argument) => argument.startsWith("--print="))?.slice(8);
+const sourceUrl = new URL('../design/tokens.json', import.meta.url);
+const cssUrl = new URL('../styles/tokens.css', import.meta.url);
+const typescriptUrl = new URL('../generated/tokens.ts', import.meta.url);
+const checkOnly = process.argv.includes('--check');
+const printTarget = process.argv.find((argument) => argument.startsWith('--print='))?.slice(8);
 
-const source = JSON.parse(await readFile(sourceUrl, "utf8"));
+const source = JSON.parse(await readFile(sourceUrl, 'utf8'));
 const tokenIndex = new Map();
 
 function indexTokens(node, path = [], inheritedType) {
-  if (!node || typeof node !== "object" || Array.isArray(node)) {
+  if (!node || typeof node !== 'object' || Array.isArray(node)) {
     return;
   }
 
   const type = node.$type ?? inheritedType;
-  if (Object.hasOwn(node, "$value")) {
-    tokenIndex.set(path.join("."), { path, type, value: node.$value });
+  if (Object.hasOwn(node, '$value')) {
+    tokenIndex.set(path.join('.'), { path, type, value: node.$value });
     return;
   }
 
   for (const [key, value] of Object.entries(node)) {
-    if (!key.startsWith("$")) {
+    if (!key.startsWith('$')) {
       indexTokens(value, [...path, key], type);
     }
   }
@@ -33,7 +33,7 @@ const aliasPattern = /^\{([^}]+)\}$/;
 
 function resolveToken(tokenPath, stack = []) {
   if (stack.includes(tokenPath)) {
-    throw new Error(`Circular token alias: ${[...stack, tokenPath].join(" -> ")}`);
+    throw new Error(`Circular token alias: ${[...stack, tokenPath].join(' -> ')}`);
   }
 
   const token = tokenIndex.get(tokenPath);
@@ -41,7 +41,7 @@ function resolveToken(tokenPath, stack = []) {
     throw new Error(`Unknown token alias: ${tokenPath}`);
   }
 
-  if (typeof token.value === "string") {
+  if (typeof token.value === 'string') {
     const alias = token.value.match(aliasPattern);
     if (alias) {
       return resolveToken(alias[1], [...stack, tokenPath]);
@@ -49,15 +49,15 @@ function resolveToken(tokenPath, stack = []) {
     return token.value;
   }
 
-  if (typeof token.value === "number") {
+  if (typeof token.value === 'number') {
     return String(token.value);
   }
 
   if (
     token.value &&
-    typeof token.value === "object" &&
-    Object.hasOwn(token.value, "value") &&
-    Object.hasOwn(token.value, "unit")
+    typeof token.value === 'object' &&
+    Object.hasOwn(token.value, 'value') &&
+    Object.hasOwn(token.value, 'unit')
   ) {
     return `${token.value.value}${token.value.unit}`;
   }
@@ -65,18 +65,18 @@ function resolveToken(tokenPath, stack = []) {
   throw new Error(`Unsupported value for token: ${tokenPath}`);
 }
 
-const themeBackgrounds = ["canvas", "surface", "subtle", "raised"];
+const themeBackgrounds = ['canvas', 'surface', 'subtle', 'raised'];
 const themeTextColors = [
-  "textPrimary",
-  "textSecondary",
-  "textMuted",
-  "accentDefault",
-  "accentHover",
-  "success",
-  "warning",
-  "danger",
-  "info",
-  "dataAccent",
+  'textPrimary',
+  'textSecondary',
+  'textMuted',
+  'accentDefault',
+  'accentHover',
+  'success',
+  'warning',
+  'danger',
+  'info',
+  'dataAccent',
 ];
 const minimumTextContrast = 4.5;
 const minimumNonTextContrast = 3;
@@ -124,20 +124,20 @@ function assertContrast(themeName, foregroundName, backgroundName, minimum) {
 function validateThemeContrast() {
   // WCAG 2.2 SC 1.4.3 and 1.4.11. Subtle borders are decorative; essential
   // control boundaries use borderStrong and are validated here.
-  for (const themeName of ["dark", "light"]) {
+  for (const themeName of ['dark', 'light']) {
     for (const foregroundName of themeTextColors) {
       for (const backgroundName of themeBackgrounds) {
         assertContrast(themeName, foregroundName, backgroundName, minimumTextContrast);
       }
     }
 
-    for (const accentName of ["accentDefault", "accentHover"]) {
-      assertContrast(themeName, "onAccent", accentName, minimumTextContrast);
+    for (const accentName of ['accentDefault', 'accentHover']) {
+      assertContrast(themeName, 'onAccent', accentName, minimumTextContrast);
     }
 
     for (const backgroundName of themeBackgrounds) {
-      assertContrast(themeName, "borderStrong", backgroundName, minimumNonTextContrast);
-      assertContrast(themeName, "focus", backgroundName, minimumNonTextContrast);
+      assertContrast(themeName, 'borderStrong', backgroundName, minimumNonTextContrast);
+      assertContrast(themeName, 'focus', backgroundName, minimumNonTextContrast);
     }
   }
 }
@@ -145,22 +145,22 @@ function validateThemeContrast() {
 validateThemeContrast();
 
 function collect(node, sourcePath, outputPath = [], inheritedType, output = []) {
-  if (!node || typeof node !== "object" || Array.isArray(node)) {
+  if (!node || typeof node !== 'object' || Array.isArray(node)) {
     return output;
   }
 
   const type = node.$type ?? inheritedType;
-  if (Object.hasOwn(node, "$value")) {
+  if (Object.hasOwn(node, '$value')) {
     output.push({
       path: outputPath,
       type,
-      value: resolveToken(sourcePath.join(".")),
+      value: resolveToken(sourcePath.join('.')),
     });
     return output;
   }
 
   for (const [key, value] of Object.entries(node)) {
-    if (!key.startsWith("$")) {
+    if (!key.startsWith('$')) {
       collect(value, [...sourcePath, key], [...outputPath, key], type, output);
     }
   }
@@ -169,14 +169,14 @@ function collect(node, sourcePath, outputPath = [], inheritedType, output = []) 
 
 function toKebab(value) {
   return value
-    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1-$2")
-    .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
-    .replace(/[_\s]+/g, "-")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1-$2')
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .replace(/[_\s]+/g, '-')
     .toLowerCase();
 }
 
 function cssName(path) {
-  return `--vs-${path.map(toKebab).join("-")}`;
+  return `--vs-${path.map(toKebab).join('-')}`;
 }
 
 function mergeTokenSets(...sets) {
@@ -197,21 +197,21 @@ function groupTokens(rootPath) {
     node = node?.[segment];
   }
   if (!node) {
-    throw new Error(`Missing token group: ${rootPath.join(".")}`);
+    throw new Error(`Missing token group: ${rootPath.join('.')}`);
   }
   return collect(node, rootPath);
 }
 
-const semanticShared = groupTokens(["semantic", "shared"]);
-const semanticDark = groupTokens(["semantic", "dark"]);
-const semanticLight = groupTokens(["semantic", "light"]);
-const semanticDensityDefault = groupTokens(["semantic", "density", "default"]);
-const semanticDensityCompact = groupTokens(["semantic", "density", "compact"]);
-const componentShared = groupTokens(["component", "shared"]);
-const componentDark = groupTokens(["component", "dark"]);
-const componentLight = groupTokens(["component", "light"]);
-const componentDensityDefault = groupTokens(["component", "density", "default"]);
-const componentDensityCompact = groupTokens(["component", "density", "compact"]);
+const semanticShared = groupTokens(['semantic', 'shared']);
+const semanticDark = groupTokens(['semantic', 'dark']);
+const semanticLight = groupTokens(['semantic', 'light']);
+const semanticDensityDefault = groupTokens(['semantic', 'density', 'default']);
+const semanticDensityCompact = groupTokens(['semantic', 'density', 'compact']);
+const componentShared = groupTokens(['component', 'shared']);
+const componentDark = groupTokens(['component', 'dark']);
+const componentLight = groupTokens(['component', 'light']);
+const componentDensityDefault = groupTokens(['component', 'density', 'default']);
+const componentDensityCompact = groupTokens(['component', 'density', 'compact']);
 
 const darkTokens = mergeTokenSets(
   semanticDark,
@@ -233,7 +233,7 @@ const lightTokens = mergeTokenSets(
 const compactTokens = mergeTokenSets(semanticDensityCompact, componentDensityCompact);
 
 function renderDeclarations(tokens) {
-  return tokens.map((token) => `  ${token.name}: ${token.value};`).join("\n");
+  return tokens.map((token) => `  ${token.name}: ${token.value};`).join('\n');
 }
 
 const css = `/* Generated by scripts/generate-tokens.mjs from design/tokens.json. Do not edit. */
@@ -265,9 +265,9 @@ ${renderDeclarations(compactTokens)}
 function identifierFor(path) {
   const words = path.flatMap((segment) =>
     segment
-      .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
-      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-      .replace(/[^a-zA-Z0-9]+/g, " ")
+      .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/[^a-zA-Z0-9]+/g, ' ')
       .trim()
       .split(/\s+/),
   );
@@ -276,7 +276,7 @@ function identifierFor(path) {
       const normalized = word.toLowerCase();
       return index === 0 ? normalized : normalized[0].toUpperCase() + normalized.slice(1);
     })
-    .join("");
+    .join('');
 }
 
 const allTokens = mergeTokenSets(darkTokens, lightTokens, compactTokens);
@@ -292,8 +292,8 @@ for (const token of tokenEntries) {
   seenIdentifiers.add(token.key);
 }
 
-const nameLines = tokenEntries.map(({ key, name }) => `  ${key}: "${name}",`).join("\n");
-const valueLines = tokenEntries.map(({ key, name }) => `  ${key}: "var(${name})",`).join("\n");
+const nameLines = tokenEntries.map(({ key, name }) => `  ${key}: "${name}",`).join('\n');
+const valueLines = tokenEntries.map(({ key, name }) => `  ${key}: "var(${name})",`).join('\n');
 
 const typescript = `/* Generated by scripts/generate-tokens.mjs from design/tokens.json. Do not edit. */
 
@@ -320,21 +320,21 @@ export function cssVar(name: TokenName): \`var(\${TokenName})\` {
 
 async function emit(url, contents) {
   if (checkOnly) {
-    const current = await readFile(url, "utf8").catch(() => "");
+    const current = await readFile(url, 'utf8').catch(() => '');
     if (current !== contents) {
       process.exitCode = 1;
       console.error(`${url.pathname} is out of date`);
     }
     return;
   }
-  await writeFile(url, contents, "utf8");
+  await writeFile(url, contents, 'utf8');
 }
 
 if (printTarget) {
-  if (printTarget !== "css" && printTarget !== "typescript") {
-    throw new Error("--print must be either css or typescript");
+  if (printTarget !== 'css' && printTarget !== 'typescript') {
+    throw new Error('--print must be either css or typescript');
   }
-  process.stdout.write(printTarget === "css" ? css : typescript);
+  process.stdout.write(printTarget === 'css' ? css : typescript);
 } else {
   await Promise.all([emit(cssUrl, css), emit(typescriptUrl, typescript)]);
 }

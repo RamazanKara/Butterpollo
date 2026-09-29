@@ -788,7 +788,11 @@ function applyDisplaySelection(selection: ClientDisplaySelection): void {
       :control-id-prefix="`${controlIdPrefix}-override`"
     />
 
-    <DisplayTopologyEditor v-if="isWindows" :client-uuid="controlIdPrefix.replace(/^client-/, '')" compact />
+    <DisplayTopologyEditor
+      v-if="isWindows"
+      :client-uuid="controlIdPrefix.replace(/^client-/, '')"
+      compact
+    />
 
     <ClientCommands
       v-model:allow-client-commands="draft.allowClientCommands"

@@ -20,10 +20,5 @@
     "types": ["vite/client"]
   },
   "include": ["**/*.ts", "**/*.d.ts", "**/*.vue"],
-  "exclude": [
-    "__tests__/**",
-    "vitest.config.ts",
-    "types/vitest-config.d.ts",
-    "types/vitest.d.ts"
-  ]
+  "exclude": ["__tests__/**", "vitest.config.ts", "types/vitest-config.d.ts", "types/vitest.d.ts"]
 }

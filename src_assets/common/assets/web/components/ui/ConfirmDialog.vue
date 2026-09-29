@@ -1,15 +1,6 @@
 <script setup lang="ts">
 // Native dialog semantics are augmented with deterministic initial focus and restoration.
-import {
-  computed,
-  nextTick,
-  onBeforeUnmount,
-  onMounted,
-  ref,
-  useId,
-  useSlots,
-  watch,
-} from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, useSlots, watch } from 'vue';
 import AppButton from './AppButton.vue';
 import UiIcon from './UiIcon.vue';
 import { useI18n } from 'vue-i18n';
@@ -145,7 +136,10 @@ function onKeydown(event: KeyboardEvent) {
 
   const first = focusable[0];
   const last = focusable[focusable.length - 1];
-  if (event.shiftKey && (document.activeElement === first || document.activeElement === panel.value)) {
+  if (
+    event.shiftKey &&
+    (document.activeElement === first || document.activeElement === panel.value)
+  ) {
     event.preventDefault();
     last.focus();
   } else if (!event.shiftKey && document.activeElement === last) {

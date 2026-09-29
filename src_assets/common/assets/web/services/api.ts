@@ -117,12 +117,7 @@ export async function apiRequest<T>(
   const payload = await parseResponse(response);
 
   if (!response.ok) {
-    if (
-      retryCsrf &&
-      isMutation(method) &&
-      response.status === 400 &&
-      isCsrfFailure(payload)
-    ) {
+    if (retryCsrf && isMutation(method) && response.status === 400 && isCsrfFailure(payload)) {
       clearCsrfToken();
       return apiRequest<T>(path, options, false);
     }

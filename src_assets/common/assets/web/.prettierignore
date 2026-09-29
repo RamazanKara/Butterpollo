@@ -2,3 +2,5 @@ node_modules
 ../../../../build
 public/assets/locale
 package-lock.json
+generated
+styles/tokens.css

@@ -76,7 +76,7 @@ for (const [name, status] of [
     await page.goto('/settings?category=display');
     await expect(page.locator('#windows-display-status')).toBeVisible();
     await expect(page.locator('#windows-display-status .vs-status-badge')).toContainText(
-        name === 'incompatible'
+      name === 'incompatible'
         ? 'Driver version mismatch'
         : name === 'watchdog'
           ? 'Watchdog failed'

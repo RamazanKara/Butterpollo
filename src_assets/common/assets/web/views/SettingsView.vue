@@ -12,10 +12,7 @@ import LinuxCaptureStatus from '@/components/settings/LinuxCaptureStatus.vue';
 import NetworkPortDetails from '@/components/settings/NetworkPortDetails.vue';
 import { acknowledgeSettings, configBoolean, settingError } from '@/utils/settings';
 import WindowsDisplayStatus from '@/components/settings/WindowsDisplayStatus.vue';
-import {
-  applyDummyPlugVsyncChange,
-  dummyPlugVsyncState,
-} from '@/utils/displayHealth';
+import { applyDummyPlugVsyncChange, dummyPlugVsyncState } from '@/utils/displayHealth';
 
 import { ApiError, apiGet, apiPatch, apiPost } from '@/services/api';
 import DisplayModeOverrides from '@/components/settings/DisplayModeOverrides.vue';

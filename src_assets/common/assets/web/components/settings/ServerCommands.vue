@@ -76,10 +76,7 @@ function updateRow(index: number, key: 'name' | 'cmd' | 'elevated', value: unkno
           </div>
         </header>
         <div class="server-commands__fields">
-          <SettingRow
-            :label="t('config.server_cmd_name')"
-            :control-id="`server-cmd-name-${index}`"
-          >
+          <SettingRow :label="t('config.server_cmd_name')" :control-id="`server-cmd-name-${index}`">
             <input
               :id="`server-cmd-name-${index}`"
               class="vs-input"

@@ -27,7 +27,8 @@ const normalizedLines = computed(() =>
 );
 
 function skeletonStyle(line: number): CSSProperties {
-  const isLastTextLine = props.variant === 'text' && normalizedLines.value > 1 && line === normalizedLines.value;
+  const isLastTextLine =
+    props.variant === 'text' && normalizedLines.value > 1 && line === normalizedLines.value;
   return {
     '--vs-skeleton-width': isLastTextLine ? '72%' : props.width,
     '--vs-skeleton-height': props.height,

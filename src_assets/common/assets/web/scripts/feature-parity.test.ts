@@ -55,9 +55,9 @@ test('Linux remote-monitor controls and frame-generation labels are available', 
     assert.equal(matchesPlatform(settingsFields.get(key)!, 'windows'), true);
     assert.equal(matchesPlatform(settingsFields.get(key)!, 'macos'), false);
   }
-  const messages = JSON.parse(readFileSync(
-    new URL('../public/assets/locale/ui/en.json', import.meta.url), 'utf8',
-  ));
+  const messages = JSON.parse(
+    readFileSync(new URL('../public/assets/locale/ui/en.json', import.meta.url), 'utf8'),
+  );
   for (const option of frameGenerationOptionsForPlatform('linux')) {
     const label = option.labelKey.split('.').reduce((value, key) => value?.[key], messages);
     assert.equal(typeof label, 'string', option.labelKey);
@@ -77,15 +77,14 @@ test('gamepad options follow the host platform', () => {
 });
 
 test('Linux exposes DS4 touchpad mapping', () => {
-  assert.deepEqual(settingsFields.get('ds4_back_as_touchpad_click')?.platform, ['windows', 'linux']);
+  assert.deepEqual(settingsFields.get('ds4_back_as_touchpad_click')?.platform, [
+    'windows',
+    'linux',
+  ]);
 });
 
 test('Linux hides Windows-only input and audio installation controls', () => {
-  for (const key of [
-    'always_send_scancodes',
-    'native_pen_touch',
-    'install_steam_audio_drivers',
-  ]) {
+  for (const key of ['always_send_scancodes', 'native_pen_touch', 'install_steam_audio_drivers']) {
     assert.equal(settingsFields.get(key)?.platform, 'windows', key);
   }
 });

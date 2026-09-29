@@ -27,13 +27,7 @@ export function formatDuration(totalSeconds: number, locale?: string): string {
 }
 
 export function formatBytes(bytes: number, locale?: string): string {
-  const units: string[] = [
-    'byte',
-    'kilobyte',
-    'megabyte',
-    'gigabyte',
-    'terabyte',
-  ];
+  const units: string[] = ['byte', 'kilobyte', 'megabyte', 'gigabyte', 'terabyte'];
   if (!Number.isFinite(bytes) || bytes <= 0) return unitFormatter(0, units[0], locale);
   const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   const value = bytes / 1024 ** exponent;

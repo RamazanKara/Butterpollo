@@ -114,12 +114,7 @@ function updateElevated(key: CommandList, index: number, value: boolean): void {
           type="checkbox"
           :checked="allowClientCommands"
           :disabled="disabled"
-          @change="
-            emit(
-              'update:allowClientCommands',
-              ($event.target as HTMLInputElement).checked,
-            )
-          "
+          @change="emit('update:allowClientCommands', ($event.target as HTMLInputElement).checked)"
         />
         <span class="vs-switch__track" aria-hidden="true" />
         <span class="vs-sr-only">{{ t('pin.allow_client_commands') }}</span>
@@ -147,11 +142,7 @@ function updateElevated(key: CommandList, index: number, value: boolean): void {
                 :value="entry.command"
                 :disabled="disabled"
                 @input="
-                  updateCommand(
-                    section.key,
-                    index,
-                    ($event.target as HTMLTextAreaElement).value,
-                  )
+                  updateCommand(section.key, index, ($event.target as HTMLTextAreaElement).value)
                 "
               />
             </SettingRow>
@@ -162,11 +153,7 @@ function updateElevated(key: CommandList, index: number, value: boolean): void {
                   :checked="entry.elevated === true"
                   :disabled="disabled"
                   @change="
-                    updateElevated(
-                      section.key,
-                      index,
-                      ($event.target as HTMLInputElement).checked,
-                    )
+                    updateElevated(section.key, index, ($event.target as HTMLInputElement).checked)
                   "
                 />
                 {{ t('_common.elevated') }}

@@ -73,10 +73,7 @@ function resetForm(): void {
 
 <template>
   <div class="vs-page vs-page--settings pair-page">
-    <PageHeader
-      :title="t('ui.pair.page.title')"
-      :description="t('ui.pair.page.description')"
-    >
+    <PageHeader :title="t('ui.pair.page.title')" :description="t('ui.pair.page.description')">
       <template #meta>
         <StatusBadge :label="t('ui.pair.page.local_approval')" tone="info" compact />
       </template>
@@ -118,7 +115,9 @@ function resetForm(): void {
 
       <section class="pair-panel vs-surface" aria-labelledby="pair-form-title">
         <div class="pair-panel__heading">
-          <div class="pair-panel__icon" aria-hidden="true"><UiIcon name="devices" :size="20" /></div>
+          <div class="pair-panel__icon" aria-hidden="true">
+            <UiIcon name="devices" :size="20" />
+          </div>
           <div>
             <h2 id="pair-form-title">{{ t('ui.pair.form.title') }}</h2>
             <p>{{ t('ui.pair.form.description') }}</p>

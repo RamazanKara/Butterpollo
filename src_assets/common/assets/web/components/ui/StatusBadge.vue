@@ -40,6 +40,8 @@ const live = computed(() => (props.announce === 'off' ? undefined : props.announ
     :aria-atomic="announce === 'off' ? undefined : 'true'"
   >
     <UiIcon class="vs-status-badge__icon" :name="resolvedIcon" aria-hidden="true" />
-    <span><slot>{{ label }}</slot></span>
+    <span
+      ><slot>{{ label }}</slot></span
+    >
   </span>
 </template>
