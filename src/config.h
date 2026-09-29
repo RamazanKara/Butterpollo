@@ -406,11 +406,6 @@ namespace config {
     bool allow_virtual_display_override {false};
   };
 
-  struct lossless_scaling_t {
-    std::string exe_path;
-    bool legacy_auto_detect {false};
-  };
-
   namespace flag {
     enum flag_e : std::size_t {
       PIN_STDIN = 0,  ///< Read PIN from stdin instead of http
@@ -503,7 +498,6 @@ namespace config {
   extern input_t input;
   extern frame_limiter_t frame_limiter;
   extern rtss_t rtss;
-  extern lossless_scaling_t lossless_scaling;
   extern sunshine_t sunshine;
 
   int parse(int argc, char *argv[]);

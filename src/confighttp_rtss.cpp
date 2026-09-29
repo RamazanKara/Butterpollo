@@ -6,14 +6,7 @@
 #ifdef _WIN32
 
 // standard includes
-  #include <algorithm>
-  #include <array>
-  #include <cwctype>
-  #include <filesystem>
-  #include <optional>
   #include <string>
-  #include <unordered_set>
-  #include <vector>
 
   // third-party includes
   #include <nlohmann/json.hpp>
@@ -24,8 +17,6 @@
   #include "src/config.h"
   #include "src/logging.h"
   #include "src/platform/windows/frame_limiter.h"
-  #include "src/platform/windows/ipc/misc_utils.h"
-  #include "src/platform/windows/lossless_scaling_paths.h"
   #include "src/platform/windows/misc.h"
 
 namespace confighttp {
@@ -37,56 +28,6 @@ namespace confighttp {
   bool authenticate(resp_https_t response, req_https_t request);
   void print_req(const req_https_t &request);
   void send_response(resp_https_t response, const nlohmann::json &output_tree);
-
-  using lossless_paths::default_steam_lossless_path;
-  using lossless_paths::discover_lossless_candidates;
-  using lossless_paths::resolve_lossless_candidate;
-
-  namespace {
-    constexpr auto k_lossless_default_hint = "C:\\\\Program Files (x86)\\\\Steam\\\\steamapps\\\\common\\\\Lossless Scaling\\\\LosslessScaling.exe";
-
-    bool is_regular_exe(const std::optional<std::filesystem::path> &path) {
-      if (!path) {
-        return false;
-      }
-      std::error_code ec;
-      auto ext = path->extension().wstring();
-      std::transform(ext.begin(), ext.end(), ext.begin(), [](wchar_t ch) {
-        return std::towlower(ch);
-      });
-      return ext == L".exe" && std::filesystem::is_regular_file(*path, ec);
-    }
-
-    std::optional<std::filesystem::path> resolve_explicit_lossless_path(const std::optional<std::filesystem::path> &path) {
-      if (!path) {
-        return std::nullopt;
-      }
-      if (auto resolved = resolve_lossless_candidate(*path)) {
-        return resolved;
-      }
-      if (is_regular_exe(path)) {
-        return path->lexically_normal();
-      }
-      return std::nullopt;
-    }
-
-    nlohmann::json make_lossless_status_unavailable_response() {
-      return {
-        {"configured_path", config::lossless_scaling.exe_path},
-        {"checked_path", config::lossless_scaling.exe_path},
-        {"configured_exists", false},
-        {"checked_exists", false},
-        {"configured_is_directory", false},
-        {"checked_is_directory", false},
-        {"default_path", k_lossless_default_hint},
-        {"default_exists", false},
-        {"default_is_directory", false},
-        {"suggested_path", k_lossless_default_hint},
-        {"candidates", nlohmann::json::array()},
-        {"status", "unavailable"}
-      };
-    }
-  }  // namespace
 
   void getRtssStatus(resp_https_t response, req_https_t request) {
     if (!authenticate(response, request)) {
@@ -228,121 +169,6 @@ namespace confighttp {
 
   void getFrameLimiterStatus(resp_https_t response, req_https_t request) {
     getRtssStatus(std::move(response), std::move(request));
-  }
-
-  void getLosslessScalingStatus(resp_https_t response, req_https_t request) try {
-    if (!authenticate(response, request)) {
-      return;
-    }
-    print_req(request);
-
-    auto query = request->parse_query_string();
-    std::string override_path;
-    if (auto it = query.find("path"); it != query.end()) {
-      override_path = it->second;
-    }
-
-    auto to_path = [](const std::string &utf8) -> std::optional<std::filesystem::path> {
-      if (utf8.empty()) {
-        return std::nullopt;
-      }
-      try {
-        std::wstring wide = platf::dxgi::utf8_to_wide(utf8);
-        if (wide.empty()) {
-          return std::nullopt;
-        }
-        return std::filesystem::path(wide);
-      } catch (...) {
-        return std::nullopt;
-      }
-    };
-
-    auto path_to_utf8 = [](const std::filesystem::path &path) -> std::string {
-      try {
-        return platf::dxgi::wide_to_utf8(path.wstring());
-      } catch (...) {
-        return std::string();
-      }
-    };
-
-    const std::string configured_utf8 = config::lossless_scaling.exe_path;
-    std::string default_hint = path_to_utf8(default_steam_lossless_path());
-    if (default_hint.empty()) {
-      default_hint = "C:\\\\Program Files (x86)\\\\Steam\\\\steamapps\\\\common\\\\Lossless Scaling\\\\LosslessScaling.exe";
-    }
-
-    const std::string check_utf8 = !override_path.empty() ? override_path : configured_utf8;
-    const auto configured_path = to_path(configured_utf8);
-    const auto checked_path = to_path(check_utf8);
-    const auto default_path = to_path(default_hint);
-    const bool has_explicit_path = !check_utf8.empty();
-
-    auto resolved_configured = resolve_explicit_lossless_path(configured_path);
-    auto resolved_checked = resolve_explicit_lossless_path(checked_path);
-    auto resolved_default = default_path ? resolve_lossless_candidate(*default_path) : std::optional<std::filesystem::path>();
-
-    std::error_code configured_ec;
-    const bool configured_is_directory = configured_path && std::filesystem::is_directory(*configured_path, configured_ec);
-    std::error_code checked_ec;
-    const bool checked_is_directory = checked_path && std::filesystem::is_directory(*checked_path, checked_ec);
-    std::error_code default_ec;
-    const bool default_is_directory = default_path && std::filesystem::is_directory(*default_path, default_ec);
-    std::error_code default_exists_ec;
-    const bool default_exists = default_path && std::filesystem::exists(*default_path, default_exists_ec);
-
-    nlohmann::json out;
-    out["configured_path"] = configured_utf8;
-    out["checked_path"] = check_utf8;
-    out["configured_exists"] = resolved_configured.has_value();
-    out["checked_exists"] = resolved_checked.has_value();
-    out["configured_is_directory"] = configured_is_directory;
-    out["checked_is_directory"] = checked_is_directory;
-    out["default_path"] = default_hint;
-    out["default_exists"] = resolved_default.has_value() || default_exists;
-    out["default_is_directory"] = default_is_directory;
-    out["using_configured_path"] = has_explicit_path;
-
-    std::string suggested_utf8 = configured_utf8;
-    if (!suggested_utf8.empty()) {
-      if (resolved_configured) {
-        suggested_utf8 = path_to_utf8(*resolved_configured);
-      }
-    } else if (resolved_default) {
-      suggested_utf8 = path_to_utf8(*resolved_default);
-    } else {
-      suggested_utf8 = default_hint;
-    }
-    out["suggested_path"] = suggested_utf8;
-    if (resolved_checked) {
-      out["resolved_path"] = path_to_utf8(*resolved_checked);
-    }
-
-    auto candidates = discover_lossless_candidates(configured_path, checked_path, has_explicit_path ? std::nullopt : default_path);
-    if (!candidates.empty()) {
-      nlohmann::json arr = nlohmann::json::array();
-      for (const auto &candidate : candidates) {
-        arr.emplace_back(path_to_utf8(candidate));
-      }
-      out["candidates"] = arr;
-    }
-
-    if (resolved_checked || (!has_explicit_path && (resolved_default || !candidates.empty()))) {
-      out["status"] = "detected";
-    } else if (check_utf8.empty()) {
-      out["status"] = "not-configured";
-    } else if (checked_is_directory) {
-      out["status"] = "path-is-directory";
-    } else {
-      out["status"] = "path-not-found";
-    }
-
-    send_response(response, out);
-  } catch (const std::exception &e) {
-    BOOST_LOG(warning) << "Lossless Scaling status check failed: " << e.what();
-    send_response(response, make_lossless_status_unavailable_response());
-  } catch (...) {
-    BOOST_LOG(warning) << "Lossless Scaling status check failed with an unknown exception";
-    send_response(response, make_lossless_status_unavailable_response());
   }
 
 }  // namespace confighttp

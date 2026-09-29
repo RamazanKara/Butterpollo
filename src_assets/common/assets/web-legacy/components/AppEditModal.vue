@@ -27,7 +27,7 @@
             <div
               class="app-modal-icon"
               :class="{
-                'app-modal-icon--playnite': hasHeaderArtwork,
+                'app-modal-icon--artwork': hasHeaderArtwork,
               }"
             >
               <img
@@ -44,20 +44,6 @@
                 isNew ? t('apps.add_application') : t('apps.edit_application')
               }}</span>
             </div>
-          </div>
-          <div class="shrink-0">
-            <span
-              v-if="linkedLibraryLabel"
-              class="inline-flex items-center px-2 py-0.5 rounded bg-primary/15 text-primary text-[11px] font-semibold"
-            >
-              {{ linkedLibraryLabel }}
-            </span>
-            <span
-              v-else
-              class="inline-flex items-center px-2 py-0.5 rounded bg-dark/10 dark:bg-light/10 text-[11px] font-semibold"
-            >
-              {{ t('apps.source_custom') }}
-            </span>
           </div>
         </div>
       </template>
@@ -79,18 +65,6 @@
           <AppEditBasicsSection
             v-model:form="form"
             v-model:cmd-text="cmdText"
-            v-model:name-select-value="nameSelectValue"
-            :is-playnite="isPlayniteManaged"
-            :name-select-options="nameSelectOptions"
-            :games-loading="gamesLoading || otherGamesLoading"
-            :library-options="libraryOptions"
-            :selected-library-key="selectedLibraryKey"
-            :linked-library-label="linkedLibraryLabel"
-            @change-library="changeLibrary"
-            :fallback-option="fallbackOption"
-            @name-focus="onNameFocus"
-            @name-search="onNameSearch"
-            @name-picked="onNamePicked"
             @open-cover-finder="openCoverFinder"
           />
 
@@ -98,17 +72,13 @@
             <n-checkbox v-model:checked="form.excludeGlobalPrepCmd" size="small">
               {{ t('apps.exclude_global_prep') }}
             </n-checkbox>
-            <n-checkbox v-if="!isPlayniteManaged" v-model:checked="form.autoDetach" size="small">
+            <n-checkbox v-model:checked="form.autoDetach" size="small">
               {{ t('apps.auto_detach') }}
             </n-checkbox>
-            <n-checkbox v-if="!isPlayniteManaged" v-model:checked="form.waitAll" size="small">{{
+            <n-checkbox v-model:checked="form.waitAll" size="small">{{
               t('apps.wait_all')
             }}</n-checkbox>
-            <n-checkbox
-              v-if="isWindows && !isPlayniteManaged"
-              v-model:checked="form.elevated"
-              size="small"
-            >
+            <n-checkbox v-if="isWindows" v-model:checked="form.elevated" size="small">
               {{ t('_common.elevated') }}
             </n-checkbox>
             <n-checkbox v-model:checked="form.terminateOnPause" size="small">
@@ -379,43 +349,13 @@
           <AppEditFrameGenSection
             v-if="isWindows"
             v-model:mode="frameGenerationSelection"
-            v-model:lossless-profile="form.losslessScalingProfile"
-            v-model:lossless-target-fps="form.losslessScalingTargetFps"
-            v-model:lossless-rtss-limit="form.losslessScalingRtssLimit"
-            v-model:lossless-flow-scale="losslessFlowScaleModel"
-            v-model:lossless-launch-delay="form.losslessScalingLaunchDelay"
             :health="frameGenHealth"
             :health-loading="frameGenHealthLoading"
             :health-error="frameGenHealthError"
-            :is-playnite-managed="isPlayniteManaged"
-            :lossless-active="losslessFrameGenEnabled"
-            :lossless-scaling-enabled="form.losslessScalingEnabled"
             :nvidia-active="nvidiaFrameGenEnabled"
             :using-virtual-display="usingVirtualDisplay"
-            :windows10="isWindows10"
-            :has-active-lossless-overrides="hasActiveLosslessOverrides"
-            :on-lossless-rtss-limit-change="onLosslessRtssLimitChange"
-            :reset-active-lossless-profile="resetActiveLosslessProfile"
             @refresh-health="handleFrameGenHealthRequest"
             @enable-virtual-screen="handleEnableVirtualScreen"
-          />
-
-          <AppEditLosslessScalingSection
-            v-if="isWindows"
-            v-model:form="form"
-            v-model:lossless-performance-mode="losslessPerformanceModeModel"
-            v-model:lossless-resolution-scale="losslessResolutionScaleModel"
-            v-model:lossless-scaling-mode="losslessScalingModeModel"
-            v-model:lossless-sharpening="losslessSharpeningModel"
-            v-model:lossless-anime-size="losslessAnimeSizeModel"
-            v-model:lossless-anime-vrs="losslessAnimeVrsModel"
-            :show-lossless-resolution="showLosslessResolution"
-            :show-lossless-sharpening="showLosslessSharpening"
-            :show-lossless-anime-options="showLosslessAnimeOptions"
-            :has-active-lossless-overrides="hasActiveLosslessOverrides"
-            :lossless-executable-detected="losslessExecutableDetected"
-            :lossless-executable-check-complete="losslessExecutableCheckComplete"
-            :reset-active-lossless-profile="resetActiveLosslessProfile"
           />
 
           <AppEditPrepCommandsSection
@@ -499,7 +439,6 @@
         :cover-searching="coverSearching"
         :cover-busy="coverBusy"
         :cover-candidates="coverCandidates"
-        :playnite-managed="isPlayniteManaged"
         :cover-error="coverError"
         @search="runCoverSearch"
         @pick="useCover"
@@ -507,7 +446,6 @@
 
       <AppEditDeleteConfirmModal
         v-model:visible="showDeleteConfirm"
-        :is-playnite-auto="isPlayniteAuto"
         :name="form.name || ''"
         @cancel="showDeleteConfirm = false"
         @confirm="del"
@@ -517,8 +455,6 @@
 </template>
 
 <script setup lang="ts">
-import { providerSupported } from '../../web/utils/providerCapabilities';
-import { groupLibraryGames, providerLabels, type GameProvider } from '../utils/libraryGames';
 import { computed, ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import { useMessage } from 'naive-ui';
 import { http } from '@/http';
@@ -529,10 +465,6 @@ import type {
   AppForm,
   ServerApp,
   PrepCmd,
-  LosslessProfileKey,
-  LosslessScalingMode,
-  LosslessProfileOverrides,
-  Anime4kSize,
   FrameGenerationProvider,
   FrameGenerationMode,
   FrameGenHealth,
@@ -540,23 +472,8 @@ import type {
   AppVirtualDisplayLayout,
   RtxHdrMode,
 } from './app-edit/types';
-import {
-  LOSSLESS_PROFILE_DEFAULTS,
-  LOSSLESS_SCALING_SHARPENING,
-  clampFlow,
-  clampResolution,
-  clampSharpness,
-  defaultRtssFromTarget,
-  emptyLosslessProfileState,
-  parseFrameGenerationMode,
-  normalizeFrameGenerationProvider,
-  parseLosslessOverrides,
-  parseLosslessProfileKey,
-  parseNumeric,
-} from './app-edit/lossless';
 import AppEditBasicsSection from './app-edit/AppEditBasicsSection.vue';
 import AppEditConfigOverridesSection from './app-edit/AppEditConfigOverridesSection.vue';
-import AppEditLosslessScalingSection from './app-edit/AppEditLosslessScalingSection.vue';
 import AppEditPrepCommandsSection from './app-edit/AppEditPrepCommandsSection.vue';
 import AppEditFrameGenSection from './app-edit/AppEditFrameGenSection.vue';
 import AppEditRtxHdrSection from './app-edit/AppEditRtxHdrSection.vue';
@@ -579,6 +496,41 @@ type DisplayDevice = {
   };
 };
 type AppVirtualDisplayModeSelection = AppVirtualDisplayMode | 'global';
+
+function parseNumeric(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) return null;
+    const parsed = Number(trimmed);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+// The host treats the retired Lossless Scaling provider and unknown values as off.
+function parseFrameGenerationMode(value: unknown): FrameGenerationMode | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const compact = value.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (compact === 'nvidiasmoothmotion' || compact === 'smoothmotion' || compact === 'nvidia') {
+    return 'nvidia-smooth-motion';
+  }
+  if (compact === 'gameprovided' || compact === 'gameprovider' || compact === 'game') {
+    return 'game-provided';
+  }
+  return 'off';
+}
+
+function normalizeFrameGenerationProvider(value: unknown): FrameGenerationProvider | null {
+  const mode = parseFrameGenerationMode(value);
+  return mode && mode !== 'off' ? mode : null;
+}
 
 interface AppEditModalProps {
   modelValue: boolean;
@@ -606,7 +558,6 @@ function fresh(): AppForm {
     cmd: '',
     workingDir: '',
     imagePath: '',
-    playniteIconPath: '',
     excludeGlobalPrepCmd: false,
     excludeGlobalStateCmd: false,
     configOverrides: {},
@@ -629,13 +580,6 @@ function fresh(): AppForm {
     output: '',
     frameGenerationProvider: 'game-provided',
     frameGenerationMode: 'off',
-    losslessScalingEnabled: false,
-    losslessScalingTargetFps: null,
-    losslessScalingRtssLimit: null,
-    losslessScalingRtssTouched: false,
-    losslessScalingProfile: 'recommended',
-    losslessScalingProfiles: emptyLosslessProfileState(),
-    losslessScalingLaunchDelay: null,
     rtxHdrMode: 'inherit',
     rtxHdrValuesOverride: false,
     rtxHdrForceSdr: false,
@@ -824,16 +768,6 @@ function parseAppVirtualDisplayLayout(value: unknown): AppVirtualDisplayLayout |
 }
 
 watch(
-  () => form.value.playniteId,
-  () => {
-    const et = form.value.exitTimeout as any;
-    if (form.value.playniteId && (typeof et !== 'number' || et === 5)) {
-      form.value.exitTimeout = 10;
-    }
-  },
-);
-
-watch(
   () => form.value.useAppIdentity,
   (enabled) => {
     if (!enabled) {
@@ -880,61 +814,16 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
       elevated: !!p?.elevated,
     }))
     : [];
-  const isPlayniteLinked = !!src['playnite-id'];
   const derivedExitTimeout =
-    typeof src['exit-timeout'] === 'number'
-      ? src['exit-timeout']
-      : isPlayniteLinked
-        ? 10
-        : base.exitTimeout;
-  const legacyLosslessFlag = !!src['lossless-scaling-framegen'];
-  const lsTarget = parseNumeric(src['lossless-scaling-target-fps']);
-  const lsLimit = parseNumeric(src['lossless-scaling-rtss-limit']);
-  const lsLaunchDelayRaw = parseNumeric(src['lossless-scaling-launch-delay']);
-  const lsLaunchDelay =
-    lsLaunchDelayRaw && lsLaunchDelayRaw > 0 ? Math.round(lsLaunchDelayRaw) : null;
-  const profileKey = parseLosslessProfileKey(src['lossless-scaling-profile']);
-  const losslessProfiles = emptyLosslessProfileState();
-  losslessProfiles.recommended = parseLosslessOverrides(src['lossless-scaling-recommended']);
-  losslessProfiles.custom = parseLosslessOverrides(src['lossless-scaling-custom']);
-  const frameGenerationModeFromConfig = parseFrameGenerationMode(
-    (src as any)?.['frame-generation-mode'],
-  );
+    typeof src['exit-timeout'] === 'number' ? src['exit-timeout'] : base.exitTimeout;
   const useAppIdentity = !!src['use-app-identity'];
-  const providerConfigured =
-    typeof src['frame-generation-provider'] === 'string' &&
-    src['frame-generation-provider'].trim().length > 0;
-  const legacyLosslessFrameGenConfigured =
-    legacyLosslessFlag || lsTarget !== null || lsLimit !== null;
-  const normalizedProvider = providerConfigured
-    ? normalizeFrameGenerationProvider(src['frame-generation-provider'])
-    : legacyLosslessFrameGenConfigured
-      ? 'lossless-scaling'
-      : base.frameGenerationProvider;
-  let frameGenerationMode: FrameGenerationMode = frameGenerationModeFromConfig ?? 'off';
-  if (!frameGenerationModeFromConfig) {
-    if (providerConfigured && normalizedProvider === 'nvidia-smooth-motion') {
-      frameGenerationMode = 'nvidia-smooth-motion';
-    } else if (normalizedProvider === 'lossless-scaling') {
-      frameGenerationMode = legacyLosslessFrameGenConfigured ? 'lossless-scaling' : 'off';
-    } else if (providerConfigured && normalizedProvider === 'game-provided') {
-      frameGenerationMode = 'game-provided';
-    }
-  }
-  const hasExplicitLosslessEnabled = Object.prototype.hasOwnProperty.call(
-    src,
-    'lossless-scaling-enabled',
-  );
-  const lsEnabled =
-    typeof src['lossless-scaling-enabled'] === 'boolean'
-      ? src['lossless-scaling-enabled']
-      : !hasExplicitLosslessEnabled &&
-        frameGenerationMode !== 'lossless-scaling' &&
-        legacyLosslessFlag;
-  const frameGenerationProvider =
-    frameGenerationModeFromConfig && frameGenerationModeFromConfig !== 'off'
-      ? (frameGenerationModeFromConfig as FrameGenerationProvider)
-      : normalizedProvider;
+  const configuredMode = parseFrameGenerationMode((src as any)?.['frame-generation-mode']);
+  const configuredProvider = normalizeFrameGenerationProvider(src['frame-generation-provider']);
+  const frameGenerationMode: FrameGenerationMode = configuredMode ?? configuredProvider ?? 'off';
+  const frameGenerationProvider: FrameGenerationProvider =
+    frameGenerationMode !== 'off'
+      ? frameGenerationMode
+      : (configuredProvider ?? base.frameGenerationProvider);
   const hasDisplayOutput = Object.prototype.hasOwnProperty.call(src, 'display-output');
   const rawOutput = String(hasDisplayOutput ? ((src as any)['display-output'] ?? '') : (src.output ?? ''));
   const rawVirtualScreen = src['virtual-screen'];
@@ -974,7 +863,6 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     cmd: String(cmdStr ?? ''),
     workingDir: String(src['working-dir'] ?? ''),
     imagePath: String(src['image-path'] ?? ''),
-    playniteIconPath: String(src['playnite-icon-path'] ?? ''),
     excludeGlobalPrepCmd: !!src['exclude-global-prep-cmd'],
     excludeGlobalStateCmd: !!src['exclude-global-state-cmd'],
     configOverrides: rtxHdrOverrides.rest,
@@ -1003,20 +891,8 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     stateCmd: state,
     detached: Array.isArray(src.detached) ? src.detached.map((s) => String(s)) : [],
     virtualScreen,
-    providerFields: Object.fromEntries(
-      Object.entries(src).filter(([key]) => key.startsWith('steam-') || key.startsWith('lutris-')),
-    ),
-    playniteId: src['playnite-id'] || undefined,
-    playniteManaged: src['playnite-managed'] || undefined,
     frameGenerationProvider,
     frameGenerationMode,
-    losslessScalingEnabled: lsEnabled,
-    losslessScalingTargetFps: lsTarget,
-    losslessScalingRtssLimit: lsLimit,
-    losslessScalingRtssTouched: lsLimit !== null,
-    losslessScalingProfile: profileKey,
-    losslessScalingProfiles: losslessProfiles,
-    losslessScalingLaunchDelay: lsLaunchDelay,
     prefer10BitSdr: typeof src?.['prefer-10bit-sdr'] === 'boolean' ? src['prefer-10bit-sdr'] : null,
     rtxHdrMode: rtxHdrOverrides.mode,
     rtxHdrValuesOverride: rtxHdrOverrides.valuesOverride,
@@ -1092,73 +968,11 @@ function toServerPayload(f: AppForm): Record<string, any> {
   if (f.virtualDisplayLayout !== null && f.virtualDisplayLayout !== _globalVDLayout) {
     payload['virtual-display-layout'] = f.virtualDisplayLayout;
   }
-  Object.assign(payload, f.providerFields ?? {});
-  if (f.playniteId) payload['playnite-id'] = f.playniteId;
-  if (f.playniteManaged) payload['playnite-managed'] = f.playniteManaged;
-  if (f.playniteIconPath) payload['playnite-icon-path'] = f.playniteIconPath;
-  const provider = normalizeFrameGenerationProvider(f.frameGenerationProvider);
   const mode = f.frameGenerationMode ?? 'off';
-  let resolvedProvider: FrameGenerationProvider = provider;
-  if (mode === 'nvidia-smooth-motion') {
-    resolvedProvider = 'nvidia-smooth-motion';
-  } else if (mode === 'lossless-scaling') {
-    resolvedProvider = 'lossless-scaling';
-  } else if (mode === 'game-provided') {
-    resolvedProvider = 'game-provided';
-  } else {
-    resolvedProvider = 'lossless-scaling';
+  if (mode !== 'off') {
+    payload['frame-generation-provider'] = mode;
   }
-  payload['frame-generation-provider'] = resolvedProvider;
   payload['frame-generation-mode'] = mode;
-  const payloadLosslessTarget = parseNumeric(f.losslessScalingTargetFps);
-  const payloadLosslessLimit = parseNumeric(f.losslessScalingRtssLimit);
-  const losslessFramegenActive = mode === 'lossless-scaling';
-  const losslessRuntimeActive = !!f.losslessScalingEnabled || losslessFramegenActive;
-  payload['lossless-scaling-enabled'] = !!f.losslessScalingEnabled;
-  payload['lossless-scaling-framegen'] = losslessFramegenActive;
-  payload['lossless-scaling-target-fps'] = losslessFramegenActive ? payloadLosslessTarget : null;
-  payload['lossless-scaling-rtss-limit'] = losslessFramegenActive ? payloadLosslessLimit : null;
-  const payloadLosslessDelayRaw = parseNumeric(f.losslessScalingLaunchDelay);
-  const payloadLosslessDelay =
-    payloadLosslessDelayRaw && payloadLosslessDelayRaw > 0
-      ? Math.round(payloadLosslessDelayRaw)
-      : null;
-  payload['lossless-scaling-launch-delay'] = losslessRuntimeActive ? payloadLosslessDelay : null;
-  payload['lossless-scaling-profile'] =
-    f.losslessScalingProfile === 'recommended' ? 'recommended' : 'custom';
-  const buildLosslessProfilePayload = (profile: LosslessProfileOverrides) => {
-    const profilePayload: Record<string, any> = {};
-    if (profile.performanceMode !== null) {
-      profilePayload['performance-mode'] = profile.performanceMode;
-    }
-    if (profile.flowScale !== null) {
-      profilePayload['flow-scale'] = profile.flowScale;
-    }
-    if (profile.resolutionScale !== null) {
-      profilePayload['resolution-scale'] = profile.resolutionScale;
-    }
-    if (profile.scalingMode !== null) {
-      profilePayload['scaling-type'] = profile.scalingMode;
-    }
-    if (profile.sharpening !== null) {
-      profilePayload['sharpening'] = profile.sharpening;
-    }
-    if (profile.anime4kSize !== null) {
-      profilePayload['anime4k-size'] = profile.anime4kSize;
-    }
-    if (profile.anime4kVrs !== null) {
-      profilePayload['anime4k-vrs'] = profile.anime4kVrs;
-    }
-    return profilePayload;
-  };
-  const recommendedPayload = buildLosslessProfilePayload(f.losslessScalingProfiles.recommended);
-  const customPayload = buildLosslessProfilePayload(f.losslessScalingProfiles.custom);
-  if (Object.keys(recommendedPayload).length > 0) {
-    payload['lossless-scaling-recommended'] = recommendedPayload;
-  }
-  if (Object.keys(customPayload).length > 0) {
-    payload['lossless-scaling-custom'] = customPayload;
-  }
   // Physical display overrides use their own field so an empty string can explicitly mean
   // "primary display" instead of "no app override".
   if (selection === 'physical') {
@@ -1209,35 +1023,23 @@ const scaleFactorModel = computed<number>({
     );
   },
 });
-const isPlayniteManaged = computed<boolean>(() => !!form.value.playniteId);
-const isPlayniteAuto = computed<boolean>(
-  () => isPlayniteManaged.value && form.value.playniteManaged !== 'manual',
-);
 const headerArtworkFailed = ref(false);
 const headerArtworkKey = computed(() => {
   const identity = String(
-    (props.app as ServerApp | null | undefined)?.uuid ||
-      form.value.playniteId ||
-      form.value.name ||
-      '',
+    (props.app as ServerApp | null | undefined)?.uuid || form.value.name || '',
   );
   const appAny = props.app as any;
-  return `${identity}|${form.value.playniteIconPath || form.value.imagePath || ''}|${appAny?.['playnite-icon-version'] || appAny?.['image-version'] || ''}`;
+  return `${identity}|${form.value.imagePath || ''}|${appAny?.['image-version'] || ''}`;
 });
 const headerArtworkUrl = computed(() => {
   const uuid = String((props.app as ServerApp | null | undefined)?.uuid || '');
   if (!uuid) return '';
-  const appAny = props.app as any;
-  const icon = !!form.value.playniteIconPath;
-  const version = appAny?.[icon ? 'playnite-icon-version' : 'image-version'];
-  const base = `/api/apps/${encodeURIComponent(uuid)}/${icon ? 'icon' : 'cover'}`;
+  const version = (props.app as any)?.['image-version'];
+  const base = `/api/apps/${encodeURIComponent(uuid)}/cover`;
   return version ? `${base}?v=${version}` : base;
 });
 const hasHeaderArtwork = computed(
-  () =>
-    !!headerArtworkUrl.value &&
-    !!(form.value.playniteIconPath || form.value.imagePath) &&
-    !headerArtworkFailed.value,
+  () => !!headerArtworkUrl.value && !!form.value.imagePath && !headerArtworkFailed.value,
 );
 watch(headerArtworkKey, () => {
   headerArtworkFailed.value = false;
@@ -1365,73 +1167,11 @@ async function restoreOriginalRtxHdrLiveOverrides() {
   await enqueueRtxHdrLivePost(original, originalKey);
 }
 
-const losslessExecutableStatus = ref<any | null>(null);
-const losslessExecutableCheckComplete = ref(false);
-function hasLosslessCandidates(status: any | null): boolean {
-  return Array.isArray(status?.candidates) && status.candidates.length > 0;
-}
-const losslessExecutableDetected = computed<boolean>(() => {
-  const status = losslessExecutableStatus.value;
-  if (!status) {
-    return false;
-  }
-  if (status.checked_exists || status.configured_exists || status.default_exists) {
-    return true;
-  }
-  return hasLosslessCandidates(status);
-});
-
-async function refreshLosslessExecutableStatus() {
-  if (!isWindows.value) {
-    losslessExecutableStatus.value = null;
-    losslessExecutableCheckComplete.value = true;
-    return;
-  }
-  losslessExecutableCheckComplete.value = false;
-  try {
-    const params: Record<string, string> = {};
-    const configuredPath = (configStore.config as any)?.lossless_scaling_path;
-    if (configuredPath) {
-      params['path'] = String(configuredPath);
-    }
-    const response = await http.get('/api/lossless_scaling/status', {
-      params,
-      validateStatus: () => true,
-    });
-    if (response.status >= 200 && response.status < 300) {
-      losslessExecutableStatus.value = response.data ?? {};
-    } else {
-      losslessExecutableStatus.value = null;
-    }
-    losslessExecutableCheckComplete.value = true;
-  } catch {
-    losslessExecutableStatus.value = null;
-    losslessExecutableCheckComplete.value = true;
-  }
-}
-
 const frameGenerationSelection = computed<FrameGenerationMode>({
   get: () => form.value.frameGenerationMode ?? 'off',
   set: (mode) => {
     form.value.frameGenerationMode = mode;
-    if (mode === 'nvidia-smooth-motion') {
-      form.value.frameGenerationProvider = 'nvidia-smooth-motion';
-      form.value.losslessScalingTargetFps = null;
-      form.value.losslessScalingRtssLimit = null;
-      form.value.losslessScalingRtssTouched = false;
-    } else if (mode === 'lossless-scaling') {
-      form.value.frameGenerationProvider = 'lossless-scaling';
-    } else if (mode === 'game-provided') {
-      form.value.frameGenerationProvider = 'game-provided';
-      form.value.losslessScalingTargetFps = null;
-      form.value.losslessScalingRtssLimit = null;
-      form.value.losslessScalingRtssTouched = false;
-    } else {
-      form.value.frameGenerationProvider = 'game-provided';
-      form.value.losslessScalingTargetFps = null;
-      form.value.losslessScalingRtssLimit = null;
-      form.value.losslessScalingRtssTouched = false;
-    }
+    form.value.frameGenerationProvider = mode === 'off' ? 'game-provided' : mode;
   },
 });
 
@@ -1445,451 +1185,6 @@ const nvidiaFrameGenEnabled = computed<boolean>({
     }
   },
 });
-
-const losslessFrameGenEnabled = computed<boolean>({
-  get: () => frameGenerationSelection.value === 'lossless-scaling',
-  set: (enabled: boolean) => {
-    if (enabled) {
-      frameGenerationSelection.value = 'lossless-scaling';
-    } else if (frameGenerationSelection.value === 'lossless-scaling') {
-      frameGenerationSelection.value = 'off';
-    }
-  },
-});
-watch(
-  () => form.value.frameGenerationProvider,
-  (provider) => {
-    if (formHydratingFromServer) {
-      return;
-    }
-    const normalized = normalizeFrameGenerationProvider(provider);
-    if (provider !== normalized) {
-      form.value.frameGenerationProvider = normalized;
-      return;
-    }
-    if (normalized === 'nvidia-smooth-motion') {
-      if (form.value.frameGenerationMode !== 'nvidia-smooth-motion') {
-        form.value.frameGenerationMode = 'nvidia-smooth-motion';
-      }
-    } else if (normalized === 'lossless-scaling') {
-      if (form.value.frameGenerationMode !== 'lossless-scaling') {
-        form.value.frameGenerationMode = 'lossless-scaling';
-      }
-    } else if (normalized === 'game-provided') {
-      if (
-        form.value.frameGenerationMode === 'lossless-scaling' ||
-        form.value.frameGenerationMode === 'nvidia-smooth-motion'
-      ) {
-        form.value.frameGenerationMode = 'game-provided';
-      }
-    }
-    // Update FPS/RTSS if using lossless and frame gen is enabled
-    if (
-      normalized === 'lossless-scaling' &&
-      losslessFrameGenEnabled.value &&
-      !form.value.losslessScalingRtssTouched
-    ) {
-      form.value.losslessScalingRtssLimit = defaultRtssFromTarget(
-        parseNumeric(form.value.losslessScalingTargetFps),
-      );
-    }
-  },
-);
-
-watch(
-  () => form.value.losslessScalingTargetFps,
-  (value) => {
-    const normalized = parseNumeric(value);
-    if (normalized !== value) {
-      form.value.losslessScalingTargetFps = normalized;
-      return;
-    }
-    // Only auto-update RTSS if frame gen is enabled and user hasn't manually set it
-    if (losslessFrameGenEnabled.value && !form.value.losslessScalingRtssTouched) {
-      form.value.losslessScalingRtssLimit = defaultRtssFromTarget(normalized);
-    }
-  },
-);
-
-function onLosslessRtssLimitChange(value: number | null) {
-  const normalized = parseNumeric(value);
-  if (normalized === null) {
-    form.value.losslessScalingRtssTouched = false;
-    form.value.losslessScalingRtssLimit = null;
-    return;
-  }
-  form.value.losslessScalingRtssTouched = true;
-  form.value.losslessScalingRtssLimit = Math.min(360, Math.max(1, Math.round(normalized)));
-}
-
-const activeLosslessProfile = computed<LosslessProfileKey>(() =>
-  form.value.losslessScalingProfile === 'recommended' ? 'recommended' : 'custom',
-);
-
-function getEffectivePerformanceMode(profile: LosslessProfileKey): boolean {
-  const overrides = form.value.losslessScalingProfiles[profile];
-  return overrides.performanceMode ?? LOSSLESS_PROFILE_DEFAULTS[profile].performanceMode;
-}
-
-function setPerformanceMode(profile: LosslessProfileKey, value: boolean): void {
-  const defaults = LOSSLESS_PROFILE_DEFAULTS[profile];
-  form.value.losslessScalingProfiles[profile].performanceMode =
-    value === defaults.performanceMode ? null : value;
-}
-
-function getEffectiveFlowScale(profile: LosslessProfileKey): number {
-  const overrides = form.value.losslessScalingProfiles[profile];
-  return overrides.flowScale ?? LOSSLESS_PROFILE_DEFAULTS[profile].flowScale;
-}
-
-function setFlowScale(profile: LosslessProfileKey, value: number | null): void {
-  const defaults = LOSSLESS_PROFILE_DEFAULTS[profile];
-  const clamped = clampFlow(value);
-  form.value.losslessScalingProfiles[profile].flowScale =
-    clamped === null || clamped === defaults.flowScale ? null : clamped;
-}
-
-function getEffectiveResolutionScale(profile: LosslessProfileKey): number {
-  const overrides = form.value.losslessScalingProfiles[profile];
-  return overrides.resolutionScale ?? LOSSLESS_PROFILE_DEFAULTS[profile].resolutionScale;
-}
-
-function setResolutionScale(profile: LosslessProfileKey, value: number | null): void {
-  const defaults = LOSSLESS_PROFILE_DEFAULTS[profile];
-  const clamped = clampResolution(value);
-  form.value.losslessScalingProfiles[profile].resolutionScale =
-    clamped === null || clamped === defaults.resolutionScale ? null : clamped;
-}
-
-function getEffectiveScalingMode(profile: LosslessProfileKey): LosslessScalingMode {
-  const overrides = form.value.losslessScalingProfiles[profile];
-  return overrides.scalingMode ?? LOSSLESS_PROFILE_DEFAULTS[profile].scalingMode;
-}
-
-function setScalingMode(profile: LosslessProfileKey, value: LosslessScalingMode): void {
-  const defaults = LOSSLESS_PROFILE_DEFAULTS[profile];
-  const overrides = form.value.losslessScalingProfiles[profile];
-  overrides.scalingMode = value === defaults.scalingMode ? null : value;
-  if (!LOSSLESS_SCALING_SHARPENING.has(value)) {
-    overrides.sharpening = null;
-  }
-  if (value !== 'anime4k') {
-    overrides.anime4kSize = null;
-    overrides.anime4kVrs = null;
-  }
-  // When scaling is set to 'off', reset resolution scaling to default (100%)
-  if (value === 'off') {
-    overrides.resolutionScale = null;
-  }
-  if (profile === activeLosslessProfile.value) {
-  }
-}
-
-function getEffectiveSharpening(profile: LosslessProfileKey): number {
-  const overrides = form.value.losslessScalingProfiles[profile];
-  const defaults = LOSSLESS_PROFILE_DEFAULTS[profile];
-  return overrides.sharpening ?? defaults.sharpening;
-}
-
-function setSharpening(profile: LosslessProfileKey, value: number | null): void {
-  const defaults = LOSSLESS_PROFILE_DEFAULTS[profile];
-  const clamped = clampSharpness(value);
-  form.value.losslessScalingProfiles[profile].sharpening =
-    clamped === null || clamped === defaults.sharpening ? null : clamped;
-}
-
-function getEffectiveAnimeSize(profile: LosslessProfileKey): Anime4kSize {
-  const overrides = form.value.losslessScalingProfiles[profile];
-  return overrides.anime4kSize ?? LOSSLESS_PROFILE_DEFAULTS[profile].anime4kSize;
-}
-
-function setAnimeSize(profile: LosslessProfileKey, value: Anime4kSize | null): void {
-  const defaults = LOSSLESS_PROFILE_DEFAULTS[profile];
-  const resolved = value ?? defaults.anime4kSize;
-  form.value.losslessScalingProfiles[profile].anime4kSize =
-    resolved === defaults.anime4kSize ? null : resolved;
-}
-
-function getEffectiveAnimeVrs(profile: LosslessProfileKey): boolean {
-  const overrides = form.value.losslessScalingProfiles[profile];
-  return overrides.anime4kVrs ?? LOSSLESS_PROFILE_DEFAULTS[profile].anime4kVrs;
-}
-
-function setAnimeVrs(profile: LosslessProfileKey, value: boolean): void {
-  const defaults = LOSSLESS_PROFILE_DEFAULTS[profile];
-  form.value.losslessScalingProfiles[profile].anime4kVrs =
-    value === defaults.anime4kVrs ? null : value;
-}
-
-const losslessPerformanceModeModel = computed<boolean>({
-  get: () => getEffectivePerformanceMode(activeLosslessProfile.value),
-  set: (value: boolean) => {
-    setPerformanceMode(activeLosslessProfile.value, !!value);
-  },
-});
-
-const losslessFlowScaleModel = computed<number | null>({
-  get: () => getEffectiveFlowScale(activeLosslessProfile.value),
-  set: (value) => {
-    setFlowScale(activeLosslessProfile.value, value ?? null);
-  },
-});
-
-const losslessResolutionScaleModel = computed<number | null>({
-  get: () => getEffectiveResolutionScale(activeLosslessProfile.value),
-  set: (value) => {
-    setResolutionScale(activeLosslessProfile.value, value ?? null);
-  },
-});
-
-const losslessScalingModeModel = computed<LosslessScalingMode>({
-  get: () => getEffectiveScalingMode(activeLosslessProfile.value),
-  set: (value: LosslessScalingMode) => {
-    setScalingMode(activeLosslessProfile.value, value);
-  },
-});
-
-const losslessSharpeningModel = computed<number>({
-  get: () => getEffectiveSharpening(activeLosslessProfile.value),
-  set: (value: number | null) => {
-    setSharpening(activeLosslessProfile.value, value ?? null);
-  },
-});
-
-const losslessAnimeSizeModel = computed<Anime4kSize>({
-  get: () => getEffectiveAnimeSize(activeLosslessProfile.value),
-  set: (value: Anime4kSize | null) => {
-    setAnimeSize(activeLosslessProfile.value, value);
-  },
-});
-
-const losslessAnimeVrsModel = computed<boolean>({
-  get: () => getEffectiveAnimeVrs(activeLosslessProfile.value),
-  set: (value: boolean) => {
-    setAnimeVrs(activeLosslessProfile.value, !!value);
-  },
-});
-
-const showLosslessSharpening = computed(() =>
-  LOSSLESS_SCALING_SHARPENING.has(losslessScalingModeModel.value),
-);
-const showLosslessResolution = computed(() => {
-  const mode = losslessScalingModeModel.value;
-  return mode !== null && mode !== 'off';
-});
-const showLosslessAnimeOptions = computed(() => losslessScalingModeModel.value === 'anime4k');
-
-const hasActiveLosslessOverrides = computed<boolean>(() => {
-  const overrides = form.value.losslessScalingProfiles[activeLosslessProfile.value];
-  return (
-    overrides.performanceMode !== null ||
-    overrides.flowScale !== null ||
-    overrides.resolutionScale !== null ||
-    overrides.scalingMode !== null ||
-    overrides.sharpening !== null ||
-    overrides.anime4kSize !== null ||
-    overrides.anime4kVrs !== null
-  );
-});
-
-function resetActiveLosslessProfile(): void {
-  const overrides = form.value.losslessScalingProfiles[activeLosslessProfile.value];
-  overrides.performanceMode = null;
-  overrides.flowScale = null;
-  overrides.resolutionScale = null;
-  overrides.scalingMode = null;
-  overrides.sharpening = null;
-  overrides.anime4kSize = null;
-  overrides.anime4kVrs = null;
-}
-type LegacyLibraryEntry = {
-  provider: GameProvider;
-  id: string;
-  name: string;
-  game: Record<string, any>;
-};
-const otherLibraryGames = ref<LegacyLibraryEntry[]>([]);
-const otherGamesLoading = ref(false);
-const otherGamesLoaded = ref(false);
-const libraryEntries = computed<LegacyLibraryEntry[]>(() => [
-  ...playniteOptions.value.map((option) => ({
-    provider: 'playnite' as const,
-    id: option.value,
-    name: option.label,
-    game: {},
-  })),
-  ...otherLibraryGames.value,
-]);
-const nameSelectValue = ref<string>('');
-const nameSearchQuery = ref('');
-let selectedSteamCoverRequest: Promise<void> | undefined;
-const nameSelectOptions = computed(() => {
-  const groups = groupLibraryGames(libraryEntries.value, nameSearchQuery.value).slice(0, 100);
-  const options = groups.map((group) => ({
-    label:
-      group.name +
-      ' — ' +
-      [...new Set(group.entries.map((entry) => providerLabels[entry.provider]))].join(' · '),
-    value: '__library__:' + group.key,
-  }));
-  const custom = nameSearchQuery.value.trim() || form.value.name.trim();
-  if (custom)
-    options.push({
-      label: t('apps.source_custom_named', { name: custom }),
-      value: '__custom__:' + custom,
-    });
-  return options;
-});
-const fallbackOption = (value: unknown) => ({
-  label: form.value.name || String(value ?? ''),
-  value: String(value ?? ''),
-});
-const selectedLibraryKey = computed(() =>
-  form.value.playniteId
-    ? 'playnite:' + form.value.playniteId
-    : form.value.providerFields?.['steam-id']
-      ? 'steam:' + form.value.providerFields['steam-id']
-      : form.value.providerFields?.['lutris-id']
-        ? 'lutris:' + form.value.providerFields['lutris-id']
-        : '',
-);
-const selectedLibraryAlternatives = computed(
-  () =>
-    groupLibraryGames(libraryEntries.value).find((group) =>
-      group.entries.some((entry) => entry.provider + ':' + entry.id === selectedLibraryKey.value),
-    )?.entries ?? [],
-);
-const libraryOptions = computed(() =>
-  selectedLibraryAlternatives.value.map((entry) => ({
-    label: providerLabels[entry.provider],
-    value: entry.provider + ':' + entry.id,
-  })),
-);
-const linkedLibraryLabel = computed(() =>
-  selectedLibraryKey.value
-    ? providerLabels[selectedLibraryKey.value.split(':')[0] as GameProvider]
-    : '',
-);
-
-async function loadOtherLibraries() {
-  if (otherGamesLoading.value || otherGamesLoaded.value) return;
-  otherGamesLoading.value = true;
-  const providers = (['steam', 'lutris'] as GameProvider[]).filter((provider) => providerSupported(configStore.metadata, provider));
-  try {
-    const results = await Promise.allSettled(
-      providers.map(async (provider) => {
-        const response = await http.get('/api/' + provider + '/games');
-        if (response.data?.enabled === false) return [];
-        const games: Record<string, any>[] = Array.isArray(response.data)
-          ? response.data
-          : (response.data?.games ?? []);
-        return games
-          .filter((game) => !game['filtered'] && (provider !== 'steam' || game['installed']))
-          .map((game) => ({
-            provider,
-            id: String(game['steam_id'] ?? game['appid'] ?? game['lutris_id'] ?? game['id'] ?? ''),
-            name: String(game['name'] ?? ''),
-            game,
-          }))
-          .filter((entry) => entry.id && entry.name);
-      }),
-    );
-    otherLibraryGames.value = results.flatMap((result) =>
-      result.status === 'fulfilled' ? result.value : [],
-    );
-    otherGamesLoaded.value = results.every((result) => result.status === 'fulfilled');
-  } finally {
-    otherGamesLoading.value = false;
-  }
-}
-async function onNameFocus() {
-  await Promise.allSettled([loadPlayniteGames(), loadOtherLibraries()]);
-}
-function ensureNameSelectionFromForm() {
-  const group = groupLibraryGames(libraryEntries.value).find((group) =>
-    group.entries.some((entry) => entry.provider + ':' + entry.id === selectedLibraryKey.value),
-  );
-  nameSelectValue.value = group
-    ? '__library__:' + group.key
-    : form.value.name
-      ? '__custom__:' + form.value.name
-      : '';
-}
-function clearLibraryLinks() {
-  form.value.playniteId = undefined;
-  form.value.playniteManaged = undefined;
-  form.value.playniteIconPath = '';
-  form.value.providerFields = {};
-}
-function selectLibraryEntry(entry: LegacyLibraryEntry) {
-  clearLibraryLinks();
-  form.value.name = entry.name;
-  form.value.cmd = '';
-  form.value.workingDir = '';
-  form.value.imagePath = '';
-  if (entry.provider === 'playnite') onPickPlaynite(entry.id);
-  else {
-    const game = entry.game;
-    const fields: Record<string, unknown> = {
-      [entry.provider + '-id']: entry.id,
-      [entry.provider + '-managed']: 'manual',
-    };
-    form.value.autoDetach = true;
-    form.value.waitAll = false;
-    if (entry.provider === 'steam') {
-      const uri = game['launch_uri'] || 'steam://rungameid/' + entry.id;
-      form.value.cmd = isWindows.value ? 'cmd /c start "" ' + uri : 'xdg-open ' + uri;
-      form.value.workingDir = game['install_dir'] || '';
-      form.value.imagePath = game['artwork_client_path'] || './assets/steam.png';
-      for (const key of [
-        'install_dir',
-        'library_path',
-        'icon_path',
-        'header_path',
-        'boxart_path',
-        'artwork_path',
-        'artwork_client_path',
-        'artwork_format',
-        'app_type',
-      ]) {
-        if (game[key]) fields['steam-' + key.replaceAll('_', '-')] = game[key];
-      }
-      fields['steam-source'] = 'installed';
-      if (game['artwork_client_path']) fields['steam-artwork-client-compatible'] = true;
-      else selectedSteamCoverRequest = loadSelectedSteamCover(entry.id);
-    } else {
-      form.value.cmd = 'lutris ' + (game['launch_uri'] || 'lutris:rungameid/' + entry.id);
-      form.value.workingDir = game['directory'] || '';
-      form.value.imagePath = game['image_path'] || './assets/box.png';
-      for (const key of ['slug', 'runner', 'platform', 'directory', 'service', 'service_id']) {
-        if (game[key]) fields['lutris-' + key.replaceAll('_', '-')] = game[key];
-      }
-    }
-    form.value.providerFields = fields;
-  }
-  ensureNameSelectionFromForm();
-}
-async function loadSelectedSteamCover(id: string) {
-  try {
-    const response = await http.get('/api/steam/games', { params: { appid: id } });
-    const game = response.data?.games?.[0];
-    if (
-      form.value.providerFields?.['steam-id'] !== id ||
-      form.value.imagePath !== './assets/steam.png' ||
-      !game?.artwork_client_path
-    )
-      return;
-    form.value.imagePath = game['artwork_client_path'];
-    form.value.providerFields['steam-artwork-client-path'] = game['artwork_client_path'];
-    form.value.providerFields['steam-artwork-client-compatible'] = true;
-  } catch {}
-}
-function changeLibrary(key: string) {
-  const entry = selectedLibraryAlternatives.value.find(
-    (entry) => entry.provider + ':' + entry.id === key,
-  );
-  if (entry) selectLibraryEntry(entry);
-}
 
 async function close(options: { rollbackLiveRtxHdr?: boolean } = {}) {
   showDeleteConfirm.value = false;
@@ -2026,16 +1321,6 @@ async function useCover(cover: CoverCandidate) {
       { headers: { 'Content-Type': 'application/json' }, validateStatus: () => true },
     );
     if (r.status >= 200 && r.status < 300 && r.data && r.data.path) {
-      if (isPlayniteManaged.value) {
-        const playniteResult = await http.post(
-          '/api/playnite/cover',
-          { playnite_id: form.value.playniteId, cover_key: cover.key },
-          { headers: { 'Content-Type': 'application/json' }, validateStatus: () => true },
-        );
-        if (playniteResult.status < 200 || playniteResult.status >= 300) {
-          throw new Error('playnite-cover-update-failed');
-        }
-      }
       form.value.imagePath = String(r.data.path || '');
       showCoverModal.value = false;
     }
@@ -2046,7 +1331,7 @@ async function useCover(cover: CoverCandidate) {
   }
 }
 
-// Platform + Playnite detection
+// Platform detection
 const configStore = useConfigStore();
 const platformName = computed(() => (configStore.metadata?.platform || '').toLowerCase());
 const isWindows = computed(() => platformName.value === 'windows');
@@ -2230,12 +1515,6 @@ const autoCaptureUsesWgc = computed(() => {
   }
   return false;
 });
-// Windows 11 shipped as build 22000; anything below that on Windows is Windows 10.
-const isWindows10 = computed(() => {
-  if (!isWindows.value) return false;
-  const build = windowsBuildNumber.value;
-  return build !== null && build < 22000;
-});
 const usingVirtualDisplay = computed(() => {
   return resolvesToVirtualDisplay({
     displaySelection: displaySelection.value,
@@ -2418,16 +1697,11 @@ watch(open, (o) => {
       liveRtxHdrSuppress = false;
       formHydratingFromServer = false;
     });
-    refreshPlayniteStatus().then(() => {
-      if (playniteInstalled.value) void loadPlayniteGames();
-    });
     requestAnimationFrame(() => updateShadows());
-    ensureNameSelectionFromForm();
     // Frame-gen health is only meaningful after an explicit check; start clean on open.
     frameGenHealth.value = null;
     frameGenHealthError.value = null;
     if (isWindows.value) {
-      refreshLosslessExecutableStatus().catch(() => {});
       if (displaySelection.value === 'physical' && displayDevices.value.length === 0) {
         loadDisplayDevices().catch(() => {});
       }
@@ -2450,14 +1724,6 @@ watch(
     form.value.rtxHdrSaturation,
   ],
   () => scheduleRtxHdrLiveUpdate(),
-);
-
-watch(
-  () => (configStore.config as any)?.lossless_scaling_path,
-  () => {
-    if (!open.value || !isWindows.value) return;
-    refreshLosslessExecutableStatus().catch(() => {});
-  },
 );
 
 watch(
@@ -2940,7 +2206,6 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
       }
 
       const osBuild = windowsBuildNumber.value;
-      const losslessSelected = form.value.frameGenerationMode === 'lossless-scaling';
       let osStatus: FrameGenHealth['os']['status'];
       let osMessage: string;
       if (osBuild === null) {
@@ -2949,9 +2214,6 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
       } else if (osBuild >= 22000) {
         osStatus = 'pass';
         osMessage = t('apps.framegen.health_os_win11');
-      } else if (losslessSelected) {
-        osStatus = 'fail';
-        osMessage = t('apps.framegen.health_os_win10_lossless');
       } else {
         osStatus = 'warn';
         osMessage = t('apps.framegen.health_os_win10');
@@ -3036,12 +2298,8 @@ function handleEnableVirtualScreen() {
   refreshFrameGenHealth({ reason: 'virtual-toggle', silent: true }).catch(() => {});
 }
 
-const playniteInstalled = ref(false);
 const isNew = computed(() => !form.value.uuid && form.value.index < 0);
 const APP_UUID_RE = /^[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}$/;
-// Playnite picker state
-const gamesLoading = ref(false);
-const playniteOptions = ref<{ label: string; value: string }[]>([]);
 
 function deleteTargetForForm(f: AppForm): string {
   const uuid = String(f.uuid || '').trim();
@@ -3054,51 +2312,6 @@ function deleteTargetForForm(f: AppForm): string {
   return '';
 }
 
-async function loadPlayniteGames() {
-  if (!isWindows.value || gamesLoading.value || playniteOptions.value.length) return;
-  // Ensure we have up-to-date install status
-  await refreshPlayniteStatus();
-  if (!playniteInstalled.value) return;
-  gamesLoading.value = true;
-  try {
-    const r = await http.get('/api/playnite/games');
-    const games: any[] = Array.isArray(r.data) ? r.data : [];
-    playniteOptions.value = games
-      .filter((g) => !!g.installed)
-      .map((g) => ({ label: g.name || g.id, value: g.id }))
-      .sort((a, b) => a.label.localeCompare(b.label));
-  } catch (_) {}
-  gamesLoading.value = false;
-  // Refresh suggestions (replace placeholder with actual items)
-  try {
-    onNameSearch(nameSearchQuery.value);
-  } catch {}
-}
-
-async function refreshPlayniteStatus() {
-  if (!isWindows.value) return;
-  try {
-    const r = await http.get('/api/playnite/status', { validateStatus: () => true });
-    if (r.status === 200 && r.data && typeof r.data === 'object' && r.data !== null) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const data = r.data as any;
-      playniteInstalled.value = data.installed === true || data.active === true;
-    }
-  } catch (_) {}
-}
-
-function onPickPlaynite(id: string) {
-  const opt = playniteOptions.value.find((o) => o.value === id);
-  if (!opt) return;
-  // Lock in selection and set fields
-  form.value.name = opt.label;
-  form.value.playniteId = id;
-  form.value.playniteManaged = 'manual';
-  // clear command by default for Playnite managed entries
-  if (!form.value.cmd) form.value.cmd = '';
-  // Reflect selection in unified combobox
-  ensureNameSelectionFromForm();
-}
 watch(
   () => displaySelection.value,
   (selection, prev) => {
@@ -3201,26 +2414,10 @@ onBeforeUnmount(() => {
   ro = null;
 });
 
-function onNameSearch(query: string) {
-  nameSearchQuery.value = query || '';
-}
-function onNamePicked(value: string | null) {
-  if (value?.startsWith('__library__:')) {
-    const group = groupLibraryGames(libraryEntries.value).find(
-      (group) => group.key === value.slice('__library__:'.length),
-    );
-    if (group?.entries[0]) selectLibraryEntry(group.entries[0]);
-  } else {
-    clearLibraryLinks();
-    form.value.name = value?.startsWith('__custom__:') ? value.slice('__custom__:'.length) : '';
-  }
-}
-
 // Cover preview logic removed; Vibepollo no longer fetches or proxies images
 async function save() {
   saving.value = true;
   try {
-    await selectedSteamCoverRequest;
     const payload = toServerPayload(form.value);
     const response = await http.post('./api/apps', payload, {
       headers: { 'Content-Type': 'application/json' },
@@ -3246,33 +2443,6 @@ async function save() {
 async function del() {
   saving.value = true;
   try {
-    // If Playnite auto-managed, add to exclusion list before removing
-    const pid = form.value.playniteId;
-    if (isPlayniteAuto.value && pid) {
-      try {
-        // Ensure config store is loaded
-        try {
-          // @ts-ignore optional chaining for older runtime
-          if (!configStore.config) await (configStore.fetchConfig?.() || Promise.resolve());
-        } catch {}
-        // Start from current local store state to avoid desync
-        const current: Array<{ id: string; name: string }> = Array.isArray(
-          (configStore.config as any)?.playnite_exclude_games,
-        )
-          ? ((configStore.config as any).playnite_exclude_games as any)
-          : [];
-        const map = new Map(current.map((e) => [String(e.id), String(e.name || '')] as const));
-        const name = playniteOptions.value.find((o) => o.value === String(pid))?.label || '';
-        map.set(String(pid), name);
-        const next = Array.from(map.entries()).map(([id, name]) => ({ id, name }));
-        // Update local store (keeps UI in sync) and persist via store API
-        configStore.updateOption('playnite_exclude_games', next);
-        await configStore.save();
-      } catch (_) {
-        // best-effort; continue with deletion even if exclusion save fails
-      }
-    }
-
     const target = deleteTargetForForm(form.value);
     if (!target) {
       message?.error(t('apps.delete_invalid_target'));
@@ -3292,20 +2462,6 @@ async function del() {
       message?.error(errMessage);
       return;
     }
-    try {
-      if (responseData?.playniteFullscreenDisabled) {
-        try {
-          configStore.updateOption('playnite_fullscreen_entry_enabled', false);
-        } catch {}
-        try {
-          message?.info(t('playnite.fullscreen_entry_removed'));
-        } catch {}
-      }
-    } catch {}
-    // Best-effort force sync on Windows environments
-    try {
-      await http.post('./api/playnite/force_sync', {}, { validateStatus: () => true });
-    } catch (_) {}
     emit('deleted');
     await close();
   } finally {
@@ -3336,13 +2492,13 @@ async function del() {
   box-shadow: inset 0 0 0 1px rgb(var(--color-primary) / 0.14);
 }
 
-.app-modal-icon--playnite {
+.app-modal-icon--artwork {
   border-radius: 0.45rem;
   background: rgb(var(--color-dark) / 0.08);
   box-shadow: inset 0 0 0 1px rgb(var(--color-dark) / 0.08);
 }
 
-.dark .app-modal-icon--playnite {
+.dark .app-modal-icon--artwork {
   background: rgb(var(--color-light) / 0.08);
   box-shadow: inset 0 0 0 1px rgb(var(--color-light) / 0.08);
 }

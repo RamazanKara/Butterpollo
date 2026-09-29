@@ -246,7 +246,6 @@ namespace platf::rtx_hdr {
                          << " fg_exe='" << foreground.foreground_exe << "'"
                          << " active='" << foreground.active_app_name << "'"
                          << " active_exe='" << foreground.active_app_exe << "'"
-                         << " playnite=" << (foreground.uses_playnite ? "1" : "0")
                          << " fullscreen=" << (foreground.fullscreen_on_capture_display ? "1" : "0");
       }
 

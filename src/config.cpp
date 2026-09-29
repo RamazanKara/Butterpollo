@@ -38,11 +38,8 @@
 #include "config.h"
 #include "virtual_display_scale.h"
 #include "config_key.h"
-#include "config_playnite.h"
-#include "config_lutris.h"
 #include "display_device.h"
 #include "display_helper_integration.h"
-#include "config_steam.h"
 #include "entry_handler.h"
 #include "file_handler.h"
 #include "globals.h"
@@ -1061,11 +1058,6 @@ namespace config {
     false  // allow_virtual_display_override
   };
 
-  lossless_scaling_t lossless_scaling {
-    {},  // exe_path
-    false  // legacy_auto_detect
-  };
-
   namespace {
     #ifdef __linux__
     constexpr std::string_view default_config_filename = "vibepollo.conf";
@@ -1122,7 +1114,6 @@ namespace config {
     const input_t default_input = input;
     const frame_limiter_t default_frame_limiter = frame_limiter;
     const rtss_t default_rtss = rtss;
-    const lossless_scaling_t default_lossless_scaling = lossless_scaling;
     const sunshine_t default_sunshine = sunshine;
 
     std::unordered_map<std::string, std::string> command_line_overrides;
@@ -1140,7 +1131,6 @@ namespace config {
       input = default_input;
       frame_limiter = default_frame_limiter;
       rtss = default_rtss;
-      lossless_scaling = default_lossless_scaling;
 
       sunshine = default_sunshine;
       sunshine.username = preserved_username;
@@ -2085,8 +2075,6 @@ namespace config {
       BOOST_LOG(info) << "config: Forcing frame_limiter_disable_vsync=1 due to dummy plug HDR10 workaround (VSYNC override required).";
       frame_limiter.disable_vsync = true;
     }
-    string_f(vars, "lossless_scaling_path", lossless_scaling.exe_path);
-    bool_f(vars, "lossless_scaling_legacy_auto_detect", lossless_scaling.legacy_auto_detect);
 
     path_f(vars, "pkey", nvhttp.pkey);
     path_f(vars, "cert", nvhttp.cert);
@@ -2297,15 +2285,14 @@ namespace config {
       }
     }
 
-    // Provider settings are cross-platform. Playnite remains Windows-only,
-    // while Steam's parser enforces the Linux Steam-only policy.
-    config::apply_steam(vars);
-#ifdef __linux__
-    config::apply_lutris(vars);
-#endif
-#ifdef _WIN32
-    config::apply_playnite(vars);
-#endif
+    // Game library integrations (Playnite, Steam, Lutris) and Lossless Scaling
+    // automation were removed. Drop their retired keys so older config files
+    // load without "Unrecognized configurable option" warnings.
+    std::erase_if(vars, [](const auto &entry) {
+      const std::string_view key = entry.first;
+      return key.starts_with("playnite_") || key.starts_with("steam_") ||
+             key.starts_with("lutris_") || key.starts_with("lossless_scaling_");
+    });
 
     auto it = vars.find("flags"s);
     if (it != std::end(vars)) {
@@ -2704,11 +2691,6 @@ namespace config {
         "av1_mode",
         "capture",
         "encoder",
-
-        // Playnite per-app focus behavior
-        "playnite_focus_attempts",
-        "playnite_focus_timeout_secs",
-        "playnite_focus_exit_on_first",
 
         // Frame limiter behavior
         "frame_limiter_enable",

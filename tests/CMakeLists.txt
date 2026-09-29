@@ -369,54 +369,6 @@ sunshine_register_component(NAME test_component_remote_display_topology TEST_SOU
     LINK_LIBRARIES nlohmann_json::nlohmann_json)
 sunshine_register_component(NAME test_component_config_parse TEST_SOURCE unit/test_config_parse.cpp
     PRODUCT_SOURCES)
-sunshine_register_component(NAME test_component_config_playnite TEST_SOURCE test_config_playnite.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config_playnite_parse.cpp"
-    LINK_LIBRARIES nlohmann_json::nlohmann_json)
-sunshine_register_component(NAME test_component_steam_integration TEST_SOURCE test_steam_integration.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_integration.cpp"
-                    "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/provider_scan_protocol.cpp"
-    LINK_LIBRARIES nlohmann_json::nlohmann_json)
-sunshine_register_component(NAME test_component_steam_artwork TEST_SOURCE test_steam_artwork.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_artwork.cpp"
-                    "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_integration.cpp"
-                    "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/provider_scan_protocol.cpp"
-    INCLUDE_DIRECTORIES ${FFMPEG_INCLUDE_DIRS}
-    LINK_LIBRARIES nlohmann_json::nlohmann_json ${FFMPEG_LIBRARIES} ${STEAM_ARTWORK_TEST_LIBRARIES}
-    DEFINITIONS ${STEAM_ARTWORK_TEST_DEFINITIONS})
-sunshine_register_component(NAME test_component_config_steam TEST_SOURCE test_config_steam.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config_steam.cpp"
-    LINK_LIBRARIES nlohmann_json::nlohmann_json)
-sunshine_register_component(NAME test_component_steam_sync TEST_SOURCE test_steam_sync.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_sync_policy.cpp"
-                    "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_integration.cpp"
-                    "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/provider_scan_protocol.cpp"
-    LINK_LIBRARIES nlohmann_json::nlohmann_json)
-sunshine_register_component(NAME test_component_steam_process_tracker TEST_SOURCE test_steam_process_tracker.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_process_tracker.cpp")
-sunshine_register_component(NAME test_component_steam_auto_sync TEST_SOURCE test_steam_auto_sync.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_auto_sync_policy.cpp"
-                    "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_integration.cpp"
-                    "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/provider_scan_protocol.cpp"
-    LINK_LIBRARIES nlohmann_json::nlohmann_json)
-sunshine_register_component(NAME test_component_config_lutris TEST_SOURCE test_config_lutris.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config_lutris.cpp"
-    LINK_LIBRARIES nlohmann_json::nlohmann_json)
-sunshine_register_component(NAME test_component_lutris_integration TEST_SOURCE test_lutris_integration.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/lutris_integration.cpp"
-                    "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/provider_scan_protocol.cpp"
-                    "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/lutris_artwork.cpp"
-                    "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_artwork.cpp"
-    INCLUDE_DIRECTORIES ${FFMPEG_INCLUDE_DIRS}
-    LINK_LIBRARIES nlohmann_json::nlohmann_json ${SQLITE3_LIBRARIES} ${FFMPEG_LIBRARIES} ${STEAM_ARTWORK_TEST_LIBRARIES}
-    DEFINITIONS ${STEAM_ARTWORK_TEST_DEFINITIONS})
-sunshine_register_component(NAME test_component_lutris_sync TEST_SOURCE test_lutris_sync.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/lutris_sync_policy.cpp"
-                    "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/lutris_integration.cpp"
-                    "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/provider_scan_protocol.cpp"
-    LINK_LIBRARIES nlohmann_json::nlohmann_json ${SQLITE3_LIBRARIES})
-sunshine_register_component(NAME test_component_provider_scan_protocol TEST_SOURCE test_provider_scan_protocol.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/provider_scan_protocol.cpp"
-    LINK_LIBRARIES nlohmann_json::nlohmann_json)
 sunshine_register_component(NAME test_component_file_handler TEST_SOURCE unit/test_file_handler.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/file_handler_core.cpp")
 sunshine_register_component(NAME test_component_state_storage TEST_SOURCE unit/test_state_storage.cpp
@@ -447,9 +399,6 @@ sunshine_register_component(NAME test_component_display_device_policy TEST_SOURC
 sunshine_register_component(NAME test_component_process_policy TEST_SOURCE unit/test_process.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/app_catalog_policy.cpp"
     LINK_LIBRARIES Boost::crc)
-sunshine_register_component(NAME test_component_process_framegen_json TEST_SOURCE unit/test_process_framegen_json.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/app_framegen_config.cpp"
-    LINK_LIBRARIES nlohmann_json::nlohmann_json)
 sunshine_register_component(NAME test_component_session_history TEST_SOURCE unit/test_session_history.cpp
     PRODUCT_SOURCES
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/session_history_storage.cpp"
@@ -497,17 +446,6 @@ sunshine_register_component(NAME test_component_virtual_display_manifest TEST_SO
     INCLUDE_DIRECTORIES "${SUNSHINE_TEST_GENERATED_INCLUDE_DIR}")
 
 if(WIN32)
-    sunshine_register_component(NAME test_component_playnite_protocol TEST_SOURCE test_playnite_protocol.cpp
-        PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/playnite_protocol.cpp")
-    foreach(_playnite_test IN ITEMS
-            test_playnite_autosync_reconcile.cpp
-            test_playnite_sync_autosync.cpp)
-        get_filename_component(_playnite_name "${_playnite_test}" NAME_WE)
-        sunshine_register_component(NAME "test_component_${_playnite_name}" TEST_SOURCE "${_playnite_test}"
-            PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/playnite_sync_policy.cpp")
-    endforeach()
-    sunshine_register_component(NAME test_component_test_playnite_sync TEST_SOURCE test_playnite_sync.cpp
-        PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/playnite_sync_policy.cpp")
     sunshine_register_component(NAME test_component_display_helper_watchdog TEST_SOURCE unit/test_display_helper_watchdog.cpp
         PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_watchdog.cpp")
     sunshine_register_component(NAME test_component_display_helper_session_deferral TEST_SOURCE unit/test_display_helper_session_deferral.cpp
@@ -587,8 +525,6 @@ if(WIN32)
         INCLUDE_DIRECTORIES "${SUNSHINE_LIBVIRTUALGAMEPAD_INCLUDE_DIR}"
         LINK_LIBRARIES sunshine_test_moonlight_headers)
     sunshine_register_component(NAME test_component_virtual_display_cleanup_policy TEST_SOURCE unit/test_virtual_display_cleanup_policy.cpp)
-    sunshine_register_component(NAME test_component_lossless_scaling_policy TEST_SOURCE unit/test_lossless_scaling.cpp
-        PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/tools/playnite_launcher/lossless_scaling_policy.cpp")
 endif()
 
 sunshine_register_component(NAME test_component_hdr_request TEST_SOURCE unit/test_hdr_request_policy.cpp)
@@ -611,8 +547,6 @@ if(Python3_Interpreter_FOUND AND SUNSHINE_TEST_GXX)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/input/test_windows_mouse_keys.py" --compiler "${SUNSHINE_TEST_GXX}")
     add_test(NAME regression_frame_limiter_vsync
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_frame_limiter_vsync.py")
-    add_test(NAME regression_playnite_stop_callback
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_playnite_stop_callback.py")
     add_test(NAME regression_rtss_profile_version
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_rtss_profile_version.py")
     add_test(NAME regression_virtual_capture_readiness

@@ -4,38 +4,10 @@
       <label class="text-xs font-semibold uppercase tracking-wide opacity-70">{{
         $t('apps.name')
       }}</label>
-      <div class="flex items-center gap-2 mb-1">
-        <n-select
-          v-model:value="nameSelectValue"
-          :options="nameSelectOptions"
-          :loading="gamesLoading"
-          filterable
-          clearable
-          :placeholder="$t('apps.name_search_placeholder')"
-          class="flex-1"
-          :fallback-option="fallbackOption"
-          @focus="emit('name-focus')"
-          @search="(q) => emit('name-search', q)"
-          @update:value="(val) => emit('name-picked', val)"
-        />
-      </div>
-      <label v-if="libraryOptions.length > 1" class="block space-y-1">
-        <span class="text-xs font-semibold">Launch with</span>
-        <n-select
-          :value="selectedLibraryKey"
-          :options="libraryOptions"
-          @update:value="(value) => emit('change-library', value)"
-        />
-      </label>
-      <div class="text-[11px] opacity-60">
-        {{
-          linkedLibraryLabel ||
-          (isPlaynite ? $t('apps.linked_to_playnite') : $t('apps.custom_application'))
-        }}
-      </div>
+      <n-input v-model:value="form.name" />
     </div>
 
-    <div v-if="!isPlaynite" class="md:col-span-2">
+    <div class="md:col-span-2">
       <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
         <section
           class="rounded-xl border border-dark/10 dark:border-light/10 bg-light/80 dark:bg-dark/40 p-4 space-y-3"
@@ -114,7 +86,7 @@
       </div>
     </div>
 
-    <div v-if="!isPlaynite" class="space-y-1 md:col-span-1">
+    <div class="space-y-1 md:col-span-1">
       <label class="text-xs font-semibold uppercase tracking-wide opacity-70">{{
         $t('apps.working_dir')
       }}</label>
@@ -137,7 +109,6 @@
       }}</label>
       <div class="flex flex-col sm:flex-row sm:items-center gap-2">
         <n-input
-          v-if="!isPlaynite"
           v-model:value="form.imagePath"
           class="font-mono flex-1"
           placeholder="/path/to/image.png"
@@ -146,50 +117,22 @@
           <i class="fas fa-image" /> {{ $t('apps.find_cover') }}
         </n-button>
       </div>
-      <p v-if="isPlaynite" class="text-[11px] text-warning">
-        {{ $t('apps.playnite_cover_replace_warning') }}
-      </p>
-      <p v-else class="text-[11px] opacity-60">{{ $t('apps.image_storage_desc') }}</p>
+      <p class="text-[11px] opacity-60">{{ $t('apps.image_storage_desc') }}</p>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { toRefs } from 'vue';
 import type { AppForm } from './types';
-import { NSelect, NButton, NInput, NInputNumber } from 'naive-ui';
-
-const rawProps = defineProps<{
-  libraryOptions: Array<{ label: string; value: string }>;
-  selectedLibraryKey: string;
-  linkedLibraryLabel: string;
-  isPlaynite: boolean;
-  nameSelectOptions: Array<{ label: string; value: string; disabled?: boolean }>;
-  gamesLoading: boolean;
-  fallbackOption: (value: unknown) => { label: string; value: string };
-}>();
-const {
-  libraryOptions,
-  selectedLibraryKey,
-  linkedLibraryLabel,
-  isPlaynite,
-  nameSelectOptions,
-  gamesLoading,
-  fallbackOption,
-} = toRefs(rawProps);
+import { NButton, NInput, NInputNumber } from 'naive-ui';
 
 const emit = defineEmits<{
-  (e: 'change-library', value: string): void;
-  (e: 'name-focus'): void;
-  (e: 'name-search', query: string): void;
-  (e: 'name-picked', value: string | null): void;
   (e: 'open-cover-finder'): void;
 }>();
 
 // Two-way bindings
 const form = defineModel<AppForm>('form', { required: true });
 const cmdText = defineModel<string>('cmdText', { required: true });
-const nameSelectValue = defineModel<string>('nameSelectValue', { required: true });
 
 function addDetached() {
   form.value.detached.push('');

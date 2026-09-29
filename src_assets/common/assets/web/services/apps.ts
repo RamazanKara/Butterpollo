@@ -20,13 +20,7 @@ export class AppServiceError extends Error {
   }
 }
 
-const transientFields = new Set([
-  'id',
-  'index',
-  'image-version',
-  'playnite-icon-version',
-  'remote-session',
-]);
+const transientFields = new Set(['id', 'index', 'image-version', 'remote-session']);
 
 export async function fetchApps(): Promise<AppRecord[]> {
   const payload = await apiGet<unknown>('/api/apps');

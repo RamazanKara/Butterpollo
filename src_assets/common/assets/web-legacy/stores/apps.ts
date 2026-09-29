@@ -16,10 +16,8 @@ export interface App {
   uuid?: string;
   'working-dir'?: string;
   'image-path'?: string;
-  'playnite-icon-path'?: string;
   // Cache-busting stamps (file mtimes) the server attaches to GET /api/apps responses.
   'image-version'?: number;
-  'playnite-icon-version'?: number;
   'exclude-global-prep-cmd'?: boolean;
   'exclude-global-state-cmd'?: boolean;
   'config-overrides'?: Record<string, unknown>;
@@ -42,14 +40,6 @@ export interface App {
   detached?: string[];
   'scale-factor'?: number;
   gamepad?: string;
-  'lossless-scaling-enabled'?: boolean;
-  'lossless-scaling-framegen'?: boolean;
-  'lossless-scaling-target-fps'?: number;
-  'lossless-scaling-rtss-limit'?: number;
-  'lossless-scaling-profile'?: string;
-  'lossless-scaling-recommended'?: Record<string, unknown>;
-  'lossless-scaling-custom'?: Record<string, unknown>;
-  'lossless-scaling-launch-delay'?: number;
   // Fallback for any other server fields we don't model yet
   [key: string]: any;
 }

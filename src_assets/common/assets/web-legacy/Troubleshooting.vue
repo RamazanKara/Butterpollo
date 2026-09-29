@@ -55,7 +55,7 @@
             <p class="text-xs opacity-70 leading-snug">
               {{
                 $t('troubleshooting.collect_playnite_logs_desc') ||
-                'Export Vibepollo, Playnite, plugin, and display-helper logs.'
+                'Export Vibepollo, display-helper, and WGC helper logs.'
               }}
             </p>
           </div>
@@ -407,14 +407,6 @@ const logSourceOptions = computed(() => {
       {
         label: translate('troubleshooting.logs_source_display_helper', 'Display helper'),
         value: 'display_helper',
-      },
-      {
-        label: translate('troubleshooting.logs_source_playnite', 'Playnite'),
-        value: 'playnite',
-      },
-      {
-        label: translate('troubleshooting.logs_source_playnite_launcher', 'Playnite launcher'),
-        value: 'playnite_launcher',
       },
       {
         label: translate('troubleshooting.logs_source_wgc', 'WGC helper'),

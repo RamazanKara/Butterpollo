@@ -553,7 +553,7 @@ namespace platf::dxgi {
      */
     winrt::file_handle create_client_pipe(const std::wstring &fullPipeName) const;
 
-    SecurityDescriptorBuilder _secdesc_builder;  // optional custom SD builder (Playnite can override)
+    SecurityDescriptorBuilder _secdesc_builder;  // optional custom SD builder
   };
 
   class AnonymousPipeFactory: public IAsyncPipeFactory {

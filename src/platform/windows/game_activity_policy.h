@@ -14,7 +14,6 @@ namespace platf::game_activity_policy {
     shell_fullscreen = 5,
     fullscreen_foreground = 10,
     tracked_process = 20,
-    playnite = 30,
   };
 
   struct signal_t {

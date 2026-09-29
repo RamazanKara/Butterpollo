@@ -1,9 +1,4 @@
-import {
-  advancedEncoderGroups,
-  extendedDefaults,
-  extendedField,
-  playnitePolicyFields,
-} from './extendedSettings.ts';
+import { advancedEncoderGroups, extendedDefaults, extendedField } from './extendedSettings.ts';
 import { NETWORK_PORT_MAX, NETWORK_PORT_MIN } from '../utils/network.ts';
 export type SettingsFieldKind =
   | 'boolean'
@@ -49,7 +44,6 @@ export interface SettingsField {
   visibleWhen?: SettingsVisibility;
   source?: 'gpu';
   encoderFamily?: 'nvidia' | 'intel' | 'amd' | 'vaapi' | 'vulkan' | 'videotoolbox' | 'software';
-  integration?: 'rtss' | 'lossless';
 }
 
 // Keep this list aligned with config::is_allowed_override_key(). The global
@@ -319,14 +313,9 @@ export function frameGenerationOptionsForPlatform(platform: string): SettingsOpt
   ];
 }
 
-const integrationPath = (
-  key: string,
-  integration: SettingsField['integration'],
-  extra: Partial<SettingsField> = {},
-): SettingsField => ({
+const integrationPath = (key: string, extra: Partial<SettingsField> = {}): SettingsField => ({
   key,
   kind: 'integration-path',
-  integration,
   monospace: true,
   platform: 'windows',
   stacked: true,
@@ -722,7 +711,7 @@ export const settingsCategories: SettingsCategory[] = [
       {
         id: 'pacing_integrations',
         fields: [
-          integrationPath('rtss_install_path', 'rtss', {
+          integrationPath('rtss_install_path', {
             labelKey: 'ui.settings.fields.rtss_install_path.label',
             descriptionKey: 'ui.settings.fields.rtss_install_path.description',
           }),
@@ -740,11 +729,6 @@ export const settingsCategories: SettingsCategory[] = [
               platform: 'windows',
             },
           ),
-          integrationPath('lossless_scaling_path', 'lossless', {
-            labelKey: 'ui.settings.fields.lossless_scaling_path.label',
-            descriptionKey: 'ui.settings.fields.lossless_scaling_path.description',
-          }),
-          boolean('lossless_scaling_legacy_auto_detect', { platform: 'windows' }),
         ],
       },
     ],
@@ -1120,8 +1104,6 @@ export const settingsDefaults: Record<string, unknown> = {
   video_max_batch_size_kb: 64,
   rtss_install_path: '',
   rtss_frame_limit_type: 'async',
-  lossless_scaling_path: '',
-  lossless_scaling_legacy_auto_detect: false,
   address_family: 'ipv4',
   port: 47989,
   bind_address: '',
@@ -1229,32 +1211,6 @@ export const settingsDestinations: Array<{
   keys: string[];
   platform?: SettingsField['platform'];
 }> = [
-  {
-    labelKey: 'ui.integrations.playnite.policies_title',
-    to: '/integrations#playnite-policies',
-    platform: 'windows',
-    keys: playnitePolicyFields
-      .map((field) => field.key)
-      .concat([
-        'playnite',
-        'playnite_sync_categories',
-        'playnite_exclude_games',
-        'playnite_exclude_categories',
-        'playnite_sync_plugins',
-        'playnite_exclude_plugins',
-      ]),
-  },
-  {
-    labelKey: 'ui.integrations.steam.name',
-    to: '/integrations#integration-steam',
-    keys: ['steam', 'steam_auto_sync', 'steam_exclude_games', 'steam_include_tools'],
-  },
-  {
-    labelKey: 'ui.integrations.lutris.name',
-    to: '/integrations#integration-lutris',
-    platform: 'linux',
-    keys: ['lutris', 'lutris_auto_sync', 'lutris_include_steam'],
-  },
   {
     labelKey: 'ui.integrations.mangohud.name',
     to: '/integrations#integration-mangohud',

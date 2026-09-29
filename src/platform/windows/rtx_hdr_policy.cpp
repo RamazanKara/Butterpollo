@@ -1,7 +1,6 @@
 #include "rtx_hdr_policy.h"
 
 #include <algorithm>
-#include <cctype>
 
 namespace platf::rtx_hdr::policy {
   namespace {
@@ -11,17 +10,6 @@ namespace platf::rtx_hdr::policy {
       if (has_tuning_values(resolved.application)) return profile_source_e::application;
       if (has_tuning_values(resolved.global)) return profile_source_e::global;
       return profile_source_e::config;
-    }
-    std::string normalize_path(std::string_view value) {
-      std::string result(value);
-      std::replace(result.begin(), result.end(), '/', '\\');
-      while (!result.empty() && result.back() == '\\') result.pop_back();
-      std::transform(result.begin(), result.end(), result.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-      return result;
-    }
-    std::string basename(std::string_view value) {
-      const auto path = normalize_path(value); const auto position = path.find_last_of('\\');
-      return position == std::string::npos ? path : path.substr(position + 1);
     }
   }
 
@@ -53,12 +41,6 @@ namespace platf::rtx_hdr::policy {
   }
   std::optional<int> decode_percent_units(std::uint32_t raw) { return raw <= 200 ? std::optional<int>{static_cast<int>(raw)} : std::nullopt; }
   float sdr_brightness_to_white_nits(int brightness) { return 100.0f + static_cast<float>(std::clamp(brightness, 0, 100)); }
-  bool playnite_foreground_matches(std::string_view active_id, std::string_view status_id, std::string_view status_exe, std::string_view install_dir, std::string_view foreground_exe) {
-    if (foreground_exe.empty() || status_id.empty() || (!active_id.empty() && active_id != status_id)) return false;
-    const auto foreground = normalize_path(foreground_exe); const auto status = normalize_path(status_exe); const auto directory = normalize_path(install_dir);
-    if ((!status.empty() && foreground == status) || (!basename(foreground).empty() && basename(foreground) == basename(status))) return true;
-    return !directory.empty() && foreground.size() > directory.size() && foreground.compare(0, directory.size(), directory) == 0 && foreground[directory.size()] == '\\';
-  }
 
   void scheduler_t::apply(const runtime_values_t &values) {
     frame_.enabled = values.enabled; frame_.contrast = values.contrast; frame_.saturation = values.saturation;

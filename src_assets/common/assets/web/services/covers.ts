@@ -19,10 +19,6 @@ interface CoverUploadResponse extends Record<string, unknown> {
   path?: unknown;
 }
 
-interface PlayniteCoverResponse extends Record<string, unknown> {
-  status?: unknown;
-}
-
 function searchBucket(name: string): string {
   const prefix = name
     .substring(0, Math.min(name.length, 2))
@@ -91,15 +87,4 @@ export async function uploadCover(cover: CoverCandidate): Promise<string> {
   });
   if (typeof response.path !== 'string' || !response.path) throw new Error('cover-upload-failed');
   return response.path;
-}
-
-export async function updatePlayniteCover(
-  playniteId: string,
-  cover: CoverCandidate,
-): Promise<void> {
-  const response = await apiPost<PlayniteCoverResponse>('/api/playnite/cover', {
-    playnite_id: playniteId,
-    cover_key: cover.key,
-  });
-  if (response.status !== true) throw new Error('playnite-cover-update-failed');
 }

@@ -89,7 +89,7 @@ See below for details on token endpoints and usage examples.
 ## GET /api/logs/export
 Downloads a ZIP archive containing logs useful for troubleshooting (Windows only).
 
-- Includes: Sunshine session logs (current and up to 29 previous sessions, including rollovers), Playnite logs (`playnite.log`, `extensions.log`, `launcher.log`), Sunshine Playnite plugin logs (`sunshine_playnite-*.log*` and legacy `sunshine_playnite.log`), launcher helper logs (`sunshine_playnite_launcher-*.log*` / `sunshine_launcher-*.log*` and legacy `sunshine_playnite_launcher.log` / `sunshine_launcher.log`), display helper logs (`sunshine_display_helper-*.log*` and legacy `sunshine_display_helper.log`), and WGC helper logs (`sunshine_wgc_helper-*.log*` and legacy `sunshine_wgc_helper.log`) when present.
+- Includes: Sunshine session logs (current and up to 29 previous sessions, including rollovers), launcher helper logs (`sunshine_launcher-*.log*` and legacy `sunshine_launcher.log`), display helper logs (`sunshine_display_helper-*.log*` and legacy `sunshine_display_helper.log`), and WGC helper logs (`sunshine_wgc_helper-*.log*` and legacy `sunshine_wgc_helper.log`) when present.
 - Requires authentication.
 
 ## POST /api/password
@@ -181,7 +181,7 @@ and configuration write formats remain compatible.
 - `encoder_status`: `state` (`ready`, `failed`, or `unknown`) and `h264`, `hevc`, `av1`
   support from the current encoder-probe cache. Reading metadata never initiates a probe.
 - Provider actions are shown only when the corresponding `providers` capability is explicitly
-  true. Missing Steam, Lutris, MangoHUD, and Playnite-toggle capabilities mean unavailable.
+  true. A missing capability means unavailable.
 - Linux `linux.session_role`: `desktop`, `greeter`, or `unknown`.
 - Linux `virtual_display.reason`: empty when ready; otherwise
   `driver_or_outputs_unavailable` or `session_or_output_unavailable`.

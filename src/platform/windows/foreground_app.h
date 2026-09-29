@@ -22,7 +22,6 @@ namespace platf::foreground_app {
     bool fullscreen_on_capture_display {false};
     bool has_active_app {false};
     bool matches_active_app {false};
-    bool uses_playnite {false};
     bool tracks_active_app_window {false};
     DWORD foreground_pid {0};
     DWORD blocker_pid {0};
@@ -56,14 +55,6 @@ namespace platf::foreground_app {
   );
 
   bool path_equal_or_basename_match(std::string_view lhs, std::string_view rhs);
-  bool path_is_under_directory(std::string_view path, std::string_view directory);
-  bool playnite_foreground_matches_for_tests(
-    std::string_view active_playnite_id,
-    std::string_view status_id,
-    std::string_view status_exe,
-    std::string_view status_install_dir,
-    std::string_view foreground_exe
-  );
   using visible_window_evidence_t = game_activity_policy::visible_window_evidence_t;
 
   bool transient_shell_overlay_for_tests(

@@ -413,9 +413,6 @@ jobs:
             mingw-w64-${{ matrix.toolchain }}-cppwinrt
             mingw-w64-${{ matrix.toolchain }}-curl-winssl
             mingw-w64-${{ matrix.toolchain }}-gcc
-            mingw-w64-${{ matrix.toolchain }}-libjpeg-turbo
-            mingw-w64-${{ matrix.toolchain }}-libpng
-            mingw-w64-${{ matrix.toolchain }}-libwebp
             mingw-w64-${{ matrix.toolchain }}-MinHook
             mingw-w64-${{ matrix.toolchain }}-miniupnpc
             mingw-w64-${{ matrix.toolchain }}-ninja
@@ -614,7 +611,6 @@ jobs:
             '.\build\sunshine.exe',
             '.\build\tools\audio-info.exe',
             '.\build\tools\dxgi-info.exe',
-            '.\build\tools\playnite-launcher.exe',
             '.\build\tools\sunshine_display_helper.exe',
             '.\build\tools\sunshine_wgc_capture.exe',
             '.\build\tools\sunshinesvc.exe'
@@ -1370,7 +1366,7 @@ jobs:
           $firstParty = @(
             'sunshine.exe','uninstall.exe','zlib1.dll',
             'sunshinesvc.exe','dxgi-info.exe','audio-info.exe',
-            'playnite-launcher.exe','sunshine_wgc_capture.exe','sunshine_display_helper.exe',
+            'sunshine_wgc_capture.exe','sunshine_display_helper.exe',
             'virtualdisplay_probe.exe','VkLayer_sunshine_hdr.dll'
           )
           $optionalFirstParty = @('vibeshine_truehdr.dll')

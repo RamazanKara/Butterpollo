@@ -85,8 +85,6 @@
 #if defined(_WIN32)
   #include "platform/windows/misc.h"
   #include "src/platform/windows/ipc/misc_utils.h"
-  #include "src/platform/windows/playnite_integration.h"
-  #include "src/platform/windows/playnite_sync.h"
 
   #include <windows.h>
 #endif
@@ -307,10 +305,6 @@ namespace confighttp {
         if (entry.contains("image-path") && entry["image-path"].is_string()) {
           image_path = entry["image-path"].get<std::string>();
         }
-        std::string playnite_id;
-        if (entry.contains("playnite-id") && entry["playnite-id"].is_string()) {
-          playnite_id = entry["playnite-id"].get<std::string>();
-        }
 
         std::vector<fs::path> candidates;
         std::unordered_set<std::string> seen;
@@ -360,9 +354,6 @@ namespace confighttp {
         static const std::array<const char *, 4> fallback_exts {".png", ".jpg", ".jpeg", ".webp"};
         for (const char *ext : fallback_exts) {
           push_candidate(cover_dir / (uuid + ext));
-        }
-        if (!playnite_id.empty()) {
-          push_candidate(cover_dir / (std::string("playnite_") + playnite_id + ".png"));
         }
 
         for (const auto &candidate : candidates) {
@@ -535,14 +526,6 @@ namespace confighttp {
       }
 
       for (const auto &key : keys) {
-        if (key.rfind("playnite_", 0) == 0) {
-          continue;
-        }
-
-        if (key.rfind("steam_", 0) == 0) {
-          continue;
-        }
-
         if (key.rfind("realtime_stats_", 0) == 0) {
           continue;
         }
@@ -606,37 +589,11 @@ namespace confighttp {
   void getFrameLimiterStatus(resp_https_t response, req_https_t request);
 #endif
 
-  void getSteamStatus(resp_https_t response, req_https_t request);
-  void getSteamGames(resp_https_t response, req_https_t request);
-  void postSteamForceSync(resp_https_t response, req_https_t request);
-  void postSteamLaunch(resp_https_t response, req_https_t request);
-
-#ifdef __linux__
-  void getLutrisStatus(resp_https_t response, req_https_t request);
-  void getLutrisGames(resp_https_t response, req_https_t request);
-  void postLutrisForceSync(resp_https_t response, req_https_t request);
-  void postLutrisLaunch(resp_https_t response, req_https_t request);
-#endif
-
 #ifdef _WIN32
-  // Forward declarations for Playnite handlers implemented in confighttp_playnite.cpp
-  void getPlayniteStatus(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
-  void installPlaynite(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
-  void uninstallPlaynite(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
-  void getPlayniteGames(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
-  void getPlayniteCategories(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
-  void postPlayniteForceSync(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
-  void postPlayniteCover(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
-  void postPlayniteLaunch(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
-  // Helper to keep confighttp.cpp free of Playnite details
-  void enhance_app_with_playnite_cover(nlohmann::json &input_tree);
-  void enhance_app_with_playnite_icon(nlohmann::json &input_tree);
-  // New: download Playnite-related logs as a ZIP
-
   // RTSS status endpoint (Windows-only)
   void getRtssStatus(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
-  void getLosslessScalingStatus(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
-  void downloadPlayniteLogs(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
+  // Support log export and crash bundle endpoints (confighttp_support.cpp)
+  void downloadSupportLogs(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   void getCrashDumpStatus(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   void postCrashDumpDismiss(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   void getCrashBundleManifest(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
@@ -1754,9 +1711,6 @@ namespace confighttp {
       file_tree["current_app"] = proc::proc.get_running_app_uuid();
       file_tree["host_uuid"] = http::unique_id;
       file_tree["host_name"] = config::nvhttp.sunshine_name;
-#ifdef _WIN32
-      // No auto-insert here; controlled by config 'playnite_fullscreen_entry_enabled'.
-#endif
 
       // Legacy versions of Sunshine used strings for boolean and integers, let's convert them
       // List of keys to convert to boolean
@@ -1774,75 +1728,16 @@ namespace confighttp {
         "prefer-10bit-sdr",
         "gen1-framegen-fix",
         "gen2-framegen-fix",
-        "dlss-framegen-capture-fix",  // backward compatibility
-        "lossless-scaling-enabled",
-        "lossless-scaling-framegen",
-        "lossless-scaling-legacy-auto-detect"
+        "dlss-framegen-capture-fix"  // backward compatibility
       };
 
       // List of keys to convert to integers
       std::vector<std::string> integer_keys = {
         "exit-timeout",
-        "lossless-scaling-target-fps",
-        "lossless-scaling-rtss-limit",
-        "scale-factor",
-        "lossless-scaling-launch-delay"
+        "scale-factor"
       };
 
       bool mutated = ensure_remote_session_apps(file_tree);
-      auto normalize_lossless_profile_overrides = [](nlohmann::json &node) -> bool {
-        if (!node.is_object()) {
-          return false;
-        }
-        bool changed = false;
-        auto convert_int = [&](const char *key) {
-          if (!node.contains(key)) {
-            return;
-          }
-          auto &value = node[key];
-          if (value.is_string()) {
-            try {
-              value = std::stoi(value.get<std::string>());
-              changed = true;
-            } catch (...) {
-            }
-          }
-        };
-        auto convert_bool = [&](const char *key) {
-          if (!node.contains(key)) {
-            return;
-          }
-          auto &value = node[key];
-          if (value.is_string()) {
-            auto text = value.get<std::string>();
-            if (text == "true" || text == "false") {
-              value = (text == "true");
-              changed = true;
-            } else if (text == "1" || text == "0") {
-              value = (text == "1");
-              changed = true;
-            }
-          }
-        };
-        convert_bool("performance-mode");
-        convert_int("flow-scale");
-        convert_int("resolution-scale");
-        convert_int("sharpening");
-        convert_bool("anime4k-vrs");
-        if (node.contains("scaling-type") && node["scaling-type"].is_string()) {
-          auto text = node["scaling-type"].get<std::string>();
-          boost::algorithm::to_lower(text);
-          node["scaling-type"] = text;
-          changed = true;
-        }
-        if (node.contains("anime4k-size") && node["anime4k-size"].is_string()) {
-          auto text = node["anime4k-size"].get<std::string>();
-          boost::algorithm::to_upper(text);
-          node["anime4k-size"] = text;
-          changed = true;
-        }
-        return changed;
-      };
       // Walk fileTree and convert true/false strings to boolean or integer values
       for (auto &app : file_tree["apps"]) {
         for (const auto &key : boolean_keys) {
@@ -1856,12 +1751,6 @@ namespace confighttp {
             app[key] = std::stoi(app[key].get<std::string>());
             mutated = true;
           }
-        }
-        if (app.contains("lossless-scaling-recommended")) {
-          mutated = normalize_lossless_profile_overrides(app["lossless-scaling-recommended"]) || mutated;
-        }
-        if (app.contains("lossless-scaling-custom")) {
-          mutated = normalize_lossless_profile_overrides(app["lossless-scaling-custom"]) || mutated;
         }
         if (app.contains("prep-cmd")) {
           for (auto &prep : app["prep-cmd"]) {
@@ -1886,15 +1775,23 @@ namespace confighttp {
         }
       }
 
-      // Add computed app ids for UI clients (best-effort, do not persist).
+      // Add computed app ids for UI clients (best-effort, do not persist). Match by UUID:
+      // proc::parse skips entries it cannot launch, so list positions may differ.
       if (file_tree.contains("apps") && file_tree["apps"].is_array()) {
         try {
-          const auto apps_snapshot = proc::proc.get_apps();
-          const auto count = std::min(file_tree["apps"].size(), apps_snapshot.size());
-          for (size_t idx = 0; idx < count; ++idx) {
-            auto &app = file_tree["apps"][idx];
-            app["id"] = apps_snapshot[idx].id;
+          std::unordered_map<std::string, std::string> ids_by_uuid;
+          for (const auto &loaded : proc::proc.get_apps()) {
+            ids_by_uuid.emplace(loaded.uuid, loaded.id);
+          }
+          auto &apps_node = file_tree["apps"];
+          for (size_t idx = 0; idx < apps_node.size(); ++idx) {
+            auto &app = apps_node[idx];
             app["index"] = static_cast<int>(idx);
+            if (app.contains("uuid") && app["uuid"].is_string()) {
+              if (const auto it = ids_by_uuid.find(app["uuid"].get<std::string>()); it != ids_by_uuid.end()) {
+                app["id"] = it->second;
+              }
+            }
           }
         } catch (...) {
         }
@@ -1924,12 +1821,6 @@ namespace confighttp {
         };
         for (auto &app : file_tree["apps"]) {
           try {
-            if (app.contains("playnite-icon-path") && app["playnite-icon-path"].is_string()) {
-              const auto v = art_stamp(app["playnite-icon-path"].get<std::string>());
-              if (v) {
-                app["playnite-icon-version"] = v;
-              }
-            }
             if (app.contains("image-path") && app["image-path"].is_string()) {
               const auto v = art_stamp(app["image-path"].get<std::string>());
               if (v) {
@@ -2018,20 +1909,6 @@ namespace confighttp {
         overrides.erase("nvenc_force_split_encode");
         normalize_adapter_config_pair(overrides);
       }
-
-      // If image-path omitted but we have a Playnite id, let Playnite helper resolve a cover (Windows)
-#ifdef _WIN32
-      enhance_app_with_playnite_cover(input_tree);
-      enhance_app_with_playnite_icon(input_tree);
-      try {
-        if (input_tree.contains("playnite-id") && input_tree["playnite-id"].is_string()) {
-          const auto playnite_id = input_tree["playnite-id"].get<std::string>();
-          if (!playnite_id.empty()) {
-            input_tree["uuid"] = platf::playnite::sync::policy::canonical_playnite_app_uuid(playnite_id);
-          }
-        }
-      } catch (...) {}
-#endif
 
 #ifndef _WIN32
       if ((input_tree.contains("gen1-framegen-fix") && input_tree["gen1-framegen-fix"].is_boolean() && input_tree["gen1-framegen-fix"].get<bool>()) ||
@@ -2234,71 +2111,6 @@ namespace confighttp {
   }
 
   /**
-   * @brief Serve a Playnite application's icon image by UUID.
-   */
-  void getAppIcon(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) {
-      return;
-    }
-
-    std::string uuid;
-    if (request->path_match.size() > 1) {
-      uuid = request->path_match[1];
-    }
-    if (uuid.empty()) {
-      bad_request(response, request, "Missing application uuid");
-      return;
-    }
-
-    try {
-      std::string content = file_handler::read_file(config::stream.file_apps.c_str());
-      nlohmann::json file_tree = nlohmann::json::parse(content);
-      if (!file_tree.contains("apps") || !file_tree["apps"].is_array()) {
-        not_found(response, request);
-        return;
-      }
-
-      fs::path icon_path;
-      for (const auto &app : file_tree["apps"]) {
-        if (!app.contains("uuid") || !app["uuid"].is_string()) {
-          continue;
-        }
-        if (app["uuid"].get<std::string>() != uuid) {
-          continue;
-        }
-        if (app.contains("playnite-icon-path") && app["playnite-icon-path"].is_string()) {
-          std::string raw_path = app["playnite-icon-path"].get<std::string>();
-          boost::algorithm::trim(raw_path);
-          if (!raw_path.empty()) {
-            icon_path = raw_path;
-          }
-        }
-        break;
-      }
-
-      if (icon_path.empty() || !fs::exists(icon_path)) {
-        not_found(response, request);
-        return;
-      }
-
-      std::ifstream in(icon_path, std::ios::binary);
-      if (!in) {
-        bad_request(response, request, "Unable to read application icon");
-        return;
-      }
-
-      SimpleWeb::CaseInsensitiveMultimap headers;
-      headers.emplace("Content-Type", "image/png");
-      headers.emplace("X-Frame-Options", "DENY");
-      headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-      response->write(success_ok, in, headers);
-    } catch (std::exception &e) {
-      BOOST_LOG(warning) << "GetAppIcon: "sv << e.what();
-      bad_request(response, request, e.what());
-    }
-  }
-
-  /**
    * @brief Upload or set a specific application's cover image by UUID.
    *        Accepts either a JSON body with {"url": "..."} (restricted to images.igdb.com) or {"data": base64}.
    *        Saves to appdata/covers/@c uuid.@c ext where ext is derived from URL or defaults to .png for data.
@@ -2497,27 +2309,6 @@ namespace confighttp {
 
     std::optional<size_t> target_index = index_from_body ? index_from_body : index_from_path;
 
-#ifdef _WIN32
-    // Detect if the app being removed is the Playnite fullscreen launcher
-    auto is_playnite_fullscreen = [](const nlohmann::json &app) -> bool {
-      try {
-        if (app.contains("playnite-fullscreen") && app["playnite-fullscreen"].is_boolean() && app["playnite-fullscreen"].get<bool>()) {
-          return true;
-        }
-        if (app.contains("cmd") && app["cmd"].is_string()) {
-          auto s = app["cmd"].get<std::string>();
-          if (s.find("playnite-launcher") != std::string::npos && s.find("--fullscreen") != std::string::npos) {
-            return true;
-          }
-        }
-        if (app.contains("name") && app["name"].is_string() && app["name"].get<std::string>() == "Playnite (Fullscreen)") {
-          return true;
-        }
-      } catch (...) {}
-      return false;
-    };
-#endif
-
     try {
       std::string content = file_handler::read_file(config::stream.file_apps.c_str());
       nlohmann::json file_tree = nlohmann::json::parse(content);
@@ -2556,7 +2347,6 @@ namespace confighttp {
       new_apps.reserve(apps_node.size());
 
       bool removed = false;
-      bool disabled_fullscreen_flag = false;
 
       for (size_t i = 0; i < apps_node.size(); ++i) {
         const auto &app_entry = apps_node[i];
@@ -2578,23 +2368,6 @@ namespace confighttp {
         }
 
         removed = true;
-
-#ifdef _WIN32
-        try {
-          if (is_playnite_fullscreen(app_entry)) {
-            auto current_cfg = config::parse_config(file_handler::read_file(config::sunshine.config_file.c_str()));
-            current_cfg["playnite_fullscreen_entry_enabled"] = "false";
-            std::stringstream config_stream;
-            for (const auto &kv : current_cfg) {
-              config_stream << kv.first << " = " << kv.second << std::endl;
-            }
-            file_handler::write_file(config::sunshine.config_file.c_str(), config_stream.str());
-            config::apply_config_now();
-            disabled_fullscreen_flag = true;
-          }
-        } catch (...) {
-        }
-#endif
       }
 
       if (!removed) {
@@ -2608,9 +2381,6 @@ namespace confighttp {
 
       nlohmann::json output_tree;
       output_tree["status"] = true;
-      if (disabled_fullscreen_flag) {
-        output_tree["playniteFullscreenDisabled"] = true;
-      }
       send_response(response, output_tree);
     } catch (std::exception &e) {
       BOOST_LOG(warning) << "DeleteApp: "sv << e.what();
@@ -2811,7 +2581,6 @@ namespace confighttp {
   }
 
 #ifdef _WIN32
-  // removed unused forward declaration for default_playnite_ext_dir()
 #endif
 
   /**
@@ -3106,9 +2875,7 @@ namespace confighttp {
       {"hevc", probe_complete && encoder_caps.hevc_mode >= 2},
       {"av1", probe_complete && encoder_caps.av1_mode >= 2},
     };
-    output_tree["providers"]["steam"] = true;
 #if defined(__linux__)
-    output_tree["providers"]["lutris"] = true;
     output_tree["providers"]["mangohud"] = true;
     const char *session_role = std::getenv("VIBEPOLLO_SESSION_ROLE");
     const std::string role = session_role ? session_role : "unknown";
@@ -3138,7 +2905,6 @@ namespace confighttp {
     };
 #endif
 #if defined(_WIN32)
-    output_tree["providers"]["playnite_toggle"] = true;
     const auto driver_snapshot = proc::vDisplayDriverStatusSnapshot();
     const auto driver_status = driver_snapshot.status;
     const auto active_driver = driver_snapshot.selection;
@@ -4518,47 +4284,6 @@ namespace confighttp {
       send_response(response, output_tree);
     } catch (std::exception &e) {
       BOOST_LOG(warning) << "UploadCover: "sv << e.what();
-      bad_request(response, request, e.what());
-    }
-  }
-
-  /**
-   * @brief Purge all auto-synced Playnite applications (playnite-managed == "auto").
-   * @api_examples{/api/apps/purge_autosync| POST| null}
-   */
-  void purgeAutoSyncedApps(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) {
-      return;
-    }
-
-    print_req(request);
-
-    try {
-      std::lock_guard apps_lock {apps_file_mutex()};
-      nlohmann::json output_tree;
-      nlohmann::json new_apps = nlohmann::json::array();
-      std::string file = file_handler::read_file(config::stream.file_apps.c_str());
-      nlohmann::json file_tree = nlohmann::json::parse(file);
-      auto &apps_node = file_tree["apps"];
-
-      int removed = 0;
-      for (auto &app : apps_node) {
-        std::string managed = app.contains("playnite-managed") && app["playnite-managed"].is_string() ? app["playnite-managed"].get<std::string>() : std::string();
-        if (managed == "auto") {
-          ++removed;
-          continue;
-        }
-        new_apps.push_back(app);
-      }
-
-      file_tree["apps"] = new_apps;
-      confighttp::refresh_client_apps_cache(file_tree);
-
-      output_tree["status"] = true;
-      output_tree["removed"] = removed;
-      send_response(response, output_tree);
-    } catch (std::exception &e) {
-      BOOST_LOG(warning) << "purgeAutoSyncedApps: "sv << e.what();
       bad_request(response, request, e.what());
     }
   }
@@ -6159,7 +5884,6 @@ namespace confighttp {
     register_api_route("^/api/health/crashdump/dismiss$", "POST", postCrashDumpDismiss);
 #endif
     register_api_route("^/api/apps/([A-Fa-f0-9-]+)/cover$", "GET", getAppCover);
-    register_api_route("^/api/apps/([A-Fa-f0-9-]+)/icon$", "GET", getAppIcon);
     register_api_route("^/api/apps/([A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12})$", "DELETE", deleteApp);
     register_api_route("^/api/apps/([0-9]+)$", "DELETE", deleteApp);
     register_api_route("^/api/clients/unpair-all$", "POST", unpairAll);
@@ -6195,35 +5919,15 @@ namespace confighttp {
     register_api_route("^/api/covers/([0-9]+)$", "GET", getCover);
     register_api_route("^/api/vigembus/status$", "GET", getViGEmBusStatus);
     register_api_route("^/api/vigembus/install$", "POST", installViGEmBus);
-    register_api_route("^/api/apps/purge_autosync$", "POST", purgeAutoSyncedApps);
 #if defined(_WIN32) || defined(__linux__)
     register_api_route("^/api/frame-limiter/status$", "GET", getFrameLimiterStatus);
 #endif
-    register_api_route("^/api/steam/status$", "GET", getSteamStatus);
-    register_api_route("^/api/steam/games$", "GET", getSteamGames);
-    register_api_route("^/api/steam/force_sync$", "POST", postSteamForceSync);
-    register_api_route("^/api/steam/launch$", "POST", postSteamLaunch);
-#ifdef __linux__
-    register_api_route("^/api/lutris/status$", "GET", getLutrisStatus);
-    register_api_route("^/api/lutris/games$", "GET", getLutrisGames);
-    register_api_route("^/api/lutris/force_sync$", "POST", postLutrisForceSync);
-    register_api_route("^/api/lutris/launch$", "POST", postLutrisLaunch);
-#endif
 #ifdef _WIN32
-    register_api_route("^/api/playnite/status$", "GET", getPlayniteStatus);
     register_api_route("^/api/rtss/status$", "GET", getRtssStatus);
-    register_api_route("^/api/lossless_scaling/status$", "GET", getLosslessScalingStatus);
-    register_api_route("^/api/playnite/install$", "POST", installPlaynite);
-    register_api_route("^/api/playnite/uninstall$", "POST", uninstallPlaynite);
-    register_api_route("^/api/playnite/games$", "GET", getPlayniteGames);
-    register_api_route("^/api/playnite/categories$", "GET", getPlayniteCategories);
-    register_api_route("^/api/playnite/force_sync$", "POST", postPlayniteForceSync);
-    register_blocking_api_route("^/api/playnite/cover$", "POST", postPlayniteCover);
-    register_api_route("^/api/playnite/launch$", "POST", postPlayniteLaunch);
     // Export logs bundle (Windows only). Collection and sanitizing can take
     // seconds on large log sets; keep it off the single io thread so the rest
     // of the WebUI stays responsive during an export.
-    register_blocking_api_route("^/api/logs/export$", "GET", downloadPlayniteLogs);
+    register_blocking_api_route("^/api/logs/export$", "GET", downloadSupportLogs);
     register_blocking_api_route("^/api/logs/export_crash/manifest$", "GET", getCrashBundleManifest);
     register_blocking_api_route("^/api/logs/export_crash$", "GET", downloadCrashBundle);
 #else

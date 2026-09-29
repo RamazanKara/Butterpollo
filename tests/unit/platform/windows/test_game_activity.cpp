@@ -13,31 +13,31 @@ namespace {
 
   TEST(GameActivity, HighestPriorityPositiveSignalWins) {
     const std::array signals {
+      signal_t {signal_source_e::shell_fullscreen, true, 5, "shell.exe"},
       signal_t {signal_source_e::fullscreen_foreground, true, 10, "fallback.exe"},
       signal_t {signal_source_e::tracked_process, true, 20, "tracked.exe"},
-      signal_t {signal_source_e::playnite, true, 30, "playnite-game.exe"},
-    };
-
-    const auto state = platf::game_activity_policy::reduce_signals(signals);
-
-    EXPECT_TRUE(state.active);
-    EXPECT_EQ(state.source, signal_source_e::playnite);
-    EXPECT_EQ(state.pid, 30u);
-    EXPECT_EQ(state.executable, "playnite-game.exe");
-  }
-
-  TEST(GameActivity, RetractingOneSourceLeavesOtherClaimsActive) {
-    const std::array signals {
-      signal_t {signal_source_e::playnite, false, 0, {}},
-      signal_t {signal_source_e::tracked_process, true, 20, "tracked.exe"},
-      signal_t {signal_source_e::fullscreen_foreground, true, 10, "fallback.exe"},
     };
 
     const auto state = platf::game_activity_policy::reduce_signals(signals);
 
     EXPECT_TRUE(state.active);
     EXPECT_EQ(state.source, signal_source_e::tracked_process);
+    EXPECT_EQ(state.pid, 20u);
     EXPECT_EQ(state.executable, "tracked.exe");
+  }
+
+  TEST(GameActivity, RetractingOneSourceLeavesOtherClaimsActive) {
+    const std::array signals {
+      signal_t {signal_source_e::tracked_process, false, 0, {}},
+      signal_t {signal_source_e::fullscreen_foreground, true, 10, "fallback.exe"},
+      signal_t {signal_source_e::shell_fullscreen, true, 5, "shell.exe"},
+    };
+
+    const auto state = platf::game_activity_policy::reduce_signals(signals);
+
+    EXPECT_TRUE(state.active);
+    EXPECT_EQ(state.source, signal_source_e::fullscreen_foreground);
+    EXPECT_EQ(state.executable, "fallback.exe");
   }
 
   TEST(GameActivity, VisibleFullscreenGameWinsOverDesktopBehindIt) {

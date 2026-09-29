@@ -702,7 +702,7 @@ namespace platf::dxgi {
       sizeof(message)
     );
 
-    // Wait for control client to connect (match Playnite connector's 10s timeout with margin)
+    // Wait for control client to connect
     pipe->wait_for_client_connection(15000);
 
     if (!pipe->is_connected()) {

@@ -1,51 +1,20 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
-import {
-  NButton,
-  NSwitch,
-  NAlert,
-  NTag,
-  NSelect,
-  NInputNumber,
-  NRadioGroup,
-  NRadio,
-} from 'naive-ui';
-import type {
-  FrameGenHealth,
-  FrameGenRequirementStatus,
-  FrameGenerationMode,
-  LosslessProfileKey,
-} from './types';
-import { FRAME_GENERATION_PROVIDERS, LOSSLESS_FLOW_MIN, LOSSLESS_FLOW_MAX } from './lossless';
+import { NButton, NAlert, NTag, NSelect } from 'naive-ui';
+import type { FrameGenHealth, FrameGenRequirementStatus, FrameGenerationMode } from './types';
 import { frameGenDisplayNotice } from './frameGenDisplayPolicy';
 
 const { t } = useI18n();
 
 const modeModel = defineModel<FrameGenerationMode>('mode', { default: 'off' });
-const losslessProfileModel = defineModel<LosslessProfileKey>('losslessProfile', {
-  default: 'recommended',
-});
-const losslessTargetModel = defineModel<number | null>('losslessTargetFps', { default: null });
-const losslessRtssModel = defineModel<number | null>('losslessRtssLimit', { default: null });
-const losslessFlowModel = defineModel<number | null>('losslessFlowScale', { default: null });
-const losslessLaunchDelayModel = defineModel<number | null>('losslessLaunchDelay', {
-  default: null,
-});
 
 const props = defineProps<{
   health: FrameGenHealth | null;
   healthLoading: boolean;
   healthError: string | null;
-  isPlayniteManaged: boolean;
-  losslessActive: boolean;
-  losslessScalingEnabled: boolean;
   nvidiaActive: boolean;
   usingVirtualDisplay: boolean;
-  windows10: boolean;
-  hasActiveLosslessOverrides: boolean;
-  onLosslessRtssLimitChange: (value: number | null) => void;
-  resetActiveLosslessProfile: () => void;
 }>();
 
 const emit = defineEmits<{
@@ -56,38 +25,13 @@ const emit = defineEmits<{
 const hasHealthData = computed(() => !!props.health);
 const frameGenOptions = computed(() => [
   { label: t('apps.framegen.mode_none'), value: 'off' as const },
-  ...FRAME_GENERATION_PROVIDERS.map((option) => ({
-    label: option.labelKey ? t(option.labelKey) : (option.label ?? String(option.value)),
-    value: option.value,
-  })),
+  { label: t('apps.framegen.provider_game_provided'), value: 'game-provided' as const },
+  { label: 'NVIDIA Smooth Motion', value: 'nvidia-smooth-motion' as const },
 ]);
-const isLosslessMode = computed(() => modeModel.value === 'lossless-scaling');
 const frameGenDisplayAlert = computed(() => {
   const notice = frameGenDisplayNotice(props.usingVirtualDisplay, modeModel.value);
   return notice ? { type: notice.type, message: t(notice.key) } : null;
 });
-const losslessAdvancedTargets = ref(
-  losslessTargetModel.value !== null || losslessRtssModel.value !== null,
-);
-
-watch(
-  () => [losslessTargetModel.value, losslessRtssModel.value],
-  ([target, rtss]) => {
-    if (target !== null || rtss !== null) {
-      losslessAdvancedTargets.value = true;
-    }
-  },
-);
-
-function handleLosslessAdvancedToggle(enabled: boolean) {
-  losslessAdvancedTargets.value = enabled;
-  if (!enabled) {
-    losslessTargetModel.value = null;
-    losslessRtssModel.value = null;
-    props.onLosslessRtssLimitChange(null);
-  }
-}
-
 const requirementRows = computed(() => {
   if (!props.health) return [];
   return [
@@ -198,9 +142,6 @@ const displayTargets = computed(() => props.health?.display.targets || []);
           {{ $t('apps.framegen.subtitle') }}
         </p>
         <div class="flex flex-wrap items-center gap-2">
-          <n-tag v-if="losslessActive" size="small" type="primary">
-            <i class="fas fa-bolt mr-1" /> {{ $t('apps.framegen.tag_lossless_active') }}
-          </n-tag>
           <n-tag v-if="nvidiaActive" size="small" type="info">
             <i class="fab fa-nvidia mr-1" /> {{ $t('apps.framegen.tag_nvidia_active') }}
           </n-tag>
@@ -247,159 +188,9 @@ const displayTargets = computed(() => props.health?.display.targets || []);
           size="small"
           :clearable="false"
         />
-        <n-alert
-          v-if="(isLosslessMode || props.losslessScalingEnabled) && !props.isPlayniteManaged"
-          type="warning"
-          :show-icon="true"
-          size="small"
-          class="text-xs"
-        >
-          {{ $t('apps.framegen.lossless_unmanaged_warning') }}
-        </n-alert>
         <p class="text-[12px] opacity-70 leading-relaxed">
           {{ $t('apps.framegen.kind_hint') }}
         </p>
-      </div>
-
-      <div
-        v-if="isLosslessMode"
-        class="space-y-3 rounded-xl border border-primary/20 bg-primary/5 p-3"
-      >
-        <n-alert v-if="windows10" type="warning" size="small">
-          {{ $t('apps.framegen.lossless_win10_warning') }}
-        </n-alert>
-        <div class="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
-          <div class="space-y-1">
-            <div class="font-medium text-sm">{{ $t('apps.framegen.lossless_title') }}</div>
-            <p class="text-[12px] opacity-70 leading-relaxed">
-              {{ $t('apps.framegen.lossless_subtitle') }}
-            </p>
-          </div>
-          <n-button
-            size="small"
-            tertiary
-            :disabled="!props.hasActiveLosslessOverrides"
-            @click="props.resetActiveLosslessProfile()"
-          >
-            {{ $t('apps.framegen.reset_profile') }}
-          </n-button>
-        </div>
-
-        <div class="space-y-2">
-          <label class="text-xs font-semibold uppercase tracking-wide opacity-70">{{
-            $t('apps.framegen.profile_label')
-          }}</label>
-          <n-radio-group v-model:value="losslessProfileModel" class="flex flex-col space-y-2">
-            <n-radio value="recommended" class="w-full py-2 px-2 rounded-md hover:bg-surface/10">
-              <div class="flex items-center gap-2 w-full">
-                <span class="block text-sm">{{ $t('apps.framegen.profile_recommended') }}</span>
-              </div>
-            </n-radio>
-            <n-radio value="custom" class="w-full py-2 px-2 rounded-md hover:bg-surface/10">
-              <div class="flex items-center gap-2 w-full">
-                <span class="block text-sm">{{ $t('apps.framegen.profile_custom') }}</span>
-              </div>
-            </n-radio>
-          </n-radio-group>
-          <p class="text-[12px] opacity-60 leading-relaxed">
-            {{ $t('apps.framegen.profile_hint') }}
-          </p>
-        </div>
-
-        <div class="space-y-3">
-          <div class="space-y-2">
-            <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-              {{ $t('apps.framegen.frame_targets_label') }}
-            </label>
-            <p class="text-[12px] opacity-60 leading-relaxed">
-              {{ $t('apps.framegen.frame_targets_hint') }}
-            </p>
-            <div class="flex flex-wrap items-center gap-2">
-              <n-switch
-                size="small"
-                :value="losslessAdvancedTargets"
-                @update:value="handleLosslessAdvancedToggle"
-              />
-              <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                {{ $t('apps.framegen.advanced_overrides') }}
-              </span>
-              <span class="text-[11px] opacity-60">{{
-                $t('apps.framegen.advanced_overrides_note')
-              }}</span>
-            </div>
-          </div>
-          <div v-if="losslessAdvancedTargets" class="grid gap-3 md:grid-cols-2">
-            <div class="space-y-1">
-              <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                {{ $t('apps.framegen.target_fps_label') }}
-              </label>
-              <n-input-number
-                v-model:value="losslessTargetModel"
-                :min="1"
-                :max="360"
-                :step="1"
-                :precision="0"
-                placeholder="120"
-                size="small"
-              />
-              <p class="text-[12px] opacity-60 leading-relaxed">
-                {{ $t('apps.framegen.target_fps_hint') }}
-              </p>
-            </div>
-            <div class="space-y-1">
-              <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                {{ $t('apps.framegen.rtss_limit_label') }}
-              </label>
-              <n-input-number
-                v-model:value="losslessRtssModel"
-                :min="1"
-                :max="360"
-                :step="1"
-                :precision="0"
-                placeholder="60"
-                size="small"
-                @update:value="props.onLosslessRtssLimitChange"
-              />
-              <p class="text-[12px] opacity-60 leading-relaxed">
-                {{ $t('apps.framegen.rtss_limit_hint') }}
-              </p>
-            </div>
-          </div>
-          <div class="space-y-1">
-            <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-              {{ $t('apps.framegen.flow_scale_label') }}
-            </label>
-            <n-input-number
-              v-model:value="losslessFlowModel"
-              :min="LOSSLESS_FLOW_MIN"
-              :max="LOSSLESS_FLOW_MAX"
-              :step="1"
-              :precision="0"
-              placeholder="50"
-              size="small"
-            />
-            <p class="text-[12px] opacity-60 leading-relaxed">
-              {{ $t('apps.framegen.flow_scale_hint') }}
-            </p>
-          </div>
-          <div class="space-y-1">
-            <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-              {{ $t('apps.framegen.launch_delay_label') }}
-            </label>
-            <n-input-number
-              v-model:value="losslessLaunchDelayModel"
-              :min="0"
-              :max="600"
-              :step="1"
-              :precision="0"
-              placeholder="8"
-              size="small"
-            />
-            <p class="text-[12px] opacity-60 leading-relaxed">
-              {{ $t('apps.framegen.launch_delay_hint') }}
-            </p>
-          </div>
-        </div>
       </div>
 
       <div class="space-y-3">

@@ -56,7 +56,6 @@ namespace platf::rtx_hdr {
     std::optional<bool> decode_activation(std::optional<std::uint32_t> driver_flags, std::optional<std::uint32_t> profile_enable);
     std::optional<int> decode_percent_units(std::uint32_t raw);
     float sdr_brightness_to_white_nits(int brightness);
-    bool playnite_foreground_matches(std::string_view active_playnite_id, std::string_view status_id, std::string_view status_exe, std::string_view status_install_dir, std::string_view foreground_exe);
 
     struct foreground_state_t {
       bool has_active_app {false};

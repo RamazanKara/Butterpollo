@@ -294,11 +294,10 @@ test('server command rows round-trip for the Vibepollo editor', () => {
 
 test('provider actions and private Linux controls require backend capabilities', () => {
   for (const metadata of [undefined, {}, { platform: 'linux' }, { platform: 'windows' }]) {
-    for (const provider of ['steam', 'lutris', 'mangohud', 'playnite_toggle'])
-      assert.equal(providerSupported(metadata, provider), false);
+    assert.equal(providerSupported(metadata, 'mangohud'), false);
   }
-  assert.equal(providerSupported({ providers: { steam: 'true' } }, 'steam'), false);
-  assert.equal(providerSupported({ providers: { steam: true } }, 'steam'), true);
+  assert.equal(providerSupported({ providers: { mangohud: 'true' } }, 'mangohud'), false);
+  assert.equal(providerSupported({ providers: { mangohud: true } }, 'mangohud'), true);
   assert.equal(supportsManagedLinuxDisplay({ platform: 'linux' }), false);
   for (const key of ['virtual_display_mode', 'dd_refresh_rate_option', 'frame_limiter_provider'])
     assert.equal(settingsCapabilitySupported(key, { platform: 'linux' }), false);

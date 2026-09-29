@@ -65,12 +65,8 @@ install(TARGETS dxgi-info RUNTIME DESTINATION "tools" COMPONENT dxgi)
 install(TARGETS audio-info RUNTIME DESTINATION "tools" COMPONENT audio)
 
 # Helpers and tools
-# - Playnite launcher helper used for Playnite-managed app launches
 # - WGC capture helper used by the WGC display backend
 # - Display helper used for applying/reverting display settings
-if (TARGET playnite-launcher)
-    install(TARGETS playnite-launcher RUNTIME DESTINATION "tools" COMPONENT application)
-endif()
 if (TARGET sunshine_wgc_capture)
     install(TARGETS sunshine_wgc_capture RUNTIME DESTINATION "tools" COMPONENT application)
 endif()
@@ -473,11 +469,6 @@ install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/firewall/"
 # Sunshine assets
 install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/assets/"
         DESTINATION "${SUNSHINE_ASSETS_DIR}"
-        COMPONENT assets)
-
-# Plugins (copy plugin folders such as `plugins/playnite` into the package)
-install(DIRECTORY "${CMAKE_SOURCE_DIR}/plugins/"
-        DESTINATION "plugins"
         COMPONENT assets)
 
 # copy assets (excluding shaders) to build directory, for running without install

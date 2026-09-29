@@ -49,41 +49,6 @@ add_custom_command(TARGET sunshinesvc POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:sunshinesvc>" "${CMAKE_BINARY_DIR}/wix_payload/tools/sunshinesvc.exe"
 )
 
-# Playnite launcher: per-launch helper that hosts a private IPC server
-add_executable(playnite-launcher
-        playnite_launcher/main.cpp
-        playnite_launcher/launcher.cpp
-        playnite_launcher/arguments.cpp
-        playnite_launcher/cleanup.cpp
-        playnite_launcher/focus_utils.cpp
-        playnite_launcher/lossless_scaling.cpp
-        playnite_launcher/lossless_scaling_policy.cpp
-        playnite_launcher/playnite_process.cpp)
-set_target_properties(playnite-launcher PROPERTIES CXX_STANDARD 23)
-set_target_properties(playnite-launcher PROPERTIES WIN32_EXECUTABLE TRUE)
-target_include_directories(playnite-launcher PRIVATE ${CMAKE_SOURCE_DIR}/tools/playnite_launcher)
-target_sources(playnite-launcher PRIVATE
-        ${CMAKE_SOURCE_DIR}/src/logging.cpp
-        ${CMAKE_SOURCE_DIR}/src/logging_policy.cpp
-        ${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_ipc.cpp
-        ${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_protocol.cpp
-        ${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/pipes.cpp
-        ${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/misc_utils.cpp)
-target_compile_definitions(playnite-launcher PRIVATE SUNSHINE_PLAYNITE_LAUNCHER)
-target_link_libraries(playnite-launcher
-        ${Boost_LIBRARIES}
-        ${CMAKE_THREAD_LIBS_INIT}
-        nlohmann_json::nlohmann_json
-        user32
-        userenv
-        ole32
-        oleaut32
-        Psapi
-        shell32
-        shlwapi
-        wtsapi32
-        ${PLATFORM_LIBRARIES})
-target_compile_options(playnite-launcher PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
 # Add sunshine_wgc_capture executable
 add_executable(sunshine_wgc_capture
         sunshine_wgc_capture.cpp

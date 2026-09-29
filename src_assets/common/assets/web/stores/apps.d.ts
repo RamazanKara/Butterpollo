@@ -12,9 +12,7 @@ export interface App {
   uuid?: string;
   'working-dir'?: string;
   'image-path'?: string;
-  'playnite-icon-path'?: string;
   'image-version'?: number;
-  'playnite-icon-version'?: number;
   'exclude-global-prep-cmd'?: boolean;
   'config-overrides'?: Record<string, unknown>;
   elevated?: boolean;
@@ -26,14 +24,6 @@ export interface App {
   'exit-timeout'?: number;
   'prep-cmd'?: PrepCmd[];
   detached?: string[];
-  'lossless-scaling-enabled'?: boolean;
-  'lossless-scaling-framegen'?: boolean;
-  'lossless-scaling-target-fps'?: number;
-  'lossless-scaling-rtss-limit'?: number;
-  'lossless-scaling-profile'?: string;
-  'lossless-scaling-recommended'?: Record<string, unknown>;
-  'lossless-scaling-custom'?: Record<string, unknown>;
-  'lossless-scaling-launch-delay'?: number;
   [key: string]: any;
 }
 

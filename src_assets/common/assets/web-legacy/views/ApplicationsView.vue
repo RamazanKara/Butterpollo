@@ -14,30 +14,6 @@
       </div>
 
       <div class="apps-header__actions">
-        <template v-if="isWindows">
-          <n-button
-            v-if="playniteEnabled"
-            size="medium"
-            type="default"
-            strong
-            :loading="syncBusy"
-            :disabled="syncBusy"
-            class="apps-header__action"
-            :aria-label="$t('playnite.force_sync')"
-            @click="forceSync"
-          >
-            <i class="fas fa-rotate-right" />
-            <span>{{ $t('playnite.force_sync') }}</span>
-          </n-button>
-        </template>
-
-        <n-button size="medium" class="apps-header__action" @click="librarySetupOpen = true">
-          <i class="fas fa-puzzle-piece" />
-          <span>{{
-            libraryConfigured ? 'Library manager settings' : 'Setup Game Library Integration'
-          }}</span>
-        </n-button>
-
         <n-button
           type="primary"
           size="medium"
@@ -72,31 +48,12 @@
               loading="lazy"
               @error="onArtworkError(app)"
             />
-            <i
-              v-else
-              class="fas apps-row__fallback-icon"
-              :class="app['playnite-id'] ? 'fa-gamepad' : 'fa-window-maximize'"
-            />
+            <i v-else class="fas fa-window-maximize apps-row__fallback-icon" />
           </div>
 
           <div class="apps-row__main">
             <div class="apps-row__title-line">
               <span class="apps-row__title">{{ app.name || $t('apps.untitled') }}</span>
-              <span v-if="app['playnite-id']" class="apps-row__badge apps-row__badge--playnite">
-                {{ $t('apps.playnite_badge') }}
-                <span v-if="playniteSourceLabel(app)" class="apps-row__badge-detail">
-                  · {{ playniteSourceLabel(app) }}
-                </span>
-              </span>
-              <span
-                v-else-if="app['steam-id'] || app['lutris-id']"
-                class="apps-row__badge apps-row__badge--playnite"
-              >
-                {{ app['steam-id'] ? 'Steam' : 'Lutris' }}
-              </span>
-              <span v-else class="apps-row__badge apps-row__badge--custom">{{
-                $t('apps.custom_badge')
-              }}</span>
             </div>
             <div v-if="appSubtitle(app)" class="apps-row__subtitle" :title="appSubtitle(app)">
               {{ appSubtitle(app) }}
@@ -120,75 +77,26 @@
             <i class="fas fa-plus" />
             <span>{{ $t('apps.add_application') }}</span>
           </n-button>
-          <n-button
-            v-if="!libraryConfigured"
-            size="medium"
-            type="default"
-            @click="librarySetupOpen = true"
-          >
-            <i class="fas fa-puzzle-piece" />
-            <span>{{
-              libraryConfigured ? 'Library manager settings' : 'Setup Game Library Integration'
-            }}</span>
-          </n-button>
         </div>
       </div>
     </section>
 
-    <GameLibrarySetup
-      v-model:open="librarySetupOpen"
-      :platform="configStore.metadata?.platform || ''"
-      :metadata="configStore.metadata"
-      :request="libraryRequest"
-      @configured="libraryConfigured = $event"
-      @saved="librariesSaved"
-    />
     <AppEditModal v-model="showModal" :app="currentApp" :index="currentAppIndex" @saved="reload" @deleted="reload" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, computed } from 'vue';
-import GameLibrarySetup from '@/components/GameLibrarySetup.vue';
+import { ref, onMounted, onBeforeUnmount } from 'vue';
 import AppEditModal from '@/components/AppEditModal.vue';
 import { useAppsStore } from '@/stores/apps';
 import { storeToRefs } from 'pinia';
 import { NButton } from 'naive-ui';
 import { useConfigStore } from '@/stores/config';
-import { http } from '@/http';
-import { useRouter } from 'vue-router';
-import { useAuthStore } from '@/stores/auth';
-import { useI18n } from 'vue-i18n';
 import type { App } from '@/stores/apps';
 
 const appsStore = useAppsStore();
 const { apps } = storeToRefs(appsStore);
 const configStore = useConfigStore();
-const auth = useAuthStore();
-const router = useRouter();
-const { t } = useI18n();
-
-const librarySetupOpen = ref(false);
-const libraryConfigured = ref(false);
-async function libraryRequest(
-  method: 'GET' | 'POST' | 'PATCH',
-  path: string,
-  body?: Record<string, unknown>,
-) {
-  const response = await http.request({ method, url: path, data: body });
-  return response.data;
-}
-async function librariesSaved() {
-  await Promise.all([reload(), configStore.fetchConfig(true), fetchPlayniteStatus()]);
-}
-const syncBusy = ref(false);
-const isWindows = computed(
-  () => (configStore.metadata?.platform || '').toLowerCase() === 'windows',
-);
-
-const playniteInstalled = ref(false);
-const playniteStatusReady = ref(false);
-const playniteEnabled = computed(() => playniteInstalled.value);
 
 const showModal = ref(false);
 const currentApp = ref<App | null>(null);
@@ -224,20 +132,19 @@ function firstString(...values: unknown[]): string {
 }
 
 function appArtworkKey(app: App): string {
-  const identity = firstString(app.uuid, app['playnite-id'], app.name);
-  return `${identity}|${app['playnite-icon-path'] || app['image-path'] || ''}|${app['playnite-icon-version'] || app['image-version'] || ''}`;
+  const identity = firstString(app.uuid, app.name);
+  return `${identity}|${app['image-path'] || ''}|${app['image-version'] || ''}`;
 }
 
 function appHasArtwork(app: App): boolean {
   const key = appArtworkKey(app);
   if (!app.uuid || !key || failedArtworkKeys.value.has(key)) return false;
-  return !!(app['playnite-icon-path'] || app['image-path']);
+  return !!app['image-path'];
 }
 
 function appArtworkUrl(app: App): string {
-  const icon = !!app['playnite-icon-path'];
-  const version = icon ? app['playnite-icon-version'] : app['image-version'];
-  const base = `/api/apps/${encodeURIComponent(app.uuid || '')}/${icon ? 'icon' : 'cover'}`;
+  const version = app['image-version'];
+  const base = `/api/apps/${encodeURIComponent(app.uuid || '')}/cover`;
   return version ? `${base}?v=${version}` : base;
 }
 
@@ -258,59 +165,12 @@ function appSubtitle(app: App): string {
   return '';
 }
 
-function playniteSourceLabel(app: App): string {
-  if (app['playnite-managed'] === 'manual') return t('apps.playnite_source_manual');
-  const src = app['playnite-source'];
-  if (typeof src === 'string' && src.length > 0) {
-    const normalized = src.replace(/\s/g, '');
-    if (normalized === 'recent') return t('apps.playnite_source_recent');
-    if (normalized === 'category') return t('apps.playnite_source_category');
-    if (normalized === 'recent+category' || normalized === 'category+recent')
-      return t('apps.playnite_source_both');
-    return t('apps.playnite_source_unknown');
-  }
-  return t('apps.playnite_source_managed');
-}
-
-async function forceSync(): Promise<void> {
-  syncBusy.value = true;
-  try {
-    await http.post('./api/playnite/force_sync', {}, { validateStatus: () => true });
-    await reload();
-  } catch {
-  } finally {
-    syncBusy.value = false;
-  }
-}
-
-async function fetchPlayniteStatus(): Promise<void> {
-  if (!auth.isAuthenticated) return;
-  try {
-    const r = await http.get('/api/playnite/status', { validateStatus: () => true });
-    if (
-      r.status === 200 &&
-      r.data &&
-      typeof r.data === 'object' &&
-      r.data !== null &&
-      'installed' in (r.data as Record<string, unknown>)
-    ) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const data = r.data as any;
-      playniteInstalled.value = data.installed === true || data.active === true;
-    }
-  } catch {
-    // ignore; will retry on next auth change
-  } finally {
-    playniteStatusReady.value = true;
-  }
-}
-
 let refreshTimer: number | undefined;
 let refreshing = false;
 onBeforeUnmount(() => window.clearInterval(refreshTimer));
 onMounted(async () => {
   refreshTimer = window.setInterval(async () => {
-    if (document.hidden || refreshing || showModal.value || librarySetupOpen.value) return;
+    if (document.hidden || refreshing || showModal.value) return;
     refreshing = true;
     try {
       await reload();
@@ -321,19 +181,9 @@ onMounted(async () => {
   try {
     await configStore.fetchConfig?.();
   } catch {}
-  if (auth.isAuthenticated) {
-    void fetchPlayniteStatus();
-  } else {
-    playniteStatusReady.value = false;
-  }
   try {
     await appsStore.loadApps(true);
   } catch {}
-});
-
-auth.onLogin(() => {
-  playniteStatusReady.value = false;
-  void fetchPlayniteStatus();
 });
 </script>
 
@@ -577,46 +427,6 @@ auth.onLogin(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-/* Badges */
-.apps-row__badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  padding: 0.1rem 0.5rem;
-  border-radius: 9999px;
-  letter-spacing: 0.02em;
-  flex-shrink: 0;
-  align-self: center;
-  white-space: nowrap;
-}
-
-.apps-row__badge-detail {
-  font-weight: 500;
-  opacity: 0.75;
-}
-
-.apps-row__badge--playnite {
-  color: rgb(var(--color-primary));
-  background: rgb(var(--color-primary) / 0.12);
-}
-
-.dark .apps-row__badge--playnite {
-  background: rgb(var(--color-primary) / 0.18);
-}
-
-.apps-row__badge--custom {
-  color: rgb(var(--color-dark));
-  background: rgb(var(--color-dark) / 0.08);
-  opacity: 0.75;
-}
-
-.dark .apps-row__badge--custom {
-  color: rgb(var(--color-light));
-  background: rgb(var(--color-light) / 0.08);
 }
 
 /* Chevron */

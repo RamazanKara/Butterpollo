@@ -3,11 +3,8 @@
  */
 
 #include "foreground_app.h"
-#include "rtx_hdr_policy.h"
 
-#include "playnite_integration.h"
 #include "src/process.h"
-#include "tools/playnite_launcher/focus_utils.h"
 #include "utf_utils.h"
 
 #include <algorithm>
@@ -161,12 +158,19 @@ namespace platf::foreground_app {
     }
 
     std::string process_image_path_utf8(DWORD pid) {
-      std::wstring path;
-      if (!playnite_launcher::focus::get_process_image_path(pid, path)) {
+      HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+      if (!process) {
+        return {};
+      }
+      wchar_t buffer[MAX_PATH];
+      DWORD size = ARRAYSIZE(buffer);
+      const BOOL ok = QueryFullProcessImageNameW(process, 0, buffer, &size);
+      CloseHandle(process);
+      if (!ok) {
         return {};
       }
       try {
-        return utf_utils::to_utf8(path);
+        return utf_utils::to_utf8(std::wstring(buffer, size));
       } catch (...) {
         return {};
       }
@@ -487,28 +491,6 @@ namespace platf::foreground_app {
     return !left_base.empty() && left_base == right_base;
   }
 
-  bool path_is_under_directory(std::string_view path, std::string_view directory) {
-    const auto child = normalize_path_text(path);
-    const auto parent = normalize_path_text(directory);
-    if (child.empty() || parent.empty() || child.size() <= parent.size()) {
-      return false;
-    }
-    if (child.compare(0, parent.size(), parent) != 0) {
-      return false;
-    }
-    return child[parent.size()] == '\\';
-  }
-
-  bool playnite_foreground_matches_for_tests(
-    std::string_view active_playnite_id,
-    std::string_view status_id,
-    std::string_view status_exe,
-    std::string_view status_install_dir,
-    std::string_view foreground_exe
-  ) {
-    return rtx_hdr::policy::playnite_foreground_matches(active_playnite_id, status_id, status_exe, status_install_dir, foreground_exe);
-  }
-
   bool transient_shell_overlay_for_tests(
     const std::string_view class_name,
     const bool desktop_ui,
@@ -551,43 +533,13 @@ namespace platf::foreground_app {
 
     const auto app = proc::proc.running_app_state();
     state.has_active_app = app.has_active_app;
-    state.uses_playnite = app.uses_playnite;
     state.active_app_name = app.name;
 
-    std::optional<platf::playnite::active_game_status_t> playnite_status;
-    std::string cached_install_dir;
-    if (app.uses_playnite) {
-      const auto active_games = platf::playnite::get_active_game_statuses();
-      for (auto game = active_games.rbegin(); game != active_games.rend(); ++game) {
-        if (game->active && game->id == app.playnite_id) {
-          playnite_status = *game;
-          break;
-        }
-      }
-      platf::playnite::get_cached_install_dir(app.playnite_id, cached_install_dir);
-    }
-
     if (capture_rect) {
-      bool require_active_app_match =
-        state.has_active_app && (app.uses_playnite || app.trackable);
+      bool require_active_app_match = state.has_active_app && app.trackable;
 
       active_window_matcher_t matcher;
-      if (app.uses_playnite) {
-        matcher = [playnite_status, cached_install_dir](DWORD, const std::string_view executable) {
-          if (playnite_status &&
-              playnite_foreground_matches_for_tests(
-                {},
-                playnite_status->id,
-                playnite_status->exe,
-                playnite_status->install_dir,
-                executable
-              )) {
-            return true;
-          }
-          return !cached_install_dir.empty() &&
-                 path_is_under_directory(executable, cached_install_dir);
-        };
-      } else if (app.trackable) {
+      if (app.trackable) {
         matcher = [](const DWORD pid, std::string_view) {
           return proc::proc.running_app_contains_pid(pid);
         };
@@ -674,13 +626,8 @@ namespace platf::foreground_app {
         state.matches_active_app = true;
         state.foreground_pid = visible_game.pid;
         state.foreground_exe = visible_game.executable;
-        state.active_app_exe =
-          playnite_status && !playnite_status->exe.empty() ?
-            playnite_status->exe :
-            visible_game.executable;
-        if (app.uses_playnite) {
-          state.source = "playnite-visible";
-        } else if (app.trackable) {
+        state.active_app_exe = visible_game.executable;
+        if (app.trackable) {
           state.source = "process-visible";
         } else {
           state.source = "fullscreen-visible";
@@ -699,33 +646,6 @@ namespace platf::foreground_app {
       return state;
     }
 
-    if (app.uses_playnite) {
-      if (playnite_status &&
-          playnite_foreground_matches_for_tests(
-            app.playnite_id,
-            playnite_status->id,
-            playnite_status->exe,
-            playnite_status->install_dir,
-            state.foreground_exe
-          )) {
-        state.matches_active_app = true;
-        state.active_app_exe =
-          !playnite_status->exe.empty() ?
-            playnite_status->exe :
-            state.foreground_exe;
-        state.source = "playnite-status";
-        return state;
-      }
-
-      if (!cached_install_dir.empty() &&
-          path_is_under_directory(state.foreground_exe, cached_install_dir)) {
-        state.matches_active_app = true;
-        state.active_app_exe = state.foreground_exe;
-        state.source = "playnite-cache";
-        return state;
-      }
-    }
-
     if (state.foreground_pid != 0 && proc::proc.running_app_contains_pid(state.foreground_pid)) {
       state.matches_active_app = true;
       state.active_app_exe = state.foreground_exe;
@@ -733,10 +653,10 @@ namespace platf::foreground_app {
       return state;
     }
 
-    if ((app.uses_playnite || !app.trackable) && state.fullscreen_on_capture_display) {
+    if (!app.trackable && state.fullscreen_on_capture_display) {
       state.matches_active_app = true;
       state.active_app_exe = state.foreground_exe;
-      state.source = app.uses_playnite ? "playnite-fullscreen" : "fullscreen-foreground";
+      state.source = "fullscreen-foreground";
       return state;
     }
 

@@ -70,7 +70,7 @@ namespace display_helper_integration::helpers {
         return session.appid <= 0;
       }
 
-      return app->cmd.empty() && app->playnite_id.empty();
+      return app->cmd.empty();
     }
 
     bool output_name_targets_virtual(const std::string &output_name) {

@@ -27,12 +27,10 @@
 #include "config.h"
 #include "platform/common.h"
 #include "rtsp.h"
-#include "steam_process_tracker.h"
 #include "utility.h"
 
 #ifdef _WIN32
   #include "platform/windows/virtual_display.h"
-#include "tools/playnite_launcher/lossless_scaling.h"
 
 namespace VDISPLAY {
   enum class DRIVER_STATUS;
@@ -65,12 +63,8 @@ namespace proc {
 
   typedef config::prep_cmd_t cmd_t;
 
-  inline constexpr int kLosslessScalingDefaultLaunchDelaySeconds = 8;
-
   struct active_session_guard_t {
     bool has_active_app {false};
-    bool uses_playnite {false};
-    std::string playnite_id;
     std::string client_uuid;
     std::uint64_t normal_vdd_identity_token {0};
     std::chrono::steady_clock::time_point launch_started_at {};
@@ -80,8 +74,6 @@ namespace proc {
   struct running_app_state_t {
     bool has_active_app {false};
     bool trackable {false};
-    bool uses_playnite {false};
-    std::string playnite_id;
     std::string name;
     std::string command;
     std::string working_dir;
@@ -101,16 +93,6 @@ namespace proc {
    *    "null"   -- The output of the commands are discarded
    *    filename -- The output of the commands are appended to filename
    */
-  struct lossless_scaling_profile_overrides_t {
-    std::optional<bool> performance_mode;
-    std::optional<int> flow_scale;
-    std::optional<int> resolution_scale;
-    std::optional<std::string> scaling_type;
-    std::optional<int> sharpening;
-    std::optional<std::string> anime4k_size;
-    std::optional<bool> anime4k_vrs;
-  };
-
   struct ctx_t {
     std::vector<cmd_t> prep_cmds;
     std::vector<cmd_t> state_cmds;
@@ -141,19 +123,6 @@ namespace proc {
     std::string gamepad;
     std::string art_version;
     std::vector<std::string> id_aliases;
-    // Provider metadata used by the Steam-owned process lifecycle boundary.
-    // These remain strings because the catalog/API stores Steam IDs and paths
-    // as JSON strings for compatibility with older app entries.
-    std::string steam_id;
-    std::string steam_install_dir;
-    // Lutris also launches through a short-lived broker. Its game directory
-    // lets the shared process tracker own the real Wine/native process.
-    std::string lutris_id;
-    std::string lutris_directory;
-    // When present, this app should be launched via Playnite instead of direct cmd.
-    std::string playnite_id;
-    // When true, launch Playnite in fullscreen mode via the helper.
-    bool playnite_fullscreen;
     bool frame_gen_limiter_fix;
     bool elevated;
     bool virtual_screen {false};
@@ -174,16 +143,12 @@ namespace proc {
     bool gen1_framegen_fix;
     bool gen2_framegen_fix;
     bool frame_generation_enabled {false};
-    bool lossless_scaling_enabled {false};
+    // Retired Lossless Scaling launch-session fields. They stay false/unset so
+    // the shared stream-start frame generation policy sees no Lossless provider.
     bool lossless_scaling_framegen {false};
     std::string frame_generation_provider {"lossless-scaling"};
     std::optional<double> lossless_scaling_target_fps;
     std::optional<int> lossless_scaling_rtss_limit;
-    std::string lossless_scaling_profile {"custom"};
-    lossless_scaling_profile_overrides_t lossless_scaling_recommended;
-    lossless_scaling_profile_overrides_t lossless_scaling_custom;
-    int lossless_scaling_launch_delay_seconds {kLosslessScalingDefaultLaunchDelaySeconds};
-    bool lossless_scaling_legacy_auto_detect {false};
     std::optional<config::video_t::dd_t::config_option_e> dd_config_option_override;
 
     // Per-application overrides for global config keys (raw config-file value representation).
@@ -284,18 +249,8 @@ namespace proc {
     // If no command associated with _app_id, yet it's still running
     bool placebo {};
 
-    platf::steam::lifecycle::tracker _steam_tracker;
-    std::shared_ptr<platf::steam::lifecycle::process_controller> _steam_process_controller;
-    bool _steam_tracking_active {false};
-    bool _steam_tracking_associated {false};
-    platf::steam::lifecycle::exit_latch _steam_tracking_exit;
-    std::chrono::steady_clock::time_point _steam_tracking_deadline {};
-    std::chrono::steady_clock::time_point _steam_last_tracking_poll {};
-
 #ifdef _WIN32
     bool _deferred_launch {false};
-    bool _lossless_should_start_support {false};
-    playnite_launcher::lossless::lossless_scaling_app_metadata _lossless_metadata {};
 #endif
 
     bp::child _process;
@@ -310,19 +265,6 @@ namespace proc {
     file_t _pipe;
     std::vector<cmd_t>::const_iterator _app_prep_it;
     std::vector<cmd_t>::const_iterator _app_prep_begin;
-
-#ifdef _WIN32
-    void start_lossless_scaling_support(std::unordered_set<DWORD> baseline_pids, const playnite_launcher::lossless::lossless_scaling_app_metadata &metadata, std::string install_dir_hint_utf8, DWORD root_pid);
-    void stop_lossless_scaling_support();
-
-    std::thread _lossless_thread;
-    std::atomic_bool _lossless_stop_requested {false};
-    std::mutex _lossless_mutex;
-    bool _lossless_profile_applied {false};
-    playnite_launcher::lossless::lossless_scaling_profile_backup _lossless_backup {};
-    std::string _lossless_last_install_dir;
-    std::string _lossless_last_exe_path;
-#endif
   };
 
   boost::filesystem::path

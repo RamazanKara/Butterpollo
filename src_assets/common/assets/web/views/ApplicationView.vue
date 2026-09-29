@@ -1,11 +1,9 @@
 <script setup lang="ts">
-import { providerSupported } from '@/utils/providerCapabilities';
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges';
 import { useI18n } from 'vue-i18n';
 import { useRoute, useRouter } from 'vue-router';
 
-import { groupLibraryGames, providerLabels } from '@/utils/libraryGames';
 import { ApiError, apiGet, apiPost } from '@/api/client';
 import AppCompatibilitySettings from '@/components/app-edit/AppCompatibilitySettings.vue';
 import { parseAppExtras } from '@/utils/appCompatibility';
@@ -32,7 +30,7 @@ import {
   saveApp,
   type AppRecord,
 } from '@/services/apps';
-import { searchCovers, updatePlayniteCover, uploadCover } from '@/services/covers';
+import { searchCovers, uploadCover } from '@/services/covers';
 import {
   settingsCategories,
   settingsFields,
@@ -43,32 +41,6 @@ import {
   type SettingsField,
   type SettingsOption,
 } from '@/configs/settingsSchema';
-import type {
-  Anime4kSize,
-  LosslessProfileKey,
-  LosslessProfileOverrides,
-  LosslessScalingMode,
-} from '@/components/app-edit/types';
-import {
-  LOSSLESS_ANIME_SIZES,
-  LOSSLESS_FLOW_MAX,
-  LOSSLESS_FLOW_MIN,
-  LOSSLESS_PROFILE_DEFAULTS,
-  LOSSLESS_RESOLUTION_MAX,
-  LOSSLESS_RESOLUTION_MIN,
-  LOSSLESS_SCALING_OPTIONS,
-  LOSSLESS_SCALING_SHARPENING,
-  LOSSLESS_SHARPNESS_MAX,
-  LOSSLESS_SHARPNESS_MIN,
-  clampFlow,
-  clampResolution,
-  clampSharpness,
-  defaultRtssFromTarget,
-  emptyLosslessProfileState,
-  parseNumeric,
-  parseLosslessOverrides,
-  parseLosslessProfileKey,
-} from '@/components/app-edit/lossless';
 
 interface PrepEntry {
   do: string;
@@ -85,30 +57,6 @@ interface EditorForm {
   cmd: string;
   workingDir: string;
   imagePath: string;
-  playniteIconPath: string;
-  playniteId: string;
-  playniteManaged: string;
-  steamId: string;
-  steamManaged: string;
-  steamSource: string;
-  steamInstallDir: string;
-  steamLibraryPath: string;
-  steamIconPath: string;
-  steamHeaderPath: string;
-  steamBoxartPath: string;
-  steamArtworkPath: string;
-  steamArtworkClientPath: string;
-  steamArtworkFormat: string;
-  steamAppType: string;
-  steamArtworkClientCompatible: boolean | null;
-  lutrisId: string;
-  lutrisManaged: string;
-  lutrisSlug: string;
-  lutrisRunner: string;
-  lutrisPlatform: string;
-  lutrisDirectory: string;
-  lutrisService: string;
-  lutrisServiceId: string;
   elevated: boolean;
   autoDetach: boolean;
   waitAll: boolean;
@@ -124,15 +72,6 @@ interface EditorForm {
   gen1FramegenFix: boolean;
   gen2FramegenFix: boolean;
   frameGenLimiterFix: boolean;
-  losslessScalingEnabled: boolean;
-  losslessScalingFramegen: boolean;
-  losslessScalingTargetFps: string;
-  losslessScalingRtssLimit: string;
-  losslessScalingRtssTouched: boolean;
-  losslessScalingProfile: string;
-  losslessScalingProfiles: Record<LosslessProfileKey, LosslessProfileOverrides>;
-  losslessProfileExtras: Record<LosslessProfileKey, Record<string, unknown>>;
-  losslessScalingLaunchDelay: string;
   rtxHdrMode: RtxHdrMode;
   rtxHdrValuesOverride: boolean;
   rtxHdrSdrBrightness: number;
@@ -170,54 +109,6 @@ interface SelectOption {
   label: string;
 }
 
-interface PlayniteGame {
-  id: string;
-  name: string;
-  installed?: boolean;
-}
-
-interface PlayniteStatus {
-  active?: boolean;
-  installed?: boolean | null;
-}
-
-interface SteamGame {
-  installed: boolean;
-  filtered: boolean;
-  appid: number | string;
-  steamId: string;
-  stableId: string;
-  name: string;
-  installDir: string;
-  libraryPath: string;
-  iconPath: string;
-  headerPath: string;
-  portraitPath: string;
-  boxartPath: string;
-  artworkPath: string;
-  artworkClientPath: string;
-  artworkFormat: string;
-  artworkClientCompatible: boolean | null;
-  appType: string;
-  launchUri: string;
-  lastPlayed: number;
-  playtimeMinutes: number;
-}
-
-interface LutrisGame {
-  id: string;
-  name: string;
-  slug: string;
-  runner: string;
-  platform: string;
-  directory: string;
-  service: string;
-  serviceId: string;
-  imagePath: string;
-  launchUri: string;
-  filtered: boolean;
-}
-
 interface FrameGenConfig extends Record<string, unknown> {
   output_name?: unknown;
   virtual_display_mode?: unknown;
@@ -233,12 +124,6 @@ interface FrameGenMetadata {
   has_nvidia_gpu?: boolean;
   platform?: unknown;
   windows_build_number?: unknown;
-}
-
-interface RtssStatus {
-  hooks_found?: unknown;
-  path_exists?: unknown;
-  process_running?: unknown;
 }
 
 interface DisplayDevice {
@@ -345,23 +230,6 @@ const coverSearchQuery = ref('');
 const deleteOpen = ref(false);
 const deleteError = ref('');
 const errors = reactive<Record<string, string>>({});
-const gamePickerOpen = ref(false);
-const playniteGames = ref<PlayniteGame[]>([]);
-const playniteGamesLoaded = ref(false);
-const playniteGamesLoading = ref(false);
-const playniteGamesError = ref('');
-const playniteGamesUnavailable = ref(false);
-const gameActiveIndex = ref(-1);
-const steamGames = ref<SteamGame[]>([]);
-const steamGamesLoaded = ref(false);
-const steamGamesLoading = ref(false);
-const steamGamesError = ref('');
-const steamGamesUnavailable = ref(false);
-const lutrisGames = ref<LutrisGame[]>([]);
-const lutrisGamesLoaded = ref(false);
-const lutrisGamesLoading = ref(false);
-const lutrisGamesError = ref('');
-const lutrisGamesUnavailable = ref(false);
 const frameGenHealth = ref<FrameGenHealth | null>(null);
 const frameGenHealthError = ref('');
 const frameGenHealthLoading = ref(false);
@@ -369,10 +237,7 @@ let frameGenHealthEpoch = 0;
 let frameGenHealthRequest: { epoch: number; promise: Promise<void> } | null = null;
 let formHydrating = false;
 let formHydrationEpoch = 0;
-let gameCloseTimer: number | null = null;
-let selectedSteamArtworkRequest: Promise<void> | undefined;
 const form = reactive<EditorForm>(emptyForm());
-const resolutionInputMode = ref<'factor' | 'percent'>('factor');
 const overrideMetadata = ref<FrameGenMetadata>({});
 const originalRtxHdrLiveOverrides = ref<Record<string, unknown>>({});
 const liveRtxHdrStatus = ref<RtxHdrLiveStatus>('idle');
@@ -389,7 +254,6 @@ const displayDevicesError = ref('');
 const frameGenerationModes = computed<SelectOption[]>(() => [
   { value: '', label: t('ui.application.options.hostDefault') },
   { value: 'off', label: t('ui.application.options.frameMode.off') },
-  { value: 'lossless-scaling', label: t('ui.application.options.frameMode.lossless') },
   { value: 'nvidia-smooth-motion', label: t('ui.application.options.frameMode.nvidia') },
   { value: 'game-provided', label: t('ui.application.options.frameMode.game') },
 ]);
@@ -536,70 +400,6 @@ const rtxHdrCalibrationFields = computed<RtxHdrCalibrationField[]>(() => [
     step: 1,
   },
 ]);
-const isPlayniteLinked = computed(() => Boolean(form.playniteId.trim()));
-const isSteamLinked = computed(() => Boolean(form.steamId.trim()));
-const isLutrisLinked = computed(() => Boolean(form.lutrisId.trim()));
-const isProviderLinked = computed(
-  () => isPlayniteLinked.value || isSteamLinked.value || isLutrisLinked.value,
-);
-
-function managedProviderLabel(provider: string, managed: string): string {
-  return managed === 'auto' ? t('ui.application.providers.managed', { provider }) : provider;
-}
-const hasLibraryProvider = computed(() => isWindowsHost.value ||
-  providerSupported(overrideMetadata.value, 'steam') || providerSupported(overrideMetadata.value, 'lutris'));
-type LibraryEntry =
-  | { provider: 'playnite'; id: string; name: string; game: PlayniteGame }
-  | { provider: 'steam'; id: string; name: string; game: SteamGame }
-  | { provider: 'lutris'; id: string; name: string; game: LutrisGame };
-const libraryEntries = computed<LibraryEntry[]>(() => [
-  ...playniteGames.value
-    .filter((game) => game.installed !== false)
-    .map((game) => ({
-      provider: 'playnite' as const,
-      id: game.id,
-      name: game.name,
-      game,
-    })),
-  ...steamGames.value
-    .filter((game) => game.installed && !game.filtered)
-    .map((game) => ({
-      provider: 'steam' as const,
-      id: game.steamId,
-      name: game.name,
-      game,
-    })),
-  ...lutrisGames.value
-    .filter((game) => !game.filtered)
-    .map((game) => ({
-      provider: 'lutris' as const,
-      id: game.id,
-      name: game.name,
-      game,
-    })),
-]);
-const filteredLibraryGames = computed(() => groupLibraryGames(libraryEntries.value, form.name));
-const libraryGamesLoading = computed(
-  () => playniteGamesLoading.value || steamGamesLoading.value || lutrisGamesLoading.value,
-);
-const libraryGamesErrors = computed(() =>
-  [playniteGamesError.value, steamGamesError.value, lutrisGamesError.value].filter(Boolean),
-);
-const selectedLibraryKey = computed(() =>
-  form.playniteId
-    ? 'playnite:' + form.playniteId
-    : form.steamId
-      ? 'steam:' + form.steamId
-      : form.lutrisId
-        ? 'lutris:' + form.lutrisId
-        : '',
-);
-const selectedLibraryAlternatives = computed(
-  () =>
-    groupLibraryGames(libraryEntries.value).find((group) =>
-      group.entries.some((entry) => entry.provider + ':' + entry.id === selectedLibraryKey.value),
-    )?.entries ?? [],
-);
 const frameGenerationEnabled = computed(() => {
   if (form.frameGenerationMode === 'off') return false;
   return Boolean(form.frameGenerationMode);
@@ -1203,30 +1003,6 @@ const editableKeys = new Set([
   'cmd',
   'working-dir',
   'image-path',
-  'playnite-icon-path',
-  'playnite-id',
-  'playnite-managed',
-  'steam-id',
-  'steam-managed',
-  'steam-source',
-  'steam-install-dir',
-  'steam-library-path',
-  'steam-icon-path',
-  'steam-header-path',
-  'steam-boxart-path',
-  'steam-artwork-path',
-  'steam-artwork-client-path',
-  'steam-artwork-format',
-  'steam-artwork-client-compatible',
-  'steam-app-type',
-  'lutris-id',
-  'lutris-managed',
-  'lutris-slug',
-  'lutris-runner',
-  'lutris-platform',
-  'lutris-directory',
-  'lutris-service',
-  'lutris-service-id',
   'elevated',
   'auto-detach',
   'wait-all',
@@ -1242,14 +1018,6 @@ const editableKeys = new Set([
   'gen1-framegen-fix',
   'gen2-framegen-fix',
   'frame-gen-limiter-fix',
-  'lossless-scaling-enabled',
-  'lossless-scaling-framegen',
-  'lossless-scaling-target-fps',
-  'lossless-scaling-rtss-limit',
-  'lossless-scaling-profile',
-  'lossless-scaling-recommended',
-  'lossless-scaling-custom',
-  'lossless-scaling-launch-delay',
   'prep-cmd',
   'detached',
   'config-overrides',
@@ -1258,29 +1026,11 @@ const transientKeys = new Set([
   'id',
   'index',
   'image-version',
-  'playnite-icon-version',
   'remote-session',
 ]);
 
 function newUuid(): string {
   return crypto.randomUUID();
-}
-
-const LOSSLESS_PROFILE_OVERRIDE_KEYS = new Set([
-  'performance-mode',
-  'flow-scale',
-  'resolution-scale',
-  'scaling-type',
-  'sharpening',
-  'anime4k-size',
-  'anime4k-vrs',
-]);
-
-function losslessProfileExtras(input: unknown): Record<string, unknown> {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
-  return Object.fromEntries(
-    Object.entries(input).filter(([key]) => !LOSSLESS_PROFILE_OVERRIDE_KEYS.has(key)),
-  );
 }
 
 function emptyForm(): EditorForm {
@@ -1292,30 +1042,6 @@ function emptyForm(): EditorForm {
     cmd: '',
     workingDir: '',
     imagePath: '',
-    playniteIconPath: '',
-    playniteId: '',
-    playniteManaged: '',
-    steamId: '',
-    steamManaged: '',
-    steamSource: '',
-    steamInstallDir: '',
-    steamLibraryPath: '',
-    steamIconPath: '',
-    steamHeaderPath: '',
-    steamBoxartPath: '',
-    steamArtworkPath: '',
-    steamArtworkClientPath: '',
-    steamArtworkFormat: '',
-    steamAppType: '',
-    steamArtworkClientCompatible: null,
-    lutrisId: '',
-    lutrisManaged: '',
-    lutrisSlug: '',
-    lutrisRunner: '',
-    lutrisPlatform: '',
-    lutrisDirectory: '',
-    lutrisService: '',
-    lutrisServiceId: '',
     elevated: false,
     autoDetach: true,
     waitAll: true,
@@ -1331,15 +1057,6 @@ function emptyForm(): EditorForm {
     gen1FramegenFix: false,
     gen2FramegenFix: false,
     frameGenLimiterFix: false,
-    losslessScalingEnabled: false,
-    losslessScalingFramegen: false,
-    losslessScalingTargetFps: '',
-    losslessScalingRtssLimit: '',
-    losslessScalingRtssTouched: false,
-    losslessScalingProfile: 'recommended',
-    losslessScalingProfiles: emptyLosslessProfileState(),
-    losslessProfileExtras: { recommended: {}, custom: {} },
-    losslessScalingLaunchDelay: '',
     rtxHdrMode: 'inherit',
     rtxHdrValuesOverride: false,
     rtxHdrSdrBrightness: 0,
@@ -1401,170 +1118,6 @@ function asBoolean(value: unknown): boolean {
 
 function asNumberText(value: unknown): string {
   return typeof value === 'number' || typeof value === 'string' ? String(value) : '';
-}
-
-const activeLosslessProfile = computed<LosslessProfileKey>({
-  get: () => parseLosslessProfileKey(form.losslessScalingProfile),
-  set: (value) => {
-    form.losslessScalingProfile = value;
-  },
-});
-
-const activeLosslessOverrides = computed(
-  () => form.losslessScalingProfiles[activeLosslessProfile.value],
-);
-
-function losslessProfileValue<K extends keyof LosslessProfileOverrides>(
-  key: K,
-): LosslessProfileOverrides[K] | (typeof LOSSLESS_PROFILE_DEFAULTS)[LosslessProfileKey][K] {
-  const override = activeLosslessOverrides.value[key];
-  return override === null ? LOSSLESS_PROFILE_DEFAULTS[activeLosslessProfile.value][key] : override;
-}
-
-function setLosslessProfileValue<K extends keyof LosslessProfileOverrides>(
-  key: K,
-  value: LosslessProfileOverrides[K],
-): void {
-  const profile = activeLosslessProfile.value;
-  const defaults = LOSSLESS_PROFILE_DEFAULTS[profile];
-  const overrides = form.losslessScalingProfiles[profile];
-  overrides[key] = (value === defaults[key] ? null : value) as LosslessProfileOverrides[K];
-  if (key === 'scalingMode') {
-    const mode = value as LosslessScalingMode;
-    if (!LOSSLESS_SCALING_SHARPENING.has(mode)) overrides.sharpening = null;
-    if (mode !== 'anime4k') {
-      overrides.anime4kSize = null;
-      overrides.anime4kVrs = null;
-    }
-    if (mode === 'off') overrides.resolutionScale = null;
-  }
-}
-
-const losslessPerformanceModeModel = computed<boolean>({
-  get: () => Boolean(losslessProfileValue('performanceMode')),
-  set: (value) => setLosslessProfileValue('performanceMode', value),
-});
-const losslessFlowScaleModel = computed<number | null>({
-  get: () => Number(losslessProfileValue('flowScale')),
-  set: (value) => setLosslessProfileValue('flowScale', clampFlow(value)),
-});
-const losslessScalingModeModel = computed<LosslessScalingMode>({
-  get: () => (losslessProfileValue('scalingMode') ?? 'off') as LosslessScalingMode,
-  set: (value) => setLosslessProfileValue('scalingMode', value),
-});
-const losslessResolutionPercentModel = computed<number | null>({
-  get: () => Number(losslessProfileValue('resolutionScale')),
-  set: (value) => setLosslessProfileValue('resolutionScale', clampResolution(value)),
-});
-const losslessResolutionFactorModel = computed<number | null>({
-  get: () => Number((100 / Number(losslessResolutionPercentModel.value ?? 100)).toFixed(2)),
-  set: (value) => {
-    const normalized = Math.min(10, Math.max(1, Number(value) || 1));
-    const currentPercent = Number(losslessResolutionPercentModel.value ?? 100);
-    const currentFactor = Number((100 / currentPercent).toFixed(2));
-    const basePercent = 100 / normalized;
-    const clampToRange = (candidate: number) =>
-      Math.max(LOSSLESS_RESOLUTION_MIN, Math.min(LOSSLESS_RESOLUTION_MAX, candidate));
-    const snapDown = (candidate: number) => clampToRange(Math.floor(candidate / 5) * 5);
-    const snapUp = (candidate: number) => clampToRange(Math.ceil(candidate / 5) * 5);
-    const snapNearest = (candidate: number) => clampToRange(Math.round(candidate / 5) * 5);
-    const epsilon = 1e-3;
-
-    let nextPercent: number;
-    if (normalized > currentFactor + epsilon) {
-      nextPercent = snapDown(basePercent);
-    } else if (normalized < currentFactor - epsilon) {
-      nextPercent = snapUp(basePercent);
-    } else {
-      nextPercent = snapNearest(basePercent);
-    }
-
-    if (nextPercent === currentPercent) {
-      if (normalized > currentFactor + epsilon && currentPercent > LOSSLESS_RESOLUTION_MIN) {
-        nextPercent = clampToRange(currentPercent - 5);
-      } else if (normalized < currentFactor - epsilon && currentPercent < LOSSLESS_RESOLUTION_MAX) {
-        nextPercent = clampToRange(currentPercent + 5);
-      }
-    }
-    losslessResolutionPercentModel.value = nextPercent;
-  },
-});
-const losslessResolutionPercentDisplay = computed(() =>
-  Number(losslessResolutionPercentModel.value ?? 100).toFixed(0),
-);
-const losslessResolutionFactorDisplay = computed(() =>
-  Number(losslessResolutionFactorModel.value ?? 1).toFixed(2),
-);
-const losslessSharpeningModel = computed<number | null>({
-  get: () => Number(losslessProfileValue('sharpening')),
-  set: (value) => setLosslessProfileValue('sharpening', clampSharpness(value)),
-});
-const losslessAnimeSizeModel = computed<Anime4kSize>({
-  get: () => (losslessProfileValue('anime4kSize') ?? 'M') as Anime4kSize,
-  set: (value) => setLosslessProfileValue('anime4kSize', value),
-});
-const losslessAnimeVrsModel = computed<boolean>({
-  get: () => Boolean(losslessProfileValue('anime4kVrs')),
-  set: (value) => setLosslessProfileValue('anime4kVrs', value),
-});
-const losslessTargetModel = computed<number | null>({
-  get: () => parseNumeric(form.losslessScalingTargetFps),
-  set: (value) => {
-    form.losslessScalingTargetFps = value === null ? '' : String(value);
-    if (!form.losslessScalingRtssTouched && form.frameGenerationMode === 'lossless-scaling') {
-      const target = parseNumeric(value);
-      const defaultLimit = defaultRtssFromTarget(target);
-      form.losslessScalingRtssLimit = defaultLimit === null ? '' : String(defaultLimit);
-    }
-  },
-});
-const losslessRtssModel = computed<number | null>({
-  get: () => parseNumeric(form.losslessScalingRtssLimit),
-  set: (value) => {
-    const parsed = parseNumeric(value);
-    if (parsed === null) {
-      form.losslessScalingRtssTouched = false;
-      form.losslessScalingRtssLimit = '';
-      return;
-    }
-    form.losslessScalingRtssTouched = true;
-    form.losslessScalingRtssLimit = String(Math.min(360, Math.max(1, Math.round(parsed))));
-  },
-});
-const hasActiveLosslessOverrides = computed(() =>
-  Object.values(activeLosslessOverrides.value).some((value) => value !== null),
-);
-const showLosslessPanel = computed(
-  () => form.losslessScalingEnabled || form.frameGenerationMode === 'lossless-scaling',
-);
-const showLosslessResolution = computed(() => losslessScalingModeModel.value !== 'off');
-const showLosslessSharpening = computed(() =>
-  LOSSLESS_SCALING_SHARPENING.has(losslessScalingModeModel.value),
-);
-const showLosslessAnimeOptions = computed(() => losslessScalingModeModel.value === 'anime4k');
-const losslessScalingOptions = computed(() =>
-  LOSSLESS_SCALING_OPTIONS.map((option) => ({
-    value: option.value,
-    label: option.labelKey ? t(option.labelKey) : (option.label ?? String(option.value)),
-  })),
-);
-const losslessAnimeSizes = computed(() =>
-  LOSSLESS_ANIME_SIZES.map((option) => ({
-    value: option.value,
-    label: option.labelKey ? t(option.labelKey) : (option.label ?? String(option.value)),
-  })),
-);
-
-function resetActiveLosslessProfile(): void {
-  form.losslessScalingProfiles[activeLosslessProfile.value] = {
-    performanceMode: null,
-    flowScale: null,
-    resolutionScale: null,
-    scalingMode: null,
-    sharpening: null,
-    anime4kSize: null,
-    anime4kVrs: null,
-  };
 }
 
 function localizedError(cause: unknown, fallbackKey: string): string {
@@ -1642,31 +1195,23 @@ function optionIsCustom(options: SelectOption[], value: string): boolean {
   return Boolean(value) && !options.some((option) => option.value === value);
 }
 
+// The host treats the retired Lossless Scaling provider and unknown values as off.
 function normalizeFrameGenerationMode(value: string): string {
   const normalized = value.toLocaleLowerCase().replace(/[^a-z0-9]/g, '');
   if (!normalized) return '';
-  if (['off', 'none', 'disabled'].includes(normalized)) return 'off';
   if (['nvidia', 'smoothmotion', 'nvidiasmoothmotion'].includes(normalized)) {
     return 'nvidia-smooth-motion';
   }
   if (['game', 'gameprovided', 'gameprovider'].includes(normalized)) return 'game-provided';
-  return 'lossless-scaling';
+  return 'off';
 }
 
 function frameGenerationModeFor(app: AppRecord): string {
   const configured = normalizeFrameGenerationMode(asString(app['frame-generation-mode']));
   if (configured) return configured;
 
-  const legacyLosslessConfigured =
-    asBoolean(app['lossless-scaling-framegen']) ||
-    parseNumeric(app['lossless-scaling-target-fps']) !== null ||
-    parseNumeric(app['lossless-scaling-rtss-limit']) !== null;
   const provider = normalizeFrameGenerationMode(asString(app['frame-generation-provider']));
-  if (provider === 'lossless-scaling' && legacyLosslessConfigured) {
-    return provider;
-  }
-  if (['nvidia-smooth-motion', 'game-provided'].includes(provider)) return provider;
-  return legacyLosslessConfigured ? 'lossless-scaling' : '';
+  return provider === 'off' ? '' : provider;
 }
 
 function clearFrameGenHealth(): void {
@@ -1719,19 +1264,6 @@ function hydrate(app: AppRecord): void {
   const hasExplicitAutoDetach = Object.prototype.hasOwnProperty.call(app, 'auto-detach');
   const hasExplicitWaitAll = Object.prototype.hasOwnProperty.call(app, 'wait-all');
   const hasExplicitExitTimeout = Object.prototype.hasOwnProperty.call(app, 'exit-timeout');
-  const hasExplicitLosslessEnabled = Object.prototype.hasOwnProperty.call(
-    app,
-    'lossless-scaling-enabled',
-  );
-  const legacyLosslessFrameGen = asBoolean(app['lossless-scaling-framegen']);
-  const losslessProfiles = emptyLosslessProfileState();
-  losslessProfiles.recommended = parseLosslessOverrides(app['lossless-scaling-recommended']);
-  losslessProfiles.custom = parseLosslessOverrides(app['lossless-scaling-custom']);
-  const profileExtras = {
-    recommended: losslessProfileExtras(app['lossless-scaling-recommended']),
-    custom: losslessProfileExtras(app['lossless-scaling-custom']),
-  };
-  resolutionInputMode.value = 'factor';
 
   Object.assign(form, {
     uuid: appUuid(app),
@@ -1741,42 +1273,11 @@ function hydrate(app: AppRecord): void {
     cmd: command,
     workingDir: asString(app['working-dir']),
     imagePath: asString(app['image-path']),
-    playniteIconPath: asString(app['playnite-icon-path']),
-    playniteId: asString(app['playnite-id']),
-    playniteManaged: asString(app['playnite-managed']),
-    steamId: asString(app['steam-id']),
-    steamManaged: asString(app['steam-managed']),
-    steamSource: asString(app['steam-source']),
-    steamInstallDir: asString(app['steam-install-dir']),
-    steamLibraryPath: asString(app['steam-library-path']),
-    steamIconPath: asString(app['steam-icon-path']),
-    steamHeaderPath: asString(app['steam-header-path']),
-    steamBoxartPath: asString(app['steam-boxart-path']),
-    steamArtworkPath: asString(app['steam-artwork-path']),
-    steamArtworkClientPath: asString(app['steam-artwork-client-path']),
-    steamArtworkFormat: asString(app['steam-artwork-format']),
-    steamAppType: asString(app['steam-app-type']),
-    steamArtworkClientCompatible:
-      typeof app['steam-artwork-client-compatible'] === 'boolean'
-        ? app['steam-artwork-client-compatible']
-        : null,
-    lutrisId: asString(app['lutris-id']),
-    lutrisManaged: asString(app['lutris-managed']),
-    lutrisSlug: asString(app['lutris-slug']),
-    lutrisRunner: asString(app['lutris-runner']),
-    lutrisPlatform: asString(app['lutris-platform']),
-    lutrisDirectory: asString(app['lutris-directory']),
-    lutrisService: asString(app['lutris-service']),
-    lutrisServiceId: asString(app['lutris-service-id']),
     elevated: asBoolean(app.elevated),
     autoDetach: hasExplicitAutoDetach ? asBoolean(app['auto-detach']) : true,
     waitAll: hasExplicitWaitAll ? asBoolean(app['wait-all']) : true,
     excludeGlobalPrepCmd: asBoolean(app['exclude-global-prep-cmd']),
-    exitTimeout: hasExplicitExitTimeout
-      ? asNumberText(app['exit-timeout'])
-      : app['playnite-id']
-        ? '10'
-        : '5',
+    exitTimeout: hasExplicitExitTimeout ? asNumberText(app['exit-timeout']) : '5',
     virtualScreen: asBoolean(app['virtual-screen']),
     virtualDisplayMode: asString(app['virtual-display-mode']),
     virtualDisplayLayout: asString(app['virtual-display-layout']),
@@ -1787,17 +1288,6 @@ function hydrate(app: AppRecord): void {
     gen1FramegenFix: asBoolean(app['gen1-framegen-fix']),
     gen2FramegenFix: asBoolean(app['gen2-framegen-fix']),
     frameGenLimiterFix: asBoolean(app['frame-gen-limiter-fix']),
-    losslessScalingEnabled: hasExplicitLosslessEnabled
-      ? asBoolean(app['lossless-scaling-enabled'])
-      : frameGenerationMode !== 'lossless-scaling' && legacyLosslessFrameGen,
-    losslessScalingFramegen: frameGenerationMode === 'lossless-scaling' || legacyLosslessFrameGen,
-    losslessScalingTargetFps: asNumberText(app['lossless-scaling-target-fps']),
-    losslessScalingRtssLimit: asNumberText(app['lossless-scaling-rtss-limit']),
-    losslessScalingRtssTouched: parseNumeric(app['lossless-scaling-rtss-limit']) !== null,
-    losslessScalingProfile: parseLosslessProfileKey(app['lossless-scaling-profile']),
-    losslessScalingProfiles: losslessProfiles,
-    losslessProfileExtras: profileExtras,
-    losslessScalingLaunchDelay: asNumberText(app['lossless-scaling-launch-delay']),
     rtxHdrMode: rtxHdrOverrides.mode,
     rtxHdrValuesOverride: rtxHdrOverrides.valuesOverride,
     rtxHdrSdrBrightness: rtxHdrOverrides.sdrBrightness,
@@ -1817,9 +1307,6 @@ function hydrate(app: AppRecord): void {
   coverPickerOpen.value = false;
   clearErrors();
   initialSnapshot.value = JSON.stringify(form);
-  cancelGameClose();
-  gamePickerOpen.value = false;
-  gameActiveIndex.value = -1;
   clearFrameGenHealth();
   liveRtxHdrSuppress = true;
   primeLiveRtxHdrState(app);
@@ -1833,7 +1320,6 @@ function hydrateNew(): void {
   const synchronizationEpoch = beginFormSynchronizationDeferral();
   const next = emptyForm();
   Object.assign(form, next);
-  resolutionInputMode.value = 'factor';
   sourceApp.value = null;
   commandWasArray.value = false;
   coverFailed.value = true;
@@ -1841,9 +1327,6 @@ function hydrateNew(): void {
   coverPickerOpen.value = false;
   clearErrors();
   initialSnapshot.value = JSON.stringify(form);
-  cancelGameClose();
-  gamePickerOpen.value = false;
-  gameActiveIndex.value = -1;
   clearFrameGenHealth();
   liveRtxHdrSuppress = true;
   primeLiveRtxHdrState(null);
@@ -1929,21 +1412,6 @@ function setOptionalBoolean(payload: AppRecord, key: string, value: boolean | nu
   else payload[key] = value;
 }
 
-function losslessProfilePayload(
-  profile: LosslessProfileOverrides,
-  extras: Record<string, unknown>,
-): Record<string, unknown> {
-  const payload: Record<string, unknown> = { ...extras };
-  if (profile.performanceMode !== null) payload['performance-mode'] = profile.performanceMode;
-  if (profile.flowScale !== null) payload['flow-scale'] = profile.flowScale;
-  if (profile.resolutionScale !== null) payload['resolution-scale'] = profile.resolutionScale;
-  if (profile.scalingMode !== null) payload['scaling-type'] = profile.scalingMode;
-  if (profile.sharpening !== null) payload.sharpening = profile.sharpening;
-  if (profile.anime4kSize !== null) payload['anime4k-size'] = profile.anime4kSize;
-  if (profile.anime4kVrs !== null) payload['anime4k-vrs'] = profile.anime4kVrs;
-  return payload;
-}
-
 function buildPayload(): AppRecord {
   const advanced = JSON.parse(form.advancedJson || '{}') as Record<string, unknown>;
   const configOverrides = buildRtxHdrConfigOverrides(
@@ -1964,8 +1432,6 @@ function buildPayload(): AppRecord {
     'gen1-framegen-fix': form.gen1FramegenFix,
     'gen2-framegen-fix': form.gen2FramegenFix,
     'frame-gen-limiter-fix': form.frameGenLimiterFix,
-    'lossless-scaling-enabled': form.losslessScalingEnabled,
-    'lossless-scaling-framegen': form.losslessScalingFramegen,
     'prep-cmd': form.prepCmd
       .filter((entry) => entry.do.trim() || entry.undo.trim() || Object.keys(entry.extras).length)
       .map((entry) => ({
@@ -1980,436 +1446,18 @@ function buildPayload(): AppRecord {
       .filter(Boolean),
     'config-overrides': configOverrides,
   };
-  const recommendedProfile = losslessProfilePayload(
-    form.losslessScalingProfiles.recommended,
-    form.losslessProfileExtras.recommended,
-  );
-  const customProfile = losslessProfilePayload(
-    form.losslessScalingProfiles.custom,
-    form.losslessProfileExtras.custom,
-  );
-  if (Object.keys(recommendedProfile).length) {
-    payload['lossless-scaling-recommended'] = recommendedProfile;
-  }
-  if (Object.keys(customProfile).length) payload['lossless-scaling-custom'] = customProfile;
-
   setOptionalString(payload, 'output', form.output);
   setOptionalString(payload, 'display-output', form.displayOutput);
   setOptionalString(payload, 'working-dir', form.workingDir);
   setOptionalString(payload, 'image-path', form.imagePath);
-  setOptionalString(payload, 'playnite-icon-path', form.playniteIconPath);
-  setOptionalString(payload, 'playnite-id', form.playniteId);
-  setOptionalString(payload, 'playnite-managed', form.playniteManaged);
-  setOptionalString(payload, 'steam-id', form.steamId);
-  setOptionalString(payload, 'steam-managed', form.steamManaged);
-  setOptionalString(payload, 'steam-source', form.steamSource);
-  setOptionalString(payload, 'steam-install-dir', form.steamInstallDir);
-  setOptionalString(payload, 'steam-library-path', form.steamLibraryPath);
-  setOptionalString(payload, 'steam-icon-path', form.steamIconPath);
-  setOptionalString(payload, 'steam-header-path', form.steamHeaderPath);
-  setOptionalString(payload, 'steam-boxart-path', form.steamBoxartPath);
-  setOptionalString(payload, 'steam-artwork-path', form.steamArtworkPath);
-  setOptionalString(payload, 'steam-artwork-client-path', form.steamArtworkClientPath);
-  setOptionalString(payload, 'steam-artwork-format', form.steamArtworkFormat);
-  setOptionalString(payload, 'steam-app-type', form.steamAppType);
-  setOptionalBoolean(payload, 'steam-artwork-client-compatible', form.steamArtworkClientCompatible);
-  setOptionalString(payload, 'lutris-id', form.lutrisId);
-  setOptionalString(payload, 'lutris-managed', form.lutrisManaged);
-  setOptionalString(payload, 'lutris-slug', form.lutrisSlug);
-  setOptionalString(payload, 'lutris-runner', form.lutrisRunner);
-  setOptionalString(payload, 'lutris-platform', form.lutrisPlatform);
-  setOptionalString(payload, 'lutris-directory', form.lutrisDirectory);
-  setOptionalString(payload, 'lutris-service', form.lutrisService);
-  setOptionalString(payload, 'lutris-service-id', form.lutrisServiceId);
   setOptionalString(payload, 'virtual-display-mode', form.virtualDisplayMode);
   setOptionalString(payload, 'virtual-display-layout', form.virtualDisplayLayout);
   setOptionalBoolean(payload, 'prefer-10bit-sdr', form.prefer10BitSdr);
   setOptionalString(payload, 'dd-configuration-option', form.ddConfigurationOption);
   setOptionalString(payload, 'frame-generation-provider', form.frameGenerationProvider);
   setOptionalString(payload, 'frame-generation-mode', form.frameGenerationMode);
-  setOptionalString(payload, 'lossless-scaling-profile', form.losslessScalingProfile);
   setOptionalInteger(payload, 'exit-timeout', form.exitTimeout);
-  if (form.frameGenerationMode === 'lossless-scaling') {
-    setOptionalInteger(payload, 'lossless-scaling-target-fps', form.losslessScalingTargetFps);
-    setOptionalInteger(payload, 'lossless-scaling-rtss-limit', form.losslessScalingRtssLimit);
-  } else {
-    delete payload['lossless-scaling-target-fps'];
-    delete payload['lossless-scaling-rtss-limit'];
-  }
-  if (form.losslessScalingEnabled || form.frameGenerationMode === 'lossless-scaling') {
-    setOptionalInteger(payload, 'lossless-scaling-launch-delay', form.losslessScalingLaunchDelay);
-  } else {
-    delete payload['lossless-scaling-launch-delay'];
-  }
   return payload;
-}
-
-function clearPlayniteLink(): void {
-  form.playniteIconPath = '';
-  form.playniteId = '';
-  form.playniteManaged = '';
-}
-
-function canonicalSteamUuid(steamId: string): string {
-  try {
-    const suffix = BigInt(steamId).toString(16).padStart(12, '0').slice(-12);
-    return `53544541-4d00-5000-8000-${suffix}`;
-  } catch {
-    return '';
-  }
-}
-
-function clearSteamLink(): void {
-  form.steamId = '';
-  form.steamManaged = '';
-  form.steamSource = '';
-  form.steamInstallDir = '';
-  form.steamLibraryPath = '';
-  form.steamIconPath = '';
-  form.steamHeaderPath = '';
-  form.steamBoxartPath = '';
-  form.steamArtworkPath = '';
-  form.steamArtworkClientPath = '';
-  form.steamArtworkFormat = '';
-  form.steamAppType = '';
-  form.steamArtworkClientCompatible = null;
-}
-
-function clearLutrisLink(): void {
-  form.lutrisId = '';
-  form.lutrisManaged = '';
-  form.lutrisSlug = '';
-  form.lutrisRunner = '';
-  form.lutrisPlatform = '';
-  form.lutrisDirectory = '';
-  form.lutrisService = '';
-  form.lutrisServiceId = '';
-}
-
-function cancelGameClose(): void {
-  if (gameCloseTimer === null) return;
-  window.clearTimeout(gameCloseTimer);
-  gameCloseTimer = null;
-}
-
-function waitForPlaynite(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
-}
-
-async function loadPlayniteGames(): Promise<void> {
-  if (playniteGamesLoading.value || playniteGamesLoaded.value) return;
-
-  playniteGamesLoading.value = true;
-  playniteGamesError.value = '';
-  playniteGamesUnavailable.value = false;
-  try {
-    let sawActiveConnection = false;
-    for (let attempt = 0; attempt < 8; attempt += 1) {
-      const status = await apiGet<PlayniteStatus>('/api/playnite/status');
-      if (status.installed !== true && status.active !== true) {
-        playniteGames.value = [];
-        playniteGamesUnavailable.value = true;
-        playniteGamesLoaded.value = true;
-        return;
-      }
-
-      sawActiveConnection ||= status.active === true;
-      const payload = await apiGet<unknown>('/api/playnite/games');
-      const games = Array.isArray(payload) ? payload : [];
-      playniteGames.value = games
-        .filter(
-          (game): game is Record<string, unknown> =>
-            Boolean(game) && typeof game === 'object' && !Array.isArray(game),
-        )
-        .map((game) => ({
-          id: asString(game.id),
-          name: asString(game.name) || asString(game.id),
-          installed: game.installed === undefined ? undefined : asBoolean(game.installed),
-        }))
-        .filter((game) => Boolean(game.id) && Boolean(game.name) && game.installed !== false)
-        .sort((left, right) => left.name.localeCompare(right.name));
-      if (playniteGames.value.length) {
-        playniteGamesLoaded.value = true;
-        return;
-      }
-      if (attempt < 7) await waitForPlaynite(500);
-    }
-
-    playniteGamesUnavailable.value = !sawActiveConnection;
-    playniteGamesLoaded.value = sawActiveConnection;
-  } catch {
-    playniteGamesError.value = t('ui.application.playnite.loadFailed');
-  } finally {
-    playniteGamesLoading.value = false;
-  }
-}
-
-function steamGame(value: unknown): SteamGame | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const game = value as Record<string, unknown>;
-  const rawId = game.appid ?? game.steam_id;
-  const appid = typeof rawId === 'number' || typeof rawId === 'string' ? rawId : '';
-  const steamId = asString(game.steam_id) || String(appid);
-  const name = asString(game.name) || (steamId ? `Steam ${steamId}` : '');
-  if (!steamId || !name) return null;
-  return {
-    appid,
-    steamId,
-    installed: game.installed === undefined ? true : asBoolean(game.installed),
-    filtered: asBoolean(game.filtered),
-    stableId: asString(game.stable_id),
-    name,
-    installDir: asString(game.install_dir),
-    libraryPath: asString(game.library_path),
-    iconPath: asString(game.icon_path),
-    headerPath: asString(game.header_path),
-    portraitPath: asString(game.portrait_path),
-    boxartPath: asString(game.boxart_path),
-    artworkPath: asString(game.artwork_path),
-    artworkClientPath: asString(game.artwork_client_path),
-    artworkFormat: asString(game.artwork_format),
-    artworkClientCompatible:
-      typeof game.artwork_client_compatible === 'boolean' ? game.artwork_client_compatible : null,
-    appType: asString(game.app_type),
-    launchUri: asString(game.launch_uri) || `steam://rungameid/${steamId}`,
-    lastPlayed: Number(game.last_played) || 0,
-    playtimeMinutes: Number(game.playtime_minutes) || 0,
-  };
-}
-
-async function loadSteamGames(): Promise<void> {
-  if (steamGamesLoading.value || steamGamesLoaded.value) return;
-  steamGamesLoading.value = true;
-  steamGamesError.value = '';
-  steamGamesUnavailable.value = false;
-  try {
-    const payload = await apiGet<unknown>('/api/steam/games');
-    if (
-      payload &&
-      typeof payload === 'object' &&
-      'enabled' in payload &&
-      payload.enabled === false
-    ) {
-      steamGames.value = [];
-      steamGamesLoaded.value = true;
-      return;
-    }
-    const rawGames =
-      payload && typeof payload === 'object' && !Array.isArray(payload)
-        ? (payload as { games?: unknown }).games
-        : payload;
-    steamGames.value = (Array.isArray(rawGames) ? rawGames : [])
-      .map(steamGame)
-      .filter((game): game is SteamGame => Boolean(game))
-      .sort((left, right) => left.name.localeCompare(right.name));
-    steamGamesUnavailable.value = false;
-    steamGamesLoaded.value = true;
-  } catch {
-    steamGamesError.value = t('ui.application.steam.loadFailed');
-    steamGamesUnavailable.value = true;
-  } finally {
-    steamGamesLoading.value = false;
-  }
-}
-
-function lutrisGame(value: unknown): LutrisGame | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const game = value as Record<string, unknown>;
-  const id = asString(game.lutris_id) || asString(game.id);
-  const name = asString(game.name) || (id ? `Lutris ${id}` : '');
-  if (!id || !name) return null;
-  return {
-    id,
-    name,
-    slug: asString(game.slug),
-    runner: asString(game.runner),
-    platform: asString(game.platform),
-    directory: asString(game.directory),
-    service: asString(game.service),
-    serviceId: asString(game.service_id),
-    imagePath: asString(game.image_path),
-    launchUri: asString(game.launch_uri) || `lutris:rungameid/${id}`,
-    filtered: asBoolean(game.filtered),
-  };
-}
-
-async function loadLutrisGames(): Promise<void> {
-  if (lutrisGamesLoading.value || lutrisGamesLoaded.value) return;
-  lutrisGamesLoading.value = true;
-  lutrisGamesError.value = '';
-  lutrisGamesUnavailable.value = false;
-  try {
-    const payload = await apiGet<unknown>('/api/lutris/games');
-    if (
-      payload &&
-      typeof payload === 'object' &&
-      'enabled' in payload &&
-      payload.enabled === false
-    ) {
-      lutrisGames.value = [];
-      lutrisGamesLoaded.value = true;
-      return;
-    }
-    const rawGames =
-      payload && typeof payload === 'object' && !Array.isArray(payload)
-        ? (payload as { games?: unknown }).games
-        : payload;
-    lutrisGames.value = (Array.isArray(rawGames) ? rawGames : [])
-      .map(lutrisGame)
-      .filter((game): game is LutrisGame => Boolean(game))
-      .sort((left, right) => left.name.localeCompare(right.name));
-    lutrisGamesUnavailable.value = false;
-    lutrisGamesLoaded.value = true;
-  } catch {
-    lutrisGamesError.value = t('ui.application.lutris.loadFailed');
-    lutrisGamesUnavailable.value = true;
-  } finally {
-    lutrisGamesLoading.value = false;
-  }
-}
-
-function openGamePicker(): void {
-  if (!isNew.value || !hasLibraryProvider.value) return;
-  cancelGameClose();
-  gamePickerOpen.value = true;
-  gameActiveIndex.value = -1;
-  if (playniteGamesUnavailable.value) playniteGamesLoaded.value = false;
-  if (steamGamesUnavailable.value) steamGamesLoaded.value = false;
-  if (lutrisGamesUnavailable.value) lutrisGamesLoaded.value = false;
-  if (isWindowsHost.value) void loadPlayniteGames();
-  if (providerSupported(overrideMetadata.value, 'steam')) void loadSteamGames();
-  if (providerSupported(overrideMetadata.value, 'lutris')) void loadLutrisGames();
-}
-
-function closeGamePicker(): void {
-  cancelGameClose();
-  gameCloseTimer = window.setTimeout(() => {
-    gamePickerOpen.value = false;
-    gameActiveIndex.value = -1;
-    gameCloseTimer = null;
-  }, 120);
-}
-
-function selectLibraryGame(entry: LibraryEntry): void {
-  cancelGameClose();
-  if (entry.provider === 'playnite') selectPlayniteGame(entry.game);
-  else if (entry.provider === 'steam') selectSteamGame(entry.game);
-  else selectLutrisGame(entry.game);
-  gamePickerOpen.value = false;
-  gameActiveIndex.value = -1;
-}
-
-function changeLibrary(event: Event): void {
-  const key = (event.target as HTMLSelectElement).value;
-  const entry = selectedLibraryAlternatives.value.find(
-    (entry) => entry.provider + ':' + entry.id === key,
-  );
-  if (entry) selectLibraryGame(entry);
-}
-
-function steamCommand(uri: string): string {
-  const platform = asString(overrideMetadata.value.platform).toLocaleLowerCase();
-  if (platform.includes('windows')) return `cmd /c start "" ${uri}`;
-  if (platform.includes('mac') || platform.includes('darwin')) return `open ${uri}`;
-  return `xdg-open ${uri}`;
-}
-
-function selectSteamGame(game: SteamGame): void {
-  clearPlayniteLink();
-  clearLutrisLink();
-  form.name = game.name;
-  form.uuid = canonicalSteamUuid(game.steamId) || newUuid();
-  form.steamId = game.steamId;
-  form.steamManaged = 'manual';
-  form.steamSource = game.installed ? 'installed' : 'library';
-  form.steamInstallDir = game.installDir;
-  form.steamLibraryPath = game.libraryPath;
-  form.steamIconPath = game.iconPath;
-  form.steamHeaderPath = game.headerPath;
-  form.steamBoxartPath = game.boxartPath || game.portraitPath;
-  form.steamArtworkPath = game.artworkPath;
-  form.steamArtworkClientPath = game.artworkClientPath;
-  form.steamArtworkFormat = game.artworkFormat;
-  form.steamAppType = game.appType;
-  form.steamArtworkClientCompatible = game.artworkClientCompatible;
-  form.playniteIconPath = '';
-  form.cmd = steamCommand(game.launchUri);
-  form.autoDetach = true;
-  form.waitAll = false;
-  form.workingDir = game.installDir;
-  form.imagePath = game.artworkClientPath || './assets/steam.png';
-  if (!game.artworkClientPath) selectedSteamArtworkRequest = loadSelectedSteamArtwork(game.steamId);
-  selectedCoverPreview.value = '';
-  coverPickerOpen.value = false;
-}
-
-async function loadSelectedSteamArtwork(steamId: string): Promise<void> {
-  try {
-    const payload = await apiGet<{ games?: unknown[] }>(
-      `/api/steam/games?appid=${encodeURIComponent(steamId)}`,
-    );
-    const game = steamGame(payload.games?.[0]);
-    if (
-      form.steamId !== steamId ||
-      form.imagePath !== './assets/steam.png' ||
-      !game?.artworkClientPath
-    )
-      return;
-    form.imagePath = game.artworkClientPath;
-    form.steamArtworkClientPath = game.artworkClientPath;
-    form.steamArtworkClientCompatible = true;
-  } catch {
-    // The built-in cover remains usable when Steam's cache/CDN is unavailable.
-  }
-}
-
-function canonicalLutrisUuid(lutrisId: string): string {
-  try {
-    const suffix = BigInt(lutrisId).toString(16).padStart(12, '0').slice(-12);
-    return `4c555452-4953-5000-8000-${suffix}`;
-  } catch {
-    return '';
-  }
-}
-
-function selectLutrisGame(game: LutrisGame): void {
-  clearPlayniteLink();
-  clearSteamLink();
-  form.name = game.name;
-  form.uuid = canonicalLutrisUuid(game.id) || newUuid();
-  form.lutrisId = game.id;
-  form.lutrisManaged = 'manual';
-  form.lutrisSlug = game.slug;
-  form.lutrisRunner = game.runner;
-  form.lutrisPlatform = game.platform;
-  form.lutrisDirectory = game.directory;
-  form.lutrisService = game.service;
-  form.lutrisServiceId = game.serviceId;
-  form.cmd = `lutris ${game.launchUri}`;
-  form.autoDetach = true;
-  form.waitAll = false;
-  form.workingDir = game.directory;
-  form.imagePath = game.imagePath || './assets/box.png';
-  selectedCoverPreview.value = '';
-  coverPickerOpen.value = false;
-}
-
-function selectPlayniteGame(game: PlayniteGame): void {
-  cancelGameClose();
-  clearSteamLink();
-  clearLutrisLink();
-  form.name = game.name;
-  form.uuid = newUuid();
-  form.playniteId = game.id;
-  form.playniteManaged = 'manual';
-  form.cmd = '';
-  form.workingDir = '';
-  form.imagePath = '';
-  selectedCoverPreview.value = '';
-  coverPickerOpen.value = false;
-  form.playniteIconPath = '';
-  gamePickerOpen.value = false;
-  gameActiveIndex.value = -1;
 }
 
 async function openCoverPicker(): Promise<void> {
@@ -2441,62 +1489,14 @@ async function chooseCover(cover: CoverCandidate): Promise<void> {
   coverBusy.value = true;
   try {
     const imagePath = await uploadCover(cover);
-    if (isPlayniteLinked.value) {
-      await updatePlayniteCover(form.playniteId, cover);
-    }
     form.imagePath = imagePath;
     selectedCoverPreview.value = cover.url;
     coverFailed.value = false;
     coverPickerOpen.value = false;
   } catch {
-    coverError.value = t(
-      isPlayniteLinked.value
-        ? 'ui.application.coverPicker.playniteUpdateError'
-        : 'ui.application.coverPicker.uploadError',
-    );
+    coverError.value = t('ui.application.coverPicker.uploadError');
   } finally {
     coverBusy.value = false;
-  }
-}
-
-function useCustomApplication(): void {
-  cancelGameClose();
-  clearPlayniteLink();
-  gamePickerOpen.value = false;
-  gameActiveIndex.value = -1;
-  clearSteamLink();
-  clearLutrisLink();
-}
-
-function handleNameInput(): void {
-  if (isPlayniteLinked.value) clearPlayniteLink();
-  if (isSteamLinked.value) clearSteamLink();
-  if (isLutrisLinked.value) clearLutrisLink();
-  openGamePicker();
-}
-
-
-function handleNameKeydown(event: KeyboardEvent): void {
-  if (!isNew.value) return;
-  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-    event.preventDefault();
-    if (!gamePickerOpen.value) openGamePicker();
-    const count = filteredLibraryGames.value.length;
-    if (!count) return;
-    const delta = event.key === 'ArrowDown' ? 1 : -1;
-    gameActiveIndex.value =
-      gameActiveIndex.value < 0
-        ? delta > 0
-          ? 0
-          : count - 1
-        : (gameActiveIndex.value + delta + count) % count;
-  } else if (event.key === 'Enter' && gamePickerOpen.value) {
-    event.preventDefault();
-    const group = filteredLibraryGames.value[Math.max(0, gameActiveIndex.value)];
-    if (group?.entries[0]) selectLibraryGame(group.entries[0]);
-  } else if (event.key === 'Escape') {
-    gamePickerOpen.value = false;
-    gameActiveIndex.value = -1;
   }
 }
 
@@ -2781,10 +1781,9 @@ async function refreshFrameGenHealth(): Promise<void> {
     frameGenHealthLoading.value = true;
     frameGenHealthError.value = '';
     try {
-      const [configResult, metadataResult, rtssResult, displayResult] = await Promise.allSettled([
+      const [configResult, metadataResult, displayResult] = await Promise.allSettled([
         apiGet<FrameGenConfig>('/api/config'),
         apiGet<FrameGenMetadata>('/api/metadata'),
-        apiGet<RtssStatus>('/api/rtss/status'),
         apiGet<unknown>('/api/display-devices?detail=full'),
       ]);
       const hostConfig = configResult.status === 'fulfilled' ? configResult.value : {};
@@ -2831,28 +1830,9 @@ async function refreshFrameGenHealth(): Promise<void> {
         captureMessage = t('ui.application.framegenHealth.captureConfigured', { capture });
       }
 
-      let rtssStatus: FrameGenRequirementStatus;
-      let rtssMessage: string;
-      if (form.frameGenerationMode !== 'lossless-scaling') {
-        rtssStatus = 'configured';
-        rtssMessage = t('ui.application.framegenHealth.rtssOptional');
-      } else if (rtssResult.status === 'fulfilled') {
-        const rtssInstalled = asBoolean(rtssResult.value.path_exists);
-        const hooksFound = asBoolean(rtssResult.value.hooks_found);
-        if (rtssInstalled && hooksFound) {
-          rtssStatus = 'pass';
-          rtssMessage = t('apps.framegen.health_rtss_hooks');
-        } else if (rtssInstalled) {
-          rtssStatus = 'warn';
-          rtssMessage = t('apps.framegen.health_rtss_no_hooks');
-        } else {
-          rtssStatus = 'warn';
-          rtssMessage = t('apps.framegen.health_rtss_install');
-        }
-      } else {
-        rtssStatus = 'unknown';
-        rtssMessage = t('apps.framegen.health_rtss_unreachable');
-      }
+      // RTSS is optional for the supported frame generation providers.
+      const rtssStatus: FrameGenRequirementStatus = 'configured';
+      const rtssMessage = t('ui.application.framegenHealth.rtssOptional');
 
       const display = await inspectFrameGenDisplay(displayResolution, config, displayResult);
       const os: FrameGenHealth['os'] =
@@ -2862,9 +1842,7 @@ async function refreshFrameGenHealth(): Promise<void> {
             ? { status: 'unknown', message: t('apps.framegen.health_os_unknown') }
             : windowsBuild >= 22000
               ? { status: 'pass', message: t('apps.framegen.health_os_win11') }
-              : form.frameGenerationMode === 'lossless-scaling'
-                ? { status: 'fail', message: t('apps.framegen.health_os_win10_lossless') }
-                : { status: 'warn', message: t('apps.framegen.health_os_win10') };
+              : { status: 'warn', message: t('apps.framegen.health_os_win10') };
 
       if (epoch !== frameGenHealthEpoch) return;
       frameGenHealth.value = {
@@ -2946,7 +1924,6 @@ async function submit(): Promise<void> {
   if (!(await validate())) return;
   saving.value = true;
   try {
-    await selectedSteamArtworkRequest;
     const payload = buildPayload();
     await saveApp(payload);
     commitRtxHdrLiveState();
@@ -3004,26 +1981,12 @@ watch(
     clearFrameGenHealth();
     if (!mode || mode === 'off') {
       form.frameGenerationProvider = '';
-      form.losslessScalingFramegen = false;
       return;
     }
-    if (['lossless-scaling', 'nvidia-smooth-motion', 'game-provided'].includes(mode)) {
+    if (['nvidia-smooth-motion', 'game-provided'].includes(mode)) {
       form.frameGenerationProvider = mode;
     }
-    form.losslessScalingFramegen = mode === 'lossless-scaling';
-    if (mode === 'lossless-scaling' && !form.losslessScalingRtssTouched) {
-      const defaultLimit = defaultRtssFromTarget(parseNumeric(form.losslessScalingTargetFps));
-      form.losslessScalingRtssLimit = defaultLimit === null ? '' : String(defaultLimit);
-    }
     void refreshFrameGenHealth();
-  },
-);
-
-watch(
-  () => form.playniteId,
-  (playniteId) => {
-    if (formHydrating || !playniteId) return;
-    if (form.exitTimeout === '5') form.exitTimeout = '10';
   },
 );
 
@@ -3170,150 +2133,19 @@ onBeforeUnmount(() => {
                 class="vs-input"
                 data-field-key="name"
                 type="text"
-                :role="isNew ? 'combobox' : undefined"
                 autocomplete="off"
                 required
-                :aria-autocomplete="isNew ? 'list' : undefined"
-                :aria-controls="isNew ? 'app-game-options' : undefined"
-                :aria-expanded="isNew ? gamePickerOpen : undefined"
-                :aria-activedescendant="
-                  isNew && gameActiveIndex >= 0 ? `app-game-option-${gameActiveIndex}` : undefined
-                "
                 :aria-invalid="Boolean(errors.name)"
                 :aria-describedby="errors.name ? 'app-name-error' : 'app-name-help'"
                 :readonly="isRemoteSession"
-                @focus="isNew && openGamePicker()"
-                @blur="closeGamePicker"
-                @input="handleNameInput"
-                @keydown="handleNameKeydown"
-              />
-              <AppButton
-                v-if="isNew && hasLibraryProvider"
-                size="compact"
-                icon="library"
-                :label="t('ui.application.gamePicker.browse')"
-                @mousedown.prevent
-                @click="openGamePicker"
               />
             </div>
             <span id="app-name-help" class="vs-field__helper">
-              {{
-                isPlayniteLinked
-                  ? t('ui.application.playnite.linkedHelp')
-                  : isSteamLinked
-                    ? t('ui.application.steam.linkedHelp')
-                    : isLutrisLinked
-                      ? t('ui.application.lutris.linkedHelp')
-                      : t('ui.application.fields.name.help')
-              }}
+              {{ t('ui.application.fields.name.help') }}
             </span>
             <span v-if="errors.name" id="app-name-error" class="vs-field__error">{{
               errors.name
             }}</span>
-
-            <div
-              v-if="isNew && gamePickerOpen"
-              id="app-game-options"
-              class="editor-playnite-picker"
-              role="listbox"
-              :aria-label="t('ui.application.gamePicker.resultsLabel')"
-            >
-              <p v-if="libraryGamesLoading" class="editor-playnite-picker__notice">
-                {{ t('ui.application.gamePicker.loading') }}
-              </p>
-              <p
-                v-for="error in libraryGamesErrors"
-                :key="error"
-                class="editor-playnite-picker__notice"
-              >
-                {{ error }}
-              </p>
-              <button
-                v-for="(group, index) in filteredLibraryGames"
-                :id="'app-game-option-' + index"
-                :key="group.key"
-                class="editor-playnite-option"
-                :class="{ 'editor-playnite-option--active': gameActiveIndex === index }"
-                type="button"
-                role="option"
-                :aria-selected="gameActiveIndex === index"
-                @mousedown.prevent
-                @click="selectLibraryGame(group.entries[0]!)"
-                @mouseenter="gameActiveIndex = index"
-              >
-                <UiIcon name="gamepad" :size="16" aria-hidden="true" />
-                <span>{{ group.name }}</span>
-                <span class="editor-steam-option__path">{{
-                  [...new Set(group.entries.map((entry) => providerLabels[entry.provider]))].join(
-                    ' · ',
-                  )
-                }}</span>
-              </button>
-              <p
-                v-if="!libraryGamesLoading && !filteredLibraryGames.length"
-                class="editor-playnite-picker__notice"
-              >
-                {{ t('ui.application.gamePicker.empty') }}
-              </p>
-            </div>
-            <label v-if="isNew && selectedLibraryAlternatives.length > 1" class="vs-field">
-              <span class="vs-field__label">{{ t('ui.application.gamePicker.library') }}</span>
-              <select class="vs-select" :value="selectedLibraryKey" @change="changeLibrary">
-                <option
-                  v-for="entry in selectedLibraryAlternatives"
-                  :key="entry.provider + ':' + entry.id"
-                  :value="entry.provider + ':' + entry.id"
-                >
-                  {{ providerLabels[entry.provider] }}
-                </option>
-              </select>
-            </label>
-
-            <div v-if="isPlayniteLinked" class="editor-playnite-link vs-cluster">
-              <StatusBadge
-                :label="managedProviderLabel('Playnite', form.playniteManaged)"
-                :tone="form.playniteManaged === 'auto' ? 'success' : 'info'"
-                compact
-              />
-              <span>{{ form.playniteId }}</span>
-              <AppButton
-                v-if="isPlayniteLinked"
-                size="compact"
-                variant="tertiary"
-                icon="x"
-                :label="t('ui.application.playnite.useCustom')"
-                @click="useCustomApplication"
-              />
-            </div>
-            <div v-if="isSteamLinked" class="editor-playnite-link vs-cluster">
-              <StatusBadge
-                :label="managedProviderLabel('Steam', form.steamManaged)"
-                :tone="form.steamManaged === 'auto' ? 'success' : 'info'"
-                compact
-              />
-              <AppButton
-                size="compact"
-                variant="tertiary"
-                icon="x"
-                :label="t('ui.application.steam.useCustom')"
-                @click="useCustomApplication"
-              />
-            </div>
-            <div v-if="isLutrisLinked" class="editor-playnite-link vs-cluster">
-              <StatusBadge
-                :label="managedProviderLabel('Lutris', form.lutrisManaged)"
-                :tone="form.lutrisManaged === 'auto' ? 'success' : 'info'"
-                compact
-              />
-              <span>{{ form.lutrisId }}</span>
-              <AppButton
-                size="compact"
-                variant="tertiary"
-                icon="x"
-                :label="t('ui.application.lutris.useCustom')"
-                @click="useCustomApplication"
-              />
-            </div>
           </div>
 
           <label v-if="!isNew" class="vs-field editor-field editor-field--wide" for="app-uuid">
@@ -3378,7 +2210,7 @@ onBeforeUnmount(() => {
 
           <div class="editor-grid">
             <label
-              v-if="!isProviderLinked && !isRemoteSession"
+              v-if="!isRemoteSession"
               class="vs-field editor-field editor-field--full"
               for="app-command"
             >
@@ -3401,11 +2233,7 @@ onBeforeUnmount(() => {
               </span>
             </label>
 
-            <label
-              v-if="!isProviderLinked && !isRemoteSession"
-              class="vs-field editor-field"
-              for="app-working-dir"
-            >
+            <label v-if="!isRemoteSession" class="vs-field editor-field" for="app-working-dir">
               <span class="vs-field__label">{{ t('apps.working_dir') }}</span>
               <input
                 id="app-working-dir"
@@ -3416,15 +2244,11 @@ onBeforeUnmount(() => {
             </label>
 
             <div class="vs-field editor-field editor-field--full">
-              <label v-if="!isProviderLinked" class="vs-field__label" for="app-image-path">
+              <label class="vs-field__label" for="app-image-path">
                 {{ t('ui.application.fields.imagePath.label') }}
               </label>
-              <span v-else class="vs-field__label">
-                {{ t('ui.application.coverPicker.title') }}
-              </span>
               <div class="editor-cover-control">
                 <input
-                  v-if="!isProviderLinked"
                   id="app-image-path"
                   v-model="form.imagePath"
                   class="vs-input vs-monospace"
@@ -3440,61 +2264,13 @@ onBeforeUnmount(() => {
                 />
               </div>
               <span class="vs-field__helper">
-                {{
-                  t(
-                    isPlayniteLinked
-                      ? 'ui.application.coverPicker.playniteWarning'
-                      : isProviderLinked
-                        ? 'ui.application.coverPicker.providerHelp'
-                        : 'ui.application.fields.imagePath.help',
-                  )
-                }}
+                {{ t('ui.application.fields.imagePath.help') }}
               </span>
-              <details
-                v-if="isProviderLinked && !isPlayniteLinked"
-                class="editor-inline-disclosure"
-              >
-                <summary>{{ t('ui.application.coverPicker.pathDisclosure') }}</summary>
-                <input
-                  id="app-image-path"
-                  v-model="form.imagePath"
-                  class="vs-input vs-monospace"
-                  type="text"
-                  :aria-label="t('ui.application.fields.imagePath.label')"
-                  :placeholder="t('ui.application.fields.imagePath.placeholder')"
-                />
-              </details>
             </div>
-
-            <InlineAlert
-              v-if="isPlayniteLinked"
-              class="editor-field editor-field--full"
-              tone="info"
-              :title="managedProviderLabel('Playnite', form.playniteManaged)"
-            >
-              {{ t('apps.playnite_edit_notice') }}
-            </InlineAlert>
-            <InlineAlert
-              v-if="isSteamLinked"
-              class="editor-field editor-field--full"
-              tone="info"
-              :title="managedProviderLabel('Steam', form.steamManaged)"
-            >
-              {{ t('ui.application.steam.editNotice') }}
-            </InlineAlert>
-            <InlineAlert
-              v-if="isLutrisLinked"
-              class="editor-field editor-field--full"
-              tone="info"
-              :title="managedProviderLabel('Lutris', form.lutrisManaged)"
-            >
-              {{ t('ui.application.lutris.editNotice') }}
-            </InlineAlert>
           </div>
         </div>
         <div v-if="!isRemoteSession" class="vs-settings-group application-launch-settings">
           <SettingRow
-            v-if="!isPlayniteLinked"
             :label="t('apps.auto_detach')"
             :description="t('apps.auto_detach_desc')"
             control-id="app-auto-detach"
@@ -3506,7 +2282,6 @@ onBeforeUnmount(() => {
             </label>
           </SettingRow>
           <SettingRow
-            v-if="!isPlayniteLinked"
             :label="t('apps.wait_all')"
             :description="t('apps.wait_all_desc')"
             control-id="app-wait-all"
@@ -3551,7 +2326,7 @@ onBeforeUnmount(() => {
             </div>
           </SettingRow>
           <SettingRow
-            v-if="isWindowsHost && !isPlayniteLinked"
+            v-if="isWindowsHost"
             :label="t('ui.application.fields.elevated.label')"
             :description="t('ui.application.fields.elevated.description')"
             control-id="app-elevated"
@@ -3591,355 +2366,6 @@ onBeforeUnmount(() => {
               </option>
             </select>
           </label>
-
-          <div v-if="isWindowsHost" class="lossless-editor editor-field--full">
-            <div class="lossless-editor__heading">
-              <div>
-                <h3>{{ t('ui.application.options.frameMode.lossless') }}</h3>
-                <p>{{ t('ui.integrations.lossless.shortDescription') }}</p>
-              </div>
-              <StatusBadge
-                v-if="
-                  form.losslessScalingEnabled || form.frameGenerationMode === 'lossless-scaling'
-                "
-                :label="t('apps.framegen.tag_lossless_active')"
-                tone="info"
-                compact
-              />
-            </div>
-
-            <SettingRow
-              :label="t('ui.application.fields.losslessEnabled.label')"
-              :description="t('ui.application.fields.losslessEnabled.description')"
-              control-id="app-lossless-enabled"
-            >
-              <label class="vs-switch">
-                <input
-                  id="app-lossless-enabled"
-                  v-model="form.losslessScalingEnabled"
-                  type="checkbox"
-                />
-                <span class="vs-switch__track" aria-hidden="true" />
-                <span class="vs-sr-only">{{
-                  t('ui.application.fields.losslessEnabled.label')
-                }}</span>
-              </label>
-            </SettingRow>
-
-            <div v-if="showLosslessPanel" class="lossless-editor__body">
-              <InlineAlert
-                v-if="!isPlayniteLinked"
-                tone="warning"
-                :title="t('ui.application.options.frameMode.lossless')"
-              >
-                {{ t('apps.framegen.lossless_unmanaged_warning') }}
-              </InlineAlert>
-
-              <fieldset class="lossless-profile-fieldset">
-                <legend>{{ t('apps.framegen.profile_label') }}</legend>
-                <p class="lossless-profile-fieldset__hint">
-                  {{ t('apps.framegen.profile_hint') }}
-                </p>
-                <div class="lossless-profile-grid">
-                  <label
-                    class="lossless-profile-option"
-                    :class="{
-                      'lossless-profile-option--active': activeLosslessProfile === 'recommended',
-                    }"
-                  >
-                    <input v-model="activeLosslessProfile" type="radio" value="recommended" />
-                    <span>
-                      <strong>{{ t('apps.framegen.profile_recommended') }}</strong>
-                    </span>
-                  </label>
-                  <label
-                    class="lossless-profile-option"
-                    :class="{
-                      'lossless-profile-option--active': activeLosslessProfile === 'custom',
-                    }"
-                  >
-                    <input v-model="activeLosslessProfile" type="radio" value="custom" />
-                    <span>
-                      <strong>{{ t('apps.framegen.profile_custom') }}</strong>
-                    </span>
-                  </label>
-                </div>
-                <AppButton
-                  v-if="hasActiveLosslessOverrides"
-                  size="compact"
-                  variant="tertiary"
-                  icon="refresh"
-                  :label="t('apps.framegen.reset_profile')"
-                  @click="resetActiveLosslessProfile"
-                />
-              </fieldset>
-
-              <section class="lossless-editor__group" aria-labelledby="lossless-frame-heading">
-                <div class="lossless-editor__group-heading">
-                  <div>
-                    <h4 id="lossless-frame-heading">
-                      {{ t('apps.framegen.frame_targets_label') }}
-                    </h4>
-                    <p>{{ t('apps.framegen.frame_targets_hint') }}</p>
-                  </div>
-                  <StatusBadge
-                    v-if="form.frameGenerationMode === 'lossless-scaling'"
-                    :label="t('apps.framegen.tag_lossless_active')"
-                    tone="info"
-                    compact
-                  />
-                </div>
-                <div v-if="form.frameGenerationMode === 'lossless-scaling'" class="editor-grid">
-                  <label class="vs-field editor-field" for="app-lossless-target-fps">
-                    <span class="vs-field__label">{{ t('apps.framegen.target_fps_label') }}</span>
-                    <input
-                      id="app-lossless-target-fps"
-                      v-model.number="losslessTargetModel"
-                      class="vs-input"
-                      type="number"
-                      min="1"
-                      max="360"
-                      step="1"
-                      placeholder="120"
-                      inputmode="numeric"
-                    />
-                    <span class="vs-field__helper">{{ t('apps.framegen.target_fps_hint') }}</span>
-                  </label>
-                  <label class="vs-field editor-field" for="app-lossless-rtss-limit">
-                    <span class="vs-field__label">{{ t('apps.framegen.rtss_limit_label') }}</span>
-                    <input
-                      id="app-lossless-rtss-limit"
-                      v-model.number="losslessRtssModel"
-                      class="vs-input"
-                      type="number"
-                      min="1"
-                      max="360"
-                      step="1"
-                      placeholder="60"
-                      inputmode="numeric"
-                    />
-                    <span class="vs-field__helper">{{ t('apps.framegen.rtss_limit_hint') }}</span>
-                  </label>
-                  <label class="vs-field editor-field" for="app-lossless-flow-scale">
-                    <span class="vs-field__label">{{ t('apps.framegen.flow_scale_label') }}</span>
-                    <input
-                      id="app-lossless-flow-scale"
-                      v-model.number="losslessFlowScaleModel"
-                      class="vs-input"
-                      type="number"
-                      :min="LOSSLESS_FLOW_MIN"
-                      :max="LOSSLESS_FLOW_MAX"
-                      step="1"
-                      placeholder="50"
-                      inputmode="numeric"
-                    />
-                    <span class="vs-field__helper">{{ t('apps.framegen.flow_scale_hint') }}</span>
-                  </label>
-                </div>
-                <InlineAlert v-else tone="info" :title="t('apps.framegen.kind_label')">
-                  {{ t('apps.framegen.kind_hint') }}
-                </InlineAlert>
-              </section>
-
-              <section class="lossless-editor__group" aria-labelledby="lossless-upscale-heading">
-                <div class="lossless-editor__group-heading">
-                  <div>
-                    <h4 id="lossless-upscale-heading">{{ t('apps.framegen.upscaling_filter') }}</h4>
-                    <p>{{ t('apps.framegen.upscaling_filter_hint') }}</p>
-                  </div>
-                </div>
-                <div class="editor-grid">
-                  <label class="vs-field editor-field" for="app-lossless-scaling-mode">
-                    <span class="vs-field__label">{{ t('apps.framegen.upscaling_filter') }}</span>
-                    <select
-                      id="app-lossless-scaling-mode"
-                      v-model="losslessScalingModeModel"
-                      class="vs-select"
-                    >
-                      <option
-                        v-for="option in losslessScalingOptions"
-                        :key="option.value"
-                        :value="option.value"
-                      >
-                        {{ option.label }}
-                      </option>
-                    </select>
-                  </label>
-                  <div v-if="showLosslessResolution" class="vs-field editor-field">
-                    <span class="vs-field__label">{{ t('apps.framegen.resolution_scale') }}</span>
-                    <div class="lossless-resolution-control">
-                      <div
-                        class="lossless-resolution-control__modes"
-                        role="group"
-                        :aria-label="t('apps.framegen.resolution_scale')"
-                      >
-                        <button
-                          type="button"
-                          class="vs-button vs-button--tertiary vs-button--compact"
-                          :class="{
-                            'lossless-resolution-control__mode--active':
-                              resolutionInputMode === 'factor',
-                          }"
-                          :aria-pressed="resolutionInputMode === 'factor'"
-                          @click="resolutionInputMode = 'factor'"
-                        >
-                          {{ t('apps.framegen.scale_factor') }}
-                        </button>
-                        <button
-                          type="button"
-                          class="vs-button vs-button--tertiary vs-button--compact"
-                          :class="{
-                            'lossless-resolution-control__mode--active':
-                              resolutionInputMode === 'percent',
-                          }"
-                          :aria-pressed="resolutionInputMode === 'percent'"
-                          @click="resolutionInputMode = 'percent'"
-                        >
-                          {{ t('apps.framegen.percent') }}
-                        </button>
-                      </div>
-                      <input
-                        v-if="resolutionInputMode === 'factor'"
-                        id="app-lossless-resolution-factor"
-                        v-model.number="losslessResolutionFactorModel"
-                        class="vs-input"
-                        type="number"
-                        min="1"
-                        max="10"
-                        step="0.05"
-                        placeholder="1.00"
-                        inputmode="decimal"
-                      />
-                      <input
-                        v-else
-                        id="app-lossless-resolution-percent"
-                        v-model.number="losslessResolutionPercentModel"
-                        class="vs-input"
-                        type="number"
-                        :min="LOSSLESS_RESOLUTION_MIN"
-                        :max="LOSSLESS_RESOLUTION_MAX"
-                        step="5"
-                        placeholder="100"
-                        inputmode="numeric"
-                      />
-                      <span class="vs-field__helper">
-                        {{ losslessResolutionPercentDisplay }}% ·
-                        {{ losslessResolutionFactorDisplay }}x
-                      </span>
-                    </div>
-                  </div>
-                  <SettingRow
-                    :label="t('apps.framegen.performance_mode')"
-                    :description="t('apps.framegen.performance_mode_hint')"
-                    control-id="app-lossless-performance"
-                  >
-                    <label class="vs-switch">
-                      <input
-                        id="app-lossless-performance"
-                        v-model="losslessPerformanceModeModel"
-                        type="checkbox"
-                      />
-                      <span class="vs-switch__track" aria-hidden="true" />
-                      <span class="vs-sr-only">{{ t('apps.framegen.performance_mode') }}</span>
-                    </label>
-                  </SettingRow>
-                  <label
-                    v-if="showLosslessSharpening"
-                    class="vs-field editor-field"
-                    for="app-lossless-sharpening"
-                  >
-                    <span class="vs-field__label">{{ t('apps.framegen.sharpening') }}</span>
-                    <input
-                      id="app-lossless-sharpening"
-                      v-model.number="losslessSharpeningModel"
-                      class="vs-input"
-                      type="number"
-                      :min="LOSSLESS_SHARPNESS_MIN"
-                      :max="LOSSLESS_SHARPNESS_MAX"
-                      step="1"
-                      inputmode="numeric"
-                    />
-                    <span class="vs-field__helper">
-                      {{
-                        t('apps.framegen.sharpening_hint', {
-                          filter: losslessScalingModeModel.toUpperCase(),
-                        })
-                      }}
-                    </span>
-                  </label>
-                  <label
-                    v-if="showLosslessAnimeOptions"
-                    class="vs-field editor-field"
-                    for="app-lossless-anime-size"
-                  >
-                    <span class="vs-field__label">{{ t('apps.framegen.anime4k_size') }}</span>
-                    <select
-                      id="app-lossless-anime-size"
-                      v-model="losslessAnimeSizeModel"
-                      class="vs-select"
-                    >
-                      <option
-                        v-for="option in losslessAnimeSizes"
-                        :key="option.value"
-                        :value="option.value"
-                      >
-                        {{ option.label }}
-                      </option>
-                    </select>
-                  </label>
-                  <SettingRow
-                    v-if="showLosslessAnimeOptions"
-                    :label="t('apps.framegen.vrs')"
-                    :description="t('apps.framegen.vrs_hint')"
-                    control-id="app-lossless-anime-vrs"
-                  >
-                    <label class="vs-switch">
-                      <input
-                        id="app-lossless-anime-vrs"
-                        v-model="losslessAnimeVrsModel"
-                        type="checkbox"
-                      />
-                      <span class="vs-switch__track" aria-hidden="true" />
-                      <span class="vs-sr-only">{{ t('apps.framegen.vrs') }}</span>
-                    </label>
-                  </SettingRow>
-                </div>
-                <InlineAlert
-                  v-if="losslessScalingModeModel !== 'off'"
-                  tone="warning"
-                  :title="t('apps.framegen.performance_note')"
-                >
-                  {{ t('apps.framegen.performance_note_desc') }}
-                </InlineAlert>
-              </section>
-
-              <section class="lossless-editor__group" aria-labelledby="lossless-launch-heading">
-                <div class="lossless-editor__group-heading">
-                  <div>
-                    <h4 id="lossless-launch-heading">{{ t('apps.framegen.advanced_launch') }}</h4>
-                    <p>{{ t('apps.framegen.launch_delay_hint') }}</p>
-                  </div>
-                </div>
-                <label class="vs-field editor-field" for="app-lossless-launch-delay">
-                  <span class="vs-field__label">{{ t('apps.framegen.launch_delay_label') }}</span>
-                  <div class="application-number-control">
-                    <input
-                      id="app-lossless-launch-delay"
-                      v-model="form.losslessScalingLaunchDelay"
-                      class="vs-input"
-                      type="number"
-                      min="0"
-                      max="600"
-                      step="1"
-                      placeholder="8"
-                      inputmode="numeric"
-                    />
-                    <span class="application-number-control__unit">{{ t('_common.seconds') }}</span>
-                  </div>
-                </label>
-              </section>
-            </div>
-          </div>
 
           <div v-if="frameGenerationEnabled" class="framegen-health editor-field--full">
             <div class="framegen-health__heading">
@@ -4331,11 +2757,7 @@ onBeforeUnmount(() => {
         :platform="asString(overrideMetadata.platform)"
       />
 
-      <details class="editor-section editor-section--disclosure" :open="!isProviderLinked">
-        <summary v-if="isProviderLinked" class="editor-section__summary">
-          <span>{{ t('ui.application.sections.commands.advancedTitle') }}</span>
-          <small>{{ t('ui.application.sections.commands.advancedDescription') }}</small>
-        </summary>
+      <section class="editor-section" aria-labelledby="commands-heading">
         <div class="editor-section__heading editor-section__heading--actions">
           <div>
             <h2 id="commands-heading">{{ t('ui.application.sections.commands.title') }}</h2>
@@ -4397,7 +2819,7 @@ onBeforeUnmount(() => {
           />
           <span class="vs-field__helper">{{ t('ui.application.fields.detached.help') }}</span>
         </label>
-      </details>
+      </section>
 
       <section class="editor-section" aria-labelledby="overrides-heading">
         <div class="editor-section__heading">
@@ -4678,7 +3100,6 @@ onBeforeUnmount(() => {
       :busy="coverBusy"
       :candidates="coverCandidates"
       :error="coverError"
-      :playnite-managed="isPlayniteLinked"
       @search="runCoverSearch"
       @pick="chooseCover"
     />
@@ -4732,58 +3153,6 @@ onBeforeUnmount(() => {
 
 .editor-section {
   gap: var(--vs-space-12);
-}
-
-.editor-section--disclosure:not([open]) {
-  display: block;
-}
-
-.editor-section__summary,
-.editor-inline-disclosure summary {
-  cursor: pointer;
-}
-
-.editor-section__summary {
-  padding: var(--vs-space-16) var(--vs-space-20);
-  border: var(--vs-border-width) solid var(--vs-color-border-subtle);
-  border-radius: var(--vs-radius-card);
-  background: var(--vs-color-bg-surface);
-}
-
-.editor-section__summary span,
-.editor-section__summary small {
-  display: block;
-}
-
-.editor-section__summary span {
-  color: var(--vs-color-text-primary);
-  font-weight: var(--vs-type-weight-semibold);
-}
-
-.editor-section__summary small {
-  margin-block-start: var(--vs-space-4);
-  color: var(--vs-color-text-secondary);
-}
-
-.editor-inline-disclosure {
-  margin-block-start: var(--vs-space-4);
-}
-
-.editor-inline-disclosure summary {
-  color: var(--vs-color-text-secondary);
-  font-size: var(--vs-type-size-helper);
-  font-weight: var(--vs-type-weight-semibold);
-}
-
-.editor-inline-disclosure .vs-input {
-  inline-size: 100%;
-  margin-block-start: var(--vs-space-8);
-}
-
-.editor-section__summary:focus-visible,
-.editor-inline-disclosure summary:focus-visible {
-  outline: var(--vs-focus-width) solid var(--vs-color-focus);
-  outline-offset: var(--vs-focus-offset);
 }
 
 .app-display-routing {
@@ -4891,7 +3260,6 @@ onBeforeUnmount(() => {
 
 .editor-name-control,
 .editor-cover-control,
-.editor-playnite-link,
 .framegen-health__heading,
 .framegen-health__row-title,
 .framegen-health__coverage {
@@ -4915,69 +3283,6 @@ onBeforeUnmount(() => {
 
 .editor-cover-control {
   gap: var(--vs-space-8);
-}
-
-.editor-playnite-picker {
-  overflow: auto;
-  max-block-size: 17rem;
-  border: var(--vs-border-width) solid var(--vs-color-border-strong);
-  border-radius: var(--vs-radius-control);
-  background: var(--vs-color-bg-raised);
-  box-shadow: var(--vs-shadow-raised);
-}
-
-.editor-playnite-option {
-  display: flex;
-  inline-size: 100%;
-  align-items: center;
-  gap: var(--vs-space-8);
-  padding: var(--vs-space-10) var(--vs-space-12);
-  border: 0;
-  border-block-end: var(--vs-border-width) solid var(--vs-color-border-subtle);
-  background: transparent;
-  color: var(--vs-color-text-primary);
-  font: inherit;
-  text-align: start;
-  cursor: pointer;
-}
-
-.editor-playnite-option:last-of-type {
-  border-block-end: 0;
-}
-
-.editor-playnite-option:hover,
-.editor-playnite-option--active {
-  background: var(--vs-color-bg-subtle);
-}
-
-.editor-steam-option__path {
-  overflow: hidden;
-  margin-inline-start: auto;
-  color: var(--vs-color-text-tertiary);
-  font-size: var(--vs-type-size-metadata);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.editor-playnite-option:focus-visible {
-  position: relative;
-  z-index: 1;
-  outline: var(--vs-focus-width) solid var(--vs-color-focus);
-  outline-offset: calc(var(--vs-focus-width) * -1);
-}
-
-.editor-playnite-picker__notice {
-  margin: 0;
-  padding: var(--vs-space-12);
-  color: var(--vs-color-text-secondary);
-  font-size: var(--vs-type-size-helper);
-}
-
-.editor-playnite-link {
-  flex-wrap: wrap;
-  gap: var(--vs-space-8);
-  color: var(--vs-color-text-secondary);
-  font-size: var(--vs-type-size-helper);
 }
 
 .editor-field {
@@ -5058,125 +3363,6 @@ onBeforeUnmount(() => {
   border: var(--vs-border-width) solid var(--vs-color-border-subtle);
   border-radius: var(--vs-radius-control);
   background: var(--vs-color-bg-subtle);
-}
-
-.lossless-editor {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--vs-space-16);
-  min-inline-size: 0;
-  padding: var(--vs-space-16);
-  border: var(--vs-border-width) solid
-    color-mix(in srgb, var(--vs-color-accent-default) 30%, var(--vs-color-border-subtle));
-  border-radius: var(--vs-radius-control);
-  background: color-mix(in srgb, var(--vs-color-accent-default) 5%, var(--vs-color-bg-subtle));
-}
-
-.lossless-editor__heading,
-.lossless-editor__group-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--vs-space-16);
-}
-
-.lossless-editor__heading h3,
-.lossless-editor__group-heading h4 {
-  color: var(--vs-color-text-primary);
-  font-size: var(--vs-type-size-control);
-  font-weight: var(--vs-type-weight-semibold);
-}
-
-.lossless-editor__heading p,
-.lossless-editor__group-heading p {
-  margin-block-start: var(--vs-space-4);
-  color: var(--vs-color-text-secondary);
-  font-size: var(--vs-type-size-helper);
-}
-
-.lossless-editor__body,
-.lossless-editor__group {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--vs-space-16);
-  min-inline-size: 0;
-}
-
-.lossless-editor__group {
-  padding: var(--vs-space-16);
-  border: var(--vs-border-width) solid var(--vs-color-border-subtle);
-  border-radius: var(--vs-radius-control);
-  background: var(--vs-color-bg-surface);
-}
-
-.lossless-profile-fieldset {
-  display: grid;
-  gap: var(--vs-space-12);
-  min-inline-size: 0;
-  padding: 0;
-  border: 0;
-}
-
-.lossless-profile-fieldset legend {
-  color: var(--vs-color-text-primary);
-  font-size: var(--vs-type-size-control);
-  font-weight: var(--vs-type-weight-semibold);
-}
-
-.lossless-profile-fieldset__hint {
-  margin: calc(var(--vs-space-8) * -1) 0 0;
-  color: var(--vs-color-text-secondary);
-  font-size: var(--vs-type-size-helper);
-  line-height: var(--vs-type-line-height-metadata);
-}
-
-.lossless-profile-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--vs-space-12);
-}
-
-.lossless-profile-option {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--vs-space-8);
-  min-block-size: 4rem;
-  padding: var(--vs-space-12);
-  border: var(--vs-border-width) solid var(--vs-color-border-subtle);
-  border-radius: var(--vs-radius-control);
-  background: var(--vs-color-bg-raised);
-  cursor: pointer;
-}
-
-.lossless-profile-option--active {
-  border-color: var(--vs-color-accent-default);
-  background: color-mix(in srgb, var(--vs-color-accent-default) 8%, var(--vs-color-bg-raised));
-}
-
-.lossless-profile-option span {
-  display: grid;
-  gap: var(--vs-space-4);
-}
-
-.lossless-profile-option strong {
-  color: var(--vs-color-text-primary);
-  font-size: var(--vs-type-size-control);
-}
-
-.lossless-resolution-control {
-  display: grid;
-  gap: var(--vs-space-8);
-}
-
-.lossless-resolution-control__modes {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--vs-space-4);
-}
-
-.lossless-resolution-control__mode--active {
-  border-color: var(--vs-color-accent-default);
-  color: var(--vs-color-accent-default);
 }
 
 .framegen-health__heading {
@@ -5833,8 +4019,7 @@ onBeforeUnmount(() => {
   .editor-grid,
   .prep-entry,
   .editor-execution-layout,
-  .app-display-routing__choices,
-  .lossless-profile-grid {
+  .app-display-routing__choices {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -5852,9 +4037,7 @@ onBeforeUnmount(() => {
   .editor-name-control,
   .editor-cover-control,
   .framegen-health__heading,
-  .rtx-hdr__calibration-heading,
-  .lossless-editor__heading,
-  .lossless-editor__group-heading {
+  .rtx-hdr__calibration-heading {
     align-items: stretch;
     flex-direction: column;
   }

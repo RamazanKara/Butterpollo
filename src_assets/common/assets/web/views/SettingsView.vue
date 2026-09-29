@@ -1227,7 +1227,6 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
 
                   <SettingsIntegrationPath
                     v-else-if="field.kind === 'integration-path'"
-                    :kind="field.integration ?? 'rtss'"
                     :input-id="`setting-${field.key}`"
                     :model-value="values[field.key]"
                     @update:model-value="values[field.key] = $event"

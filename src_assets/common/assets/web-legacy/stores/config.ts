@@ -177,8 +177,6 @@ const defaultGroups = [
       max_bitrate: 0,
       minimum_fps_target: 20,
       fallback_mode: '1920x1080x60',
-      lossless_scaling_path: '',
-      lossless_scaling_legacy_auto_detect: false,
     },
   },
   {
@@ -209,30 +207,6 @@ const defaultGroups = [
       cert: '',
       file_state: '',
       vibeshine_file_state: '',
-    },
-  },
-  {
-    id: 'playnite',
-    name: 'Playnite',
-    options: {
-      playnite_auto_sync: true,
-      playnite_sync_all_installed: false,
-      playnite_recent_games: 10,
-      playnite_recent_max_age_days: 0,
-      playnite_autosync_delete_after_days: 0,
-      playnite_autosync_require_replacement: true,
-      playnite_autosync_remove_uninstalled: true,
-      playnite_focus_attempts: 3,
-      playnite_focus_timeout_secs: 15,
-      playnite_focus_exit_on_first: false,
-      playnite_fullscreen_entry_enabled: false,
-      playnite_sync_categories: [] as Array<{ id: string; name: string }>,
-      playnite_sync_plugins: [] as Array<{ id: string; name: string }>,
-      playnite_exclude_categories: [] as Array<{ id: string; name: string }>,
-      playnite_exclude_plugins: [] as Array<{ id: string; name: string }>,
-      playnite_exclude_games: [] as Array<{ id: string; name: string }>,
-      playnite_install_dir: '',
-      playnite_extensions_dir: '',
     },
   },
   {
@@ -651,18 +625,9 @@ export const useConfigStore = defineStore('config', () => {
       }
     }
 
-    // Normalize Playnite boolean-like fields to real booleans so toggles
-    // persist as true/false instead of enabled/disabled strings.
-    const playniteBoolKeys = [
-      'playnite_auto_sync',
-      'playnite_sync_all_installed',
-      'playnite_autosync_require_replacement',
-      'playnite_autosync_remove_uninstalled',
-      'playnite_focus_exit_on_first',
-      'playnite_fullscreen_entry_enabled',
-    ];
-    // Extend boolean normalization to cover RTSS enable flag
-    const otherBoolKeys = [
+    // Normalize boolean-like fields to real booleans so toggles persist as
+    // true/false instead of enabled/disabled strings.
+    const allBoolKeys = [
       'frame_limiter_enable',
       'frame_limiter_disable_vsync',
       'dd_use_sunshine_virtual_display_driver',
@@ -677,7 +642,6 @@ export const useConfigStore = defineStore('config', () => {
       'rtx_hdr',
       'rtx_hdr_force_sdr',
     ];
-    const allBoolKeys = playniteBoolKeys.concat(otherBoolKeys);
     const toBool = (v: any): boolean | null => {
       if (v === true || v === false) return v;
       if (v === 1 || v === 0) return !!v;
@@ -703,42 +667,6 @@ export const useConfigStore = defineStore('config', () => {
       (data as Record<string, unknown>)['frame_limiter_disable_vsync'] = true;
     }
 
-    // Normalize Playnite category/exclusion lists to arrays of {id,name}
-    const normalizeIdNameArray = (
-      v: any,
-      treatStringsAsIds: boolean,
-    ): Array<{ id: string; name: string }> => {
-      const out: Array<{ id: string; name: string }> = [];
-      if (Array.isArray(v)) {
-        for (const el of v) {
-          if (el && typeof el === 'object') {
-            const id = String((el as any).id || '');
-            const name = String((el as any).name || '');
-            if (id || name) out.push({ id, name });
-          } else if (typeof el === 'string') {
-            const s = el.trim();
-            if (!s) continue;
-            out.push(treatStringsAsIds ? { id: s, name: '' } : { id: '', name: s });
-          }
-        }
-        return out;
-      }
-      if (typeof v === 'string') {
-        // Try JSON first
-        try {
-          const parsed = JSON.parse(v);
-          return normalizeIdNameArray(parsed, treatStringsAsIds);
-        } catch {}
-        // CSV fallback
-        for (const s of v
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean)) {
-          out.push(treatStringsAsIds ? { id: s, name: '' } : { id: '', name: s });
-        }
-      }
-      return out;
-    };
     const normalizeStringArray = (v: any): string[] => {
       if (Array.isArray(v)) {
         return v.map((item) => String(item ?? '').trim()).filter((item) => item.length > 0);
@@ -760,30 +688,6 @@ export const useConfigStore = defineStore('config', () => {
     };
     if (data) {
       const record = data as Record<string, unknown>;
-      if (Object.prototype.hasOwnProperty.call(record, 'playnite_sync_categories')) {
-        record['playnite_sync_categories'] = normalizeIdNameArray(
-          record['playnite_sync_categories'],
-          false,
-        );
-      }
-      if (Object.prototype.hasOwnProperty.call(record, 'playnite_sync_plugins')) {
-        record['playnite_sync_plugins'] = normalizeIdNameArray(
-          record['playnite_sync_plugins'],
-          true,
-        );
-      }
-      if (Object.prototype.hasOwnProperty.call(record, 'playnite_exclude_categories')) {
-        record['playnite_exclude_categories'] = normalizeIdNameArray(
-          record['playnite_exclude_categories'],
-          false,
-        );
-      }
-      if (Object.prototype.hasOwnProperty.call(record, 'playnite_exclude_games')) {
-        record['playnite_exclude_games'] = normalizeIdNameArray(
-          record['playnite_exclude_games'],
-          true,
-        );
-      }
       if (Object.prototype.hasOwnProperty.call(record, 'dd_snapshot_exclude_devices')) {
         record['dd_snapshot_exclude_devices'] = normalizeStringArray(
           record['dd_snapshot_exclude_devices'],

@@ -43,14 +43,6 @@ async function setupHost(page: Page, options: HostOptions = {}) {
       saves.push(saved);
       apps = [saved];
       body = { status: true };
-    } else if (path === '/api/playnite/status') {
-      body = { installed: true, active: false };
-    } else if (path === '/api/steam/status') {
-      body = { enabled: true, available: true };
-    } else if (path === '/api/steam/games' || path === '/api/playnite/games') {
-      body = [];
-    } else if (path === '/api/lutris/games') {
-      body = { enabled: false, games: [] };
     } else if (path === '/api/config') {
       body = { capture: 'wgc' };
     } else if (path === '/api/rtss/status') {
@@ -111,33 +103,21 @@ test('existing application without lifecycle keys gets v1 defaults and saves cha
   });
 });
 
-test('existing application preserves explicit false and zero, and saves both LS profiles', async ({
+test('existing application preserves explicit false and zero, and retired fields', async ({
   page,
 }) => {
   const saves = await setupHost(page, {
     apps: [
       {
         uuid: appUuid,
-        name: 'Profile parity app',
+        name: 'Retired fields app',
         cmd: 'C:\\Games\\game.exe',
         'auto-detach': false,
         'wait-all': false,
         'exit-timeout': 0,
-        'lossless-scaling-enabled': true,
         'frame-generation-mode': 'lossless-scaling',
         'lossless-scaling-target-fps': 120,
-        'lossless-scaling-rtss-limit': 60,
-        'lossless-scaling-profile': 'custom',
-        'lossless-scaling-recommended': {
-          'performance-mode': true,
-          'flow-scale': 55,
-          'future-profile-field': 'preserve-me-too',
-        },
-        'lossless-scaling-custom': {
-          'scaling-type': 'ls1',
-          'resolution-scale': 80,
-          sharpening: 7,
-        },
+        'playnite-id': 'retired-game',
         'future-field': 'preserve-me',
       },
     ],
@@ -146,81 +126,20 @@ test('existing application preserves explicit false and zero, and saves both LS 
   await expect(page.locator('#app-auto-detach')).not.toBeChecked();
   await expect(page.locator('#app-wait-all')).not.toBeChecked();
   await expect(page.locator('#app-exit-timeout')).toHaveValue('0');
-  await expect(page.locator('#app-lossless-scaling-mode')).toHaveValue('ls1');
-  await page.getByRole('button', { name: 'Percent', exact: true }).click();
-  await expect(page.locator('#app-lossless-resolution-percent')).toHaveValue('80');
-  await page.getByRole('button', { name: 'Scale Factor', exact: true }).click();
-  await expect(page.locator('#app-lossless-resolution-factor')).toHaveValue('1.25');
-  await expect(page.locator('#app-lossless-sharpening')).toHaveValue('7');
-
-  await page.locator('#app-lossless-enabled').uncheck();
-  await expect(page.locator('#app-lossless-scaling-mode')).toHaveValue('ls1');
-  await page.locator('#app-lossless-enabled').check();
-  await page.locator('input[type="radio"][value="recommended"]').check();
-  await expect(page.locator('#app-lossless-flow-scale')).toHaveValue('55');
-  await page.locator('input[type="radio"][value="custom"]').check();
-  await expect(page.locator('#app-lossless-flow-scale')).toHaveValue('50');
-  await expect(page.locator('#app-lossless-scaling-mode')).toHaveValue('ls1');
-  await page.getByRole('button', { name: 'Reset to Profile Defaults' }).click();
+  // The host treats the retired Lossless Scaling provider as frame generation off.
+  await expect(page.locator('#app-frame-mode')).toHaveValue('off');
+  await page.locator('#app-exclude-global-prep').check();
   await page.getByRole('button', { name: 'Save application', exact: true }).last().click();
   await expect.poll(() => saves.length).toBe(1);
   expect(saves[0]).toMatchObject({
     'auto-detach': false,
     'wait-all': false,
     'exit-timeout': 0,
+    'frame-generation-mode': 'off',
     'future-field': 'preserve-me',
-    'lossless-scaling-recommended': {
-      'performance-mode': true,
-      'flow-scale': 55,
-      'future-profile-field': 'preserve-me-too',
-    },
+    'lossless-scaling-target-fps': 120,
+    'playnite-id': 'retired-game',
   });
-  expect(Object.prototype.hasOwnProperty.call(saves[0], 'lossless-scaling-custom')).toBe(false);
-});
-
-test('Lossless Scaling preserves explicit zero numeric overrides', async ({ page }) => {
-  const saves = await setupHost(page, {
-    apps: [
-      {
-        uuid: appUuid,
-        name: 'Zero override app',
-        'lossless-scaling-enabled': true,
-        'frame-generation-mode': 'lossless-scaling',
-        'lossless-scaling-custom': { 'flow-scale': 25 },
-        'lossless-scaling-profile': 'custom',
-      },
-    ],
-  });
-  await page.goto(`/v2/library/${appUuid}`);
-  await page.locator('#app-lossless-flow-scale').fill('0');
-  await page.locator('#app-lossless-target-fps').fill('0');
-  await page.locator('#app-lossless-launch-delay').fill('0');
-  await page.getByRole('button', { name: 'Save application', exact: true }).last().click();
-  await expect.poll(() => saves.length).toBe(1);
-  expect(saves[0]).toMatchObject({
-    'lossless-scaling-target-fps': 0,
-    'lossless-scaling-launch-delay': 0,
-    'lossless-scaling-custom': { 'flow-scale': 0 },
-  });
-});
-
-test('managed applications keep provider gating', async ({ page }) => {
-  await setupHost(page, {
-    apps: [
-      {
-        uuid: appUuid,
-        name: 'Managed app',
-        'playnite-id': 'managed-game',
-        'playnite-managed': 'auto',
-      },
-    ],
-  });
-  await page.goto(`/v2/library/${appUuid}`);
-  await expect(page.locator('#app-auto-detach')).toHaveCount(0);
-  await expect(page.locator('#app-wait-all')).toHaveCount(0);
-  await expect(page.locator('#app-elevated')).toHaveCount(0);
-  await expect(page.locator('#app-exclude-global-prep')).toBeVisible();
-  await expect(page.locator('#app-exit-timeout')).toHaveValue('10');
 });
 
 test('Linux applications hide Windows-only controls', async ({ page }) => {
@@ -231,56 +150,4 @@ test('Linux applications hide Windows-only controls', async ({ page }) => {
   await page.goto(`/v2/library/${appUuid}`);
   await expect(page.locator('#app-auto-detach')).toBeVisible();
   await expect(page.locator('#app-elevated')).toHaveCount(0);
-  await expect(page.locator('.lossless-editor')).toHaveCount(0);
-});
-
-test('Lossless Scaling controls remain usable at desktop and mobile widths', async ({ page }) => {
-  await setupHost(page, {
-    apps: [
-      {
-        uuid: appUuid,
-        name: 'Responsive LS app',
-        'lossless-scaling-enabled': true,
-        'frame-generation-mode': 'lossless-scaling',
-      },
-    ],
-  });
-  await page.goto(`/v2/library/${appUuid}`);
-  await expect(page.getByRole('heading', { name: 'Lossless Scaling', exact: true })).toBeVisible();
-  const losslessPanel = page.locator('.lossless-editor');
-  const launchGroup = page.locator('.lossless-editor__group').last();
-  await losslessPanel.scrollIntoViewIfNeeded();
-  await page.screenshot({
-    path: '/tmp/vibeshine-application-review/application-parity-desktop.png',
-    animations: 'disabled',
-    fullPage: false,
-  });
-  await launchGroup.scrollIntoViewIfNeeded();
-  await page.screenshot({
-    path: '/tmp/vibeshine-application-review/application-parity-desktop-launch.png',
-    animations: 'disabled',
-    fullPage: false,
-  });
-  await page.setViewportSize({ width: 390, height: 1000 });
-  await expect(page.locator('html')).toHaveAttribute('lang', 'en');
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await losslessPanel.scrollIntoViewIfNeeded();
-  const panelBox = await losslessPanel.boundingBox();
-  expect(panelBox).not.toBeNull();
-  expect(panelBox!.x).toBeGreaterThanOrEqual(0);
-  expect(panelBox!.x + panelBox!.width).toBeLessThanOrEqual(390);
-  expect(
-    await losslessPanel.evaluate((element) => element.scrollWidth <= element.clientWidth),
-  ).toBe(true);
-  await page.screenshot({
-    path: '/tmp/vibeshine-application-review/application-parity-mobile.png',
-    animations: 'disabled',
-    fullPage: false,
-  });
-  await launchGroup.scrollIntoViewIfNeeded();
-  await page.screenshot({
-    path: '/tmp/vibeshine-application-review/application-parity-mobile-launch.png',
-    animations: 'disabled',
-    fullPage: false,
-  });
 });

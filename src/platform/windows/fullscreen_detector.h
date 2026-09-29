@@ -34,7 +34,7 @@ namespace platf::fullscreen_detector {
 
   /**
    * Reconcile fullscreen evidence as an ordered positive-detection chain:
-   *  1. A full-monitor window attributed to the launched/Playnite game.
+   *  1. A full-monitor window attributed to the launched game.
    *  2. The Windows Shell's display-scoped "rude app" activation feed.
    *  3. The Shell's session-wide exclusive-D3D notification state.
    *  4. Generic opaque borderless geometry covering the capture monitor.

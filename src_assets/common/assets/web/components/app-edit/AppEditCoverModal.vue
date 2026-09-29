@@ -12,7 +12,6 @@ const props = defineProps<{
   candidates: CoverCandidate[];
   error: string;
   query: string;
-  playniteManaged: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -132,14 +131,6 @@ onBeforeUnmount(() => hideDialog(false));
             :disabled="busy || !query.trim()"
           />
         </form>
-
-        <InlineAlert
-          v-if="playniteManaged"
-          tone="warning"
-          :title="t('ui.application.coverPicker.playniteTitle')"
-        >
-          {{ t('ui.application.coverPicker.playniteWarning') }}
-        </InlineAlert>
 
         <InlineAlert
           v-if="error"

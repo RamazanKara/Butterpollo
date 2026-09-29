@@ -335,7 +335,6 @@ namespace platf::fullscreen_detector {
 
   result_t detect(const foreground_app::state_t &foreground, const RECT &capture_rect) {
     const bool attributed_game_window =
-      foreground.source == "playnite-visible" ||
       foreground.source == "process-visible" ||
       (foreground.source == "fullscreen-visible" &&
        foreground.tracks_active_app_window);

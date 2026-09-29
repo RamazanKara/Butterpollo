@@ -222,7 +222,6 @@ import Inputs from '@/configs/tabs/Inputs.vue';
 import Network from '@/configs/tabs/Network.vue';
 import Files from '@/configs/tabs/Files.vue';
 import Advanced from '@/configs/tabs/Advanced.vue';
-import Playnite from '@/configs/tabs/Playnite.vue';
 import AudioVideo from '@/configs/tabs/AudioVideo.vue';
 import Capture from '@/configs/tabs/Capture.vue';
 import RealtimeStats from '@/configs/tabs/RealtimeStats.vue';
@@ -281,7 +280,6 @@ const tabs = [
   { id: 'files', name: 'settings.tabs.files', component: markRaw(Files) },
   { id: 'advanced', name: 'settings.tabs.advanced', component: markRaw(Advanced) },
   { id: 'stats', name: 'navbar.stats', component: markRaw(RealtimeStats) },
-  { id: 'playnite', name: 'navbar.playnite', component: markRaw(Playnite) },
 ];
 
 const tabsFiltered = computed(() =>

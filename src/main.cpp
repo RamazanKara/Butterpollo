@@ -38,10 +38,6 @@
 #include "video.h"
 #include "session_history.h"
 #include "state_storage.h"
-#include "steam_auto_sync.h"
-#ifdef __linux__
-  #include "lutris_auto_sync.h"
-#endif
 #include "webrtc_stream.h"
 #ifdef _WIN32
   #include <shobjidl.h>
@@ -49,7 +45,6 @@
   #include "src/display_helper_integration.h"
   #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/misc.h"
-  #include "src/platform/windows/playnite_integration.h"
   #include "src/platform/windows/rtss_integration.h"
   #include "src/platform/windows/startup_encoder_probe_policy.h"
   #include "src/platform/windows/virtual_display.h"
@@ -722,20 +717,6 @@ int main(int argc, char *argv[]) {
   });
 #endif
 
-  // Steam's catalog can change while the server is running. The watcher is
-  // started after logging/platform initialization and owns its shutdown
-  // thread independently of the task pool.
-  platf::steam::autosync::start();
-  auto steam_autosync_guard = util::fail_guard([]() {
-    platf::steam::autosync::stop();
-  });
-#ifdef __linux__
-  platf::lutris::autosync::start();
-  auto lutris_autosync_guard = util::fail_guard([]() {
-    platf::lutris::autosync::stop();
-  });
-#endif
-
 #ifdef _WIN32
   // Reconcile the Vulkan HDR implicit-layer registration with the configured preference. This makes
   // the Web UI toggle authoritative over the installer's unconditional registration and self-heals
@@ -959,14 +940,6 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
-#ifdef _WIN32
-  // Start Playnite integration (IPC + handlers)
-  std::unique_ptr<platf::deinit_t> playnite_integration_guard;
-  if (config::playnite.enabled) {
-    playnite_integration_guard = platf::playnite::start();
-  }
-#endif
-
   std::thread configThread {confighttp::start};
 
   // Produce the capability cache before discovery can advertise the service
@@ -1050,13 +1023,6 @@ int main(int argc, char *argv[]) {
   httpThread.join();
   configThread.join();
   rtspThread.join();
-
-#ifdef __linux__
-  platf::lutris::autosync::stop();
-  lutris_autosync_guard.disable();
-#endif
-  platf::steam::autosync::stop();
-  steam_autosync_guard.disable();
 
 #ifdef _WIN32
   // Full process shutdown cannot leave the paused-session watchdog running.

@@ -5,7 +5,6 @@
 #include "game_activity.h"
 
 #include "fullscreen_detector.h"
-#include "playnite_integration.h"
 #include "src/logging.h"
 #include "src/platform/windows/ipc/display_settings_client.h"
 
@@ -121,51 +120,13 @@ namespace platf::game_activity {
           foreground.source == "visibility-unknown") {
         return {};
       }
-      if (foreground.source == "playnite-status" ||
-          foreground.source == "playnite-visible") {
-        return {signal_source_e::playnite, true, foreground.foreground_pid, foreground.foreground_exe};
-      }
       if (foreground.matches_active_app &&
           (foreground.source == "process" ||
-           foreground.source == "process-visible" ||
-           foreground.source == "playnite-cache")) {
+           foreground.source == "process-visible")) {
         return {signal_source_e::tracked_process, true, foreground.foreground_pid, foreground.foreground_exe};
       }
       if (foreground.valid_window && foreground.fullscreen_on_capture_display) {
         return {signal_source_e::fullscreen_foreground, true, foreground.foreground_pid, foreground.foreground_exe};
-      }
-      return {};
-    }
-
-    signal_t playnite_foreground_signal(
-      const foreground_app::state_t &foreground,
-      const std::vector<platf::playnite::active_game_status_t> &active_games
-    ) {
-      if (foreground.source == "desktop-visible" ||
-          foreground.source == "visibility-unknown") {
-        return {};
-      }
-      if (!foreground.valid_window || foreground.foreground_exe.empty()) {
-        return {};
-      }
-
-      // Walk newest-first so a recently started second game wins when Playnite has more
-      // than one running-game claim. A background claim alone never promotes refresh.
-      for (auto game = active_games.rbegin(); game != active_games.rend(); ++game) {
-        if (game->active && foreground_app::playnite_foreground_matches_for_tests(
-                              {},
-                              game->id,
-                              game->exe,
-                              game->install_dir,
-                              foreground.foreground_exe
-                            )) {
-          return {
-            signal_source_e::playnite,
-            true,
-            foreground.foreground_pid,
-            foreground.foreground_exe,
-          };
-        }
       }
       return {};
     }
@@ -220,8 +181,6 @@ namespace platf::game_activity {
 
   const char *source_name(const signal_source_e source) {
     switch (source) {
-      case signal_source_e::playnite:
-        return "playnite";
       case signal_source_e::tracked_process:
         return "tracked-process";
       case signal_source_e::fullscreen_foreground:
@@ -376,9 +335,7 @@ namespace platf::game_activity {
         );
 
         std::vector<signal_t> signals;
-        signals.reserve(3);
-        const auto playnite_games = platf::playnite::get_active_game_statuses();
-        signals.push_back(playnite_foreground_signal(foreground, playnite_games));
+        signals.reserve(1);
         signals.push_back(foreground_signal(foreground));
 
         auto resolved = game_activity_policy::reduce_signals(signals);
@@ -492,10 +449,7 @@ namespace platf::game_activity {
           flap_window_start = now;
           flap_count = 0;
         }
-        const auto base_delay =
-          candidate_high && resolved.source >= signal_source_e::playnite ?
-            0ms :
-            (candidate_high ? HEURISTIC_PROMOTION_DELAY : DEMOTION_DELAY);
+        const auto base_delay = candidate_high ? HEURISTIC_PROMOTION_DELAY : DEMOTION_DELAY;
         const auto required_delay =
           flap_count >= FLAP_THRESHOLD ?
             std::chrono::duration_cast<std::chrono::milliseconds>(base_delay + FLAP_EXTRA_DELAY) :

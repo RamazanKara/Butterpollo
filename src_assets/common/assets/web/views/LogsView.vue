@@ -19,8 +19,6 @@ const { locale, t } = useI18n();
 const logSources = [
   { value: 'sunshine', labelKey: 'troubleshooting.logs_source_sunshine' },
   { value: 'display_helper', labelKey: 'troubleshooting.logs_source_display_helper' },
-  { value: 'playnite', labelKey: 'troubleshooting.logs_source_playnite' },
-  { value: 'playnite_launcher', labelKey: 'troubleshooting.logs_source_playnite_launcher' },
   { value: 'wgc', labelKey: 'troubleshooting.logs_source_wgc' },
 ] as const;
 

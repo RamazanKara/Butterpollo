@@ -35,11 +35,6 @@
         "description": "Choose artwork from the matching IGDB results.",
         "empty": "No matching covers were found. Try adjusting the application name.",
         "errorTitle": "Cover selection unavailable",
-        "playniteTitle": "This changes Playnite metadata",
-        "playniteUpdateError": "Vibepollo downloaded the cover but could not replace this game's cover metadata in Playnite.",
-        "playniteWarning": "Choosing a cover here replaces this game's cover metadata in Playnite.",
-        "pathDisclosure": "Advanced: cover image path",
-        "providerHelp": "Choose replacement artwork without exposing provider-managed file paths.",
         "searchAction": "Search",
         "searchError": "Vibepollo could not search for cover artwork.",
         "searchLabel": "Search for cover artwork",
@@ -139,27 +134,9 @@
           "description": "Apply the application-specific limiter workaround.",
           "label": "Frame-generation limiter fix"
         },
-        "losslessDelay": {
-          "help": "Seconds before Lossless Scaling is applied.",
-          "label": "Launch delay"
-        },
-        "losslessEnabled": {
-          "description": "Launch and manage Lossless Scaling for this application.",
-          "label": "Enable Lossless Scaling"
-        },
-        "losslessFramegen": {
-          "description": "Enable the Lossless Scaling frame-generation path.",
-          "label": "Lossless Scaling frame generation"
-        },
-        "losslessRtss": {
-          "label": "RTSS frame limit"
-        },
-        "losslessTarget": {
-          "label": "Target frame rate"
-        },
         "name": {
-          "help": "Type a custom name or browse games from an available library provider.",
-          "label": "Application or integrated game"
+          "help": "Clients show this name in their application list.",
+          "label": "Application name"
         },
         "output": {
           "label": "Output identifier"
@@ -220,13 +197,11 @@
         },
         "frameMode": {
           "game": "Game-provided",
-          "lossless": "Lossless Scaling",
           "nvidia": "NVIDIA Smooth Motion",
           "off": "Off"
         },
         "frameProvider": {
           "game": "Game-provided frame generation",
-          "lossless": "Lossless Scaling",
           "nvidia": "NVIDIA Smooth Motion"
         },
         "hostDefault": "Use host default",
@@ -275,48 +250,6 @@
         },
         "title": "RTX HDR calibration"
       },
-      "playnite": {
-        "browse": "Browse Playnite games",
-        "empty": "No installed Playnite games match this name.",
-        "linkedHelp": "This entry will launch through its linked Playnite game.",
-        "loadFailed": "Unable to load Playnite games. Check that the Playnite integration is installed and active.",
-        "loading": "Loading Playnite games...",
-        "resultsLabel": "Matching Playnite games",
-        "unavailable": "Playnite game search is unavailable because its integration is not installed or active.",
-        "useCustom": "Use a custom application"
-      },
-      "gamePicker": {
-        "browse": "Browse games",
-        "resultsLabel": "Games from your libraries",
-        "loading": "Loading game libraries...",
-        "empty": "No matching games in your libraries.",
-        "library": "Launch with"
-      },
-      "providers": {
-        "managed": "{provider} managed"
-      },
-      "steam": {
-        "browse": "Browse Steam games",
-        "editNotice": "Vibepollo manages this game's core launch details from Steam metadata. Optional preparation and detached commands remain available under Advanced launch controls.",
-        "empty": "No installed Steam games match this name.",
-        "loadFailed": "Unable to load Steam games. Check that Steam is installed and its libraries are readable.",
-        "loading": "Loading Steam games...",
-        "linkedHelp": "This entry is linked to a Steam game.",
-        "resultsLabel": "Matching Steam games",
-        "unavailable": "Steam game search is unavailable because Steam was not detected or its libraries could not be read.",
-        "useCustom": "Use a custom application"
-      },
-      "lutris": {
-        "browse": "Browse Lutris games",
-        "editNotice": "Vibepollo manages this game's launch command from Lutris metadata. Those generated details stay hidden here; automatic Lutris entries refresh them during sync.",
-        "empty": "No imported Lutris games match this name.",
-        "loadFailed": "Unable to load Lutris games. Check that Lutris is installed and its library is readable.",
-        "loading": "Loading Lutris games...",
-        "linkedHelp": "This entry is linked to a Lutris game.",
-        "resultsLabel": "Matching Lutris games",
-        "unavailable": "Lutris game search is unavailable because Lutris was not detected or its library could not be read.",
-        "useCustom": "Use a custom application"
-      },
       "prep": {
         "after": "Run after exit",
         "before": "Run before launch",
@@ -338,8 +271,6 @@
           "title": "Advanced fields"
         },
         "commands": {
-          "advancedDescription": "Optional preparation and background commands for this integrated game.",
-          "advancedTitle": "Advanced launch controls",
           "description": "Preparation commands run before launch and may be undone after the session.",
           "title": "Preparation and detached commands"
         },
@@ -352,8 +283,7 @@
           "title": "Executable, output, and artwork"
         },
         "frameGeneration": {
-          "description": "Application-specific capture fixes and Lossless Scaling launch policy.",
-          "title": "Frame generation and Lossless Scaling"
+          "title": "Frame generation"
         },
         "identity": {
           "description": "The name clients see and the stable identifier used for safe edits and deletion.",
@@ -519,36 +449,18 @@
     },
     "integrations": {
       "actions": {
-        "disable": "Disable",
         "install": "Install",
         "installDriver": "Install driver",
-        "installExtension": "Install extension",
-        "launchPlaynite": "Launch Playnite",
-        "launchingPlaynite": "Launching Playnite",
-        "enable": "Enable",
-        "purgeAutosync": "Remove auto-synced apps",
         "refreshStatus": "Refresh status",
         "registerLayer": "Register layer",
-        "removeExtension": "Remove extension",
         "repair": "Repair",
         "repairDriver": "Repair driver",
-        "repairRegistration": "Repair registration",
-        "rescan": "Rescan",
-        "update": "Update",
-        "updateExtension": "Update extension"
+        "repairRegistration": "Repair registration"
       },
       "applying": "Applying",
       "checksFailed": "Some integration checks failed",
       "confirm": {
         "defaultTitle": "Confirm integration action",
-        "playniteInstallDescription": "Vibepollo will write its bundled extension into the detected Playnite extensions directory.",
-        "playniteInstallTitle": "Install the Playnite extension?",
-        "playniteRemoveDescription": "Playnite library synchronization will stop until the extension is installed again.",
-        "playniteRemoveTitle": "Remove the Playnite extension?",
-        "playnitePurgeAutosyncDescriptionOne": "There is currently {count} Playnite-managed auto-synced application entry. Confirm to remove auto-synced entries only; manually added apps and other providers are kept.",
-        "playnitePurgeAutosyncDescriptionOther": "There are currently {count} Playnite-managed auto-synced application entries. Confirm to remove auto-synced entries only; manually added apps and other providers are kept.",
-        "playnitePurgeAutosyncTitle": "Remove auto-synced Playnite apps?",
-        "playniteUpdateTitle": "Update the Playnite extension?",
         "vigemDescription": "The bundled elevated installer will modify the virtual controller driver on this host.",
         "vigemInstallTitle": "Install ViGEmBus?",
         "vigemRepairTitle": "Repair ViGEmBus?",
@@ -563,26 +475,6 @@
       "errors": {
         "actionFailed": "The integration action failed.",
         "actionIncomplete": "The integration action did not complete.",
-        "losslessStatus": "Lossless Scaling status is unavailable.",
-        "mangohudStatus": "MangoHUD status is unavailable.",
-        "mangohudUpdateFailed": "Unable to update MangoHUD settings.",
-        "lutrisStatus": "Lutris status is unavailable.",
-        "lutrisGames": "Lutris games are unavailable.",
-        "lutrisSyncFailed": "Unable to synchronize Lutris.",
-        "lutrisSyncRejected": "Lutris did not accept the synchronization request.",
-        "playniteStatus": "Playnite status is unavailable.",
-        "playniteApps": "The application library could not be loaded for a safe purge.",
-        "playniteLaunchFailed": "Unable to launch Playnite.",
-        "playniteLaunchRejected": "Playnite did not accept the launch request.",
-        "playnitePurgeFailed": "Unable to remove auto-synced Playnite apps.",
-        "playniteSyncFailed": "Unable to synchronize Playnite.",
-        "playniteSyncRejected": "Playnite did not accept the synchronization request.",
-        "providerUpdateFailed": "Unable to update integration settings.",
-        "steamStatus": "Steam status is unavailable.",
-        "steamGames": "Steam games are unavailable.",
-        "exclusionsUpdateFailed": "Unable to update Steam game exclusions.",
-        "steamSyncFailed": "Unable to synchronize Steam.",
-        "steamSyncRejected": "Steam did not accept the synchronization request.",
         "rtssStatus": "RTSS status is unavailable.",
         "statusLoad": "Status could not be loaded.",
         "vigemStatus": "ViGEmBus status is unavailable.",
@@ -594,49 +486,18 @@
       },
       "installedIntegrations": "Installed integrations",
       "loadingStatus": "Loading integration status",
-      "lossless": {
-        "description": "Optional application scaling and frame-generation integration.",
-        "name": "Lossless Scaling",
-        "pathIsDirectory": "Configured path is a folder",
-        "pathNotFound": "Configured path not found",
-        "shortDescription": "Scaling and frame-generation launch support."
-      },
       "notices": {
-        "playniteAutosyncPurgedOne": "Removed {count} Playnite-managed auto-synced application entry.",
-        "playniteAutosyncPurgedOther": "Removed {count} Playnite-managed auto-synced application entries.",
-        "playniteInstalled": "The Playnite extension was installed.",
-        "playniteLaunched": "Playnite launch requested.",
-        "playniteRemoved": "The Playnite extension was removed.",
-        "playniteSynced": "Playnite synchronization completed.",
-        "mangohudUpdated": "MangoHUD settings updated.",
-        "lutrisSynced": "Lutris synchronization completed.",
-        "lutrisExclusionsUpdated": "Lutris game exclusions updated.",
-        "providerUpdated": "Integration settings updated.",
-        "exclusionsUpdated": "Steam game exclusions updated.",
-        "steamSynced": "Steam synchronization completed.",
         "vigemCompleted": "The ViGEmBus installer completed.",
         "vulkanRefreshed": "The Vulkan HDR layer registration was refreshed."
-      },
-      "playnite": {
-        "description": "Synchronizes installed games and metadata through the Vibepollo extension.",
-        "shortDescription": "Library synchronization and launch integration.",
-        "policies_title": "Library and launch policies"
       },
       "mangohud": {
         "alwaysShowGraph": "Always show frame-time graph",
         "alwaysShowGraphDescription": "Keep the MangoHud overlay visible and include its live frame-time graph for every managed launch.",
-        "alwaysLimit": "Always limit rendered frames",
-        "alwaysLimitDescription": "Apply the selected Linux limiter to every game launched during a stream. Automatic virtual-screen pacing can still request a limiter when this is off.",
-        "description": "Linux game frame limiting and optional MangoHUD telemetry.",
-        "fixedLimit": "Fixed limit: {fps} FPS",
-        "fpsLimit": "Frame-rate limit",
-        "fpsLimitDescription": "Use 0 to follow the client stream rate, or enter a fixed limit with up to three decimal places.",
         "limiterMethod": "MangoHUD limiter timing",
         "limiterMethodDescription": "Only applies when MangoHUD owns the limit. Early waits before presentation for smoother pacing with more latency. Late waits after presentation for lower latency, but cannot limit frame-generated output. The Proton limiter supports frame generation.",
         "limiterMethodEarly": "Early — smoother pacing, more latency",
         "limiterMethodLate": "Late — lower latency, no frame-generation limiting",
         "name": "MangoHUD",
-        "overlayMissing": "Proton ready · MangoHUD overlay missing",
         "overlayPreset": "Metrics and layout",
         "overlayPresetDescription": "Choose one of MangoHud's standard metric layouts, or keep the metrics from your MangoHud configuration.",
         "presetCustom": "Use MangoHud configuration",
@@ -645,96 +506,7 @@
         "presetFpsOnly": "FPS only",
         "presetHorizontal": "Horizontal",
         "provider": "Limiter provider",
-        "providerAuto": "Automatic — Proton limiter + MangoHUD overlay",
-        "providerDescription": "Automatic uses Proton's built-in DXVK or vkd3d-proton limiter and keeps the MangoHUD overlay visible. On native Linux, games started through supported Proton installations while streaming are also covered when launched outside Vibepollo. Start the stream before the game; running games retain their launch-time limit. Proton supports frame-generated output. Choose MangoHUD for early or late limiter timing.",
-        "providerMangoHud": "MangoHUD",
-        "providerMangoHudProton": "MangoHUD + Proton",
-        "providerProton": "Proton DXVK/VKD3D",
-        "providerNone": "None",
-        "settingsDescription": "Choose the limiter, whether MangoHUD remains visible, and how the frame limit is calculated.",
-        "settingsTitle": "Frame-limiter settings",
-        "streamLimit": "Limit follows the client stream rate"
-      },
-      "steam": {
-        "advancedSettings": "Advanced discovery settings",
-        "appId": "Steam app {id}",
-        "autoSync": "Synchronize installed games automatically",
-        "autoSyncDescription": "Keep installed Steam games synchronized with the streaming library.",
-        "syncAllInstalled": "Synchronize all installed games",
-        "syncAllInstalledDescription": "When disabled, synchronize only the most recently played installed games.",
-        "recentGames": "Recently played games",
-        "recentGamesDescription": "Maximum number of installed games selected by their Steam LastPlayed timestamp. Set to 0 to disable recent synchronization.",
-        "recentMaxAge": "Recent-game maximum age",
-        "recentMaxAgeDescription": "Ignore games last played more than this many days ago. Set to 0 for no age limit.",
-        "gamesUnit": "games",
-        "daysUnit": "days",
-        "description": "Discovers installed games from local Steam libraries.",
-        "excludeGame": "Exclude {name} from automatic synchronization",
-        "exclude": "Exclude",
-        "excluded": "Excluded",
-        "excludedCount": "{count} excluded",
-        "excludeResults": "Exclude results",
-        "exclusionsDescription": "Excluded games remain available for manual applications but are not added by Steam auto-sync.",
-        "exclusionsTitle": "Excluded games",
-        "filteredTool": "Filtered by app type",
-        "filterGames": "Filter games",
-        "filters": {
-          "all": "All games",
-          "excluded": "Excluded",
-          "included": "Included"
-        },
-        "forced": "Enabled (Linux policy)",
-        "gameCount": "{count} installed games",
-        "includeTools": "Advanced: include tools and runtimes",
-        "includeToolsDescription": "Also import Proton runtimes, redistributables, DLC, and other non-game Steam app types.",
-        "include": "Include",
-        "included": "Included",
-        "includeResults": "Include results",
-        "importableCount": "{count} selected for synchronization",
-        "loadingGames": "Loading discovered Steam games...",
-        "linuxForced": "Steam is required on Linux.",
-        "manageGames": "Choose synchronized games",
-        "name": "Steam",
-        "noGames": "No Steam games were discovered.",
-        "noMatchingGames": "No games match this search and filter.",
-        "policyDescription": "Control automatic library updates and advanced Steam discovery behavior.",
-        "policyTitle": "Synchronization policy",
-        "removeUninstalled": "Remove uninstalled games automatically",
-        "removeUninstalledDescription": "When synchronizing all installed games, remove managed applications when their game is no longer installed. Recent-only synchronization always removes games that leave the selected set.",
-        "resultCount": "{count} results",
-        "searchGames": "Search games or app IDs...",
-        "selectionDescription": "Exclude games from automatic synchronization without removing them from your Steam library.",
-        "selectionTitle": "Choose synchronized games",
-        "synchronizedCount": "{count} synchronized",
-        "unknownGame": "Steam game {id}"
-      },
-      "lutris": {
-        "advancedSettings": "Advanced provider overlap",
-        "autoSync": "Synchronize installed games automatically",
-        "autoSyncDescription": "Keep installed Lutris games synchronized with the streaming library.",
-        "description": "Discovers non-Steam games and launchers from your local Lutris library.",
-        "excludedCount": "{count} excluded",
-        "exclusionsDescription": "Excluded games stay in Lutris but are not added to Vibepollo automatically.",
-        "exclusionsTitle": "Excluded games",
-        "filterGames": "Filter games",
-        "gameCount": "{count} installed games",
-        "gameMetadata": "Lutris game {id} · {runner}",
-        "importableCount": "{count} selected for synchronization",
-        "includeSteam": "Include Steam-backed Lutris entries",
-        "includeSteamDescription": "Off is recommended: Steam imports its own games directly. If enabled, direct Steam entries still win and duplicates are removed.",
-        "loadingGames": "Loading discovered Lutris games...",
-        "name": "Lutris",
-        "noGames": "No installed Lutris games were discovered.",
-        "noMatchingGames": "No games match this search and filter.",
-        "policyDescription": "Use Lutris for non-Steam titles while Steam remains authoritative for its own catalog.",
-        "policyTitle": "Synchronization policy",
-        "removeUninstalled": "Remove uninstalled games automatically",
-        "removeUninstalledDescription": "Remove Lutris-managed applications when their game is no longer installed.",
-        "resultCount": "{count} results",
-        "searchGames": "Search games, runners, or Lutris IDs...",
-        "steamGame": "handled by Steam by default",
-        "steamHandledBySteam": "{count} Steam games left to the Steam integration",
-        "unknownGame": "Lutris game {id}"
+        "providerAuto": "Automatic — Proton limiter + MangoHUD overlay"
       },
       "refreshing": "Refreshing",
       "rtss": {
@@ -744,23 +516,16 @@
         "shortDescription": "Frame limiting and pacing integration."
       },
       "status": {
-        "detected": "Detected",
-        "installationUnknown": "Installation unknown",
-        "notConfigured": "Not configured",
         "notDetected": "Not detected",
         "notInstalled": "Not installed",
         "notRequired": "Not required",
         "ready": "Ready",
         "repairNeeded": "Repair needed",
         "unavailable": "Unavailable",
-        "updateAvailable": "Update available",
         "updateRequired": "Update required",
         "windowsOnly": "Windows only"
       },
-      "syncing": "Syncing",
-      "saved": "All changes saved",
       "title": "Integrations",
-      "unsavedChanges": "Unsaved changes",
       "updated": "Integration updated",
       "vigem": {
         "description": "Provides virtual Xbox and DualShock controllers to streamed applications.",
@@ -784,10 +549,8 @@
         "editLabel": "Edit {name}",
         "menuLabel": "Actions for {name}",
         "moreLabel": "More actions for {name}",
-        "removePlaynite": "Remove Playnite entries",
         "showMore": "Show more",
-        "tryAgain": "Try again",
-        "sources": "Manage sources"
+        "tryAgain": "Try again"
       },
       "alerts": {
         "unavailable": "Library unavailable"
@@ -834,21 +597,8 @@
         "description": "Your games and applications, ready for your next stream.",
         "title": "Library"
       },
-      "purgePlaynite": {
-        "busy": "Removing Playnite entries",
-        "confirm": "Remove Playnite entries",
-        "descriptionOne": "There is currently {count} Playnite-linked application entry. Confirm to remove Playnite entries, including manual Playnite entries and the Playnite fullscreen launcher. Steam, Lutris, custom, and other applications are kept.",
-        "descriptionOther": "There are currently {count} Playnite-linked application entries. Confirm to remove Playnite entries, including manual Playnite entries and the Playnite fullscreen launcher. Steam, Lutris, custom, and other applications are kept.",
-        "errorTitle": "Playnite removal failed",
-        "failed": "One or more Playnite entries could not be removed.",
-        "title": "Remove Playnite entries?"
-      },
       "progress": {
         "shown": "{visible} of {total} shown"
-      },
-      "providers": {
-        "custom": "Custom",
-        "managed": "{provider} managed"
       },
       "result": {
         "many": "{count} applications",
@@ -869,8 +619,7 @@
         "configured": "Configured order",
         "label": "Sort applications",
         "nameAsc": "Name, A to Z",
-        "nameDesc": "Name, Z to A",
-        "provider": "Provider"
+        "nameDesc": "Name, Z to A"
       },
       "unnamed": "Unnamed application",
       "view": {
@@ -1734,14 +1483,6 @@
         "frame_limiter_fps_limit": {
           "description": "0 follows the stream rate. A nonzero value also replaces the automatically calculated virtual-screen limit."
         },
-        "lossless_scaling_legacy_auto_detect": {
-          "description": "Use the legacy timer-based detection path only if the normal Lossless Scaling hotkey path is unavailable.",
-          "label": "Use legacy Lossless Scaling detection"
-        },
-        "lossless_scaling_path": {
-          "description": "Leave blank to detect LosslessScaling.exe automatically. Choose a detected installation or enter the full executable path to pin one.",
-          "label": "Lossless Scaling executable"
-        },
         "output_name": {
           "description": "Leave blank to let Vibepollo choose the display. Otherwise use an exact device name."
         },
@@ -1784,25 +1525,9 @@
       },
       "integrations": {
         "automatic_path_hint": "This path was detected on the host. It is not saved until you choose “Save detected path”; leaving it this way keeps automatic detection.",
-        "browse_computer": "This PC",
-        "browse_description": "Choose an executable from the host filesystem. Use the selection to update this draft, then save settings to apply it.",
-        "browse_empty": "This folder has no executable files or folders.",
-        "browse_entries": "Host filesystem entries",
-        "browse_executable": "Executable",
-        "browse_failed": "The host folder could not be read.",
-        "browse_folder": "Folder",
-        "browse_host": "Browse host",
-        "browse_host_hint": "Choose LosslessScaling.exe from the host. Browser-local files are not used.",
-        "browse_loading": "Reading host folder…",
-        "browse_parent": "Parent folder",
-        "browse_path": "Host folder",
-        "browse_selected": "Selected executable: {path}",
-        "browse_title": "Choose Lossless Scaling executable",
         "browse_detected": "Browse detected paths",
         "checking": "Checking…",
         "checking_description": "Checking the host for a usable installation.",
-        "choose_detected": "Choose a detected installation",
-        "detected_installations": "Detected installations",
         "explicit_path_hint": "This path is saved as an explicit installation override. Clear it to return to automatic detection.",
         "hide_detected": "Hide detected paths",
         "needs_attention": "Needs attention",
@@ -1813,13 +1538,6 @@
         "status_unavailable": "Status unavailable",
         "status_unavailable_description": "The host could not report installation status. You can still enter a path manually.",
         "use_detected": "Save detected path",
-        "use_selected": "Use selected path",
-        "lossless": {
-          "not_detected": "Lossless Scaling was not found. Install it from Steam or enter the full path to LosslessScaling.exe.",
-          "path_is_directory": "The selected path is a folder. Choose LosslessScaling.exe itself.",
-          "path_missing": "The configured Lossless Scaling executable was not found. Choose another detected installation or clear the path to resume automatic detection.",
-          "ready": "Lossless Scaling was found and is ready for in-process frame generation."
-        },
         "rtss": {
           "active": "RTSS is active for the current stream.",
           "auto": "RTSS is installed and ready. Automatic selection will prefer it for frame pacing.",
@@ -1925,7 +1643,7 @@
           "title": "Capture method"
         },
         "pacing_integrations": {
-          "description": "Paths and behavior for RTSS and Lossless Scaling.",
+          "description": "Paths and behavior for RTSS.",
           "title": "Pacing integrations"
         },
         "pacing_limiter": {

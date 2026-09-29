@@ -33,9 +33,6 @@
             <i class="fas fa-search" /> {{ $t('apps.cover_search_action') }}
           </n-button>
         </form>
-        <n-alert v-if="playniteManaged" type="warning" :show-icon="true">
-          {{ $t('apps.playnite_cover_replace_warning') }}
-        </n-alert>
         <n-alert v-if="coverError" type="error" :show-icon="true">
           {{ coverError }}
         </n-alert>
@@ -92,7 +89,6 @@ const rawProps = defineProps<{
   coverBusy: boolean;
   coverCandidates: CoverCandidate[];
   searchQuery: string;
-  playniteManaged: boolean;
   coverError: string;
 }>();
 
@@ -103,13 +99,6 @@ const emit = defineEmits<{
   (e: 'pick', cover: CoverCandidate): void;
 }>();
 
-const {
-  visible,
-  coverSearching,
-  coverBusy,
-  coverCandidates,
-  searchQuery,
-  playniteManaged,
-  coverError,
-} = toRefs(rawProps);
+const { visible, coverSearching, coverBusy, coverCandidates, searchQuery, coverError } =
+  toRefs(rawProps);
 </script>

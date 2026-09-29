@@ -8,8 +8,6 @@ export const extendedDefaults: Record<string, unknown> = {
   amd_smart_access_video: 'auto',
   amd_lowlatency_mode: 'auto',
   amd_high_motion_quality_boost: 'auto',
-  playnite_install_dir: '',
-  playnite_extensions_dir: '',
 
   nvenc_intra_refresh: 'disabled',
   nvenc_preset: 1,
@@ -68,17 +66,6 @@ export const extendedDefaults: Record<string, unknown> = {
   rtx_hdr_middle_gray: 50,
   rtx_hdr_contrast: 0,
   rtx_hdr_saturation: 0,
-  playnite_auto_sync: true,
-  playnite_sync_all_installed: false,
-  playnite_recent_games: 10,
-  playnite_recent_max_age_days: 0,
-  playnite_autosync_delete_after_days: 0,
-  playnite_autosync_require_replacement: true,
-  playnite_autosync_remove_uninstalled: true,
-  playnite_focus_attempts: 3,
-  playnite_focus_timeout_secs: 15,
-  playnite_focus_exit_on_first: false,
-  playnite_fullscreen_entry_enabled: false,
 };
 
 export function extendedField(key: string, extra: Partial<SettingsField> = {}): SettingsField {
@@ -161,12 +148,3 @@ export const advancedEncoderGroups: SettingsGroup[] = Object.entries(encoderFami
       ),
   }),
 );
-
-export const playnitePolicyFields = Object.keys(extendedDefaults)
-  .filter((key) => key.startsWith('playnite_'))
-  .map((key) =>
-    extendedField(key, {
-      platform: 'windows',
-      ...(typeof extendedDefaults[key] === 'number' ? { min: 0, step: 1 } : {}),
-    }),
-  );

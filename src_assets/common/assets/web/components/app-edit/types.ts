@@ -4,24 +4,7 @@ export interface PrepCmd {
   elevated?: boolean;
 }
 
-export type LosslessProfileKey = 'recommended' | 'custom';
-
-export type LosslessScalingMode =
-  | 'off'
-  | 'ls1'
-  | 'fsr'
-  | 'nis'
-  | 'sgsr'
-  | 'bcas'
-  | 'anime4k'
-  | 'xbr'
-  | 'sharp-bilinear'
-  | 'integer'
-  | 'nearest';
-
-export type Anime4kSize = 'S' | 'M' | 'L' | 'VL' | 'UL';
-
-export type FrameGenerationProvider = 'lossless-scaling' | 'nvidia-smooth-motion' | 'game-provided';
+export type FrameGenerationProvider = 'nvidia-smooth-motion' | 'game-provided';
 export type FrameGenerationMode = 'off' | FrameGenerationProvider;
 export type AppVirtualDisplayMode = 'disabled' | 'per_client' | 'shared';
 export type RtxHdrMode = 'inherit' | 'enabled' | 'disabled';
@@ -32,26 +15,6 @@ export type AppVirtualDisplayLayout =
   | 'extended_isolated'
   | 'extended_primary_isolated';
 
-export interface LosslessProfileOverrides {
-  performanceMode: boolean | null;
-  flowScale: number | null;
-  resolutionScale: number | null;
-  scalingMode: LosslessScalingMode | null;
-  sharpening: number | null;
-  anime4kSize: Anime4kSize | null;
-  anime4kVrs: boolean | null;
-}
-
-export interface LosslessProfileDefaults {
-  performanceMode: boolean;
-  flowScale: number;
-  resolutionScale: number;
-  scalingMode: LosslessScalingMode;
-  sharpening: number;
-  anime4kSize: Anime4kSize;
-  anime4kVrs: boolean;
-}
-
 export interface AppForm {
   index: number;
   uuid?: string;
@@ -60,7 +23,6 @@ export interface AppForm {
   cmd: string;
   workingDir: string;
   imagePath: string;
-  playniteIconPath: string;
   excludeGlobalPrepCmd: boolean;
   excludeGlobalStateCmd: boolean;
   configOverrides: Record<string, unknown>;
@@ -83,13 +45,6 @@ export interface AppForm {
   virtualDisplayLayout: AppVirtualDisplayLayout | null;
   frameGenerationProvider: FrameGenerationProvider;
   frameGenerationMode: FrameGenerationMode;
-  losslessScalingEnabled: boolean;
-  losslessScalingTargetFps: number | null;
-  losslessScalingRtssLimit: number | null;
-  losslessScalingRtssTouched: boolean;
-  losslessScalingProfile: LosslessProfileKey;
-  losslessScalingProfiles: Record<LosslessProfileKey, LosslessProfileOverrides>;
-  losslessScalingLaunchDelay: number | null;
   rtxHdrMode: RtxHdrMode;
   rtxHdrValuesOverride: boolean;
   rtxHdrForceSdr: boolean;
@@ -97,21 +52,6 @@ export interface AppForm {
   rtxHdrMiddleGray: number;
   rtxHdrContrast: number;
   rtxHdrSaturation: number;
-  playniteId?: string | undefined;
-  playniteManaged?: 'manual' | string | undefined;
-  'steam-id'?: string | undefined;
-  'steam-managed'?: 'auto' | 'manual' | string | undefined;
-  'steam-source'?: string | undefined;
-  'steam-install-dir'?: string | undefined;
-  'steam-library-path'?: string | undefined;
-  'steam-icon-path'?: string | undefined;
-  'steam-header-path'?: string | undefined;
-  'steam-boxart-path'?: string | undefined;
-  'steam-artwork-path'?: string | undefined;
-  'steam-artwork-client-path'?: string | undefined;
-  'steam-artwork-format'?: string | undefined;
-  'steam-artwork-client-compatible'?: boolean | undefined;
-  'steam-app-type'?: string | undefined;
   ddConfigurationOption?:
     | 'disabled'
     | 'verify_only'
@@ -129,7 +69,6 @@ export interface ServerApp {
   uuid?: string;
   'working-dir'?: string;
   'image-path'?: string;
-  'playnite-icon-path'?: string;
   'exclude-global-prep-cmd'?: boolean;
   'config-overrides'?: Record<string, unknown>;
   elevated?: boolean;
@@ -149,21 +88,11 @@ export interface ServerApp {
   'prep-cmd'?: Array<{ do?: string; undo?: string; elevated?: boolean }>;
   detached?: string[];
   'virtual-screen'?: boolean;
-  'playnite-id'?: string | undefined;
-  'playnite-managed'?: 'manual' | string | undefined;
   'gen1-framegen-fix'?: boolean;
   'gen2-framegen-fix'?: boolean;
   'dlss-framegen-capture-fix'?: boolean;
   'frame-generation-provider'?: string;
   'frame-generation-mode'?: string;
-  'lossless-scaling-enabled'?: boolean;
-  'lossless-scaling-framegen'?: boolean;
-  'lossless-scaling-target-fps'?: number | string | null;
-  'lossless-scaling-rtss-limit'?: number | string | null;
-  'lossless-scaling-profile'?: string;
-  'lossless-scaling-recommended'?: Record<string, unknown>;
-  'lossless-scaling-custom'?: Record<string, unknown>;
-  'lossless-scaling-launch-delay'?: number | string | null;
   'virtual-display-mode'?: string;
   'virtual-display-layout'?: string;
   'dd-configuration-option'?: string;

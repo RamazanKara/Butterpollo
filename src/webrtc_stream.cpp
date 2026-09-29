@@ -2940,8 +2940,6 @@ namespace webrtc_stream {
             metadata.name = app_ctx->name;
             metadata.virtual_screen = app_ctx->virtual_screen;
             metadata.has_command = !app_ctx->cmd.empty();
-            metadata.has_playnite = !app_ctx->playnite_id.empty();
-            metadata.playnite_fullscreen = app_ctx->playnite_fullscreen;
             launch_session->virtual_display = app_ctx->virtual_screen;
             if (!launch_session->virtual_display_mode_override && app_ctx->virtual_display_mode_override) {
               launch_session->virtual_display_mode_override = app_ctx->virtual_display_mode_override;

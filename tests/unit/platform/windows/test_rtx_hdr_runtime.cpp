@@ -49,7 +49,6 @@ TEST(RtxHdrProfileResolution, RtxHdrActivationDecodeUsesEitherNvidiaSignal) { EX
 TEST(RtxHdrProfileResolution, ContrastDecodeIsRawSdkUnits) { EXPECT_EQ(policy::decode_percent_units(100), 100); EXPECT_FALSE(policy::decode_percent_units(201).has_value()); }
 TEST(RtxHdrProfileResolution, SaturationDecodeIsRawSdkUnits) { EXPECT_EQ(policy::decode_percent_units(151), 151); EXPECT_FALSE(policy::decode_percent_units(201).has_value()); }
 TEST(RtxHdrProfileResolution, SdrBrightnessBoostMapsZeroToNeutralWhite) { EXPECT_FLOAT_EQ(policy::sdr_brightness_to_white_nits(-1), 100); EXPECT_FLOAT_EQ(policy::sdr_brightness_to_white_nits(50), 150); EXPECT_FLOAT_EQ(policy::sdr_brightness_to_white_nits(101), 200); }
-TEST(RtxHdrForegroundMatching, PlayniteExecutableAndInstallDirMatch) { EXPECT_TRUE(policy::playnite_foreground_matches("id", "id", "C:/Games/Foo/foo.exe", "C:/Games/Foo", "c:/games/foo/FOO.exe")); EXPECT_TRUE(policy::playnite_foreground_matches("id", "id", "", "C:/Games/Foo", "C:/Games/Foo/Binaries/foo.exe")); EXPECT_FALSE(policy::playnite_foreground_matches("id", "other", "", "C:/Games/Foo", "C:/Games/Foo/foo.exe")); }
 
 namespace {
   policy::foreground_state_t app(std::string exe = "C:/Games/Foo/foo.exe") { return {true, true, exe, exe, "Game", "process"}; }

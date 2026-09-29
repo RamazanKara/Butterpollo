@@ -1035,7 +1035,6 @@ function groupNameFor(groupId: string, fallback: string): string {
     av: 'settings.tabs.audio_video',
     network: 'settings.tabs.network',
     files: 'settings.tabs.files',
-    playnite: 'navbar.playnite',
     advanced: 'settings.tabs.advanced',
     rtss: 'frameLimiter.stepTitle',
     nv: 'config.nvenc_section_title',

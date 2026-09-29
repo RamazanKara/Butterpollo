@@ -156,7 +156,6 @@ foreach(_sunshine_versioned_tool IN ITEMS
         dxgi-info
         audio-info
         sunshinesvc
-        playnite-launcher
         sunshine_wgc_capture
         sunshine_display_helper)
     if(TARGET "${_sunshine_versioned_tool}")
@@ -222,19 +221,6 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display_cleanup.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/hotkey_manager.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/hotkey_manager.cpp"
-        "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_ipc.h"
-        "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_ipc.cpp"
-        "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_protocol.h"
-        "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_protocol.cpp"
-        "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_sync_policy.h"
-        "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_sync_policy.cpp"
-        "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_sync.h"
-        "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_sync.cpp"
-        "${CMAKE_SOURCE_DIR}/src/config_playnite.h"
-        "${CMAKE_SOURCE_DIR}/src/config_playnite_parse.cpp"
-        "${CMAKE_SOURCE_DIR}/src/config_playnite.cpp"
-        "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_integration.h"
-        "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_integration.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/game_activity_policy.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/game_activity_policy.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/foreground_app.h"
@@ -268,16 +254,12 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_limiter.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_limiter_nvcp.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_limiter_nvcp.cpp"
-        "${CMAKE_SOURCE_DIR}/src/platform/windows/lossless_scaling_paths.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/image_convert.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/image_convert.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/rtss_integration.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/rtss_integration.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/ipc_session.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/ipc_session.cpp"
-        "${CMAKE_SOURCE_DIR}/tools/playnite_launcher/focus_utils.cpp"
-        "${CMAKE_SOURCE_DIR}/tools/playnite_launcher/lossless_scaling.cpp"
-        "${CMAKE_SOURCE_DIR}/tools/playnite_launcher/lossless_scaling_policy.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/utf_utils.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/utf_utils.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/vhf_gamepad.h"

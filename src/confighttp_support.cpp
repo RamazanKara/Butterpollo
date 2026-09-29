@@ -1,6 +1,6 @@
 /**
- * @file src/confighttp_playnite.cpp
- * @brief Playnite-specific HTTP endpoints and helpers (Windows-only).
+ * @file src/confighttp_support.cpp
+ * @brief Support log export and crash bundle HTTP endpoints (Windows-only).
  */
 
 #ifdef _WIN32
@@ -36,13 +36,12 @@
   #include <zlib.h>
 
   // local includes
-  #include "config_playnite.h"
   #include "confighttp.h"
   #include "httpcommon.h"
   #include "logging.h"
   #include "log_export.h"
+  #include "src/platform/common.h"
   #include "src/platform/windows/ipc/misc_utils.h"
-  #include "src/platform/windows/playnite_integration.h"
   #include "state_storage.h"
 
   // Windows headers
@@ -66,423 +65,6 @@ namespace confighttp {
   void send_response(resp_https_t response, const nlohmann::json &output_tree);
   void bad_request(resp_https_t response, req_https_t request, const std::string &error_message = "Bad Request");
   bool check_content_type(resp_https_t response, req_https_t request, const std::string_view &contentType);
-
-  struct playnite_install_state_t {
-    std::optional<bool> installed;
-    std::filesystem::path extensions_dir;
-  };
-
-  // Helper: determine whether the Playnite plugin is installed.
-  // An active IPC connection is authoritative proof that the plugin is loaded,
-  // even if the current service context cannot resolve the user's extension path.
-  static playnite_install_state_t query_plugin_install_state(bool active) {
-    playnite_install_state_t state;
-    try {
-      std::string destPath;
-      if (platf::playnite::get_extension_target_dir(destPath)) {
-        state.extensions_dir = destPath;
-        state.installed =
-          std::filesystem::exists(state.extensions_dir / "extension.yaml") &&
-          std::filesystem::exists(state.extensions_dir / "SunshinePlaynite.psm1");
-      } else if (active) {
-        state.installed = true;
-      }
-    } catch (...) {
-      if (active) {
-        state.installed = true;
-      }
-    }
-    return state;
-  }
-
-  // Enhance app JSON with a Playnite-derived cover path when applicable.
-  void enhance_app_with_playnite_cover(nlohmann::json &input_tree) {
-    try {
-      if ((!input_tree.contains("image-path") || (input_tree["image-path"].is_string() && input_tree["image-path"].get<std::string>().empty())) &&
-          input_tree.contains("playnite-id") && input_tree["playnite-id"].is_string()) {
-        std::string cover;
-        if (platf::playnite::get_cover_png_for_playnite_game(input_tree["playnite-id"].get<std::string>(), cover)) {
-          input_tree["image-path"] = cover;
-        }
-      }
-    } catch (...) {
-      // Best-effort only
-    }
-  }
-
-  void enhance_app_with_playnite_icon(nlohmann::json &input_tree) {
-    try {
-      if ((!input_tree.contains("playnite-icon-path") || (input_tree["playnite-icon-path"].is_string() && input_tree["playnite-icon-path"].get<std::string>().empty())) &&
-          input_tree.contains("playnite-id") && input_tree["playnite-id"].is_string()) {
-        std::string icon;
-        if (platf::playnite::get_icon_png_for_playnite_game(input_tree["playnite-id"].get<std::string>(), icon)) {
-          input_tree["playnite-icon-path"] = icon;
-        }
-      }
-    } catch (...) {
-      // Best-effort only
-    }
-  }
-
-  // No longer needed: old fallback path resolver removed with AssocQueryString-based detection
-
-  void getPlayniteStatus(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) {
-      return;
-    }
-    print_req(request);
-    if (!config::playnite.enabled) {
-      send_response(response, nlohmann::json{{"active", false}, {"enabled", false}, {"available", false}, {"installed", false}, {"update_available", false}});
-      return;
-    }
-    // Keep the Playnite IPC client alive when the UI refreshes status.
-    // This updates the inactivity timer and ensures a fresh connection.
-    platf::playnite::ensure_client_for_api();
-    nlohmann::json out;
-    // Active reflects current pipe/server connection only
-    const bool active = platf::playnite::is_active();
-    out["active"] = active;
-    // Deprecated fields removed: playnite_running, installed_unknown
-    // Session requirement removed: IPC is available during RDP/lock; rely on
-    // active IPC first, then fall back to per-user extension path resolution.
-    const auto install_state = query_plugin_install_state(active);
-    const auto &dest = install_state.extensions_dir;
-    if (install_state.installed.has_value()) {
-      out["installed"] = *install_state.installed;
-    } else {
-      out["installed"] = nullptr;
-    }
-    out["extensions_dir"] = dest.string();
-    // Version info and update flag
-    auto normalize_ver = [](std::string s) {
-      // strip leading 'v' and whitespace
-      while (!s.empty() && (s[0] == ' ' || s[0] == '\t')) {
-        s.erase(s.begin());
-      }
-      if (!s.empty() && (s[0] == 'v' || s[0] == 'V')) {
-        s.erase(s.begin());
-      }
-      return s;
-    };
-    auto semver_cmp = [&](const std::string &a, const std::string &b) {
-      auto to_parts = [](const std::string &s) {
-        std::vector<int> parts;
-        int cur = 0;
-        bool have = false;
-        for (size_t i = 0; i <= s.size(); ++i) {
-          if (i == s.size() || s[i] == '.') {
-            parts.push_back(have ? cur : 0);
-            cur = 0;
-            have = false;
-          } else if (s[i] >= '0' && s[i] <= '9') {
-            have = true;
-            cur = cur * 10 + (s[i] - '0');
-          } else {
-            // stop at first non-digit/non-dot
-            break;
-          }
-        }
-        while (!parts.empty() && parts.back() == 0) {
-          parts.pop_back();
-        }
-        return parts;
-      };
-      auto pa = to_parts(normalize_ver(a));
-      auto pb = to_parts(normalize_ver(b));
-      size_t n = std::max(pa.size(), pb.size());
-      pa.resize(n, 0);
-      pb.resize(n, 0);
-      for (size_t i = 0; i < n; ++i) {
-        if (pa[i] < pb[i]) {
-          return -1;
-        }
-        if (pa[i] > pb[i]) {
-          return 1;
-        }
-      }
-      return 0;
-    };
-    std::string installed_ver, packaged_ver;
-    bool have_installed = platf::playnite::get_installed_plugin_version(installed_ver);
-    bool have_packaged = platf::playnite::get_packaged_plugin_version(packaged_ver);
-    if (have_installed) {
-      out["installed_version"] = installed_ver;
-    }
-    if (have_packaged) {
-      out["packaged_version"] = packaged_ver;
-    }
-    bool update_available = false;
-    if (out["installed"].is_boolean() && out["installed"].get<bool>() && have_installed && have_packaged) {
-      update_available = semver_cmp(installed_ver, packaged_ver) < 0;
-    }
-    out["update_available"] = update_available;
-    // No session readiness flag; IPC works through RDP/lock. Frontend derives readiness from installed/active.
-    // Reduce verbosity: this endpoint can be polled frequently by the UI.
-    // Log at debug level instead of info to avoid log spam while still
-    // keeping the line available when debugging.
-    BOOST_LOG(debug) << "Playnite status: active=" << out["active"]
-                     << ", dir=" << (dest.empty() ? std::string("(unknown)") : dest.string())
-                     << ", installed_version=" << (have_installed ? installed_ver : std::string(""))
-                     << ", packaged_version=" << (have_packaged ? packaged_ver : std::string(""))
-                     << ", update_available=" << (update_available ? "true" : "false");
-    send_response(response, out);
-  }
-
-  void getPlayniteGames(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) {
-      return;
-    }
-    print_req(request);
-    try {
-      if (!query_plugin_install_state(platf::playnite::is_active()).installed.value_or(false)) {
-        SimpleWeb::CaseInsensitiveMultimap headers;
-        headers.emplace("Content-Type", "application/json");
-        headers.emplace("X-Frame-Options", "DENY");
-        headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-        response->write(SimpleWeb::StatusCode::success_ok, "[]", headers);
-        return;
-      }
-      std::string json;
-      if (!platf::playnite::get_games_list_json(json)) {
-        // return empty array if not available
-        json = "[]";
-      }
-      BOOST_LOG(debug) << "Playnite games: json length=" << json.size();
-      SimpleWeb::CaseInsensitiveMultimap headers;
-      headers.emplace("Content-Type", "application/json");
-      headers.emplace("X-Frame-Options", "DENY");
-      headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-      response->write(SimpleWeb::StatusCode::success_ok, json, headers);
-    } catch (std::exception &e) {
-      bad_request(response, request, e.what());
-    }
-  }
-
-  void getPlayniteCategories(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) {
-      return;
-    }
-    print_req(request);
-    try {
-      if (!query_plugin_install_state(platf::playnite::is_active()).installed.value_or(false)) {
-        SimpleWeb::CaseInsensitiveMultimap headers;
-        headers.emplace("Content-Type", "application/json");
-        headers.emplace("X-Frame-Options", "DENY");
-        headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-        response->write(SimpleWeb::StatusCode::success_ok, "[]", headers);
-        return;
-      }
-      std::string json;
-      if (!platf::playnite::get_categories_list_json(json)) {
-        // return empty array if not available
-        json = "[]";
-      }
-      BOOST_LOG(debug) << "Playnite categories: json length=" << json.size();
-      SimpleWeb::CaseInsensitiveMultimap headers;
-      headers.emplace("Content-Type", "application/json");
-      headers.emplace("X-Frame-Options", "DENY");
-      headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-      response->write(SimpleWeb::StatusCode::success_ok, json, headers);
-    } catch (std::exception &e) {
-      bad_request(response, request, e.what());
-    }
-  }
-
-  void getPlaynitePlugins(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) {
-      return;
-    }
-    print_req(request);
-    try {
-      if (!query_plugin_install_state(platf::playnite::is_active()).installed.value_or(false)) {
-        SimpleWeb::CaseInsensitiveMultimap headers;
-        headers.emplace("Content-Type", "application/json");
-        headers.emplace("X-Frame-Options", "DENY");
-        headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-        response->write(SimpleWeb::StatusCode::success_ok, "[]", headers);
-        return;
-      }
-      std::string json;
-      if (!platf::playnite::get_plugins_list_json(json)) {
-        json = "[]";
-      }
-      BOOST_LOG(debug) << "Playnite plugins: json length=" << json.size();
-      SimpleWeb::CaseInsensitiveMultimap headers;
-      headers.emplace("Content-Type", "application/json");
-      headers.emplace("X-Frame-Options", "DENY");
-      headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-      response->write(SimpleWeb::StatusCode::success_ok, json, headers);
-    } catch (std::exception &e) {
-      bad_request(response, request, e.what());
-    }
-  }
-
-  void installPlaynite(resp_https_t response, req_https_t request) {
-    if (!check_content_type(response, request, "application/json")) {
-      return;
-    }
-    if (!authenticate(response, request)) {
-      return;
-    }
-    print_req(request);
-    std::string err;
-    nlohmann::json out;
-    bool request_restart = false;
-    try {
-      std::stringstream ss;
-      ss << request->content.rdbuf();
-      if (ss.rdbuf()->in_avail() > 0) {
-        auto in = nlohmann::json::parse(ss);
-        request_restart = in.value("restart", false);
-      }
-    } catch (...) {
-      // ignore body parse errors; treat as no-restart
-    }
-    // Prefer same resolved dir as status
-    std::string target;
-    bool have_target = platf::playnite::get_extension_target_dir(target);
-    bool ok = false;
-    if (have_target) {
-      ok = platf::playnite::install_plugin_to(target, err);
-    } else {
-      ok = platf::playnite::install_plugin(err);
-    }
-    std::ostringstream log_msg;
-    log_msg << "Playnite install: " << (ok ? "success" : "failed");
-    if (have_target) {
-      log_msg << " target=" << target;
-    }
-    log_msg << " restart=" << (request_restart ? "true" : "false");
-    if (!ok && !err.empty()) {
-      log_msg << " error=" << err;
-    }
-    BOOST_LOG(info) << log_msg.str();
-    out["status"] = ok;
-    if (!ok) {
-      out["error"] = err;
-    }
-    // Optionally close and restart Playnite to pick up the new plugin
-    if (ok && request_restart) {
-      bool restarted = platf::playnite::restart_playnite();
-      out["restarted"] = restarted;
-    }
-    send_response(response, out);
-  }
-
-  void uninstallPlaynite(resp_https_t response, req_https_t request) {
-    if (!check_content_type(response, request, "application/json")) {
-      return;
-    }
-    if (!authenticate(response, request)) {
-      return;
-    }
-    print_req(request);
-    std::string err;
-    nlohmann::json out;
-    bool request_restart = false;
-    try {
-      std::stringstream ss;
-      ss << request->content.rdbuf();
-      if (ss.rdbuf()->in_avail() > 0) {
-        auto in = nlohmann::json::parse(ss);
-        request_restart = in.value("restart", false);
-      }
-    } catch (...) {
-      // ignore body parse errors; treat as no-restart
-    }
-    bool ok = platf::playnite::uninstall_plugin(err);
-    {
-      std::ostringstream log_msg;
-      log_msg << "Playnite uninstall: " << (ok ? "success" : "failed")
-              << " restart=" << (request_restart ? "true" : "false");
-      if (!ok && !err.empty()) {
-        log_msg << " error=" << err;
-      }
-      BOOST_LOG(info) << log_msg.str();
-    }
-    out["status"] = ok;
-    if (!ok) {
-      out["error"] = err;
-    }
-    if (ok && request_restart) {
-      bool restarted = platf::playnite::restart_playnite();
-      out["restarted"] = restarted;
-    }
-    send_response(response, out);
-  }
-
-  void postPlayniteForceSync(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) {
-      return;
-    }
-    print_req(request);
-    if (!config::playnite.enabled) {
-      send_response(response, nlohmann::json{{"status", false}, {"error", "Playnite integration is disabled"}});
-      return;
-    }
-    nlohmann::json out;
-    bool ok = platf::playnite::force_sync();
-    out["status"] = ok;
-    send_response(response, out);
-  }
-
-  void postPlayniteCover(resp_https_t response, req_https_t request) {
-    if (!check_content_type(response, request, "application/json")) {
-      return;
-    }
-    if (!authenticate(response, request)) {
-      return;
-    }
-    print_req(request);
-
-    try {
-      std::stringstream stream;
-      stream << request->content.rdbuf();
-      const auto input = nlohmann::json::parse(stream);
-      const auto playnite_id = input.value("playnite_id", "");
-      const auto cover_key = input.value("cover_key", "");
-      if (playnite_id.empty() || cover_key.empty()) {
-        bad_request(response, request, "Playnite game ID and cover key are required");
-        return;
-      }
-
-      const auto cover_path = platf::appdata() / "covers" / (http::url_escape(cover_key) + ".png");
-      std::error_code error;
-      if (!std::filesystem::is_regular_file(cover_path, error) || error) {
-        bad_request(response, request, "Uploaded cover was not found");
-        return;
-      }
-      if (!platf::playnite::set_game_cover(playnite_id, cover_path.generic_string())) {
-        bad_request(response, request, "Playnite did not confirm the cover metadata update");
-        return;
-      }
-      if (!platf::playnite::force_sync()) {
-        bad_request(response, request, "Playnite did not confirm a refreshed metadata snapshot");
-        return;
-      }
-
-      const nlohmann::json output {
-        {"status", true},
-        {"path", cover_path.generic_string()}
-      };
-      send_response(response, output);
-    } catch (const std::exception &e) {
-      BOOST_LOG(warning) << "SetPlayniteCover: " << e.what();
-      bad_request(response, request, e.what());
-    }
-  }
-
-  void postPlayniteLaunch(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) {
-      return;
-    }
-    print_req(request);
-    nlohmann::json out;
-    // Use unified restart path: will start Playnite if not running
-    bool ok = platf::playnite::restart_playnite();
-    out["status"] = ok;
-    send_response(response, out);
-  }
 
   using namespace log_export;
 
@@ -715,17 +297,13 @@ namespace confighttp {
   }  // namespace
 
   bool is_helper_log_source(const std::string &source) {
-    return source == "display_helper" || source == "playnite" || source == "playnite_launcher" || source == "wgc";
+    return source == "display_helper" || source == "wgc";
   }
 
   bool read_helper_log(const std::string &source, std::string &out) {
     std::string base_name;
     if (source == "display_helper") {
       base_name = "sunshine_display_helper";
-    } else if (source == "playnite") {
-      base_name = "sunshine_playnite";
-    } else if (source == "playnite_launcher") {
-      base_name = "sunshine_playnite_launcher";
     } else if (source == "wgc") {
       base_name = "sunshine_wgc_helper";
     } else {
@@ -838,115 +416,6 @@ namespace confighttp {
       }
     } catch (...) {}
 
-    // Playnite plugin log (Roaming\Sunshine\sunshine_playnite.log)
-    try {
-      platf::dxgi::safe_token user_token;
-      user_token.reset(platf::dxgi::retrieve_users_token(false));
-      PWSTR roamingW = nullptr;
-      if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, user_token.get(), &roamingW)) && roamingW) {
-        std::filesystem::path p = std::filesystem::path(roamingW) / L"Sunshine" / L"sunshine_playnite.log";
-        CoTaskMemFree(roamingW);
-        std::string data;
-        std::optional<std::filesystem::file_time_type> mtime;
-        if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
-        }
-      }
-    } catch (...) {}
-
-    // Plugin fallback log: try user's LocalAppData\Temp then process TEMP
-    try {
-      platf::dxgi::safe_token user_token;
-      user_token.reset(platf::dxgi::retrieve_users_token(false));
-      PWSTR localW = nullptr;
-      if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, user_token.get(), &localW)) && localW) {
-        std::filesystem::path p = std::filesystem::path(localW) / L"Temp" / L"sunshine_playnite.log";
-        CoTaskMemFree(localW);
-        std::string data;
-        std::optional<std::filesystem::file_time_type> mtime;
-        if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
-        }
-      }
-    } catch (...) {}
-    try {
-      wchar_t tmpPathW[MAX_PATH] = {};
-      DWORD n = GetTempPathW(_countof(tmpPathW), tmpPathW);
-      if (n > 0 && n < _countof(tmpPathW)) {
-        std::filesystem::path p = std::filesystem::path(tmpPathW) / L"sunshine_playnite.log";
-        std::string data;
-        std::optional<std::filesystem::file_time_type> mtime;
-        if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
-        }
-      }
-    } catch (...) {}
-
-    auto add_playnite_from_base = [&](const std::filesystem::path &base) {
-      bool any = false;
-      {
-        std::string data;
-        auto p = base / L"playnite.log";
-        std::optional<std::filesystem::file_time_type> mtime;
-        if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
-          any = true;
-        }
-      }
-      {
-        std::string data;
-        auto p = base / L"extensions.log";
-        std::optional<std::filesystem::file_time_type> mtime;
-        if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
-          any = true;
-        }
-      }
-      {
-        std::string data;
-        auto p = base / L"launcher.log";
-        std::optional<std::filesystem::file_time_type> mtime;
-        if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
-          any = true;
-        }
-      }
-      return any;
-    };
-
-    bool got_playnite_logs = false;
-    try {
-      platf::dxgi::safe_token user_token;
-      user_token.reset(platf::dxgi::retrieve_users_token(false));
-      auto add_from_known = [&](REFKNOWNFOLDERID id) {
-        PWSTR pathW = nullptr;
-        if (SUCCEEDED(SHGetKnownFolderPath(id, 0, user_token.get(), &pathW)) && pathW) {
-          std::filesystem::path base = std::filesystem::path(pathW) / L"Playnite";
-          CoTaskMemFree(pathW);
-          if (add_playnite_from_base(base)) {
-            got_playnite_logs = true;
-          }
-        }
-      };
-      add_from_known(FOLDERID_RoamingAppData);
-      add_from_known(FOLDERID_LocalAppData);
-    } catch (...) {}
-
-    if (!got_playnite_logs) {
-      try {
-        wchar_t buf[MAX_PATH] = {};
-        if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, buf))) {
-          got_playnite_logs |= add_playnite_from_base(std::filesystem::path(buf) / L"Playnite");
-        }
-      } catch (...) {}
-      try {
-        wchar_t buf[MAX_PATH] = {};
-        if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, buf))) {
-          got_playnite_logs |= add_playnite_from_base(std::filesystem::path(buf) / L"Playnite");
-        }
-      } catch (...) {}
-    }
-
     // One scan per directory, newest few files per helper prefix. The previous
     // shape re-enumerated the directory once per prefix and read every session
     // file ever rotated, which multiplied into the export slowdown.
@@ -1005,22 +474,6 @@ namespace confighttp {
       }
       // Legacy single-file helper logs (kept for backwards compatibility).
       {
-        std::filesystem::path p = base / L"sunshine_playnite.log";
-        std::string data;
-        std::optional<std::filesystem::file_time_type> mtime;
-        if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
-        }
-      }
-      {
-        std::filesystem::path p = base / L"sunshine_playnite_launcher.log";
-        std::string data;
-        std::optional<std::filesystem::file_time_type> mtime;
-        if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
-        }
-      }
-      {
         std::filesystem::path p = base / L"sunshine_launcher.log";
         std::string data;
         std::optional<std::filesystem::file_time_type> mtime;
@@ -1047,8 +500,6 @@ namespace confighttp {
 
       // Session-mode helper logs live under Roaming/LocalAppData\\Sunshine\\logs.
       static const std::vector<std::string> helper_log_prefixes {
-        "sunshine_playnite_launcher-",
-        "sunshine_playnite-",
         "sunshine_launcher-",
         "sunshine_display_helper-",
         "sunshine_wgc_helper-",
@@ -1146,7 +597,7 @@ namespace confighttp {
     return cached;
   }
 
-  void downloadPlayniteLogs(resp_https_t response, req_https_t request) {
+  void downloadSupportLogs(resp_https_t response, req_https_t request) {
     if (!authenticate(response, request)) {
       return;
     }
@@ -1193,11 +644,10 @@ namespace confighttp {
     std::wstring prefix;
   };
 
-  static const std::array<CrashDumpTarget, 4> kCrashDumpTargets = {{
+  static const std::array<CrashDumpTarget, 3> kCrashDumpTargets = {{
     {"sunshine.exe", L"sunshine.exe."},
     {"sunshine_display_helper.exe", L"sunshine_display_helper.exe."},
     {"sunshine_wgc_capture.exe", L"sunshine_wgc_capture.exe."},
-    {"playnite-launcher.exe", L"playnite-launcher.exe."},
   }};
 
   constexpr std::uint64_t kMinCrashDumpSunshineBytes = 10ull * 1024ull * 1024ull;
@@ -2109,7 +1559,6 @@ namespace confighttp {
       bad_request(response, request, e.what());
     }
   }
-
 }  // namespace confighttp
 
 #endif  // _WIN32

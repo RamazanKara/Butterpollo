@@ -164,7 +164,7 @@ function looksMojibake(value, enValue, key) {
   }
 
   const namespace = String(key ?? '').split('.', 1)[0];
-  const settingsNamespace = ['apps', 'config', 'playnite', 'rtss'].includes(namespace);
+  const settingsNamespace = ['apps', 'config', 'rtss'].includes(namespace);
   return settingsNamespace && value.includes('?') && !String(enValue ?? '').includes('?');
 }
 
