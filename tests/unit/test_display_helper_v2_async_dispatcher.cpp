@@ -16,6 +16,11 @@
 #include <numeric>
 
 namespace {
+  // FakeClock makes every dispatcher delay instant, so a completion only waits
+  // for the worker thread to be scheduled. This bound turns a hang into a
+  // failure under any load; it is not a timing assertion.
+  constexpr auto kCompletionTimeout = std::chrono::seconds(30);
+
   class FakeClock final : public display_helper::v2::IClock {
   public:
     std::chrono::steady_clock::time_point now() override {
@@ -141,6 +146,8 @@ TEST(DisplayHelperV2AsyncDispatcher, AppliesAfterVirtualDisplayResetSequence) {
   display_helper::v2::RecoveryOperation recovery_op(display, storage, golden_health, restore_state, clock);
   display_helper::v2::RecoveryValidationOperation recovery_validate(snapshot_service, clock);
   FakeVirtualDisplayDriver virtual_display;
+  // Declared before the dispatcher so it outlives the worker that fulfils it.
+  std::promise<display_helper::v2::ApplyOutcome> promise;
 
   display_helper::v2::AsyncDispatcher dispatcher(
     apply_op,
@@ -156,7 +163,6 @@ TEST(DisplayHelperV2AsyncDispatcher, AppliesAfterVirtualDisplayResetSequence) {
   request.virtual_layout = "extended";
   display_helper::v2::CancellationSource cancel;
 
-  std::promise<display_helper::v2::ApplyOutcome> promise;
   dispatcher.dispatch_apply(
     request,
     cancel.token(),
@@ -168,7 +174,7 @@ TEST(DisplayHelperV2AsyncDispatcher, AppliesAfterVirtualDisplayResetSequence) {
   );
 
   auto future = promise.get_future();
-  ASSERT_EQ(future.wait_for(std::chrono::milliseconds(500)), std::future_status::ready);
+  ASSERT_EQ(future.wait_for(kCompletionTimeout), std::future_status::ready);
   auto outcome = future.get();
 
   EXPECT_EQ(outcome.status, display_helper::v2::ApplyStatus::Ok);
@@ -205,6 +211,7 @@ TEST(DisplayHelperV2AsyncDispatcher, FailedVirtualResetRecoveryBoundaryIsAttempt
   display_helper::v2::RecoveryOperation recovery_op(display, storage, golden_health, restore_state, clock);
   display_helper::v2::RecoveryValidationOperation recovery_validate(snapshot_service, clock);
   FakeVirtualDisplayDriver virtual_display;
+  std::promise<display_helper::v2::ApplyOutcome> promise;
   display_helper::v2::AsyncDispatcher dispatcher(
     apply_op,
     verify_op,
@@ -218,7 +225,6 @@ TEST(DisplayHelperV2AsyncDispatcher, FailedVirtualResetRecoveryBoundaryIsAttempt
   request.configuration = display_device::SingleDisplayConfiguration {};
   request.virtual_layout = "extended";
   display_helper::v2::CancellationSource cancel;
-  std::promise<display_helper::v2::ApplyOutcome> promise;
   dispatcher.dispatch_apply(
     request,
     cancel.token(),
@@ -230,7 +236,7 @@ TEST(DisplayHelperV2AsyncDispatcher, FailedVirtualResetRecoveryBoundaryIsAttempt
   );
 
   auto future = promise.get_future();
-  ASSERT_EQ(future.wait_for(std::chrono::milliseconds(500)), std::future_status::ready);
+  ASSERT_EQ(future.wait_for(kCompletionTimeout), std::future_status::ready);
   const auto outcome = future.get();
 
   EXPECT_EQ(outcome.status, display_helper::v2::ApplyStatus::Ok);
@@ -258,6 +264,7 @@ TEST(DisplayHelperV2AsyncDispatcher, FailsWhenVirtualDisplayDisableFails) {
   display_helper::v2::RecoveryValidationOperation recovery_validate(snapshot_service, clock);
   FakeVirtualDisplayDriver virtual_display;
   virtual_display.disable_result = false;
+  std::promise<display_helper::v2::ApplyOutcome> promise;
 
   display_helper::v2::AsyncDispatcher dispatcher(
     apply_op,
@@ -273,7 +280,6 @@ TEST(DisplayHelperV2AsyncDispatcher, FailsWhenVirtualDisplayDisableFails) {
   request.virtual_layout = "extended";
   display_helper::v2::CancellationSource cancel;
 
-  std::promise<display_helper::v2::ApplyOutcome> promise;
   dispatcher.dispatch_apply(
     request,
     cancel.token(),
@@ -285,7 +291,7 @@ TEST(DisplayHelperV2AsyncDispatcher, FailsWhenVirtualDisplayDisableFails) {
   );
 
   auto future = promise.get_future();
-  ASSERT_EQ(future.wait_for(std::chrono::milliseconds(500)), std::future_status::ready);
+  ASSERT_EQ(future.wait_for(kCompletionTimeout), std::future_status::ready);
   auto outcome = future.get();
 
   EXPECT_EQ(outcome.status, display_helper::v2::ApplyStatus::Fatal);
