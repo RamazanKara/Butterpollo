@@ -1,163 +1,75 @@
-# Vibepollo
+# Butterpollo
 
-## What is Vibepollo?
+Butterpollo is a Windows game-streaming host built on [Vibepollo](https://github.com/Nonary/Vibepollo), which builds on [Apollo](https://github.com/ClassicOldSong/Apollo) and [Sunshine](https://github.com/LizardByte/Sunshine). It has one job: get each frame from your PC to your Moonlight client as fast and as evenly as possible. It adds no new features. A change goes in only if it makes streaming faster or smoother, and I measure it before it ships.
 
-Vibepollo is an AI‑enhanced version of Apollo, a popular remote streaming application. It intends to integrate all scripts from myself (Nonary) and more.
+The name comes from the first tester's verdict on the WGC fix: "smooth as butter". Also, *pollo* is Spanish for chicken.
 
+## Why this exists
 
+I wrote the native AMD AMF encoder work for Vibepollo ([#461](https://github.com/Nonary/Vibepollo/pull/461)). That PR has been open since August. In the meantime the 2.0 betas brought regressions that made streams less smooth than 1.19: a DXGI display re-scan every second on the frame-pacing thread, and control-event polls that could spin. On top of that, the WGC capture path copied every frame three times before the encoder could start. I got tired of chasing new bugs in a moving target, so Butterpollo pins one base and only accepts latency and smoothness work.
 
-## Key Features
+## Measured
 
-* **Display Setting Automation**
-  Vibepollo adds multiple safeguards to prevent dummy plugs or virtual displays from getting “stuck” when you return to your PC. It resolves common Windows 11 **24H2** display issues and restores your layout after hard crashes, shutdowns, or reboots. (The only scenario it can’t restore is during a user logout.) The workflow is simplified to a dropdown—just pick the display you want to stream.
+RX 7900 XT, AMD driver 32.0.31041.1004. Phone client, AV1 10-bit HDR, 1968x2184, 120 fps, WGC capture, native AMF. Numbers are host processing latency: capture to network send, the figure Moonlight shows. Each range covers several 10-second windows of the same stream.
 
-* **Windows Graphics Capture in Service Mode**
-  Running Windows Graphics Capture (WGC) as a service improves performance and stability. It captures the full frame rate of frame‑generated titles, avoids crashes when VRAM is exceeded, and follows Microsoft’s recommended capture method going forward. Vibepollo auto‑switches capture methods on demand, so the login screen and UAC prompts are still captured even when using WGC.
+| Build | Median | p99 | Max | Frames ≥1 ms above median, per 10 s |
+|---|---:|---:|---:|---:|
+| Before the WGC fix | 3.55-3.66 ms | 4.46-4.72 ms | 4.6-5.4 ms | 2-29 |
+| Butterpollo | 3.21-3.28 ms | 3.37-3.74 ms | 3.7-4.6 ms | 0-2 |
 
-* **Native Virtualized Display**
-  Vibepollo uses its bundled virtual display driver by default and keeps SudoVDA installed as a rollback option. It can capture output from any GPU, including those in hybrid laptops, ensuring the virtual screen connects to the correct GPU when needed. It also provides simple virtual display options, allowing users to choose between a physical or virtual display. On headless setups, it enables automatically to prevent 503 errors and false encoder detections, such as incorrect HEVC support reports.
+Hardware encoding alone takes about 2.4 ms at this resolution, so most of what is left is the encoder itself.
 
-* **Focused Configuration Interface**
-  Vibepollo includes a responsive, dependency-light browser interface built around the tasks people perform most often: selecting a streaming display, tuning frame pacing, managing games and devices, checking sessions, and recovering the host. Less common controls remain organized by domain instead of competing with everyday setup.
+## What is different from Vibepollo 2.0.0-beta.3
 
-* **Playnite Integration**
-  Deep integration with Playnite (a “launcher of launchers”) automatically syncs your recently played games with configurable expiration rules, per‑category sync, and exclusions. You can also add games manually from a Web UI dropdown; Vibepollo handles artwork, launching, and clean termination—emulators included. The goal is a seamless, GeForce Experience–style library experience—only better.
+Encoder (native AMF, `encoder = amdvce_experimental`):
+- The encode thread queries output directly on the low-latency path. Nothing sleeps on a fixed poll while a frame is due.
+- Finished packets go out before the next capture wait and before the next colour conversion, so a frame never waits behind newer work.
+- The input backlog is bounded, and a surface is reused only after the driver releases it.
+- `amd_quality` defaults to `speed`.
 
-* **RTSS & NVIDIA Control Panel Integration**
-  Vibepollo can manage RTSS to apply the correct frame limit and disable V‑Sync before streaming, significantly improving frame pacing and smoothness. The applied frame cap matches the client device’s requested FPS.
+Capture (Windows Graphics Capture):
+- The encoder reads the capture helper's shared frame directly. The host used to copy each frame on a separate GPU device and hand it over, which cost about 0.5 ms median and 0.8 ms p99 in an off-screen model of the pipeline. `wgc_direct_encoder_input = disabled` switches back.
+- The capture helper copies each frame once instead of twice when nothing is in the way.
+- The once-per-second display check runs on a worker thread, not the frame-pacing thread.
+- The capture device gets the same realtime GPU thread priority as the encoder device.
 
-* **Frame‑Generated Capture Fixes**
-  DLSS/FSR game-provided frame generation requires Vibepollo's virtual screen for reliable capture. The virtual display guarantees composed flip, allowing generated frames to be captured through WGC, and Vibepollo targets 4x virtual refresh for pacing.
+System:
+- The host (while streaming) and the capture helper opt out of Windows 11 power throttling (EcoQoS and ignored timer resolution).
+- Encoder control events (bitrate, reference invalidation, IDR) no longer spin when their producer holds the lock.
 
-* **Lossless Scaling & NVIDIA Smooth Motion**
-  Vibepollo can automatically apply optimal Lossless Scaling settings to generate frames for any application. On RTX 40‑series and newer GPUs, you can optionally enable **NVIDIA Smooth Motion** for better performance and image quality (while Lossless Scaling remains more customizable).
+Diagnostics:
+- Every 10 seconds the log prints `Host latency stages`: capture, convert, submit, encode and deliver, each as median/p99/max. It also shows which stage caused each spike and how old the frame already was when the host picked it up. If something stutters, that line shows where.
 
-* **API Token Management**
-  Access tokens can be tightly scoped—down to specific methods—so external scripts don’t need full administrative rights. This improves security while keeping automation flexible.
+## Install
 
-* **Session‑Based Authentication**
-  The sign‑in flow supports password managers and includes a “remember me” option to minimize prompts. The experience is security‑hardened without sacrificing convenience.
+Download `VibepolloSetup.exe` from [Releases](https://github.com/RamazanKara/Butterpollo/releases).
 
-* **Update Notifications**
-  Built‑in notifications let you know when new features or bug fixes are available, making it easy to stay current.
+The first releases install as a drop-in replacement for Vibepollo: same install folder, same service, same config and paired devices. Back up `C:\Program Files\Apollo\config` first and keep your current installer in case you want to go back. The installers are unsigned test builds.
 
-Due to the sheer pace and volume of changes I was producing, it became impractical to manage them within the original Sunshine repository. The review process simply couldn’t keep up with the rate of development, and large feature sets were piling up without a clear path to integration. To ensure the work remained organized, maintainable, and actively progressing, I established Vibepollo as a standalone fork.
+To keep an existing Vibepollo virtual controller driver, install with:
 
-At this point, Vibepollo differs substantially from upstream Sunshine. At that scale, asking upstream maintainers to accept large backports in one sweep is generally not sustainable, which is why Vibepollo continues as a standalone fork.
-
----
-
-## Linux (beta)
-
-Vibepollo now runs natively on Linux as a set of machine-wide system services with its own
-virtual-display kernel driver. The beta targets **Arch Linux and CachyOS**, and it is developed and
-tested on **CachyOS with KDE Plasma 6 on Wayland**. You need Linux 6.16 or newer with matching
-kernel headers, a Plasma Wayland session started by SDDM or Plasma Login Manager, and a GPU with a
-hardware H.264 encoder. Pre-login streaming is NVIDIA-only.
-
-```bash
-curl -fsSLO https://raw.githubusercontent.com/Nonary/Vibepollo/vibe-test/scripts/linux_install.sh
-sudo bash linux_install.sh
+```
+VibepolloSetup.exe /qn INSTALL_VIRTUAL_GAMEPAD_DRIVER=0
 ```
 
-The script checks the requirements, installs the kernel headers and the package, opens the firewall,
-and prints whether a reboot is needed. Manual steps, verification, and troubleshooting are in the
-[Linux install guide](docs/linux/install.md). AppImage, Flatpak, Debian, Fedora, and Docker builds
-are not part of this beta.
+Settings I stream with on AMD:
 
-SteamOS development uses a separate [user bundle](packaging/linux/steamos/README.md)
-which leaves the read-only operating system untouched. Its experimental Gaming
-Mode path supports stock Gamescope SDR capture and an optional
-[patched Gamescope HDR10 path](packaging/linux/steamos/gamescope/README.md).
-Gaming Mode automatically uses the existing Gamescope output even when virtual
-display is selected. Desktop display/layout preferences are preserved for the
-next Desktop Mode session; Gaming Mode does not create independent monitors.
-See the [SteamOS audit](packaging/linux/steamos/AUDIT.md)
-for validation and remaining work.
+```
+encoder = amdvce_experimental
+amd_usage = ultralowlatency
+amd_quality = speed
+amd_preanalysis = disabled
+amd_av1_latency_mode = lowest
+```
 
-## Does Vibepollo aim to replace Sunshine or Apollo?
+## Next
 
-Yes. Vibepollo replaces Sunshine or Apollo as your streaming host. On Linux,
-use one host installation at a time: replace an existing Sunshine, Vibeshine,
-or Vibepollo installation when installing Vibepollo, and preserve your
-configuration and pairing data during the transition.
+- The virtual display runs at 4x the stream rate (480 Hz for 120 fps). That makes Windows compose frames sooner, but it also means more GPU and capture work. I'm measuring 480 against 240 and 120 Hz before changing the default.
+- The capture helper still publishes about 1.5x more frames than the host uses.
+- Linux, NVIDIA and Intel code is inherited from Vibepollo unchanged and is not tested here yet.
 
+Bug reports are welcome if they include GPU and driver, client, resolution/fps/codec, and a few `Host latency stages` log lines.
 
-## Will Vibepollo’s features merge back into Sunshine or Apollo?
+## Credits and license
 
-**Short answer: Unlikely to be backported upstream as large, sweeping merges.**
-
-Vibepollo is largely AI‑generated. While it works well, it carries a kind of surface‑level technical debt that many upstream projects want resolved before taking big changes (styling consistency, thin/missing docs, and some over‑engineering). I see that debt as relatively unimportant today because modern AI tools can answer “why does this function exist?”, “what does this parameter do?”, or “how do these classes interact?” and will soon auto‑fix these issues—re‑style trees, write docstrings, and prune unused layers—without human effort.
-
-So this “mess” is mostly cosmetic. It doesn’t break the code, create security risks, or block future maintenance. The only debt that truly matters is architectural: API design, threading models, modularity, and performance. Those are hard to fix even with AI tools, which is why I focus on them up front and guide the AI accordingly.
-
-Because I define the architecture, I know how everything works. Whether the code looks polished or not doesn’t matter to me.
-
-Bringing Vibepollo fully in line with upstream style and documentation would take a lot of engineering time for limited practical gain. For now, full backports into Sunshine or Apollo are unlikely. Over time, targeted refactors or added documentation may make **selective upstreaming** possible.
-
----
-
-## Origin of the Name "Vibepollo"
-
-The name arose as a playful suggestion from another developer who joked about the potential unmanageability of extensive AI‑generated code. Given that approximately **99% of Vibepollo’s code is AI‑generated**, the name seemed fitting.
-
----
-
-## Why Use AI‑generated Code? Concerns About Technical Debt?
-
-AI significantly accelerates development by offloading much of the routine implementation work. Instead of spending hours writing boilerplate, wiring dependencies, or handling repetitive edge cases, I can focus on high‑level architecture, long‑term design decisions, and system direction. This shift doesn’t just speed things up—it fundamentally changes the role of the engineer, pushing us toward oversight, orchestration, and design rather than rote code production.
-
-What stands out most is that AI code works on the first try around 90% of the time. That reliability, combined with instant generation, makes it dramatically more efficient to accept its form of debt than to painstakingly write everything from scratch. In other words, I’m trading minor, manageable debt for massive development velocity—and that trade is almost always worth it.
-
-I’m not overly concerned about technical debt in this workflow, because the debt that truly matters stems from bad architecture and poor design choices, not from the code itself. As long as I guide the AI with clear structure and intent, the generated code ends up being maintainable. Problems like inconsistent naming, redundant code, or unused helpers are minor forms of debt—easily identified, cleaned up, or ignored. By contrast, deep architectural flaws, poor layering, or mismatched abstractions create lasting problems.
-
-In fact, compared to many traditional enterprise codebases I’ve maintained, AI‑assisted code often comes out cleaner and easier to manage. Legacy systems are usually burdened with years of ad‑hoc patches, inconsistent styles, and various bad practices due to knowledge level of contributor. AI‑generated code doesn’t necessarily carry fewer design flaws than human code, but it does avoid accumulating those scars—especially when paired with an intentional architectural vision, and it is less likely to do seriously bad practices that you typically find in enterprise codebases.
-
-Broadly speaking, AI‑assisted development represents the future of software engineering. Just as compilers and IDEs once transformed programming, AI is now transforming how we design, implement, and maintain systems. Instead of fearing it, I view it as a force multiplier that complements professional judgment. Vibepollo is an example of what happens when you embrace that shift: rapid iteration, a massive expansion of features, and code that remains maintainable because the architecture is intentionally guided.
-
----
-
-## The Original “AI-Only” Goal (And Why It Changed)
-
-One of the original goals of Vibepollo was to prove a specific point: that an experienced developer could maintain a complex project using almost entirely AI‑generated code, as long as they provided the architecture and kept the system coherent.
-
-That idea hasn’t aged particularly well, not because it was wrong, but because the models scaled far faster than most projections. The result is that the “skill gap” in prompting and guiding the AI matters less than it did even a few months prior. You still need engineering judgment and architecture, but it’s now dramatically easier to get high‑quality, end‑to‑end results without the same level of careful orchestration. So the original “prove it’s possible” goal is basically moot: it’s not a niche workflow anymore, it’s simply where the tools have gone.
-
----
-
-## AI Models Used by Vibepollo
-
-Vibepollo has always been built with **Codex** as the primary workflow, and in practice that has meant mostly the **GPT‑5 family** (today: **GPT‑5.3‑Codex**). I use it with the same principles as before: start from architecture, sanity‑check assumptions, and do the hard reasoning up front so the implementation lands cleanly.
-
-With **GPT‑5.3‑Codex**, there’s no real need to juggle a “fast but less capable” model anymore. In the past I’d reach for speed‑first models (like Sonnet, or smaller GPT “mini” variants) for quick turnaround, but **GPT‑5.3‑Codex** covers both: it’s about as fast as those options while also being strong enough to handle the hard engineering work in one pass.
-
-Claude was used more heavily earlier on. Older Claude models had a tendency to go off on their own path, even when the architectural plan was clear. That behavior has mostly been fixed in newer Claude releases, but GPT still ended up being the more useful engineering tool for me because it will challenge you and not simply agree with whatever you ask for.
-
-In general, GPT has felt more intelligent for the way I build and maintain this codebase. I may occasionally ask **Claude Opus 4.5** for a second opinion if GPT can’t resolve something cleanly end‑to‑end, but this is increasingly rare.
-
----
-
-## Sponsors
-
-<p align="center">
-  <a href="https://signpath.io?utm_source=foundation&amp;utm_medium=github&amp;utm_campaign=vibepollo">
-    <img src="docs/images/signpath.svg" alt="SignPath" width="420">
-  </a>
-</p>
-
-Thank you to [SignPath.io](https://signpath.io?utm_source=foundation&utm_medium=github&utm_campaign=vibepollo)
-and the [SignPath Foundation](https://signpath.org?utm_source=foundation&utm_medium=github&utm_campaign=vibepollo)
-for sponsoring Vibepollo's Windows code signing.
-
-### Code signing policy
-
-Official Vibepollo Windows releases use free code signing provided by
-[SignPath.io](https://signpath.io?utm_source=foundation&utm_medium=github&utm_campaign=vibepollo), and a
-certificate by the [SignPath Foundation](https://signpath.org?utm_source=foundation&utm_medium=github&utm_campaign=vibepollo).
-
-* **Committer and reviewer:** [Nonary](https://github.com/Nonary)
-* **Approver:** [Nonary](https://github.com/Nonary)
-* **Privacy:** Vibepollo transfers information to networked systems only for functionality requested by the user or
-  operator; it does not transmit user or runtime data to SignPath. Separately, SignPath's GitHub integration receives
-  the build artifacts, signing-request details, and GitHub-provided build-origin metadata needed to sign official
-  releases.
+Butterpollo is GPL-3.0, like everything it builds on. Thanks to Nonary for Vibepollo, ClassicOldSong for Apollo, and LizardByte and the Sunshine contributors. Everything outside the list above is their work.
