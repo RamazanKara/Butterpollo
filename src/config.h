@@ -63,6 +63,7 @@ namespace config {
 
     int hevc_mode;
     int av1_mode;
+    bool pyrowave;  ///< Offer PyroWave to PyroWave-enabled clients (Windows builds with PyroWave support).
 
     int min_threads;  // Minimum number of threads/slices for CPU encoding
 

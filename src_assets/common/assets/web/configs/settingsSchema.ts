@@ -814,6 +814,7 @@ export const settingsCategories: SettingsCategory[] = [
             option('2', 'ui.settings.options.codec.eight_bit'),
             option('3', 'ui.settings.options.codec.hdr_ten_bit'),
           ]),
+          boolean('pyrowave', { platform: 'windows' }),
         ],
       },
       {
@@ -1065,6 +1066,7 @@ export const settingsDefaults: Record<string, unknown> = {
   wgc_slot_aligned_publish: true,
   hevc_mode: 0,
   av1_mode: 0,
+  pyrowave: false,
   max_bitrate: 0,
   minimum_fps_target: 20,
   qp: 28,

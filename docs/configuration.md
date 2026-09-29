@@ -2703,6 +2703,41 @@ this option to replace the running app immediately. The default is `true`.
     </tr>
 </table>
 
+### pyrowave
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Offer the PyroWave codec to PyroWave-enabled Moonlight clients (the Artemis Android fork
+            and the Moonlight-Qt PyroWave build). PyroWave is an intra-only wavelet codec that the GPU
+            encodes through Vulkan: every frame is coded on its own, so encoding takes well under a
+            millisecond and a lost packet never corrupts later frames. The price is bandwidth: a
+            usable picture needs hundreds of Mbit/s, so only enable this for clients on fast wired
+            LANs, and give those clients a matching bitrate.
+            <br>
+            PyroWave supports 4:4:4 chroma and HDR10 (4:2:0), each when the host's startup probe
+            validates it. Other clients are unaffected and keep negotiating H.264, HEVC or AV1.
+            Each frame is sized against the stream's FEC limit, so bitrates beyond what the
+            negotiated packet size can protect are capped (logged once per stream).
+            @note{This option only applies to Windows builds with PyroWave support and needs a
+            Vulkan 1.3 driver on the capture GPU.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            disabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            pyrowave = enabled
+            @endcode</td>
+    </tr>
+</table>
+
 ### capture
 
 <table>
