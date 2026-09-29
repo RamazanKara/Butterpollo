@@ -78,23 +78,28 @@ namespace {
   }
 
   TEST(ProcessArtwork, MachinePathsStayInsideImmutableAssetsOrSharedCovers) {
-    const std::string assets = "/usr/share/vibepollo";
-    const std::string covers = "/var/lib/vibepollo/covers";
+    const std::string assets = R"(C:\Program Files\Apollo\assets)";
+    const std::string covers = R"(C:\ProgramData\Apollo\covers)";
+    const auto confined = [&](const std::string &path) {
+      return proc::catalog::machine_image_path_is_confined(path, assets, covers);
+    };
 
-    EXPECT_TRUE(proc::catalog::machine_image_path_is_confined("desktop.png", assets, covers));
-    EXPECT_TRUE(proc::catalog::machine_image_path_is_confined("./assets/steam.png", assets, covers));
-    EXPECT_TRUE(proc::catalog::machine_image_path_is_confined(
-      "/usr/share/vibepollo/remote-session/input.png", assets, covers));
-    EXPECT_TRUE(proc::catalog::machine_image_path_is_confined(
-      "/var/lib/vibepollo/covers/game.png", assets, covers));
-    EXPECT_FALSE(proc::catalog::machine_image_path_is_confined(
-      "/var/lib/vibepollo/covers", assets, covers));
-    EXPECT_FALSE(proc::catalog::machine_image_path_is_confined(
-      "/var/lib/vibepollo/covers/../../secrets.png", assets, covers));
-    EXPECT_FALSE(proc::catalog::machine_image_path_is_confined(
-      "../../home/chasep/.config/vibeshine/secret.png", assets, covers));
-    EXPECT_FALSE(proc::catalog::machine_image_path_is_confined(
-      "/home/chasep/custom.png", assets, covers));
+    EXPECT_TRUE(confined("desktop.png"));
+    EXPECT_TRUE(confined("./assets/steam.png"));
+    EXPECT_TRUE(confined(R"(C:\Program Files\Apollo\assets\remote-session\input.png)"));
+    EXPECT_TRUE(confined(R"(C:\ProgramData\Apollo\covers\game.png)"));
+    EXPECT_TRUE(confined("C:/ProgramData/Apollo/covers/game.png"));
+
+    EXPECT_FALSE(confined(""));
+    EXPECT_FALSE(confined(R"(C:\ProgramData\Apollo\covers)"));
+    EXPECT_FALSE(confined(R"(C:\ProgramData\Apollo\covers\..\..\secrets.png)"));
+    EXPECT_FALSE(confined(R"(..\..\Users\someone\AppData\Local\secret.png)"));
+    EXPECT_FALSE(confined(R"(C:\Users\someone\custom.png)"));
+    EXPECT_FALSE(confined(R"(D:\ProgramData\Apollo\covers\game.png)"));
+    EXPECT_FALSE(confined(R"(\\server\share\ProgramData\Apollo\covers\game.png)"));
+    // Root-relative paths are not absolute on Windows, so they are resolved
+    // against the assets root like any other relative path.
+    EXPECT_FALSE(confined(R"(\ProgramData\Apollo\covers\game.png)"));
   }
 
   TEST(ProcessCatalog, FirstSeenUuidVersionsArtworkAndRetainsLegacyLaunchId) {
