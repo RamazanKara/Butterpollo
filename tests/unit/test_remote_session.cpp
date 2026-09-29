@@ -125,25 +125,41 @@ TEST(RemoteSession, ConfiguredRemoteMarkersCannotShadowSyntheticControls) {
 }
 
 TEST(RemoteSession, UngatedGameStaysLaunchableAndCancelableUntilSpecialSessionOwnership) {
+  using remote_session::game_cancel_e;
   const auto active_game = game();
   const auto owner = caller("owner");
   const auto other = caller("other");
 
   EXPECT_TRUE(remote_session::exposes_active_game(owner, active_game, {}, false));
   EXPECT_FALSE(remote_session::exposes_active_game(other, active_game, {}, false));
-  EXPECT_TRUE(remote_session::allows_normal_game_cancel(owner, active_game, false));
-  EXPECT_TRUE(remote_session::allows_normal_game_cancel(other, active_game, false));
+  EXPECT_EQ(remote_session::admit_game_cancel(owner, active_game, false), game_cancel_e::terminate);
+  EXPECT_EQ(remote_session::admit_game_cancel(other, active_game, false), game_cancel_e::terminate);
 
   EXPECT_TRUE(remote_session::exposes_active_game(owner, active_game, {}, true));
   EXPECT_FALSE(remote_session::exposes_active_game(other, active_game, {}, true));
   EXPECT_TRUE(remote_session::exposes_active_game(other, active_game, {}, false, true));
-  EXPECT_TRUE(remote_session::allows_normal_game_cancel(owner, active_game, true));
-  EXPECT_FALSE(remote_session::allows_normal_game_cancel(other, active_game, true));
+  EXPECT_EQ(remote_session::admit_game_cancel(owner, active_game, true), game_cancel_e::terminate);
+  EXPECT_EQ(remote_session::admit_game_cancel(other, active_game, true), game_cancel_e::denied);
 
   const remote_session::owner_t retained_monitor {.role = remote_session::role_e::monitor, .retained = true};
   EXPECT_FALSE(remote_session::exposes_active_game(owner, active_game, retained_monitor, true));
   EXPECT_FALSE(remote_session::exposes_active_game(other, {}, {}, false));
-  EXPECT_FALSE(remote_session::allows_normal_game_cancel(caller("other", true, true, false), active_game, false));
+  EXPECT_EQ(remote_session::admit_game_cancel(caller("other", true, true, false), active_game, false), game_cancel_e::denied);
+  auto unpaired = caller("");
+  unpaired.paired = false;
+  EXPECT_EQ(remote_session::admit_game_cancel(unpaired, active_game, false), game_cancel_e::denied);
+}
+
+TEST(RemoteSession, CancelAfterNaturalAppExitIsAcknowledgedWithoutTeardown) {
+  using remote_session::game_cancel_e;
+  // The exited app's stale owner must neither block the acknowledgement nor
+  // turn it into a teardown of whatever another client has started since.
+  const remote_session::game_t exited {.running = false, .owner_uuid = "owner", .generation = 7};
+  for (const bool remote_sessions_active : {false, true}) {
+    EXPECT_EQ(remote_session::admit_game_cancel(caller("owner"), exited, remote_sessions_active), game_cancel_e::already_complete);
+    EXPECT_EQ(remote_session::admit_game_cancel(caller("other"), exited, remote_sessions_active), game_cancel_e::already_complete);
+    EXPECT_EQ(remote_session::admit_game_cancel(caller("other", true, true, false), exited, remote_sessions_active), game_cancel_e::denied);
+  }
 }
 
 TEST(RemoteSession, SecondaryCatalogueKeepsConfiguredRunningAppBesideInvisibleResumeDuplicate) {

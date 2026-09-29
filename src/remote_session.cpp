@@ -166,8 +166,14 @@ namespace remote_session {
     return owner.role == role_e::none && owns_game(caller, game);
   }
 
-  bool allows_normal_game_cancel(const caller_t &caller, const game_t &game, const bool remote_sessions_active) {
-    return game.running && caller.paired && caller.may_terminate && (!remote_sessions_active || owns_game(caller, game));
+  game_cancel_e admit_game_cancel(const caller_t &caller, const game_t &game, const bool remote_sessions_active) {
+    if (!caller.may_terminate) return game_cancel_e::denied;
+    // Natural app exit clears the owner before the client sends its final
+    // cancel. Acknowledge it without touching another client's transports or
+    // a concurrently admitted application.
+    if (!game.running) return game_cancel_e::already_complete;
+    if (!caller.paired) return game_cancel_e::denied;
+    return !remote_sessions_active || owns_game(caller, game) ? game_cancel_e::terminate : game_cancel_e::denied;
   }
 
   projection_t project(const caller_t &caller, const game_t &game, const owner_t &owner, const std::vector<app_t> &configured, const bool remote_sessions_active) {

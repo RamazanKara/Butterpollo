@@ -546,8 +546,6 @@ add_test(NAME regression_virtual_capture_readiness
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_virtual_capture_readiness.py")
 add_test(NAME regression_virtual_display_scale_boundary
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_virtual_display_scale_boundary.py" "${SUNSHINE_TEST_GXX}")
-add_test(NAME regression_cancel_after_app_exit
-    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_cancel_after_app_exit.py")
 add_test(NAME regression_display_policy_adapter
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_policy_adapter.py")
 add_test(NAME regression_retained_resume_policy

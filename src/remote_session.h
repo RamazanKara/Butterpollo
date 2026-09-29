@@ -90,6 +90,13 @@ namespace remote_session {
   enum class terminate_confirmation_e : std::uint8_t { prompt, confirmed };
   enum class app_replacement_confirmation_e : std::uint8_t { prompt, confirmed };
 
+  /** Outcome of a Moonlight /cancel request for the ordinary running game. */
+  enum class game_cancel_e : std::uint8_t {
+    denied,            ///< 403: no permission, or a Remote Input/Monitor session protects the game.
+    already_complete,  ///< 200 without teardown: the app exited before the client's cancel arrived.
+    terminate,         ///< 200, then tear down the streams and the app.
+  };
+
   [[nodiscard]] bool requires_termination_confirmation(bool terminate_on_first_request, bool caller_owns_active_game);
 
   [[nodiscard]] terminate_confirmation_e arm_or_confirm_termination(
@@ -176,7 +183,11 @@ namespace remote_session {
     bool remote_sessions_active,
     bool replacement_confirmation_active = false
   );
-  [[nodiscard]] bool allows_normal_game_cancel(const caller_t &caller, const game_t &game, bool remote_sessions_active);
+  /**
+   * Decide a /cancel request. A game that is no longer running has already
+   * dropped its owner, so its owner and generation are never consulted.
+   */
+  [[nodiscard]] game_cancel_e admit_game_cancel(const caller_t &caller, const game_t &game, bool remote_sessions_active);
   [[nodiscard]] projection_t project(const caller_t &caller, const game_t &game, const owner_t &owner, const std::vector<app_t> &configured, bool remote_sessions_active);
   [[nodiscard]] dispatch_t dispatch(const caller_t &caller, const game_t &game, const owner_t &owner, control_e control);
   /** Join the running game's output while a peer owns it or a paused game retains a capture-ready output. */

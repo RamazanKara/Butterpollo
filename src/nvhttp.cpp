@@ -5661,37 +5661,36 @@ namespace nvhttp {
     }
 
     const auto identity = resolve_client_identity(request, verified_client);
-    const bool has_running_app = proc::proc.running() > 0;
-    if (!has_running_app) {
-      // Natural app exit clears its owner before the client sends the final
-      // cancel request. Acknowledge the completed operation without touching
-      // another client's transports or a concurrently admitted application.
-      tree.put("root.cancel", 1);
-      tree.put("root.<xmlattr>.status_code", 200);
-      return;
-    }
-    const auto active_session = proc::proc.active_session_guard();
     const remote_session::caller_t caller {
       .uuid = identity.uuid,
       .paired = !identity.uuid.empty(),
       .may_terminate = has_client_perm(verified_client, PERM::launch),
     };
-    const remote_session::game_t game {
-      .running = has_running_app,
-      .owner_uuid = active_session.client_uuid,
-      .generation = active_session_generation(active_session),
-    };
-    const bool remote_sessions_active = remote_role_gate_snapshot_for_client(identity.uuid).active;
-    if (!remote_session::allows_normal_game_cancel(caller, game, remote_sessions_active)) {
-      tree.put("root.cancel", 0);
-      tree.put("root.<xmlattr>.status_code", 403);
-      tree.put(
-        "root.<xmlattr>.status_message",
-        remote_sessions_active ?
-          "Only the configured running-game owner may cancel this game while Remote Input or Remote Monitor is active" :
-          "No running app is available to cancel"
-      );
-      return;
+    remote_session::game_t game {.running = proc::proc.running() > 0};
+    bool remote_sessions_active = false;
+    if (game.running) {
+      const auto active_session = proc::proc.active_session_guard();
+      game.owner_uuid = active_session.client_uuid;
+      game.generation = active_session_generation(active_session);
+      remote_sessions_active = remote_role_gate_snapshot_for_client(identity.uuid).active;
+    }
+    switch (remote_session::admit_game_cancel(caller, game, remote_sessions_active)) {
+      case remote_session::game_cancel_e::already_complete:
+        tree.put("root.cancel", 1);
+        tree.put("root.<xmlattr>.status_code", 200);
+        return;
+      case remote_session::game_cancel_e::denied:
+        tree.put("root.cancel", 0);
+        tree.put("root.<xmlattr>.status_code", 403);
+        tree.put(
+          "root.<xmlattr>.status_message",
+          remote_sessions_active ?
+            "Only the configured running-game owner may cancel this game while Remote Input or Remote Monitor is active" :
+            "No running app is available to cancel"
+        );
+        return;
+      case remote_session::game_cancel_e::terminate:
+        break;
     }
 
     remote_session::clear_app_replacement_confirmation(identity.uuid);
@@ -5700,7 +5699,6 @@ namespace nvhttp {
 
 #ifdef _WIN32
     const bool preserve_deferred_launch =
-      has_running_app &&
       proc::proc.is_launch_deferred() &&
       rtsp_stream::session_count_no_cleanup() == 0;
     if (preserve_deferred_launch) {
@@ -5709,7 +5707,7 @@ namespace nvhttp {
 #else
     constexpr bool preserve_deferred_launch = false;
 #endif
-    terminate_streams_and_app(false, preserve_deferred_launch, has_running_app);
+    terminate_streams_and_app(false, preserve_deferred_launch, /*terminate_app=*/true);
   }
 
   void appasset(resp_https_t response, req_https_t request) {
