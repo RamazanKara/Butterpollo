@@ -955,38 +955,6 @@ export const settingsCategories: SettingsCategory[] = [
           ]),
         ],
       },
-      {
-        id: 'host_history',
-        fields: [
-          ...Object.keys(extendedDefaults)
-            .filter(
-              (key) =>
-                key.startsWith('realtime_stats_') &&
-                !['realtime_stats_enabled', 'realtime_stats_poll_interval_ms'].includes(key),
-            )
-            .map((key) =>
-              extendedField(key, { visibleWhen: { key: 'realtime_stats_enabled', equals: true } }),
-            ),
-          boolean('session_history_enabled'),
-          number('session_history_ttl_days', {
-            min: 0,
-            step: 1,
-            visibleWhen: { key: 'session_history_enabled', equals: true },
-          }),
-          number('session_history_db_size_limit_mb', {
-            min: 0,
-            step: 1,
-            visibleWhen: { key: 'session_history_enabled', equals: true },
-          }),
-          boolean('realtime_stats_enabled'),
-          number('realtime_stats_poll_interval_ms', {
-            min: 250,
-            max: 60000,
-            step: 50,
-            visibleWhen: { key: 'realtime_stats_enabled', equals: true },
-          }),
-        ],
-      },
     ],
   },
   {
@@ -1118,11 +1086,6 @@ export const settingsDefaults: Record<string, unknown> = {
   global_prep_cmd: [],
   global_state_cmd: [],
   server_cmd: [],
-  session_history_enabled: true,
-  session_history_ttl_days: 0,
-  session_history_db_size_limit_mb: 0,
-  realtime_stats_enabled: true,
-  realtime_stats_poll_interval_ms: 2000,
 };
 
 export const knownSettingsKeys = new Set(

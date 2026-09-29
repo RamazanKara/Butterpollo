@@ -26,7 +26,6 @@
 // local includes
 #include "src/boost_process_shim.h"
 #include "src/config.h"
-#include "src/host_stats_types.h"
 #include "src/logging.h"
 #include "src/thread_safe.h"
 #include "src/utility.h"
@@ -1070,15 +1069,6 @@ namespace platf {
 
   bool
     set_clipboard(const std::string &content);
-
-  /**
-   * @brief Factory for the platform-specific host stats provider.
-   *
-   * Always returns a usable provider; on platforms without a real
-   * implementation, it returns a stub that emits empty samples.
-   */
-  std::unique_ptr<host_stats_provider_t>
-    create_host_stats_provider();
 
   std::string resolve_render_device();
   bool has_elevated_privileges(bool all_caps = true);

@@ -49,7 +49,6 @@
 #include "platform/common.h"
 #include "process.h"
 #include "rtsp.h"
-#include "session_history.h"
 #include "state_storage.h"
 #include "stream.h"
 #include "utility.h"
@@ -1101,10 +1100,7 @@ namespace config {
     {},  // server commands
     std::chrono::hours {2},  // session_token_ttl default 2h
     std::chrono::hours {24 * 7},  // remember_me_refresh_token_ttl default 7d
-    86400,  // update_check_interval_seconds default 24h
-    true,  // session_history_enabled
-    0,  // session_history_ttl_days (disabled by default)
-    0  // session_history_db_size_limit_mb (disabled by default)
+    86400  // update_check_interval_seconds default 24h
   };
 
   namespace {
@@ -2093,7 +2089,6 @@ namespace config {
     list_server_cmd_f(vars, "server_cmd", config::sunshine.server_cmds);
 
     int_f(vars, "update_check_interval", config::sunshine.update_check_interval_seconds);
-    bool_f(vars, "session_history_enabled", config::sunshine.session_history_enabled);
 
     string_f(vars, "audio_sink", audio.sink);
     string_f(vars, "virtual_sink", audio.virtual_sink);
@@ -2285,13 +2280,15 @@ namespace config {
       }
     }
 
-    // Game library integrations (Playnite, Steam, Lutris) and Lossless Scaling
-    // automation were removed. Drop their retired keys so older config files
-    // load without "Unrecognized configurable option" warnings.
+    // Game library integrations (Playnite, Steam, Lutris), Lossless Scaling
+    // automation, host stats and session history were removed. Drop their
+    // retired keys so older config files load without "Unrecognized
+    // configurable option" warnings.
     std::erase_if(vars, [](const auto &entry) {
       const std::string_view key = entry.first;
       return key.starts_with("playnite_") || key.starts_with("steam_") ||
-             key.starts_with("lutris_") || key.starts_with("lossless_scaling_");
+             key.starts_with("lutris_") || key.starts_with("lossless_scaling_") ||
+             key.starts_with("session_history_") || key.starts_with("realtime_stats_");
     });
 
     auto it = vars.find("flags"s);
@@ -2322,38 +2319,6 @@ namespace config {
         sunshine.remember_me_refresh_token_ttl = std::chrono::seconds {ttl_secs};
       }
     }
-    {
-      int retention_days = config::sunshine.session_history_ttl_days;
-      int_between_f(vars, "session_history_ttl_days", retention_days, {0, std::numeric_limits<int>::max()});
-      if (retention_days >= 0) {
-        sunshine.session_history_ttl_days = retention_days;
-      }
-    }
-    {
-      int quota_mb = config::sunshine.session_history_db_size_limit_mb;
-      int_between_f(vars, "session_history_db_size_limit_mb", quota_mb, {0, std::numeric_limits<int>::max()});
-      if (quota_mb >= 0) {
-        sunshine.session_history_db_size_limit_mb = quota_mb;
-      }
-    }
-
-    bool_f(vars, "realtime_stats_enabled", sunshine.realtime_stats_enabled);
-    int_between_f(vars, "realtime_stats_poll_interval_ms", sunshine.realtime_stats_poll_interval_ms, {250, 60000});
-
-    // Web-UI-only realtime stats preferences; consumed here so they are not
-    // reported as unrecognized options.
-    for (const auto *ui_only_key : {
-           "realtime_stats_history_retention_seconds",
-           "realtime_stats_max_history_points",
-           "realtime_stats_pause_when_hidden",
-           "realtime_stats_show_active_sessions",
-           "realtime_stats_show_host_stats",
-           "realtime_stats_show_host_charts",
-           "realtime_stats_show_session_history",
-         }) {
-      vars.erase(ui_only_key);
-    }
-
 #ifdef _WIN32
     platf::hotkey::update_restore_hotkey(
       video.dd.snapshot_restore_hotkey,
@@ -3196,7 +3161,6 @@ namespace config {
       const auto prev_rtx_hdr_middle_gray = video.rtx_hdr.middle_gray;
       const auto prev_rtx_hdr_peak_brightness = video.rtx_hdr.peak_brightness;
 #endif
-      const auto prev_session_history_enabled = sunshine.session_history_enabled;
 
       auto vars = parse_config(file_handler::read_file(sunshine.config_file.c_str()));
       merge_config_overrides(vars, command_line_overrides);
@@ -3211,12 +3175,6 @@ namespace config {
       const std::string old_log_file = sunshine.log_file;
 
       apply_config(std::move(vars));
-      if (sunshine.session_history_enabled != prev_session_history_enabled && has_active_stream_sessions()) {
-        BOOST_LOG(info) << "Hot-apply: deferring session history enablement change until active sessions end.";
-        sunshine.session_history_enabled = prev_session_history_enabled;
-        g_deferred_reload.store(true, std::memory_order_release);
-      }
-      session_history::reload_settings();
 
       // If only the log level changed, we can reconfigure sinks in place.
       if (sunshine.min_log_level != old_min_level && sunshine.log_file == old_log_file) {

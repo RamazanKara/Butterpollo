@@ -168,7 +168,6 @@ test('all canonical v2 pages render without client-side exceptions', async ({ pa
     'library/new',
     'devices',
     'pair',
-    'stats',
     'integrations',
     'logs',
     'api-tokens',
@@ -331,23 +330,11 @@ test('appearance controls persist the chosen theme and follow system appearance'
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
 });
 
-test('unknown readiness and unavailable utilization do not render as successful measurements', async ({
-  page,
-}) => {
+test('unknown readiness does not render as ready', async ({ page }) => {
   await host(page);
   await page.route('**/api/metadata', (route) => route.fulfill({ json: { platform: 'linux' } }));
-  await page.route('**/api/host/stats', (route) =>
-    route.fulfill({ json: { cpu_percent: -1, gpu_percent: null } }),
-  );
   await page.goto('/v2/');
   await expect(page.locator('.readiness-panel')).toHaveAttribute('data-tone', 'neutral');
-  await expect(page.locator('.metric-grid dd')).toHaveText([
-    'Unavailable',
-    'Unavailable',
-    'Unavailable',
-    'Unavailable',
-  ]);
-  await expect(page.locator('.metric-footnote')).toHaveCount(0);
   await expect(page.getByRole('link', { name: 'Review setup', exact: true })).toBeVisible();
 });
 
@@ -413,31 +400,6 @@ for (const width of [320, 390, 768, 1100, 1440]) {
   });
 }
 
-test('a failed performance refresh retains the sample and visibly marks it as stale', async ({
-  page,
-}) => {
-  await host(page);
-  let unavailable = false;
-  await page.route('**/api/host/stats', (route) =>
-    unavailable
-      ? route.fulfill({ status: 503, json: { status: false } })
-      : route.fulfill({
-          json: { cpu_percent: 12, gpu_percent: 8, ram_percent: 24, vram_percent: 11 },
-        }),
-  );
-  await page.goto('/v2/');
-  await expect(page.locator('.metric-grid dd').first()).toHaveText('12%');
-  unavailable = true;
-  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
-  await expect(
-    page.getByText('Showing the last available sample. Refresh to try again.'),
-  ).toBeVisible();
-  await expect(page.locator('.metric-grid dd').first()).toHaveText('12%');
-  unavailable = false;
-  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
-  await expect(page.locator('.overview-stale')).toHaveCount(0);
-});
-
 test('encoder failures direct the overview to diagnostics', async ({ page }) => {
   await host(page, 'windows');
   await page.route('**/api/metadata', (route) =>
@@ -454,6 +416,42 @@ test('encoder failures direct the overview to diagnostics', async ({ page }) => 
     'href',
     '/v2/logs',
   );
+});
+
+test('overview stops a running application only after confirmation', async ({ page }) => {
+  await host(page);
+  let closeCalls = 0;
+  await page.route('**/api/session/status', (route) =>
+    route.fulfill({
+      json: {
+        status: true,
+        activeSessions: 2,
+        appRunning: true,
+        appName: 'Elden Ring',
+        paused: false,
+        lastEncoderProbeFailed: false,
+      },
+    }),
+  );
+  await page.route('**/api/apps/close', (route) => {
+    closeCalls += 1;
+    return route.fulfill({ json: { status: true } });
+  });
+  await page.goto('/v2/');
+  await expect(page.locator('.readiness-panel .button--primary')).toHaveAttribute(
+    'href',
+    '/v2/devices',
+  );
+  await page.locator('.readiness-panel').getByRole('button', { name: 'Stop stream' }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toContainText('Stop the RTSP stream?');
+  await expect(dialog).toContainText('ends every active RTSP stream');
+  expect(closeCalls).toBe(0);
+  await dialog.getByRole('button', { name: 'Stop stream' }).click();
+  await expect.poll(() => closeCalls).toBe(1);
+  await expect(
+    page.getByText('The running application and its RTSP stream were asked to stop.'),
+  ).toBeVisible();
 });
 
 test('unmigrated Linux services are neither offered nor called', async ({ page }) => {

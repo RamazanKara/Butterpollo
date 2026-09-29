@@ -8,7 +8,6 @@ const ApplicationsView = () => import('@/views/ApplicationsView.vue');
 const SettingsView = () => import('@/views/SettingsView.vue');
 const TroubleshootingView = () => import('@/views/TroubleshootingView.vue');
 const ClientManagementView = () => import('@/views/ClientManagementView.vue');
-const StatsView = () => import('@/views/StatsView.vue');
 
 const routes = [
   { path: '/', component: DashboardView, meta: { container: 'xl' } },
@@ -18,7 +17,7 @@ const routes = [
   { path: '/troubleshooting', component: TroubleshootingView },
   { path: '/changelog', redirect: '/' },
   { path: '/clients', component: ClientManagementView },
-  { path: '/stats', component: StatsView, meta: { container: 'xl' } },
+  { path: '/stats', redirect: '/clients' },
   {
     path: '/api-tokens',
     alias: '/api-tokens/',

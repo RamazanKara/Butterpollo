@@ -11,7 +11,6 @@ const MaintenanceView = () => import('@/views/MaintenanceView.vue');
 const NotFoundView = () => import('@/views/NotFoundView.vue');
 const PairView = () => import('@/views/PairView.vue');
 const SettingsView = () => import('@/views/SettingsView.vue');
-const StatsView = () => import('@/views/StatsView.vue');
 
 const router = createRouter({
   history: createWebHistory('/v2/'),
@@ -54,13 +53,11 @@ const router = createRouter({
     },
     {
       path: '/stats',
-      name: 'stats',
-      component: StatsView,
-      meta: { titleKey: 'ui.nav.stats' },
+      redirect: '/devices',
     },
     {
       path: '/sessions',
-      redirect: '/stats',
+      redirect: '/devices',
     },
     {
       path: '/integrations',

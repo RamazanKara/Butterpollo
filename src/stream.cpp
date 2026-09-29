@@ -51,7 +51,6 @@ extern "C" {
 #include "remote_display_topology.h"
 #include "rtsp.h"
 #include "rtsp_pending_policy.h"
-#include "session_history.h"
 #include "stream.h"
 #include "sync.h"
 #include "system_tray.h"
@@ -126,17 +125,6 @@ using namespace std::literals;
 
 namespace stream {
   namespace {
-    std::string current_server_version() {
-      std::string version = PROJECT_VERSION;
-#ifdef PROJECT_VERSION_PRERELEASE
-      if (std::string_view(PROJECT_VERSION_PRERELEASE).size() > 0) {
-        version += ' ';
-        version += PROJECT_VERSION_PRERELEASE;
-      }
-#endif
-      return version;
-    }
-
     template<typename T>
     void saturating_add_relaxed(std::atomic<T> &target, T delta) {
       static_assert(std::is_integral_v<T>, "saturating_add_relaxed requires integral atomics");
@@ -646,9 +634,9 @@ namespace stream {
     std::string device_name;
     std::string history_device_name;
     std::string device_uuid;
-    // Per-stream identifier used by the session_history subsystem. Distinct
+    // Per-stream identifier reported by the active session API. Distinct
     // from device_uuid so that consecutive streams from the same Moonlight
-    // client produce separate history rows.
+    // client can be told apart.
     std::string history_uuid;
     std::string stream_gpu_model;
     crypto::PERM permission;
@@ -775,7 +763,7 @@ namespace stream {
       if (!client_uuid.empty() && session->device_uuid != client_uuid) {
         continue;
       }
-      // Keep the session metadata (runtime sessions API, history, stats) in sync with the
+      // Keep the session metadata (runtime sessions API) in sync with the
       // value the encoder thread will adopt from the event below.
       session->config.monitor.bitrate = bitrate_kbps;
       session->config.monitor.client_requested_bitrate = bitrate_kbps;
@@ -3372,24 +3360,18 @@ namespace stream {
       session.display_power_guard.reset();
       BOOST_LOG(info) << "Session ended"sv;
 
-      // Record session end in persistent history (fires exactly once, after join)
-      session_history::end_session(session.history_uuid);
-
       if (last_rtsp_session && finalized_shared_runtime) {
         // Keep the cleanup tail externally observable while dropping the
         // protocol-specific owner so config's full activity predicate can
         // apply the deferred reload that this teardown just unblocked.
         session::cleanup_reservation_t cleanup_reservation;
-        // The shared cleanup and history tail are complete. Drop this teardown
+        // The shared cleanup tail is complete. Drop this teardown
         // owner before the comprehensive config activity predicate runs so a
         // deferred reload is not blocked by the very teardown that proved idle.
         if (teardown_reserved) {
           teardown_sessions.fetch_sub(1, std::memory_order_acq_rel);
           teardown_reserved = false;
         }
-        // Apply deferred config updates only after the session end is queued.
-        // This prevents a deferred session_history_enabled=false reload from
-        // disabling the writer before it records stream_ended/end_time_unix.
         config::maybe_apply_deferred();
       }
     }
@@ -3438,34 +3420,10 @@ namespace stream {
 
       session.state.store(state_e::RUNNING, std::memory_order_relaxed);
 
-      // Record session in persistent history
+      // Snapshot the device name reported by the active session API.
       {
-        session_history::session_metadata_t meta;
-        meta.protocol = "rtsp";
-        {
-          std::lock_guard lg {session.metadata_mutex};
-          meta.uuid = session.history_uuid;
-          session.history_device_name = session.device_name;
-          meta.client_name = session.history_device_name;
-          meta.device_name = session.history_device_name;
-          meta.stream_gpu_model = session.stream_gpu_model;
-        }
-        meta.app_name = proc::proc.get_last_run_app_name();
-        meta.width = session.config.monitor.width;
-        meta.height = session.config.monitor.height;
-        meta.target_fps = session.stream_fps;
-        meta.encoder_bitrate_kbps = session.config.monitor.bitrate;
-        meta.requested_bitrate_kbps = session.config.monitor.client_requested_bitrate
-                                        ? session.config.monitor.client_requested_bitrate
-                                        : session.config.monitor.bitrate;
-        meta.codec = std::string(video_format_name(session.config.monitor.videoFormat));
-        meta.hdr = session.config.monitor.dynamicRange != 0 &&
-                   !session.config.monitor.prefer_sdr_10bit &&
-                   !session.config.monitor.force_sdr;
-        meta.yuv444 = session.config.monitor.chromaSamplingType != 0;
-        meta.audio_channels = session.audio_disabled ? 0 : session.config.audio.channels;
-        meta.server_version = current_server_version();
-        session_history::begin_session(meta);
+        std::lock_guard lg {session.metadata_mutex};
+        session.history_device_name = session.device_name;
       }
 
       // If this is the first session, invoke the platform callbacks
@@ -3585,8 +3543,7 @@ namespace stream {
       session->display_power_guard = launch_session.display_power_guard;
       session->device_name = launch_session.device_name;
       session->device_uuid = !launch_session.client_uuid.empty() ? launch_session.client_uuid : launch_session.unique_id;
-      // Fresh history identifier per stream so each start/stop cycle produces
-      // a distinct row in the session_history database.
+      // Fresh identifier per stream so each start/stop cycle is distinct.
       session->history_uuid = uuid_util::uuid_t::generate().string();
       session->permission = launch_session.perm;
 

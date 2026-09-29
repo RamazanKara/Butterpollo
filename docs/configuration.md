@@ -4442,14 +4442,6 @@ Enables the display-helper HDR-toggle workaround for display stacks that require
 
 Sets the delay, in milliseconds, used by the display-helper HDR-toggle workaround.
 
-### realtime_stats_enabled
-
-Enables collection of the host and session statistics shown by the real-time statistics view.
-
-### realtime_stats_poll_interval_ms
-
-Sets the real-time statistics polling interval in milliseconds. Lower values refresh the dashboard more frequently.
-
 ### rtx_hdr
 
 Enables RTX HDR processing when the active NVIDIA environment supports it.
@@ -4477,18 +4469,6 @@ Sets the RTX HDR middle-gray control.
 ### rtx_hdr_peak_brightness
 
 Sets the RTX HDR peak-brightness control.
-
-### session_history_enabled
-
-Enables persistent session-history recording.
-
-### session_history_ttl_days
-
-Sets the number of days to retain session-history records. Set `0` to retain records until another configured limit removes them.
-
-### session_history_db_size_limit_mb
-
-Sets the maximum on-disk size, in MiB, of the session-history database before older records are pruned.
 
 ### vulkan_hdr_layer
 

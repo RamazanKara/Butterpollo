@@ -1030,7 +1030,6 @@ const OVERRIDE_DESC_KEYS: Record<string, string> = {
 function groupNameFor(groupId: string, fallback: string): string {
   const keys: Record<string, string> = {
     general: 'settings.tabs.general',
-    stats: 'navbar.stats',
     input: 'settings.tabs.input',
     av: 'settings.tabs.audio_video',
     network: 'settings.tabs.network',

@@ -30,10 +30,7 @@ const navigationGroups = [
   },
   {
     labelKey: 'ui.shell.monitor',
-    items: [
-      { labelKey: 'ui.nav.stats', icon: 'activity', to: '/stats' },
-      { labelKey: 'ui.nav.logs', icon: 'logs', to: '/logs' },
-    ],
+    items: [{ labelKey: 'ui.nav.logs', icon: 'logs', to: '/logs' }],
   },
   {
     labelKey: 'ui.shell.manage',

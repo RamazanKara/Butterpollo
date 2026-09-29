@@ -186,8 +186,6 @@ if(WIN32)
 endif()
 add_subdirectory("${GTEST_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/googletest")
 
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(SQLITE3 REQUIRED IMPORTED_TARGET sqlite3)
 if(NOT TARGET Boost::algorithm OR
    NOT TARGET Boost::asio OR
    NOT TARGET Boost::crc OR
@@ -399,14 +397,6 @@ sunshine_register_component(NAME test_component_display_device_policy TEST_SOURC
 sunshine_register_component(NAME test_component_process_policy TEST_SOURCE unit/test_process.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/app_catalog_policy.cpp"
     LINK_LIBRARIES Boost::crc)
-sunshine_register_component(NAME test_component_session_history TEST_SOURCE unit/test_session_history.cpp
-    PRODUCT_SOURCES
-        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/session_history_storage.cpp"
-        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/session_history_storage_diagnostics.cpp"
-        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/session_history_policy.cpp"
-    LINK_LIBRARIES PkgConfig::SQLITE3 nlohmann_json::nlohmann_json)
-sunshine_register_component(NAME test_component_host_stats TEST_SOURCE unit/test_host_stats.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/host_stats_service.cpp")
 sunshine_register_component(NAME test_component_audio_policy TEST_SOURCE unit/test_audio.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/audio_policy.cpp")
 sunshine_register_component(NAME test_component_mouse_policy TEST_SOURCE unit/test_mouse.cpp

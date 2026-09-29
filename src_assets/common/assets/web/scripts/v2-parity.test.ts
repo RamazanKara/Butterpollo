@@ -22,8 +22,6 @@ import {
 } from '../configs/settingsSchema.ts';
 import {
   displayFieldVisibility,
-  downsampleHostHistory,
-  hostHistoryPeaks,
   normalizeCommandRows,
   normalizeServerCommandRows,
   preserveHiddenDisplayValues,
@@ -210,44 +208,6 @@ test('display visibility calls disabled Physical and does not clear hidden value
   );
 });
 
-test('host history downsampling and peaks make relative spikes comparable', () => {
-  const points = Array.from({ length: 10 }, (_, index) => ({
-    timestamp: index,
-    cpu_percent: index === 7 ? 95 : 10,
-    gpu_percent: index === 6 ? 88 : 20,
-    gpu_encoder_percent: index === 8 ? 79 : 5,
-    net_tx_bps: index === 9 ? 12_000_000 : 1_000_000,
-  }));
-  const downsampled = downsampleHostHistory(points, 4);
-  assert.equal(downsampled.length, 4);
-  assert.deepEqual(
-    downsampled.map((point) => point.timestamp),
-    [6, 7, 8, 9],
-    'the rendered series must retain each CPU/GPU/encoder/network spike',
-  );
-  assert.deepEqual(hostHistoryPeaks(points), { cpu: 95, gpu: 88, encoder: 79, networkMbps: 12 });
-});
-
-test('host compute readouts label current and peak values explicitly', () => {
-  const chart = readFileSync(
-    new URL('../components/stats/HostComputeChart.vue', import.meta.url),
-    'utf8',
-  );
-  assert.match(
-    chart,
-    /CPU[\s\S]*t\('stats\.current'\)[\s\S]*current\.cpu[\s\S]*t\('stats\.peak'\)[\s\S]*peak\.cpu/,
-  );
-  assert.match(
-    chart,
-    /GPU[\s\S]*t\('stats\.current'\)[\s\S]*current\.gpu[\s\S]*t\('stats\.peak'\)[\s\S]*peak\.gpu/,
-  );
-  assert.match(
-    chart,
-    /ENC[\s\S]*t\('stats\.current'\)[\s\S]*current\.encoder[\s\S]*t\('stats\.peak'\)[\s\S]*peak\.encoder/,
-  );
-  assert.doesNotMatch(chart, /t\('stats\.peak'\)[^\n]*\/[^\n]*t\('stats\.current'\)/);
-});
-
 test('advanced encoder settings have actual fields and platform-aware options', () => {
   for (const key of [
     'nvenc_twopass',
@@ -260,7 +220,6 @@ test('advanced encoder settings have actual fields and platform-aware options', 
     'vt_software',
     'keybindings',
     'session_token_ttl_seconds',
-    'realtime_stats_show_host_stats',
   ])
     assert.ok(settingsFields.has(key), key);
   assert.equal(encoderFamilyFor('vaapi'), 'vaapi');

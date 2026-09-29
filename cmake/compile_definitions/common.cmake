@@ -156,23 +156,6 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/state_storage.h"
         "${CMAKE_SOURCE_DIR}/src/state_storage_policy.cpp"
         "${CMAKE_SOURCE_DIR}/src/state_storage_policy.h"
-        "${CMAKE_SOURCE_DIR}/src/session_history.cpp"
-        "${CMAKE_SOURCE_DIR}/src/session_history.h"
-        "${CMAKE_SOURCE_DIR}/src/session_history_sampler.cpp"
-        "${CMAKE_SOURCE_DIR}/src/session_history_sampler.h"
-        "${CMAKE_SOURCE_DIR}/src/session_history_storage.cpp"
-        "${CMAKE_SOURCE_DIR}/src/session_history_storage.h"
-        "${CMAKE_SOURCE_DIR}/src/session_history_storage_diagnostics.cpp"
-        "${CMAKE_SOURCE_DIR}/src/session_history_storage_diagnostics.h"
-        "${CMAKE_SOURCE_DIR}/src/session_history_policy.cpp"
-        "${CMAKE_SOURCE_DIR}/src/session_history_policy.h"
-        "${CMAKE_SOURCE_DIR}/src/session_history_writer.cpp"
-        "${CMAKE_SOURCE_DIR}/src/session_history_writer.h"
-        "${CMAKE_SOURCE_DIR}/src/host_stats.cpp"
-        "${CMAKE_SOURCE_DIR}/src/host_stats.h"
-        "${CMAKE_SOURCE_DIR}/src/host_stats_service.cpp"
-        "${CMAKE_SOURCE_DIR}/src/host_stats_service.h"
-        "${CMAKE_SOURCE_DIR}/src/host_stats_types.h"
         ${PLATFORM_TARGET_FILES})
 
 if(NOT SUNSHINE_ASSETS_DIR_DEF)
@@ -211,7 +194,6 @@ include_directories(
         "${CMAKE_SOURCE_DIR}/third-party/moonlight-common-c/enet/include"
         "${CMAKE_SOURCE_DIR}/third-party/nanors"
         "${CMAKE_SOURCE_DIR}/third-party/nanors/deps/obl"
-        ${SQLITE3_INCLUDE_DIRS}
         ${SUNSHINE_FFMPEG_INCLUDE_DIRS}
         ${OPENSSL_INCLUDE_DIR}
         ${Opus_INCLUDE_DIR}
@@ -221,7 +203,6 @@ include_directories(
 list(APPEND SUNSHINE_EXTERNAL_LIBRARIES
         ${MINIUPNP_LIBRARIES}
         ${CMAKE_THREAD_LIBS_INIT}
-        ${SQLITE3_LIBRARIES}
         enet
         libdisplaydevice::display_device
         libvirtualdisplay::driver

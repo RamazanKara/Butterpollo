@@ -885,7 +885,6 @@
       "logs": "Logs",
       "maintenance": "Maintenance",
       "overview": "Overview",
-      "stats": "Statistics",
       "settings": "Settings"
     },
     "browser_stream": {
@@ -1009,14 +1008,12 @@
         "checkUpdates": "Check for updates",
         "openLibrary": "Open library",
         "openLogs": "Open logs",
-        "openStats": "Open statistics",
         "pairDevice": "Pair a device",
         "reportBug": "Report a bug",
         "startBrowserStream": "Start browser stream",
         "useLegacyWebUi": "Use legacy Web UI",
         "viewAll": "View all",
-        "reviewSetup": "Review setup",
-        "viewDetails": "View details"
+        "reviewSetup": "Review setup"
       },
       "activeSessions": {
         "one": "{count} active session.",
@@ -1040,20 +1037,9 @@
         "title": "Paired devices"
       },
       "errors": {
-        "hostInfo": "Host information is unavailable.",
-        "hostMetrics": "Live host metrics are unavailable.",
         "library": "The application library is unavailable.",
         "pairedDevices": "Paired devices are unavailable.",
         "streamStatus": "Stream status is unavailable."
-      },
-      "hardwareUnavailable": "Host hardware details unavailable",
-      "hostLoad": {
-        "description": "Current resource usage. Updates every 10 seconds.",
-        "memoryInUse": "{used} of {total} memory in use",
-        "title": "Host performance",
-        "unavailableDescription": "Refresh to request a new host sample.",
-        "unavailableTitle": "Host metrics unavailable",
-        "staleDescription": "Showing the last available sample. Refresh to try again."
       },
       "library": {
         "configured": {
@@ -1066,7 +1052,6 @@
         "unnamedApplication": "Unnamed application"
       },
       "loadingReadiness": "Loading host readiness",
-      "memory": "Memory",
       "notUpdated": "Not updated yet",
       "reportBug": {
         "description": "Found something that is not working? Open a GitHub issue and include the relevant logs.",
@@ -1084,7 +1069,6 @@
       "remoteStream": "Remote stream",
       "sessions": "Sessions",
       "title": "Overview",
-      "unavailable": "Unavailable",
       "updated": "Updated {time}",
       "updates": {
         "installed": "Installed version: {version}. Review the latest release before updating.",
@@ -1094,10 +1078,6 @@
         "blockedDevices": {
           "detail": "Enable at least one paired device before streaming.",
           "title": "All paired devices are blocked"
-        },
-        "hostLoad": {
-          "detail": "CPU or GPU utilization is above {threshold}%. Stream quality may be affected.",
-          "title": "Host load is very high"
         },
         "encoderProbe": {
           "detail": "The last encoder capability check failed. Streaming may still recover with an available display, but review the logs before relying on it.",
@@ -1124,9 +1104,6 @@
         "settings": "Fine-tune your stream",
         "settingsDetail": "Set up your display, audio, and input."
       },
-      "hostDetails": "Host details",
-      "processor": "Processor",
-      "graphics": "Graphics",
       "installedVersion": "Installed version",
       "support": "Help & updates"
     },
@@ -1180,123 +1157,21 @@
     },
     "sessions": {
       "action": {
-        "delete_record": "Delete session record",
-        "refreshing": "Refreshing",
         "stop_stream": "Stop stream",
-        "stop_stream_named": "Stop {protocol} stream for {client}",
         "working": "Working"
       },
-      "active": {
-        "empty_description": "Sessions appear here as soon as an Artemis or browser client connects.",
-        "list_aria_label": "Active streaming sessions",
-        "refresh_description": "Auto-refreshes every four seconds while this tab is visible.",
-        "title": "Active sessions"
-      },
-      "alert": {
-        "action_complete": "Session action complete",
-        "app_running_description": "{app} has no active RTSP clients. It may be paused for reconnection.",
-        "app_running_title": "Application is still running",
-        "history_degraded_description": "Live streams are unaffected, but new diagnostics may be incomplete.",
-        "history_degraded_title": "Session history is degraded",
-        "partial_failure_description": "Existing rows remain visible while Vibepollo retries.",
-        "partial_failure_title": "Some session data is unavailable"
-      },
       "confirm": {
-        "delete_title": "Delete this session record?",
-        "generic_title": "Confirm session action",
         "stop_rtsp_all_description": "Stopping the running application ends every active RTSP stream on this host.",
         "stop_rtsp_description": "Stopping the running application ends this RTSP stream.",
-        "stop_rtsp_title": "Stop the RTSP stream?",
-        "stop_webrtc_description": "The selected WebRTC session will close immediately.",
-        "stop_webrtc_title": "Stop this browser stream?"
-      },
-      "count": {
-        "active": "{count} active session | {count} active sessions",
-        "rtsp": "{count} RTSP session active | {count} RTSP sessions active",
-        "webrtc": "{count} WebRTC session active | {count} WebRTC sessions active"
-      },
-      "diagnostic": {
-        "ice_candidates": "ICE candidates",
-        "session_id": "Session ID",
-        "title": "Diagnostics"
+        "stop_rtsp_title": "Stop the RTSP stream?"
       },
       "error": {
         "action": "Unable to complete the session action.",
-        "source_detail": "{source}: {detail}",
-        "source_load": "Unable to load {source}.",
-        "stop_rtsp_rejected": "The host did not stop the RTSP stream.",
-        "webrtc_not_found": "The browser stream was not found."
-      },
-      "history": {
-        "actions": "Actions",
-        "client_and_game": "Client and game",
-        "description": "Browse completed sessions retained by this host.",
-        "empty_description": "Completed streams will appear here when session history is available.",
-        "empty_title": "No session history",
-        "next_page": "Next page",
-        "outcome": "Outcome",
-        "previous_page": "Previous page",
-        "stream": "Stream",
-        "table_caption": "Recent completed streaming sessions"
-      },
-      "metric": {
-        "picture": "Picture"
+        "stop_rtsp_rejected": "The host did not stop the RTSP stream."
       },
       "notice": {
-        "history_deleted": "The session record was deleted.",
-        "stop_rtsp": "The running application and its RTSP stream were asked to stop.",
-        "stop_webrtc": "The browser stream was stopped."
-      },
-      "page": {
-        "description": "See active Artemis and browser streams, inspect diagnostics, and review recent session outcomes. Live values update without moving rows.",
-        "title": "Sessions"
-      },
-      "protocol": {
-        "rtsp": "RTSP",
-        "webrtc": "WebRTC"
-      },
-      "source": {
-        "host_status": "Host session status",
-        "rtsp": "RTSP sessions",
-        "webrtc": "WebRTC sessions"
-      },
-      "status": {
-        "awaiting_offer": "Awaiting offer",
-        "error": "Error",
-        "negotiating": "Negotiating",
-        "no_active": "No active streams",
-        "paused": "Paused",
-        "stopped": "Stopped",
-        "stopping": "Stopping",
-        "streaming": "Streaming"
-      },
-      "value": {
-        "browser_session": "Browser session {id}",
-        "browser_stream": "Browser stream",
-        "desktop_stream": "Desktop stream",
-        "fps": "{value} fps",
-        "frame_count": "No frames | {count} frame | {count} frames",
-        "milliseconds": "{value} ms",
-        "milliseconds_ago": "{value} ms ago",
-        "moonlight_client": "Artemis client",
-        "negotiating_codec": "Negotiating codec",
-        "not_reported": "Not reported",
-        "streamed_application": "The streamed application",
-        "unknown_client": "Unknown client",
-        "unknown_codec": "Unknown codec",
-        "unknown_time": "Unknown time"
+        "stop_rtsp": "The running application and its RTSP stream were asked to stop."
       }
-    },
-    "stats": {
-      "close_detail": "Close session details",
-      "host_cpu": "CPU",
-      "host_gpu": "GPU",
-      "host_ram": "RAM",
-      "host_vitals_title": "Host vitals",
-      "host_vram": "VRAM",
-      "maximum": "Max {value}",
-      "minimum": "Min {value}",
-      "sample_count": "{count} sample | {count} samples"
     },
     "settings": {
       "all_settings": "All settings",
@@ -1318,7 +1193,7 @@
           "label": "Files & certificates"
         },
         "host": {
-          "description": "Identity, local behavior, history retention, and live metrics.",
+          "description": "Identity, commands, local behavior, and logging.",
           "label": "Host & diagnostics"
         },
         "input": {
@@ -1620,9 +1495,6 @@
         },
         "file_paths": {
           "title": "Data paths"
-        },
-        "host_history": {
-          "title": "History and live diagnostics"
         },
         "host_identity": {
           "title": "Identity and local behavior"
@@ -2222,8 +2094,5 @@
       "host_status_unavailable": "Host status is temporarily unavailable.",
       "unreachable": "Unable to reach Vibepollo."
     }
-  },
-  "sessions": {
-    "history_performance_title": "Session performance"
   }
 }

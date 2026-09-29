@@ -92,19 +92,6 @@ async function installFixture(page: Page, options: FixtureOptions = {}) {
       };
     } else if (path === '/api/session/status') {
       body = { status: true, activeSessions: 0, appRunning: false };
-    } else if (path === '/api/host/stats') {
-      body = {
-        cpu_percent: 20,
-        gpu_percent: 30,
-        ram_percent: 40,
-        vram_percent: 50,
-        ram_used_bytes: 1,
-        ram_total_bytes: 2,
-        vram_used_bytes: 1,
-        vram_total_bytes: 2,
-      };
-    } else if (path === '/api/host/info') {
-      body = { cpu_model: 'Fixture CPU', gpu_model: 'Fixture GPU' };
     } else if (path === '/api/health/vigem') {
       calls.vigem += 1;
       if (options.vigem === 'error') {

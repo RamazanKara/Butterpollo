@@ -4,20 +4,23 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 
 import LinuxCaptureStatus from '@/components/settings/LinuxCaptureStatus.vue';
-import { ApiError, apiGet } from '@/api/client';
+import { ApiError, apiGet, apiPost } from '@/api/client';
 import {
   AppButton,
-  EmptyState,
+  ConfirmDialog,
   InlineAlert,
   LoadingSkeleton,
   PageHeader,
   UiIcon,
   type StatusTone,
 } from '@/components/ui';
-import type { HostInfo, HostStatsSnapshot } from '@/types/host';
 import type { SessionStatus } from '@/types/sessions';
 import { useSystemStore, type HostMetadata } from '@/stores/system';
-import { formatBytes } from '@/utils/format';
+
+interface MutationResponse {
+  status?: boolean | string;
+  error?: string;
+}
 
 interface OverviewWarning {
   key: string;
@@ -37,9 +40,6 @@ interface VigemHealth {
 const { locale, t } = useI18n();
 const system = useSystemStore();
 const session = ref<SessionStatus | null>(null);
-const hostStats = ref<HostStatsSnapshot | null>(null);
-const statsStale = ref(false);
-const hostInfo = ref<HostInfo | null>(null);
 const hostPlatform = ref('');
 const vigemInstalled = ref<boolean | null>(null);
 const vigemRequired = ref<boolean | null>(null);
@@ -49,6 +49,10 @@ const loading = ref(true);
 const refreshing = ref(false);
 const fetchErrors = ref<string[]>([]);
 const lastUpdatedAt = ref<number | null>(null);
+const stopConfirmOpen = ref(false);
+const stopping = ref(false);
+const stopNotice = ref('');
+const stopError = ref('');
 let pollTimer: number | undefined;
 
 function errorMessage(cause: unknown, fallback: string): string {
@@ -122,32 +126,16 @@ async function refresh(silent = false): Promise<void> {
   void system.refreshHost();
   const results = await Promise.allSettled([
     apiGet<SessionStatus>('/api/session/status'),
-    apiGet<HostStatsSnapshot>('/api/host/stats'),
-    apiGet<HostInfo>('/api/host/info'),
     apiGet<Pick<HostMetadata, 'platform'>>('/api/metadata'),
   ]);
 
   const nextErrors: string[] = [];
-  const [sessionResult, statsResult, infoResult, metadataResult] = results;
+  const [sessionResult, metadataResult] = results;
 
   if (sessionResult.status === 'fulfilled') {
     session.value = sessionResult.value;
   } else {
     nextErrors.push(errorMessage(sessionResult.reason, t('ui.overview.errors.streamStatus')));
-  }
-
-  if (statsResult.status === 'fulfilled') {
-    hostStats.value = statsResult.value;
-    statsStale.value = false;
-  } else {
-    statsStale.value = true;
-    nextErrors.push(errorMessage(statsResult.reason, t('ui.overview.errors.hostMetrics')));
-  }
-
-  if (infoResult.status === 'fulfilled') {
-    hostInfo.value = infoResult.value;
-  } else {
-    nextErrors.push(errorMessage(infoResult.reason, t('ui.overview.errors.hostInfo')));
   }
 
   if (metadataResult.status === 'fulfilled') {
@@ -183,8 +171,8 @@ const warnings = computed<OverviewWarning[]>(() => {
       detail: t('ui.overview.warnings.paused.detail', {
         app: session.value.appName || t('ui.overview.currentApplication'),
       }),
-      to: '/stats',
-      action: t('ui.overview.actions.openStats'),
+      to: '/devices',
+      action: t('ui.overview.actions.manageDevices'),
     });
   }
   if (
@@ -197,16 +185,6 @@ const warnings = computed<OverviewWarning[]>(() => {
       detail: t('ui.overview.warnings.encoderProbe.detail'),
       to: '/logs',
       action: t('ui.overview.actions.openLogs'),
-    });
-  }
-  const hottest = Math.max(hostStats.value?.cpu_percent ?? 0, hostStats.value?.gpu_percent ?? 0);
-  if (hottest >= 95) {
-    result.push({
-      key: 'host-load',
-      title: t('ui.overview.warnings.hostLoad.title'),
-      detail: t('ui.overview.warnings.hostLoad.detail', { threshold: 95 }),
-      to: '/stats',
-      action: t('ui.overview.actions.openStats'),
     });
   }
   return result;
@@ -270,7 +248,11 @@ const readinessIcon = computed(() => {
 });
 const primaryAction = computed(() => {
   if (isStreaming.value)
-    return { to: '/stats', label: t('ui.overview.actions.openStats'), icon: 'activity' } as const;
+    return {
+      to: '/devices',
+      label: t('ui.overview.actions.manageDevices'),
+      icon: 'devices',
+    } as const;
   if (warnings.value.length)
     return {
       to: warnings.value[0].to,
@@ -290,22 +272,32 @@ const quickActions = [
   { key: 'devices', to: '/devices', icon: 'devices' },
   { key: 'settings', to: '/settings', icon: 'settings' },
 ] as const;
-const metrics = computed(() => [
-  { label: t('host.cpu'), value: hostStats.value?.cpu_percent },
-  { label: t('host.gpu'), value: hostStats.value?.gpu_percent },
-  { label: t('ui.overview.memory'), value: hostStats.value?.ram_percent },
-  { label: t('host.vram'), value: hostStats.value?.vram_percent },
-]);
-function validPercent(value: number | undefined): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100;
+const stopConfirmDescription = computed(() =>
+  (session.value?.activeSessions ?? 0) > 1
+    ? t('ui.sessions.confirm.stop_rtsp_all_description')
+    : t('ui.sessions.confirm.stop_rtsp_description'),
+);
+
+function requestStop(): void {
+  stopError.value = '';
+  stopNotice.value = '';
+  stopConfirmOpen.value = true;
 }
-function percent(value: number | undefined): string {
-  return validPercent(value)
-    ? new Intl.NumberFormat(locale.value || undefined, {
-        maximumFractionDigits: 0,
-        style: 'percent',
-      }).format((value ?? 0) / 100)
-    : t('ui.overview.unavailable');
+
+async function confirmStop(): Promise<void> {
+  stopping.value = true;
+  stopError.value = '';
+  try {
+    const response = await apiPost<MutationResponse>('/api/apps/close', {});
+    if (response.status !== true) throw new Error(t('ui.sessions.error.stop_rtsp_rejected'));
+    stopNotice.value = t('ui.sessions.notice.stop_rtsp');
+    stopConfirmOpen.value = false;
+    await refresh(true);
+  } catch (cause) {
+    stopError.value = errorMessage(cause, t('ui.sessions.error.action'));
+  } finally {
+    stopping.value = false;
+  }
 }
 
 function onVisibilityChange(): void {
@@ -382,9 +374,26 @@ onBeforeUnmount(() => {
           <RouterLink class="button button--primary" :to="primaryAction.to">
             <UiIcon :name="primaryAction.icon" />{{ primaryAction.label }}
           </RouterLink>
+          <AppButton
+            v-if="session?.appRunning"
+            icon="stop"
+            :label="t('ui.sessions.action.stop_stream')"
+            variant="secondary"
+            :disabled="stopping"
+            @click="requestStop"
+          />
         </div>
       </section>
 
+      <InlineAlert v-if="stopError" tone="danger" :title="stopError" announce="assertive" />
+      <InlineAlert
+        v-if="stopNotice"
+        tone="success"
+        :title="stopNotice"
+        announce="polite"
+        :dismiss-label="t('_common.dismiss')"
+        @dismiss="stopNotice = ''"
+      />
       <div v-if="showVigemBanner || warnings.length" class="overview-notices">
         <InlineAlert v-if="showVigemBanner" tone="warning" :title="t('config.vigem_missing_title')">
           {{ t('config.vigem_missing_desc') }}
@@ -422,90 +431,24 @@ onBeforeUnmount(() => {
         {{ fetchErrors.slice(1).join(' ') }}
       </InlineAlert>
 
-      <div class="overview-detail-grid">
-        <section class="overview-panel" aria-labelledby="host-metrics-title">
-          <div class="overview-panel__heading">
-            <div>
-              <h2 id="host-metrics-title">{{ t('ui.overview.hostLoad.title') }}</h2>
-              <p :class="{ 'overview-stale': statsStale && hostStats }">
-                {{
-                  t(
-                    statsStale && hostStats
-                      ? 'ui.overview.hostLoad.staleDescription'
-                      : 'ui.overview.hostLoad.description',
-                  )
-                }}
-              </p>
-            </div>
-            <RouterLink class="overview-detail-link" to="/stats"
-              >{{ t('ui.overview.actions.viewDetails') }}<UiIcon name="chevron-right"
-            /></RouterLink>
-          </div>
-          <dl v-if="hostStats" class="metric-grid">
-            <div
-              v-for="metric in metrics"
-              :key="metric.label"
-              :class="{ 'metric--unavailable': !validPercent(metric.value) }"
-            >
-              <dt>{{ metric.label }}</dt>
-              <dd>{{ percent(metric.value) }}</dd>
-              <div class="metric-track" aria-hidden="true">
-                <span
-                  :style="{ width: `${validPercent(metric.value) ? metric.value : 0}%` }"
-                  :data-high="validPercent(metric.value) && metric.value >= 95"
-                />
-              </div>
-            </div>
-          </dl>
-          <EmptyState
-            v-else
-            compact
-            icon="activity"
-            :title="t('ui.overview.hostLoad.unavailableTitle')"
-            :description="t('ui.overview.hostLoad.unavailableDescription')"
-          />
-          <p
-            v-if="hostStats && hostStats.ram_total_bytes > 0 && hostStats.ram_used_bytes >= 0"
-            class="metric-footnote"
+      <section class="overview-panel workspace-panel" aria-labelledby="workspace-title">
+        <div class="overview-panel__heading">
+          <h2 id="workspace-title">{{ t('ui.overview.quickActions.title') }}</h2>
+        </div>
+        <RouterLink
+          v-for="action in quickActions"
+          :key="action.key"
+          class="workspace-link"
+          :to="action.to"
+        >
+          <span class="workspace-link__icon"><UiIcon :name="action.icon" :size="20" /></span>
+          <span class="workspace-link__copy"
+            ><strong>{{ t(`ui.overview.quickActions.${action.key}`) }}</strong
+            ><span>{{ t(`ui.overview.quickActions.${action.key}Detail`) }}</span></span
           >
-            {{
-              t('ui.overview.hostLoad.memoryInUse', {
-                total: formatBytes(hostStats.ram_total_bytes, locale),
-                used: formatBytes(hostStats.ram_used_bytes, locale),
-              })
-            }}
-          </p>
-          <dl class="host-details" :aria-label="t('ui.overview.hostDetails')">
-            <div>
-              <dt>{{ t('ui.overview.processor') }}</dt>
-              <dd>{{ hostInfo?.cpu_model || t('ui.overview.unavailable') }}</dd>
-            </div>
-            <div>
-              <dt>{{ t('ui.overview.graphics') }}</dt>
-              <dd>{{ hostInfo?.gpu_model || t('ui.overview.unavailable') }}</dd>
-            </div>
-          </dl>
-        </section>
-
-        <section class="overview-panel workspace-panel" aria-labelledby="workspace-title">
-          <div class="overview-panel__heading">
-            <h2 id="workspace-title">{{ t('ui.overview.quickActions.title') }}</h2>
-          </div>
-          <RouterLink
-            v-for="action in quickActions"
-            :key="action.key"
-            class="workspace-link"
-            :to="action.to"
-          >
-            <span class="workspace-link__icon"><UiIcon :name="action.icon" :size="20" /></span>
-            <span class="workspace-link__copy"
-              ><strong>{{ t(`ui.overview.quickActions.${action.key}`) }}</strong
-              ><span>{{ t(`ui.overview.quickActions.${action.key}Detail`) }}</span></span
-            >
-            <UiIcon name="chevron-right" :size="16" />
-          </RouterLink>
-        </section>
-      </div>
+          <UiIcon name="chevron-right" :size="16" />
+        </RouterLink>
+      </section>
       <LinuxCaptureStatus
         v-if="system.metadata?.platform === 'linux' && supportsManagedLinuxDisplay(system.metadata)"
         :metadata="system.metadata"
@@ -536,6 +479,17 @@ onBeforeUnmount(() => {
         </nav>
       </footer>
     </template>
+    <ConfirmDialog
+      v-model:open="stopConfirmOpen"
+      :title="t('ui.sessions.confirm.stop_rtsp_title')"
+      :description="stopConfirmDescription"
+      :confirm-label="t('ui.sessions.action.stop_stream')"
+      :cancel-label="t('_common.cancel')"
+      :busy="stopping"
+      :busy-label="t('ui.sessions.action.working')"
+      :close-on-confirm="false"
+      @confirm="confirmStop"
+    />
   </div>
 </template>
 
@@ -630,11 +584,6 @@ onBeforeUnmount(() => {
 .overview-vigem-version {
   color: var(--vs-color-text-muted);
 }
-.overview-detail-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
-  gap: var(--vs-space-24);
-}
 .overview-panel {
   padding: var(--vs-space-24);
 }
@@ -648,87 +597,6 @@ onBeforeUnmount(() => {
 .overview-panel h2 {
   font-size: 16px;
   line-height: 24px;
-}
-.overview-panel__heading p {
-  margin-top: var(--vs-space-4);
-  color: var(--vs-color-text-muted);
-  font-size: var(--vs-type-size-metadata);
-}
-.overview-panel__heading .overview-stale {
-  color: var(--vs-color-status-warning);
-}
-.overview-detail-link {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--vs-space-4);
-  font-size: 12px;
-  text-decoration: none;
-}
-.metric-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--vs-space-20);
-  margin-top: var(--vs-space-32);
-}
-.metric-grid > div {
-  min-width: 0;
-}
-.metric-grid dt {
-  color: var(--vs-color-text-secondary);
-  font-size: var(--vs-type-size-metadata);
-}
-.metric-grid dd {
-  margin: var(--vs-space-8) 0 var(--vs-space-16);
-  font-size: 28px;
-  line-height: 36px;
-  font-weight: var(--vs-type-weight-medium);
-  letter-spacing: -0.04em;
-  font-variant-numeric: tabular-nums;
-}
-.metric-grid .metric--unavailable dd {
-  font-size: var(--vs-type-size-helper);
-  letter-spacing: normal;
-}
-.metric-track {
-  height: 4px;
-  overflow: hidden;
-  border-radius: var(--vs-radius-pill);
-  background: var(--vs-color-border-subtle);
-}
-.metric-track > span {
-  display: block;
-  height: 100%;
-  background: var(--vs-color-accent-default);
-  border-radius: inherit;
-}
-.metric-track > span[data-high='true'] {
-  background: var(--vs-color-status-warning);
-}
-.metric-footnote {
-  margin-top: var(--vs-space-16);
-  color: var(--vs-color-text-muted);
-  font-size: var(--vs-type-size-helper);
-}
-.host-details {
-  display: grid;
-  gap: var(--vs-space-12);
-  padding-top: var(--vs-space-20);
-  margin-top: var(--vs-space-24);
-  border-top: 1px solid var(--vs-color-border-subtle);
-  font-size: var(--vs-type-size-metadata);
-}
-.host-details > div {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: var(--vs-space-8) var(--vs-space-16);
-}
-.host-details dt {
-  color: var(--vs-color-text-muted);
-}
-.host-details dd {
-  color: var(--vs-color-text-secondary);
-  overflow-wrap: anywhere;
 }
 .workspace-panel {
   padding-bottom: var(--vs-space-12);
@@ -810,11 +678,6 @@ onBeforeUnmount(() => {
 .overview-footer a:hover {
   color: var(--vs-color-accent-default);
 }
-@media (max-width: 1199px) {
-  .overview-detail-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
 @media (max-width: 767px) {
   .readiness-panel {
     padding: var(--vs-space-24);
@@ -836,10 +699,6 @@ onBeforeUnmount(() => {
   .overview-panel {
     padding: var(--vs-space-20);
   }
-  .metric-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--vs-space-24);
-  }
 }
 @media (max-width: 359px) {
   .readiness-panel__state {
@@ -847,13 +706,8 @@ onBeforeUnmount(() => {
   }
 }
 @media (forced-colors: active) {
-  .readiness-panel__icon,
-  .metric-track {
+  .readiness-panel__icon {
     border: 1px solid CanvasText;
-  }
-  .metric-track > span {
-    background: Highlight;
-    forced-color-adjust: none;
   }
 }
 </style>

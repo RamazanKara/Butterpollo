@@ -28,9 +28,6 @@
                   <RouterLink to="/clients" :class="linkClass('/clients')">
                     <i class="fas fa-users-cog" /><span>{{ $t('clients.nav') }}</span>
                   </RouterLink>
-                  <RouterLink to="/stats" :class="linkClass('/stats')">
-                    <i class="fas fa-chart-line" /><span>{{ $t('navbar.stats') }}</span>
-                  </RouterLink>
                   <RouterLink to="/settings" :class="linkClass('/settings')">
                     <i class="fas fa-sliders" /><span>{{ $t('navbar.configuration') }}</span>
                   </RouterLink>
@@ -184,7 +181,6 @@ watch(
       '/logs': 'navbar.troubleshoot',
       '/troubleshooting': 'navbar.troubleshoot',
       '/clients': 'clients.nav',
-      '/stats': 'navbar.stats',
     };
     const v = map[p] || 'Vibepollo';
     pageTitle.value = v;
@@ -240,7 +236,6 @@ const mobileMenuOptions = computed(() => {
       icon: icon('fas fa-table-cells-large'),
     },
     { label: t('clients.nav'), key: '/clients', icon: icon('fas fa-users-cog') },
-    { label: t('navbar.stats'), key: '/stats', icon: icon('fas fa-chart-line') },
     { label: t('navbar.configuration'), key: '/settings', icon: icon('fas fa-sliders') },
     { label: t('navbar.troubleshoot'), key: '/troubleshooting', icon: icon('fas fa-bug') },
     { type: 'divider' as const },

@@ -21,7 +21,7 @@ This matrix turns the UX specification into implementation ownership and observa
 
 | ID | Priority | Surface | Requirement | Reused foundations and patterns | Acceptance condition |
 |---|---|---|---|---|---|
-| SHL-01 | Critical | Shell | Persistent navigation for Overview, Library, Devices, Sessions, Integrations, Logs, and Settings; Settings/Help remain low in the rail | Navigation, page header, semantic status | ≥1024 px supports 264 px expanded and 64 px collapsed modes with labels in the normal state. Tablet uses rail or drawer; mobile uses a modal drawer. |
+| SHL-01 | Critical | Shell | Persistent navigation for Overview, Library, Devices, Integrations, Logs, and Settings; Settings/Help remain low in the rail | Navigation, page header, semantic status | ≥1024 px supports 264 px expanded and 64 px collapsed modes with labels in the normal state. Tablet uses rail or drawer; mobile uses a modal drawer. |
 | SHL-02 | Critical | Shell | Contextual title, supporting context, and page actions | Page header, overflow menu | Desktop holds one row; tablet moves secondary actions to overflow; mobile stacks while retaining one visible primary action. |
 | SHL-03 | High | Shell | Global health is discoverable without constant noise | Status control, alert/live region | Active or degraded health is persistent and actionable; healthy state may be visually quiet but the Overview/status destination remains reachable. |
 | SHL-04 | Critical | Shell | Predictable keyboard/focus behavior | Native navigation, focus tokens, dialog/drawer focus management | Tab order follows visual order; Escape closes only the top transient layer; focus returns to its invoker; icon-only collapsed navigation retains accessible names and tooltips. |
@@ -85,13 +85,13 @@ values are preserved when platform rules hide their controls.
 | Audio, controller, keyboard and mouse                                            | Everyday, with detailed Audio/Input categories | Saving a single field preserves unrelated configuration                                          |
 | Remote Monitor, display remapping and recovery                                   | Settings → Displays; Devices                   | Existing serialization and platform parity tests                                                 |
 | App and device overrides                                                         | Library → application; Devices → settings      | Common canonical field definitions, platform options and runtime allowlist                       |
-| Language, token lifetimes, history/statistics and file locations                 | Host, Network and Files categories             | Catalog coverage and API boolean normalization tests                                             |
+| Language, token lifetimes and file locations                                     | Host, Network and Files categories             | Catalog coverage and API boolean normalization tests                                             |
 | RTSS, ViGEmBus and the Vulkan HDR layer                                          | Integrations                                   | Windows status rows with confirmed repair actions                                                |
 | Pairing, individual disconnect/unpair and bulk unpair                            | Pair / Devices                                 | Bulk-unpair browser test verifies explicit confirmation                                          |
 | Release information and Linux diagnostics                                        | Maintenance                                    | Browser test verifies logs and display setup are reachable                                       |
 | Search, category history and direct field links                                  | Settings                                       | Browser test retains unsaved edits through category navigation                                   |
 | Save, deferred application and restart state                                     | Settings                                       | Snapshot acknowledgement, rejected-save and validation tests                                     |
-| Library, browser streaming, stats, logs, API tokens, authentication              | Existing canonical routes                      | Shared layout primitives and route smoke checks                                                  |
+| Library, browser streaming, logs, API tokens, authentication                     | Existing canonical routes                      | Shared layout primitives and route smoke checks                                                  |
 
 ### Verification commands
 
