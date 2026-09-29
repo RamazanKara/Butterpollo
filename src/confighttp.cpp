@@ -2676,6 +2676,7 @@ namespace confighttp {
       {"h264", probe_complete},
       {"hevc", probe_complete && encoder_caps.hevc_mode >= 2},
       {"av1", probe_complete && encoder_caps.av1_mode >= 2},
+      {"pyrowave", probe_complete && encoder_caps.pyrowave},
     };
 #if defined(__linux__)
     output_tree["providers"]["mangohud"] = true;

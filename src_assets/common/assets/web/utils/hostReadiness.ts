@@ -5,6 +5,7 @@ export interface ReadinessMetadata {
     h264?: boolean;
     hevc?: boolean;
     av1?: boolean;
+    pyrowave?: boolean;
   };
   capture_status?: {
     configured_backend?: string;

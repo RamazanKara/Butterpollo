@@ -37,6 +37,7 @@ extern "C" {
 #include "logging.h"
 #include "network.h"
 #include "nvhttp.h"
+#include "pyrowave/pyrowave_negotiation.h"
 #include "rtsp.h"
 #include "rtsp_pending_policy.h"
 #include "stream.h"
@@ -1650,6 +1651,10 @@ namespace rtsp_stream {
       ss << "a=rtpmap:98 AV1/90000"sv << std::endl;
     }
 
+    if (video::active_pyrowave) {
+      ss << pyrowave::DESCRIBE_RTPMAP << std::endl;
+    }
+
     if (!session->surround_params.empty()) {
       // If we have our own surround parameters, advertise them twice first
       ss << "a=fmtp:97 surround-params="sv << session->surround_params << std::endl;
@@ -1889,6 +1894,50 @@ namespace rtsp_stream {
       return false;
     }
 
+    {
+      // A client asking for a format we cannot encode must fail here: the
+      // encoder layer would otherwise fall back to H.264, which a PyroWave
+      // client cannot decode.
+      const auto decision = pyrowave::negotiate_announce(
+        config.monitor.videoFormat,
+        config.monitor.chromaSamplingType,
+        config.monitor.dynamicRange,
+        pyrowave::capabilities_t {
+          .available = video::active_pyrowave,
+          .yuv444 = video::active_pyrowave_yuv444,
+          .hdr = video::active_pyrowave_hdr,
+        }
+      );
+      std::string_view rejection;
+      switch (decision.status) {
+        case pyrowave::announce_status_e::accepted:
+          break;
+        case pyrowave::announce_status_e::unknown_video_format:
+          rejection = "the requested video format is unknown"sv;
+          break;
+        case pyrowave::announce_status_e::unavailable:
+          rejection = "PyroWave is disabled or unsupported on this host"sv;
+          break;
+        case pyrowave::announce_status_e::yuv444_unavailable:
+          rejection = "PyroWave 4:4:4 is unsupported on this host"sv;
+          break;
+        case pyrowave::announce_status_e::hdr_yuv444:
+          rejection = "PyroWave HDR is only available with 4:2:0 chroma"sv;
+          break;
+      }
+      if (!rejection.empty()) {
+        BOOST_LOG(warning) << "Rejecting client video request (bitStreamFormat=" << config.monitor.videoFormat
+                           << ", chromaSamplingType=" << config.monitor.chromaSamplingType
+                           << ", dynamicRangeMode=" << config.monitor.dynamicRange << "): " << rejection;
+        respond(socket->sock, *session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
+        return false;
+      }
+      if (decision.hdr_downgraded) {
+        BOOST_LOG(info) << "Client requested PyroWave HDR, which is unavailable on this host; streaming PyroWave SDR"sv;
+      }
+      config.monitor.dynamicRange = decision.dynamic_range;
+    }
+
     // When using stereo audio, the audio quality is (strangely) indicated by whether the Host field
     // in the RTSP message matches a local interface's IP address. Fortunately, Moonlight always sends
     // 0.0.0.0 when it wants low quality, so it is easy to check without enumerating interfaces.
@@ -1936,6 +1985,10 @@ namespace rtsp_stream {
     const bool hevc_main10 = config.monitor.videoFormat == 1 && video::active_hevc_mode >= 3;
     const bool av1_main10 = config.monitor.videoFormat == 2 && video::active_av1_mode >= 3;
     const bool supports_10bit_dynamic_range = hevc_main10 || av1_main10;
+    // PyroWave has HDR10 (4:2:0 only) but no 10-bit SDR mode, so it only takes
+    // part in the HDR upgrade below; 10-bit SDR requests fall back to 8-bit SDR.
+    const bool pyrowave_hdr = config.monitor.videoFormat == pyrowave::VIDEO_FORMAT_PYROWAVE &&
+                              config.monitor.chromaSamplingType == 0 && video::active_pyrowave_hdr;
     config.monitor.force_sdr = session->force_sdr;
     if (prefer_10bit_sdr) {
       if (supports_10bit_dynamic_range) {
@@ -1948,7 +2001,7 @@ namespace rtsp_stream {
         BOOST_LOG(info) << "10-bit SDR is enabled for this client, but Main10 is unavailable; using 8-bit SDR encode";
       }
     } else if (config.monitor.dynamicRange == 0) {
-      if (session->enable_hdr && supports_10bit_dynamic_range) {
+      if (session->enable_hdr && (supports_10bit_dynamic_range || pyrowave_hdr)) {
         BOOST_LOG(info) << "RTSP ANNOUNCE requested SDR while launch HDR is enabled; using HDR 10-bit encode";
         config.monitor.dynamicRange = 1;
       }

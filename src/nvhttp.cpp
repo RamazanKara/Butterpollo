@@ -77,6 +77,7 @@
   #include "platform/linux/private_display_resume_policy.h"
 #endif
 #include "process.h"
+#include "pyrowave/pyrowave_protocol.h"
 #include "rtsp.h"
 #include "rtsp_pending_policy.h"
 #include "stream.h"
@@ -809,6 +810,7 @@ namespace nvhttp {
           << (caps.hevc_mode == 3 || caps.av1_mode == 3)
           << ", hevc_mode=" << caps.hevc_mode
           << ", av1_mode=" << caps.av1_mode
+          << ", pyrowave=" << caps.pyrowave
           << ", source=" << reason << '.';
         return http_encoder_capabilities_t {
           .advertised = std::move(caps),
@@ -1775,6 +1777,7 @@ namespace nvhttp {
           << (caps.hevc_mode == 3 || caps.av1_mode == 3)
           << ", hevc_mode=" << caps.hevc_mode
           << ", av1_mode=" << caps.av1_mode
+          << ", pyrowave=" << caps.pyrowave
           << ", source=" << reason << '.';
         return http_encoder_capabilities_t {
           .advertised = std::move(caps),
@@ -3761,6 +3764,12 @@ namespace nvhttp {
           codec_mode_flags |= SCM_AV1_HIGH10_444;
         }
       }
+      if (advertised_video.pyrowave) {
+        codec_mode_flags |= pyrowave::SCM_PYROWAVE;
+        if (advertised_video.pyrowave_yuv444) {
+          codec_mode_flags |= pyrowave::SCM_PYROWAVE_444;
+        }
+      }
       tree.put("root.ServerCodecModeSupport", codec_mode_flags);
 
       tree.put("root.PairStatus", pair_status);
@@ -4029,7 +4038,7 @@ namespace nvhttp {
 #else
         const auto advertised_video = video::advertised_encoder_capabilities(true);
 #endif
-        const bool is_hdr_supported = advertised_video.hevc_mode == 3 || advertised_video.av1_mode == 3;
+        const bool is_hdr_supported = advertised_video.hevc_mode == 3 || advertised_video.av1_mode == 3 || advertised_video.pyrowave_hdr;
 
         for (size_t i = 0; i < projection.catalogue.size(); ++i) {
           const auto &entry = projection.catalogue[i];

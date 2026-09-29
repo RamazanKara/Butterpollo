@@ -12,6 +12,8 @@ TEST(VideoFormatNameTests, CanonicalCodecNameNormalizesKnownAliases) {
   EXPECT_EQ(stream::canonical_codec_name("hevc"), "HEVC");
   EXPECT_EQ(stream::canonical_codec_name("H265"), "HEVC");
   EXPECT_EQ(stream::canonical_codec_name("av1"), "AV1");
+  EXPECT_EQ(stream::canonical_codec_name("PyroWave"), "PyroWave");
+  EXPECT_EQ(stream::canonical_codec_name("pyrowave"), "PyroWave");
 }
 
 TEST(VideoFormatNameTests, CanonicalCodecNamePreservesUnknownValues) {

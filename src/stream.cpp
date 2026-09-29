@@ -48,6 +48,7 @@ extern "C" {
 #include "nvhttp.h"
 #include "platform/common.h"
 #include "process.h"
+#include "pyrowave/pyrowave_rate_control.h"
 #include "remote_display_topology.h"
 #include "rtsp.h"
 #include "rtsp_pending_policy.h"
@@ -432,6 +433,29 @@ namespace stream {
   };
 
 #pragma pack(pop)
+
+  // There are 2 bits for FEC block count for a maximum of 4 FEC blocks
+  constexpr auto MAX_FEC_BLOCKS = 4;
+  constexpr auto MAX_TOTAL_FEC_SHARDS = 255;
+
+  /**
+   * @brief Largest frame payload the video broadcast can split into FEC blocks.
+   * @details Larger frames are sent without FEC. Intra-only codecs size their
+   *          frames against this limit.
+   */
+  std::size_t max_fec_protected_frame_bytes(const config_t &config) {
+    const std::size_t blocksize = config.packetsize + MAX_RTP_HEADER_SIZE;
+    if (config.packetsize <= 0 || blocksize <= sizeof(video_packet_raw_t)) {
+      return 0;
+    }
+    return pyrowave::rate_control::fec_frame_limit_bytes(
+      blocksize - sizeof(video_packet_raw_t),
+      config::stream.fec_percentage,
+      MAX_FEC_BLOCKS,
+      MAX_TOTAL_FEC_SHARDS,
+      sizeof(video_short_frame_header_t)
+    );
+  }
 
   constexpr std::size_t round_to_pkcs7_padded(std::size_t size) {
     return ((size + 15) / 16) * 16;
@@ -2097,10 +2121,6 @@ namespace stream {
 
       payload = std::string_view {(char *) payload_new.data(), payload_new.size()};
 
-      // There are 2 bits for FEC block count for a maximum of 4 FEC blocks
-      constexpr auto MAX_FEC_BLOCKS = 4;
-      constexpr auto MAX_TOTAL_FEC_SHARDS = 255;
-
       // The max number of data shards per block is found by solving this system of equations for D:
       // D = 255 - P
       // P = D * F
@@ -2890,6 +2910,7 @@ namespace stream {
 #endif
 
     BOOST_LOG(debug) << "Start capturing Video"sv;
+    session->config.monitor.max_frame_bytes = max_fec_protected_frame_bytes(session->config);
     video::capture(session->mail, session->config.monitor, session);
   }
 

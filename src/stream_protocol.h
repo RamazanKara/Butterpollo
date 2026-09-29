@@ -20,6 +20,7 @@ namespace stream {
     if (lowered == "h264" || lowered == "h.264") return "H.264";
     if (lowered == "h265" || lowered == "hevc") return "HEVC";
     if (lowered == "av1") return "AV1";
+    if (lowered == "pyrowave") return "PyroWave";
     return std::string(codec);
   }
 
