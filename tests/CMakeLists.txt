@@ -521,39 +521,39 @@ endif()
 
 sunshine_register_component(NAME test_component_hdr_request TEST_SOURCE unit/test_hdr_request_policy.cpp)
 
-# Production-code regression harnesses exercise Windows policies on the native host.
-find_package(Python3 COMPONENTS Interpreter)
-find_program(SUNSHINE_TEST_GXX NAMES g++)
-if(Python3_Interpreter_FOUND AND SUNSHINE_TEST_GXX)
-    add_test(NAME regression_synthetic_capture
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_synthetic_capture.py")
-    add_test(NAME regression_hdr_probe_fallback
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_hdr_probe_fallback.py")
-    add_test(NAME regression_resume_color_policy
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_resume_color_policy.py")
-    add_test(NAME regression_delayed_mouse_release
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/input/test_delayed_mouse_release.py")
-    add_test(NAME regression_windows_absolute_mouse
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/input/test_windows_absolute_mouse.py")
-    add_test(NAME regression_windows_mouse_keys
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/input/test_windows_mouse_keys.py" --compiler "${SUNSHINE_TEST_GXX}")
-    add_test(NAME regression_frame_limiter_vsync
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_frame_limiter_vsync.py")
-    add_test(NAME regression_rtss_profile_version
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_rtss_profile_version.py")
-    add_test(NAME regression_virtual_capture_readiness
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_virtual_capture_readiness.py")
-    add_test(NAME regression_virtual_display_scale_boundary
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_virtual_display_scale_boundary.py")
-    add_test(NAME regression_cancel_after_app_exit
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_cancel_after_app_exit.py")
-    add_test(NAME regression_display_policy_adapter
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_policy_adapter.py")
-    add_test(NAME regression_retained_resume_policy
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_retained_resume_policy.py")
-    add_test(NAME regression_terminate_lock
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_terminate_lock.py")
-endif()
+# Production-code regression harnesses exercise Windows policies on the native
+# host. They are part of the suite, so a missing interpreter or compiler is a
+# configuration error rather than a silently smaller test run.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+find_program(SUNSHINE_TEST_GXX NAMES g++ REQUIRED)
+add_test(NAME regression_synthetic_capture
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_synthetic_capture.py")
+add_test(NAME regression_hdr_probe_fallback
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_hdr_probe_fallback.py")
+add_test(NAME regression_resume_color_policy
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_resume_color_policy.py")
+add_test(NAME regression_delayed_mouse_release
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/input/test_delayed_mouse_release.py")
+add_test(NAME regression_windows_absolute_mouse
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/input/test_windows_absolute_mouse.py")
+add_test(NAME regression_windows_mouse_keys
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/input/test_windows_mouse_keys.py" --compiler "${SUNSHINE_TEST_GXX}")
+add_test(NAME regression_frame_limiter_vsync
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_frame_limiter_vsync.py")
+add_test(NAME regression_rtss_profile_version
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_rtss_profile_version.py")
+add_test(NAME regression_virtual_capture_readiness
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_virtual_capture_readiness.py")
+add_test(NAME regression_virtual_display_scale_boundary
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_virtual_display_scale_boundary.py" "${SUNSHINE_TEST_GXX}")
+add_test(NAME regression_cancel_after_app_exit
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_cancel_after_app_exit.py")
+add_test(NAME regression_display_policy_adapter
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_policy_adapter.py")
+add_test(NAME regression_retained_resume_policy
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_retained_resume_policy.py")
+add_test(NAME regression_terminate_lock
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_terminate_lock.py")
 
 if(TARGET test_component_resource_locale_catalog)
     set_tests_properties(test_component_resource_locale_catalog PROPERTIES

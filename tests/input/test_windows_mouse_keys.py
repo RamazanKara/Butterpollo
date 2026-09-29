@@ -158,8 +158,10 @@ def main():
         cpp = Path(directory) / 'test.cpp'
         executable = Path(directory) / 'test'
         cpp.write_text(PRELUDE + globals_source + enable + '\n' + restore + TESTS)
-        subprocess.run([args.compiler, '-std=c++20', '-Wall', '-Wextra', '-Werror',
-                        '-pthread', '-fsanitize=undefined', str(cpp), '-o', str(executable)], check=True)
+        # Trap mode needs no libubsan runtime, which MinGW does not ship.
+        subprocess.run([args.compiler, '-std=c++20', '-Wall', '-Wextra', '-Werror', '-pthread',
+                        '-fsanitize=undefined', '-fsanitize-trap=undefined',
+                        str(cpp), '-o', str(executable)], check=True)
         return subprocess.run([str(executable)], check=False).returncode
 
 

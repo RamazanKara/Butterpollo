@@ -150,5 +150,6 @@ with tempfile.TemporaryDirectory(prefix="vdisplay-scale-") as directory:
     source = pathlib.Path(directory) / "test.cpp"
     binary = pathlib.Path(directory) / "test"
     source.write_text(harness)
-    subprocess.run([sys.argv[1] if len(sys.argv)>1 else "c++", "-std=c++20", "-Wall", "-Wextra", "-Werror", "-fsanitize=undefined", "-fno-sanitize-recover=undefined", str(source), "-o", str(binary)], check=True)
+    # Trap mode needs no libubsan runtime, which MinGW does not ship.
+    subprocess.run([sys.argv[1] if len(sys.argv)>1 else "c++", "-std=c++20", "-Wall", "-Wextra", "-Werror", "-fsanitize=undefined", "-fsanitize-trap=undefined", str(source), "-o", str(binary)], check=True)
     subprocess.run([str(binary)], check=True)
