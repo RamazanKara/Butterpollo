@@ -273,9 +273,9 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include/ViGEm/Common.h"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include/ViGEm/Util.h"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include/ViGEm/km/BusShared.h"
-        # Native AMD AMF encoder (D3D11). AMF SDK headers are provided by the
-        # bundled FFmpeg build-deps (include/AMF), so no extra dependency is
-        # required - the runtime (amfrt64.dll) is loaded dynamically.
+        # Native AMD AMF encoder (D3D11). AMF SDK headers ship in the pinned
+        # prebuilt FFmpeg (include/AMF, see cmake/dependencies/ffmpeg.cmake), so no
+        # extra dependency is required - the runtime (amfrt64.dll) is loaded dynamically.
         "${CMAKE_SOURCE_DIR}/src/amf/amf_config.h"
         "${CMAKE_SOURCE_DIR}/src/amf/amf_encoded_frame.h"
         "${CMAKE_SOURCE_DIR}/src/amf/amf_encoder.h"
