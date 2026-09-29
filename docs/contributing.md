@@ -58,9 +58,7 @@ when its wording and meaning are an exact match.
 
 > [!IMPORTANT]
 > For normal source changes, modify only the applicable English source catalog,
-> not translated locale files. The mappings in `crowdin.yml` publish both
-> English catalogs; translations are contributed through [CrowdIn][crowdin-url]
-> and returned in a localization pull request. Components must use locale keys
+> not translated locale files. Components must use locale keys
 > for all user-facing copy rather than embedding English fallback text.
 
 ##### C++
@@ -146,9 +144,9 @@ maintainers to run the tests locally.
 
 <div class="section_buttons">
 
-| Previous                |                                                         Next |
-|:------------------------|-------------------------------------------------------------:|
-| [Building](building.md) | [Source Code](../third-party/doxyconfig/docs/source_code.md) |
+| Previous                |
+|:------------------------|
+| [Building](building.md) |
 
 </div>
 

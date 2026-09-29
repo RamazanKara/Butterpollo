@@ -1,13 +1,5 @@
 # Configuration
 
-@admonition{ Host authority | @htmlonly
-By providing the host authority (URI + port), you can easily open each configuration option in the config UI.
-<br>
-<script src="configuration.js"></script>
-<strong>Host authority: </strong> <input type="text" id="host-authority" value="localhost:47990">
-@endhtmlonly
-}
-
 Sunshine will work with the default settings for most users. In some cases you may want to configure Sunshine further.
 
 The default location for the configuration file is listed below. You can use another location if you

@@ -606,7 +606,6 @@ jobs:
             -DBUILD_VIRTUALDISPLAY_PROBE=OFF \
             -DBUILD_VIRTUALDISPLAY_TOOLS=OFF \
             -DBUILD_VIRTUALDISPLAY_VULKAN_LAYER=OFF \
-            -DBUILD_DOCS=OFF \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG -g -gdwarf-4" \
             -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -g -gdwarf-4" \

@@ -46,7 +46,6 @@
 # build directories
 build/
 cmake-*/
-docs/doxyconfig*
 
 # Node package installs
 node_modules/

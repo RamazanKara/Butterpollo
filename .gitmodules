@@ -2,10 +2,6 @@
 	path = third-party/build-deps
 	url = https://github.com/LizardByte/build-deps.git
 	branch = master
-[submodule "third-party/doxyconfig"]
-	path = third-party/doxyconfig
-	url = https://github.com/LizardByte/doxyconfig.git
-	branch = master
 [submodule "third-party/googletest"]
 	path = third-party/googletest
 	url = https://github.com/google/googletest.git
@@ -22,10 +18,6 @@
 	path = third-party/nv-codec-headers
 	url = https://github.com/FFmpeg/nv-codec-headers.git
 	branch = master
-[submodule "third-party/nvapi-open-source-sdk"]
-	path = third-party/nvapi-open-source-sdk
-	url = https://github.com/LizardByte/nvapi-open-source-sdk.git
-	branch = sdk
 [submodule "third-party/nvapi"]
 	path = third-party/nvapi
 	url = https://github.com/NVIDIA/nvapi.git

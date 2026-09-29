@@ -24,10 +24,6 @@ curl -u user:pass -H "X-CSRF-Token: your_token_here" \
   -X POST https://localhost:47990/api/restart
 ```
 
-@htmlonly
-<script src="api.js"></script>
-@endhtmlonly
-
 ## API Token Security Model and Best Practices
 
 Sunshine API tokens are designed for security and fine-grained access control:

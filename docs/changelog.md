@@ -12,7 +12,7 @@
 
 | Previous                              |                          Next |
 |:--------------------------------------|------------------------------:|
-| [Getting Started](getting_started.md) | [Third-party Packages](third_party_packages.md) |
+| [Getting Started](getting_started.md) | [Legal](legal.md) |
 
 </div>
 

@@ -11,11 +11,6 @@ and release artifacts may be missing when merging changes on a faster cadence.
 Binaries of Vibepollo are created for each release. Availability varies by platform while the distribution channels are being established.
 Binaries can be found in the [latest release][latest-release].
 
-> [!NOTE]
-> Some third party packages also exist.
-> See [Third Party Packages](third_party_packages.md) for more information.
-> No support will be provided for third party packages!
-
 ## Install
 
 ### Windows

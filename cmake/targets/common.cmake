@@ -34,11 +34,6 @@ endif()
 
 target_compile_options(sunshine PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${SUNSHINE_COMPILE_OPTIONS}>;$<$<COMPILE_LANGUAGE:CUDA>:${SUNSHINE_COMPILE_OPTIONS_CUDA};-std=c++17>)  # cmake-lint: disable=C0301
 
-# docs
-if(BUILD_DOCS)
-    add_subdirectory(third-party/doxyconfig docs)
-endif()
-
 set(TEST_DIR "")
 
 # src/upnp
