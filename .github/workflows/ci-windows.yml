@@ -282,6 +282,8 @@ jobs:
       SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG: ${{ inputs.signpath_msi_artifact_configuration_slug }}
       SIGNPATH_ARTIFACT_CONFIGURATION_SLUG: ${{ inputs.signpath_artifact_configuration_slug }}
       TRUEHDR_RUNTIME_ROOT: ${{ github.workspace }}\.vibeshine-deps\truehdr-runtime
+      # PyroWave C API commit; its bitstream matches the PyroWave Moonlight clients.
+      PYROWAVE_COMMIT: 89f7e47d4abbf650c91fae766728af866c5e32a0
     defaults:
       run:
         shell: msys2 {0}
@@ -421,6 +423,27 @@ jobs:
             mingw-w64-${{ matrix.toolchain }}-openssl
             mingw-w64-${{ matrix.toolchain }}-opus
             mingw-w64-${{ matrix.toolchain }}-tools
+            mingw-w64-${{ matrix.toolchain }}-vulkan-headers
+
+      - name: Cache PyroWave
+        id: cache-pyrowave
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: ${{ runner.temp }}/pyrowave-install
+          key: pyrowave-${{ runner.os }}-${{ matrix.msystem }}-${{ env.PYROWAVE_COMMIT }}-${{ hashFiles('scripts/build_pyrowave.sh') }}
+
+      - name: Build PyroWave
+        if: steps.cache-pyrowave.outputs.cache-hit != 'true'
+        shell: msys2 {0}
+        env:
+          PYROWAVE_ROOT: ${{ runner.temp }}/pyrowave-install
+          PYROWAVE_WORKDIR_WIN: ${{ runner.temp }}/pyrowave-work
+        run: |
+          set -euo pipefail
+          # Stripped build of the pinned PyroWave C API; the bitstream must match
+          # what the PyroWave Moonlight clients decode.
+          PYROWAVE_STRIP=1 PYROWAVE_WORKDIR="$(cygpath -u "${PYROWAVE_WORKDIR_WIN}")" \
+            bash scripts/build_pyrowave.sh "${PYROWAVE_COMMIT}" "$(cygpath -u "${PYROWAVE_ROOT}")"
 
       - name: Setup dotnet  # needed for wix
         uses: actions/setup-dotnet@baa11fbfe1d6520db94683bd5c7a3818018e4309  # v5.1.0
@@ -503,6 +526,7 @@ jobs:
           BRANCH: ${{ github.head_ref || github.ref_name }}
           COMMIT: ${{ inputs.release_commit }}
           REQUIRE_TRUEHDR_RUNTIME: ${{ inputs.require_truehdr_runtime }}
+          PYROWAVE_ROOT: ${{ runner.temp }}/pyrowave-install
         run: |
           echo "Using BUILD_VERSION=${BUILD_VERSION}"
 
@@ -560,6 +584,8 @@ jobs:
             -DSUNSHINE_PUBLISHER_NAME="${GITHUB_REPOSITORY_OWNER}" \
             -DSUNSHINE_PUBLISHER_WEBSITE="https://github.com/RamazanKara/Butterpollo" \
             -DSUNSHINE_PUBLISHER_ISSUE_URL="https://github.com/RamazanKara/Butterpollo/issues" \
+            -DSUNSHINE_ENABLE_PYROWAVE=ON \
+            -DSUNSHINE_PYROWAVE_ROOT="$(cygpath -u "${PYROWAVE_ROOT}")" \
             "${vdd_prebuilt_arg[@]}" \
             "${vhf_gamepad_package_arg[@]}" \
             "${truehdr_runtime_arg[@]}"
@@ -795,6 +821,37 @@ jobs:
           if (($actual -join "`n") -cne ($expected -join "`n")) {
             throw "Unsigned MSI VHF layout is not exact: $($actual -join ', ')"
           }
+
+      - name: Verify unsigned MSI ships the PyroWave runtime
+        shell: pwsh
+        env:
+          MSI_NAME: ${{ steps.package-windows-msi.outputs.msi_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $extractRoot = Join-Path $env:RUNNER_TEMP 'unsigned-pyrowave-msi-extract'
+          New-Item -ItemType Directory -Path $extractRoot -Force | Out-Null
+          $msiPath = Join-Path $PWD "unsigned-signpath-msi\$($env:MSI_NAME)"
+          $process = Start-Process msiexec.exe -ArgumentList @('/a', $msiPath, '/qn', "TARGETDIR=$extractRoot") -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Administrative extraction of unsigned MSI failed with exit code $($process.ExitCode)."
+          }
+          # sunshine.exe imports libpyrowave-shared-0.dll, so the DLL must sit next
+          # to it; the MIT notices of PyroWave, Granite and volk ship alongside.
+          $appRoot = Join-Path $extractRoot 'Apollo'
+          $required = @(
+            'sunshine.exe',
+            'libpyrowave-shared-0.dll',
+            'licenses\pyrowave\LICENSE',
+            'licenses\pyrowave\LICENSE.Granite',
+            'licenses\pyrowave\LICENSE.volk.md'
+          )
+          foreach ($relative in $required) {
+            $path = Join-Path $appRoot $relative
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -le 0) {
+              throw "Unsigned MSI is missing the PyroWave payload: $relative"
+            }
+          }
+          Write-Host 'The MSI ships the PyroWave runtime and its license texts.'
 
       - name: Upload unsigned MSI for SignPath
         id: upload-unsigned-msi

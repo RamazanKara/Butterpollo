@@ -57,6 +57,11 @@
     <pe-file path="Apollo/uninstall.exe"><authenticode-sign/></pe-file>
     <pe-file path="Apollo/zlib1.dll"><authenticode-sign/></pe-file>
     <pe-file path="Apollo/vibeshine_truehdr.dll"><authenticode-sign/></pe-file>
+    <!--
+      PyroWave runtime, built by CI from the pinned upstream source
+      (scripts/build_pyrowave.sh). Absent from builds without PyroWave.
+    -->
+    <pe-file path="Apollo/libpyrowave-shared-0.dll" min-matches="0" max-matches="1"><authenticode-sign/></pe-file>
 
     <!-- Apollo/tools\ -->
     <pe-file path="Apollo/tools/sunshinesvc.exe"><authenticode-sign/></pe-file>

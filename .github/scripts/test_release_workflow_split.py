@@ -505,5 +505,35 @@ class WindowsWorkflowEfficiencyTest(unittest.TestCase):
             bootstrapper,
         )
 
+    def test_windows_builds_and_ships_pinned_pyrowave(self) -> None:
+        workflow = load_workflow("ci-windows.yml")
+        job = workflow["jobs"]["build_windows"]
+        steps = job["steps"]
+        names = [step["name"] for step in steps]
+
+        setup = next(step for step in steps if step["name"] == "Setup Dependencies Windows")
+        self.assertIn("mingw-w64-${{ matrix.toolchain }}-vulkan-headers", setup["with"]["install"])
+
+        script = (ROOT / "scripts" / "build_pyrowave.sh").read_text(encoding="utf-8")
+        self.assertIn(f"PINNED_COMMIT={job['env']['PYROWAVE_COMMIT']}\n", script)
+
+        cache = next(step for step in steps if step["name"] == "Cache PyroWave")
+        self.assertTrue(cache["uses"].startswith("actions/cache@"))
+        self.assertIn("${{ env.PYROWAVE_COMMIT }}", cache["with"]["key"])
+        self.assertIn("hashFiles('scripts/build_pyrowave.sh')", cache["with"]["key"])
+
+        build_pyrowave = next(step for step in steps if step["name"] == "Build PyroWave")
+        self.assertEqual(build_pyrowave["if"], "steps.cache-pyrowave.outputs.cache-hit != 'true'")
+        self.assertIn('bash scripts/build_pyrowave.sh "${PYROWAVE_COMMIT}"', build_pyrowave["run"])
+        self.assertLess(names.index("Build PyroWave"), names.index("Build Windows"))
+
+        build = next(step for step in steps if step["name"] == "Build Windows")
+        self.assertIn("-DSUNSHINE_ENABLE_PYROWAVE=ON", build["run"])
+        self.assertIn("-DSUNSHINE_PYROWAVE_ROOT=", build["run"])
+
+        verify = next(step for step in steps if step["name"] == "Verify unsigned MSI ships the PyroWave runtime")
+        self.assertIn("libpyrowave-shared-0.dll", verify["run"])
+        self.assertLess(names.index("Package Windows MSI"), names.index("Verify unsigned MSI ships the PyroWave runtime"))
+
 if __name__ == "__main__":
     unittest.main()
