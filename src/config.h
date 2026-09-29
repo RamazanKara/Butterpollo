@@ -368,8 +368,10 @@ namespace config {
     // Virtual-display capture policy. Enabled keeps the virtual display at a fixed 4x
     // refresh and lets WGC admit 2x desktop / 4x game frames without changing the mode.
     // Legacy uses a fixed 2x refresh; disabled leaves the automatic policy off.
+    // Butterpollo defaults to 2x: at 120 fps it measured lower host latency and far
+    // steadier frame age than 4x, whose 480 compositions/s are sampled unevenly.
     virtual_display_capture_mode_e virtual_display_capture_mode {
-      virtual_display_capture_mode_e::enabled
+      virtual_display_capture_mode_e::legacy
     };
 
     [[nodiscard]] bool virtual_display_limiter_enabled() const {

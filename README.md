@@ -28,6 +28,7 @@ Encoder (native AMF, `encoder = amdvce_experimental`):
 - `amd_quality` defaults to `speed`.
 
 Capture (Windows Graphics Capture):
+- The virtual display runs at 2x the stream rate (240 Hz for 120 fps) instead of 4x (480 Hz). In a blind A/B/C test on the phone stream, 2x had slightly lower host latency (3.17-3.19 vs 3.25-3.26 ms median). It also had much steadier frame age: how old a frame already is when the host picks it up was 1.78 ms median and about 2 ms p99 at 240 Hz, against 2.0 ms median and 4.2-5.7 ms p99 at 480 Hz. The helper also handles half as many capture callbacks. `frame_limiter_auto_virtual_framegen = enabled` brings back 4x.
 - The encoder reads the capture helper's shared frame directly. The host used to copy each frame on a separate GPU device and hand it over, which cost about 0.5 ms median and 0.8 ms p99 in an off-screen model of the pipeline. `wgc_direct_encoder_input = disabled` switches back.
 - The capture helper copies each frame once instead of twice when nothing is in the way.
 - The once-per-second display check runs on a worker thread, not the frame-pacing thread.
@@ -64,8 +65,8 @@ amd_av1_latency_mode = lowest
 
 ## Next
 
-- The virtual display runs at 4x the stream rate (480 Hz for 120 fps). That makes Windows compose frames sooner, but it also means more GPU and capture work. I'm measuring 480 against 240 and 120 Hz before changing the default.
-- The capture helper still publishes about 1.5x more frames than the host uses.
+- 120 Hz (1x) was inconclusive: capture dropped to 25-68 fps for part of that test. I'll look at it before touching the 1x path.
+- The capture helper still publishes more frames than the host uses.
 - Linux, NVIDIA and Intel code is inherited from Vibepollo unchanged and is not tested here yet.
 
 Bug reports are welcome if they include GPU and driver, client, resolution/fps/codec, and a few `Host latency stages` log lines.

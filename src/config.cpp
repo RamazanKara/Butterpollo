@@ -1050,7 +1050,7 @@ namespace config {
     false,  // mangohud_always_show_graph
     "late",  // mangohud_limiter_method
     false,  // disable_vsync
-    frame_limiter_t::virtual_display_capture_mode_e::enabled
+    frame_limiter_t::virtual_display_capture_mode_e::legacy
   };
 
   // Windows-only: RTSS defaults
@@ -2071,8 +2071,8 @@ namespace config {
           frame_limiter.virtual_display_capture_mode = mode_e::enabled;
         } else {
           BOOST_LOG(warning) << "config: Unknown frame_limiter_auto_virtual_framegen mode '"
-                             << virtual_capture_mode << "'; using enabled.";
-          frame_limiter.virtual_display_capture_mode = mode_e::enabled;
+                             << virtual_capture_mode << "'; using legacy.";
+          frame_limiter.virtual_display_capture_mode = mode_e::legacy;
         }
       }
     }

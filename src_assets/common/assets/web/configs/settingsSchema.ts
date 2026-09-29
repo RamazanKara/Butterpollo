@@ -1052,7 +1052,7 @@ export const settingsDefaults: Record<string, unknown> = {
   mangohud_limiter_method: 'late',
   mangohud_preset: 'custom',
   mangohud_always_show_graph: false,
-  frame_limiter_auto_virtual_framegen: 'enabled',
+  frame_limiter_auto_virtual_framegen: 'legacy',
   frame_limiter_disable_vsync: false,
   rtss_allow_virtual_display_override: false,
   capture: '',

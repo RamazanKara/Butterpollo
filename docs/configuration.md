@@ -3099,7 +3099,7 @@ are detected during the stream. The host log reports hook readiness or failure.
     </tr>
     <tr>
         <td>Default</td>
-        <td colspan="2">@code{}enabled@endcode</td>
+        <td colspan="2">@code{}legacy@endcode (fixed 2x). Butterpollo measured lower host latency and steadier frame age at 2x than at 4x for 120 fps streams.</td>
     </tr>
     <tr>
         <td>Examples</td>
