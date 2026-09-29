@@ -104,6 +104,12 @@ Downloads a ZIP archive containing logs useful for troubleshooting (Windows only
 ## POST /api/restart
 @copydoc confighttp::restart()
 
+## GET /api/updates
+@copydoc confighttp::getUpdates()
+
+## POST /api/updates/check
+@copydoc confighttp::postUpdateCheck()
+
 ## Authentication
 
 All API calls require authentication. You can use either:

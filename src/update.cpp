@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <future>
+#include <mutex>
 #include <sstream>
 #include <thread>
 #include <variant>
@@ -33,11 +34,20 @@ using namespace std::literals;
 namespace update {
   state_t state;
 
+  static std::mutex status_mutex;
+  static check_status_t last_status;  ///< Guarded by status_mutex; `checking` comes from state.
+
   static size_t write_to_string(void *contents, size_t size, size_t nmemb, void *userp) {
     size_t total = size * nmemb;
     auto *out = static_cast<std::string *>(userp);
     out->append(static_cast<char *>(contents), total);
     return total;
+  }
+
+  /// GitHub sends null for unset strings such as a release without a title.
+  static std::string string_field(const nlohmann::json &object, const char *key) {
+    const auto it = object.find(key);
+    return it != object.end() && it->is_string() ? it->get<std::string>() : std::string {};
   }
 
   bool download_github_release_data(const std::string &owner, const std::string &repo, std::string &out_json) {
@@ -58,6 +68,9 @@ namespace update {
       BOOST_LOG(warning) << "GitHub release check is using libcurl defaults for TLS";
     }
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    // A stalled request would keep check_in_progress set and block every later check.
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_to_string);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &out_json);
     char errbuf[CURL_ERROR_SIZE] = {0};
@@ -126,10 +139,12 @@ namespace update {
   }
 
   static void perform_check() {
-    state.check_in_progress = true;
+    // trigger_check() set the flag. Clearing it last publishes the status first.
     auto fg = util::fail_guard([]() {
       state.check_in_progress = false;
     });
+    bool fetched = false;
+    std::vector<release_info_t> releases;
     try {
       const bool allow_prerelease_updates =
         config::sunshine.notify_pre_releases || version_compare::is_prerelease_channel(PROJECT_VERSION);
@@ -139,18 +154,13 @@ namespace update {
       std::string releases_json;
       if (download_github_release_data(SUNSHINE_REPO_OWNER, SUNSHINE_REPO_NAME, releases_json)) {
         auto j = nlohmann::json::parse(releases_json);
-        // Reset release info
-        state.latest_release = release_info_t {};
-        state.latest_prerelease = release_info_t {};
 
         // Track best by semver
         release_info_t best_stable;
         release_info_t best_pre;
 
         for (auto &rel : j) {
-          const bool is_prerelease = rel.value("prerelease", false);
-          const bool is_draft = rel.value("draft", false);
-          if (is_draft) {
+          if (rel.value("draft", false)) {
             continue;
           }
 
@@ -173,32 +183,26 @@ namespace update {
             }
           }
 
-          const std::string tag = rel.value("tag_name", "");
-          if (!is_prerelease) {
-            if (best_stable.version.empty() || version_compare::compare_semver(best_stable.version, tag) < 0) {
-              best_stable.version = tag;
-              best_stable.url = rel.value("html_url", "");
-              best_stable.name = rel.value("name", "");
-              best_stable.body = rel.value("body", "");
-              best_stable.published_at = rel.value("published_at", "");
-              best_stable.is_prerelease = false;
-              best_stable.assets = assets;
-            }
-          } else if (allow_prerelease_updates) {
-            if (best_pre.version.empty() || version_compare::compare_semver(best_pre.version, tag) < 0) {
-              best_pre.version = tag;
-              best_pre.url = rel.value("html_url", "");
-              best_pre.name = rel.value("name", "");
-              best_pre.body = rel.value("body", "");
-              best_pre.published_at = rel.value("published_at", "");
-              best_pre.is_prerelease = true;
-              best_pre.assets = assets;
-            }
+          release_info_t release {
+            .version = string_field(rel, "tag_name"),
+            .url = string_field(rel, "html_url"),
+            .name = string_field(rel, "name"),
+            .body = string_field(rel, "body"),
+            .published_at = string_field(rel, "published_at"),
+            .is_prerelease = rel.value("prerelease", false),
+            .assets = std::move(assets),
+          };
+          auto &best = release.is_prerelease ? best_pre : best_stable;
+          if ((!release.is_prerelease || allow_prerelease_updates) &&
+              (best.version.empty() || version_compare::compare_semver(best.version, release.version) < 0)) {
+            best = release;
           }
+          releases.push_back(std::move(release));
         }
 
         state.latest_release = best_stable;
         state.latest_prerelease = best_pre;
+        fetched = true;
         if (!state.latest_release.version.empty()) {
           BOOST_LOG(info) << "Update check: latest stable tag="sv << state.latest_release.version;
         }
@@ -236,14 +240,23 @@ namespace update {
     } catch (std::exception &e) {
       BOOST_LOG(warning) << "Update check failed: "sv << e.what();
     }
+
+    std::scoped_lock lock {status_mutex};
+    last_status.checked_at = std::chrono::system_clock::now();
+    last_status.last_check_failed = !fetched;
+    if (fetched) {
+      last_status.releases = std::move(releases);
+    }
+  }
+
+  check_status_t check_status() {
+    std::scoped_lock lock {status_mutex};
+    auto status = last_status;
+    status.checking = state.check_in_progress;
+    return status;
   }
 
   void trigger_check(bool force) {
-    const bool in_progress = state.check_in_progress.load();
-    if (in_progress) {
-      BOOST_LOG(info) << "Update check trigger skipped: another check is in progress (force="sv << (force ? "true"sv : "false"sv) << ')';
-      return;
-    }
     if (!force && config::sunshine.update_check_interval_seconds == 0) {
       BOOST_LOG(info) << "Update check trigger skipped: checks are disabled by config (interval=0)"sv;
       return;
@@ -255,6 +268,12 @@ namespace update {
         BOOST_LOG(info) << "Update check trigger throttled: last ran "sv << since_last.count() << "s ago (interval="sv << config::sunshine.update_check_interval_seconds << 's' << ')';
         return;
       }
+    }
+    // Claim the flag here, not in the worker, so a caller polling check_status()
+    // right after this returns sees the check as running.
+    if (state.check_in_progress.exchange(true)) {
+      BOOST_LOG(info) << "Update check trigger skipped: another check is in progress (force="sv << (force ? "true"sv : "false"sv) << ')';
+      return;
     }
     BOOST_LOG(info) << "Update check trigger accepted (force="sv << (force ? "true"sv : "false"sv) << ')';
     std::thread([]() {

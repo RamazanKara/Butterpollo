@@ -43,6 +43,22 @@ namespace update {
   extern state_t state;
 
   /**
+   * @brief Outcome of the release checks, as reported to the web UI.
+   */
+  struct check_status_t {
+    std::vector<release_info_t> releases;  ///< Non-draft releases from the last successful check, in GitHub order
+    std::chrono::system_clock::time_point checked_at {};  ///< When the last check finished; the epoch if none has
+    bool last_check_failed {false};  ///< Whether the last finished check could not read the release list
+    bool checking {false};  ///< Whether a check is running
+  };
+
+  /**
+   * @brief Get the outcome of the latest release check. Safe to call from any thread.
+   * @return A copy of the check status.
+   */
+  check_status_t check_status();
+
+  /**
    * @brief Trigger an asynchronous update check.
    * Initiates a check for updates if not already running. If force is true, bypasses interval throttling.
    * @param force If true, forces the check regardless of throttling.

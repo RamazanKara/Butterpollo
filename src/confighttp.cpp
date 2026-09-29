@@ -67,6 +67,7 @@
 #include "platform/common.h"
 #include "rtsp.h"
 #include "stream.h"
+#include "update.h"
 #include "video.h"
 #include "webrtc_stream.h"
 
@@ -1313,7 +1314,7 @@ namespace confighttp {
       headers.emplace("Content-Type", std::string {content_type});
       headers.emplace("Cache-Control", cache_immutable ? "public, max-age=31536000, immutable" : "no-cache");
       headers.emplace("Content-Security-Policy",
-                      "default-src 'self'; base-uri 'self'; connect-src 'self' https://api.github.com https://raw.githubusercontent.com wss:; font-src 'self'; "
+                      "default-src 'self'; base-uri 'self'; connect-src 'self' https://raw.githubusercontent.com wss:; font-src 'self'; "
                       "form-action 'self'; frame-ancestors 'none'; img-src 'self' https://images.igdb.com data: blob:; media-src 'self' blob:; "
                       "object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:");
       headers.emplace("Referrer-Policy", "no-referrer");
@@ -2723,6 +2724,67 @@ namespace confighttp {
       // Non-fatal; keep metadata response minimal if enumeration fails.
     }
 #endif
+    send_response(response, output_tree);
+  }
+
+  /**
+   * @brief Get the releases found by the host's update checker.
+   * @param response The HTTP response object.
+   * @param request The HTTP request object.
+   *
+   * The web UI reads release information here instead of querying GitHub from the browser.
+   * `releases` keeps the result of the last successful check and uses GitHub's field names;
+   * `checked_at` is the Unix time of the last finished check, or 0.
+   *
+   * @api_examples{/api/updates| GET| null}
+   */
+  void getUpdates(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+
+    const auto status = update::check_status();
+    nlohmann::json releases = nlohmann::json::array();
+    for (const auto &release : status.releases) {
+      releases.push_back({
+        {"tag_name", release.version},
+        {"name", release.name},
+        {"html_url", release.url},
+        {"body", release.body},
+        {"published_at", release.published_at},
+        {"prerelease", release.is_prerelease},
+      });
+    }
+
+    nlohmann::json output_tree;
+    output_tree["status"] = true;
+    output_tree["checking"] = status.checking;
+    output_tree["checked_at"] = std::chrono::duration_cast<std::chrono::seconds>(status.checked_at.time_since_epoch()).count();
+    output_tree["check_failed"] = status.last_check_failed;
+    output_tree["releases"] = std::move(releases);
+    send_response(response, output_tree);
+  }
+
+  /**
+   * @brief Start a release check. Poll GET /api/updates until `checking` is false.
+   * @param response The HTTP response object.
+   * @param request The HTTP request object.
+   *
+   * @api_examples{/api/updates/check| POST| null}
+   */
+  void postUpdateCheck(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+
+    update::trigger_check(true);
+
+    nlohmann::json output_tree;
+    output_tree["status"] = true;
     send_response(response, output_tree);
   }
 
@@ -5451,6 +5513,8 @@ namespace confighttp {
     register_api_route("^/api/metadata$", "GET", getMetadata);
     register_api_route("^/api/configLocale$", "GET", getLocale);
     register_api_route("^/api/restart$", "POST", restart);
+    register_api_route("^/api/updates$", "GET", getUpdates);
+    register_api_route("^/api/updates/check$", "POST", postUpdateCheck);
     register_api_route("^/api/quit$", "POST", quit);
     register_blocking_api_route("^/api/reset-display-device-persistence$", "POST", resetDisplayDevicePersistence);
 #if defined(_WIN32)

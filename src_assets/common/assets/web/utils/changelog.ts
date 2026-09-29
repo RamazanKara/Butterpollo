@@ -1,29 +1,12 @@
-export type ChangelogSource = 'bundled' | 'github';
 export type ChangelogChannel = 'stable' | 'alpha' | 'beta' | 'rc' | 'other';
-
-export interface ChangelogSection {
-  heading: string;
-  bullets: string[];
-  body: string[];
-}
 
 export interface ChangelogEntry {
   tag: string;
   name: string;
   date: string;
   body: string;
-  sections: ChangelogSection[];
-  coreVersion: string;
-  releaseLine: string;
-  channel: ChangelogChannel;
-  source: ChangelogSource;
   url?: string;
   prerelease?: boolean;
-}
-
-export interface BundledChangelogAsset {
-  generatedAt: string;
-  releases: ChangelogEntry[];
 }
 
 export interface GitHubReleaseLike {
@@ -146,68 +129,6 @@ export function sortChangelogEntries(entries: ChangelogEntry[]): ChangelogEntry[
   });
 }
 
-export function parseMarkdownSections(body: string): ChangelogSection[] {
-  const sections: ChangelogSection[] = [];
-  let current: ChangelogSection | null = null;
-
-  for (const rawLine of (body || '').replace(/\r\n/g, '\n').split('\n')) {
-    const line = rawLine.trimEnd();
-    const heading = line.match(/^##+\s+(.+)$/);
-    if (heading?.[1]) {
-      current = { heading: heading[1].trim(), bullets: [], body: [] };
-      sections.push(current);
-      continue;
-    }
-
-    if (!current) {
-      if (line.trim()) {
-        current = { heading: 'Notes', bullets: [], body: [] };
-        sections.push(current);
-      } else {
-        continue;
-      }
-    }
-
-    const bullet = line.match(/^[-*]\s+(.+)$/);
-    if (bullet?.[1]) {
-      current.bullets.push(bullet[1].trim());
-    } else if (line.trim()) {
-      current.body.push(line.trim());
-    }
-  }
-
-  return sections;
-}
-
-export function parseBundledReleaseNote(filename: string, content: string): ChangelogEntry | null {
-  const tag = normalizeChangelogTag(filename.replace(/^.*[\\/]/, ''));
-  if (!/^\d+\.\d+(?:\.\d+)?(?:[-+].*)?$/i.test(tag)) return null;
-  const info = parseChangelogVersion(tag);
-  const normalizedBody = (content || '').replace(/\r\n/g, '\n').trim();
-  const lines = normalizedBody.split('\n');
-  let name = `Vibepollo ${tag}`;
-  let date = '';
-  let body = normalizedBody;
-  const title = lines[0]?.match(/^#\s+(.+?)(?:\s+-\s+(\d{4}-\d{2}-\d{2}))?\s*$/);
-  if (title) {
-    name = title[1]?.trim() || name;
-    date = title[2] ?? '';
-    body = lines.slice(1).join('\n').trim();
-  }
-  return {
-    tag,
-    name,
-    date,
-    body,
-    sections: parseMarkdownSections(body),
-    coreVersion: info.coreVersion,
-    releaseLine: info.releaseLine,
-    channel: info.channel,
-    source: 'bundled',
-    prerelease: info.channel !== 'stable',
-  };
-}
-
 export function githubReleaseToChangelogEntry(release: GitHubReleaseLike): ChangelogEntry | null {
   if (!release || release.draft || !release.tag_name) return null;
   const tag = normalizeChangelogTag(release.tag_name);
@@ -225,43 +146,8 @@ export function githubReleaseToChangelogEntry(release: GitHubReleaseLike): Chang
     name: (release.name || `Vibepollo ${tag}`).trim(),
     date: (release.published_at || release.created_at || '').slice(0, 10),
     body,
-    sections: parseMarkdownSections(body),
-    coreVersion: info.coreVersion,
-    releaseLine: info.releaseLine,
-    channel: info.channel,
-    source: 'github',
     prerelease: release.prerelease ?? info.channel !== 'stable',
   };
   if (release.html_url) entry.url = release.html_url;
   return entry;
-}
-
-export function mergeChangelogEntries(
-  bundled: ChangelogEntry[],
-  github: ChangelogEntry[],
-): ChangelogEntry[] {
-  const byTag = new Map<string, ChangelogEntry>();
-  for (const entry of bundled) {
-    byTag.set(normalizeChangelogTag(entry.tag).toLowerCase(), entry);
-  }
-  for (const entry of github) {
-    const key = normalizeChangelogTag(entry.tag).toLowerCase();
-    const existing = byTag.get(key);
-    if (!existing) {
-      byTag.set(key, entry);
-      continue;
-    }
-    const body = entry.body || existing.body;
-    byTag.set(key, {
-      ...existing,
-      ...entry,
-      body,
-      sections: parseMarkdownSections(body),
-      source: 'github',
-      name: entry.name || existing.name,
-      date: entry.date || existing.date,
-      ...(entry.url || existing.url ? { url: entry.url || existing.url } : {}),
-    });
-  }
-  return sortChangelogEntries(Array.from(byTag.values()));
 }

@@ -16,6 +16,7 @@ import {
 } from '@/components/ui';
 import type { SessionStatus } from '@/types/sessions';
 import { useSystemStore, type HostMetadata } from '@/stores/system';
+import { PROJECT_REPOSITORY_URL } from '@/utils/project';
 
 interface MutationResponse {
   status?: boolean | string;
@@ -465,13 +466,13 @@ onBeforeUnmount(() => {
         >
         <nav :aria-label="t('ui.overview.support')">
           <a
-            href="https://github.com/Nonary/Vibepollo/issues/new/choose"
+            :href="`${PROJECT_REPOSITORY_URL}/issues/new/choose`"
             target="_blank"
             rel="noopener noreferrer"
             >{{ t('ui.overview.actions.reportBug') }}<UiIcon name="external-link" :size="14"
           /></a>
           <a
-            href="https://github.com/Nonary/Vibepollo/releases/latest"
+            :href="`${PROJECT_REPOSITORY_URL}/releases/latest`"
             target="_blank"
             rel="noopener noreferrer"
             >{{ t('ui.overview.actions.checkUpdates') }}<UiIcon name="external-link" :size="14"

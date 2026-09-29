@@ -5,6 +5,7 @@ import {
   type ChangelogEntry,
   type GitHubReleaseLike,
 } from './changelog.ts';
+import { PROJECT_REPOSITORY_URL } from './project.ts';
 
 export function selectAvailableUpdate(
   installedVersion: string,
@@ -24,4 +25,11 @@ export function selectAvailableUpdate(
     if (!best || compareChangelogTags(entry.tag, best.tag) > 0) best = entry;
   }
   return best;
+}
+
+/** Link for a release: its GitHub page, or the project's release list. */
+export function releasePageUrl(entry: Pick<ChangelogEntry, 'url'> | null): string {
+  return entry?.url?.startsWith('https://github.com/')
+    ? entry.url
+    : `${PROJECT_REPOSITORY_URL}/releases`;
 }

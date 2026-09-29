@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { selectAvailableUpdate } from '../utils/updates.ts';
+import { releasePageUrl, selectAvailableUpdate } from '../utils/updates.ts';
 
 const releases = [
   { tag_name: 'v2.0.0-beta.10', prerelease: true },
@@ -33,4 +33,25 @@ test('stable release supersedes a beta and unknown installed versions produce no
   );
   assert.equal(selectAvailableUpdate('', releases, true), null);
   assert.equal(selectAvailableUpdate('unknown', releases, true), null);
+});
+
+test('butter tags compare by upstream version, then fork revision', () => {
+  const forkReleases = [
+    { tag_name: '2.0.0-beta.3-butter.3', prerelease: true },
+    { tag_name: '2.0.0-beta.3-butter.2', prerelease: true },
+  ];
+  assert.equal(
+    selectAvailableUpdate('2.0.0-beta.3-butter.2', forkReleases, false)?.tag,
+    '2.0.0-beta.3-butter.3',
+  );
+  assert.equal(selectAvailableUpdate('2.0.0-beta.3-butter.3', forkReleases, false), null);
+});
+
+test('release links stay on GitHub and otherwise open the project release list', () => {
+  const tagPage = 'https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-beta.3-butter.3';
+  const releaseList = 'https://github.com/RamazanKara/Butterpollo/releases';
+  assert.equal(releasePageUrl({ url: tagPage }), tagPage);
+  assert.equal(releasePageUrl({ url: 'javascript:alert(1)' }), releaseList);
+  assert.equal(releasePageUrl({}), releaseList);
+  assert.equal(releasePageUrl(null), releaseList);
 });

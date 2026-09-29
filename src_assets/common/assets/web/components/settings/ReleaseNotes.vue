@@ -2,36 +2,30 @@
 import { onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { AppButton, InlineAlert } from '@/components/ui';
+import { checkForUpdates, fetchUpdateStatus } from '@/services/updates';
 import {
   githubReleaseToChangelogEntry,
-  mergeChangelogEntries,
+  sortChangelogEntries,
   type ChangelogEntry,
-  type GitHubReleaseLike,
 } from '@/utils/changelog';
+import { releasePageUrl } from '@/utils/updates';
 const props = defineProps<{ installedVersion?: string }>();
 const { t } = useI18n();
 const releases = ref<ChangelogEntry[]>([]);
 const loading = ref(false);
 const failed = ref(false);
-async function load(remote = false) {
+async function load(now = false) {
   if (loading.value) return;
   loading.value = true;
   failed.value = false;
   try {
-    const response = await fetch(
-      remote ? 'https://api.github.com/repos/Nonary/Vibepollo/releases' : '/assets/changelog.json',
-      { headers: { Accept: 'application/json' }, credentials: 'omit' },
+    const status = now ? await checkForUpdates() : await fetchUpdateStatus();
+    releases.value = sortChangelogEntries(
+      status.releases
+        .map((release) => githubReleaseToChangelogEntry(release))
+        .filter((entry): entry is ChangelogEntry => entry !== null),
     );
-    if (!response.ok) throw new Error('releases-unavailable');
-    const data = await response.json();
-    const incoming = remote
-      ? (Array.isArray(data) ? data : [])
-          .map((entry: GitHubReleaseLike) => githubReleaseToChangelogEntry(entry))
-          .filter((entry): entry is ChangelogEntry => entry !== null)
-      : Array.isArray(data.releases)
-        ? data.releases
-        : [];
-    releases.value = mergeChangelogEntries(releases.value, incoming);
+    failed.value = status.checkFailed;
   } catch {
     failed.value = true;
   } finally {
@@ -61,13 +55,9 @@ onMounted(() => void load());
     <details v-for="release in releases.slice(0, 10)" :key="release.tag">
       <summary>{{ release.name || release.tag }} · {{ release.date }}</summary>
       <p class="release-notes__body">{{ release.body }}</p>
-      <a
-        v-if="release.url?.startsWith('https://github.com/Nonary/Vibepollo/releases/')"
-        :href="release.url"
-        target="_blank"
-        rel="noopener noreferrer"
-        >{{ t('ui.maintenance.releases.open') }}</a
-      >
+      <a :href="releasePageUrl(release)" target="_blank" rel="noopener noreferrer">{{
+        t('ui.maintenance.releases.open')
+      }}</a>
     </details>
   </section>
 </template>

@@ -52,9 +52,6 @@ async function setupHost(page: Page, options: HostOptions = {}) {
     }
     await route.fulfill({ json: body });
   });
-  await page.route('**/assets/changelog.json', (route) =>
-    route.fulfill({ json: { releases: [] } }),
-  );
   return saves;
 }
 

@@ -3,6 +3,7 @@ import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { StatusBadge, UiIcon } from '@/components/ui';
 import { linuxCaptureState, type ReadinessMetadata } from '@/utils/hostReadiness';
+import { PROJECT_REPOSITORY_URL } from '@/utils/project';
 const props = defineProps<{ metadata: ReadinessMetadata; virtualMode?: string }>();
 const { t, te } = useI18n();
 const reasonKey = computed(() => {
@@ -30,7 +31,7 @@ const state = computed(() => linuxCaptureState(props.metadata, props.virtualMode
       <p v-if="metadata.linux?.session_role === 'greeter'">{{ t('ui.settings.linux.greeter') }}</p>
       <a
         v-if="state === 'unavailable' || state === 'unknown'"
-        href="https://github.com/Nonary/Vibepollo/issues"
+        :href="`${PROJECT_REPOSITORY_URL}/issues`"
         target="_blank"
         rel="noopener noreferrer"
         >{{ t('ui.settings.linux.repair') }}</a
