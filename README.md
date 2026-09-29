@@ -1,6 +1,6 @@
 # Butterpollo
 
-Butterpollo is a Windows game-streaming host built on [Vibepollo](https://github.com/Nonary/Vibepollo), which builds on [Apollo](https://github.com/ClassicOldSong/Apollo) and [Sunshine](https://github.com/LizardByte/Sunshine). It has one job: get each frame from your PC to your Moonlight client as fast and as evenly as possible. It adds no new features. A change goes in only if it makes streaming faster or smoother, and I measure it before it ships.
+Butterpollo is a Windows game-streaming host built on [Vibepollo](https://github.com/Nonary/Vibepollo), which builds on [Apollo](https://github.com/ClassicOldSong/Apollo) and [Sunshine](https://github.com/LizardByte/Sunshine). It has one job: get each frame from your PC to your Moonlight client as fast and as evenly as possible. Anything that doesn't serve that job has been taken out. A change goes in only if it makes streaming faster or smoother, and I measure it before it ships.
 
 The name comes from the first tester's verdict on the WGC fix: "smooth as butter". Also, *pollo* is Spanish for chicken.
 
@@ -43,6 +43,23 @@ Diagnostics:
 - Every 10 seconds the log prints `Host latency stages`: capture, convert, submit, encode and deliver, each as median/p99/max. It also shows which stage caused each spike and how old the frame already was when the host picked it up. If something stutters, that line shows where.
 - With WGC capture the log also prints `WGC helper publish to host claim` every 10 seconds: how long a published frame waited before the host took it.
 
+Removed, because none of it is needed to stream:
+- Linux, macOS and FreeBSD support. Butterpollo builds for Windows only.
+- WebRTC browser streaming. Moonlight is unaffected.
+- Playnite, Steam library and Lutris integration, and Lossless Scaling automation. Apps you added yourself keep working, including `steam://` commands. Apps synced from Playnite without a command are skipped at startup.
+- The stats and session history pages and the SQLite database behind them. The Devices page still shows who is connected, and the Overview page has a Stop stream button.
+- Docker files, upstream issue bots, docs-site tooling and dead code.
+
+## PyroWave (experimental)
+
+[PyroWave](https://github.com/Themaister/pyrowave) is an intra-only wavelet codec that runs as Vulkan compute. Every frame stands alone, and encoding is very fast: in a self-test on an RX 7900 XT, colour conversion, encode and packetizing took 0.5-0.7 ms per frame at 1080p and about 0.7 ms at 4K. The cost is bandwidth. It needs a few hundred Mbit/s, so it is only for fast wired networks.
+
+Butterpollo's PyroWave stream is wire-compatible with the PyroWave Moonlight clients from [pyrowave-streaming](https://github.com/joemossjr16/pyrowave-streaming): the Artemis fork for Android and the Moonlight-Qt build for Windows, Linux and the Steam Deck. Other Moonlight clients don't know the codec and keep using H.264, HEVC or AV1.
+
+To use it, turn on `pyrowave` (Advanced settings, or `pyrowave = enabled` in `sunshine.conf`) and restart the host. At startup the host checks that the GPU can encode PyroWave and only then offers it. It does 4:2:0 and 4:4:4 in SDR, and 4:2:0 in HDR10. The client picks the bitrate, and the host keeps each frame small enough for the stream's error correction to cover it.
+
+Phones decode PyroWave more slowly than hardware codecs. The Artemis fork measured about 5.7 ms per frame at 1972x1248 on a Snapdragon 8 Elite Gen 5, so use a lower stream resolution there.
+
 ## Install
 
 Download `VibepolloSetup.exe` from [Releases](https://github.com/RamazanKara/Butterpollo/releases).
@@ -69,10 +86,11 @@ amd_av1_latency_mode = lowest
 
 - 120 Hz (1x) was inconclusive: capture dropped to 25-68 fps for part of that test. I'll look at it before touching the 1x path.
 - Slot-aligned publishing needs numbers from a live stream. The `WGC helper publish to host claim` line is there to get them.
-- NVIDIA and Intel GPUs have been tested and work. Their encoder code is inherited from Vibepollo unchanged. Linux is not tested.
+- PyroWave has passed a GPU self-test (real conversion, encode and framing, decoded and compared against a reference), but not yet a stream to a real client.
+- NVIDIA and Intel GPUs have been tested and work. Their encoder code is inherited from Vibepollo unchanged.
 
 Bug reports are welcome if they include GPU and driver, client, resolution/fps/codec, and a few `Host latency stages` log lines.
 
 ## Credits and license
 
-Butterpollo is GPL-3.0, like everything it builds on. Thanks to Nonary for Vibepollo, ClassicOldSong for Apollo, and LizardByte and the Sunshine contributors. Everything outside the list above is their work.
+Butterpollo is GPL-3.0, like everything it builds on. Thanks to Nonary for Vibepollo, ClassicOldSong for Apollo, and LizardByte and the Sunshine contributors. Everything outside the list above is their work. PyroWave and Granite are by Themaister (MIT), and the PyroWave Moonlight protocol and clients are joemossjr16's work.
