@@ -91,6 +91,9 @@ jobs:
       VHF_SOURCE_REVISION: 0b3970e1a8c839f14f20a7c8eaf48ff59b8c1986
       VHF_DRIVER_VER: 09/13/2026,0.1.0.34
       VHF_PROTOCOL_VERSION: '2'
+      # Debug info costs compile and link time; only produce it when the PDBs
+      # are packaged.
+      WITH_SYMBOLS: ${{ startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols || inputs.upload_symbols_artifact }}
     defaults:
       run:
         shell: msys2 {0}
@@ -103,7 +106,13 @@ jobs:
         with:
           ref: ${{ inputs.release_commit }}
           fetch-depth: 1
-          submodules: recursive
+          submodules: true
+
+      - name: Checkout nested submodules
+        shell: pwsh
+        # ENet is the only nested submodule the build compiles; the others
+        # hold documentation and test frameworks of the libraries.
+        run: git -C third-party/moonlight-common-c submodule update --init --depth 1 enet
 
       - name: Test VHF publisher trust policy
         if: inputs.build_tests
@@ -179,14 +188,19 @@ jobs:
 
       - name: Setup Dependencies Windows
         id: setup-msys2
-        uses: msys2/setup-msys2@4f806de0a5a7294ffabaff804b38a9b435a73bda  # v2.30.0
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e  # v2.33.0
         with:
           msystem: ucrt64
-          update: true
+          # Packages come from the action's pinned MSYS2 snapshot (v2.33.0:
+          # 2026-09-27, GCC 16), so the toolchain only moves when the action is
+          # bumped. Upgrading on every run would bypass the package cache and
+          # invalidate ccache whenever MSYS2 ships a new compiler.
+          update: false
           cache: true
           install: >-
             git
             mingw-w64-ucrt-x86_64-boost
+            mingw-w64-ucrt-x86_64-ccache
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-cppwinrt
             mingw-w64-ucrt-x86_64-curl-winssl
@@ -198,8 +212,13 @@ jobs:
             mingw-w64-ucrt-x86_64-onevpl
             mingw-w64-ucrt-x86_64-openssl
             mingw-w64-ucrt-x86_64-opus
+            mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-python-yaml
             mingw-w64-ucrt-x86_64-tools
             mingw-w64-ucrt-x86_64-vulkan-headers
+
+      - name: Test CI workflow contracts
+        run: python .github/scripts/test_ci_workflows.py
 
       - name: Cache PyroWave
         id: cache-pyrowave
@@ -291,7 +310,30 @@ jobs:
           .\scripts\download_truehdr_runtime_release.ps1 @args
           "SUNSHINE_TRUEHDR_RUNTIME_DIR=$env:TRUEHDR_RUNTIME_ROOT" >> $env:GITHUB_ENV
 
+      - name: Configure ccache
+        shell: pwsh
+        run: |
+          # Objects are keyed on the preprocessed source and the command line;
+          # paths below the workspace are hashed relative to it.
+          @(
+            "CCACHE_DIR=$env:RUNNER_TEMP\ccache"
+            "CCACHE_BASEDIR=$($env:GITHUB_WORKSPACE.Replace('\', '/'))"
+            'CCACHE_COMPRESS=true'
+            'CCACHE_MAXSIZE=1500M'
+            'CCACHE_SLOPPINESS=pch_defines,time_macros,include_file_mtime,include_file_ctime'
+          ) | Add-Content -LiteralPath $env:GITHUB_ENV
+
+      - name: Restore ccache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: ${{ runner.temp }}\ccache
+          key: ccache-${{ runner.os }}-ucrt64-${{ hashFiles('CMakeLists.txt', 'cmake/**', 'tests/CMakeLists.txt', 'tests/cmake/**') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ccache-${{ runner.os }}-ucrt64-${{ hashFiles('CMakeLists.txt', 'cmake/**', 'tests/CMakeLists.txt', 'tests/cmake/**') }}-
+            ccache-${{ runner.os }}-ucrt64-
+
       - name: Build Windows
+        id: build
         env:
           BRANCH: ${{ github.head_ref || github.ref_name }}
           COMMIT: ${{ inputs.release_commit }}
@@ -332,7 +374,12 @@ jobs:
             )
             echo "Using pinned TrueHDR runtime: ${SUNSHINE_TRUEHDR_RUNTIME_DIR}"
           fi
+          release_flags="-O3 -DNDEBUG"
+          if [[ "${WITH_SYMBOLS}" == "true" ]]; then
+            release_flags+=" -g -gdwarf-4"
+          fi
 
+          ccache --zero-stats
           mkdir -p build
           # Test targets are opt-in for CI builds.
           cmake \
@@ -346,8 +393,10 @@ jobs:
             -DBUILD_VIRTUALDISPLAY_TOOLS=OFF \
             -DBUILD_VIRTUALDISPLAY_VULKAN_LAYER=OFF \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG -g -gdwarf-4" \
-            -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -g -gdwarf-4" \
+            -DCMAKE_C_FLAGS_RELEASE="${release_flags}" \
+            -DCMAKE_CXX_FLAGS_RELEASE="${release_flags}" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DSUNSHINE_NPM_EXECUTABLE="${NPM_PATH}" \
             -DSUNSHINE_ASSETS_DIR=assets \
             -DSUNSHINE_PUBLISHER_NAME="${GITHUB_REPOSITORY_OWNER}" \
@@ -362,7 +411,24 @@ jobs:
           cmake --build build --target all --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
           echo "::remove-matcher owner=gcc::"
 
+      - name: Save ccache
+        if: always() && steps.build.outcome != 'skipped'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: ${{ runner.temp }}\ccache
+          key: ccache-${{ runner.os }}-ucrt64-${{ hashFiles('CMakeLists.txt', 'cmake/**', 'tests/CMakeLists.txt', 'tests/cmake/**') }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Show ccache statistics
+        if: always() && steps.build.outcome != 'skipped'
+        run: ccache --show-stats
+
+      - name: Run tests
+        if: inputs.build_tests
+        timeout-minutes: 20
+        run: ctest --test-dir build --output-on-failure --timeout 300 --parallel 4
+
       - name: Test native AMF lifecycle behavior
+        if: inputs.build_tests
         run: |
           set -euo pipefail
           c++ \
@@ -376,7 +442,7 @@ jobs:
           ./build/native-amf-lifecycle-test.exe
 
       - name: Install cv2pdb
-        if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols || inputs.upload_symbols_artifact
+        if: env.WITH_SYMBOLS == 'true'
         shell: pwsh
         env:
           CV2PDB_VERSION: "0.54"
@@ -395,7 +461,7 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value (Split-Path $cv2pdbExe.FullName -Parent)
 
       - name: Generate Windows PDB
-        if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols || inputs.upload_symbols_artifact
+        if: env.WITH_SYMBOLS == 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -429,7 +495,7 @@ jobs:
           }
 
       - name: Package Windows Symbols
-        if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols || inputs.upload_symbols_artifact
+        if: env.WITH_SYMBOLS == 'true'
         id: package-windows-symbols
         shell: pwsh
         env:
@@ -592,7 +658,7 @@ jobs:
           overwrite: true
 
       - name: Upload Windows symbols package
-        if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols || inputs.upload_symbols_artifact
+        if: env.WITH_SYMBOLS == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: windows-symbols-Windows
