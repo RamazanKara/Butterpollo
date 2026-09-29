@@ -144,6 +144,25 @@ TEST(VideoLatencyTrace, AttributesSpikesToTheStageThatGrew) {
   EXPECT_EQ(window.summarize().frames, 0u);
 }
 
+TEST(VideoLatencyTrace, SummarizesSourceAgeOnlyWhenKnown) {
+  video::latency_trace::window_t window(1.0);
+  auto aged = latency_sample(0.1, 0.1, 0.1, 2.5, 0.2);
+  aged.source_age_ms = 1.5;
+  window.add(aged);
+  aged.source_age_ms = 3.5;
+  window.add(aged);
+  window.add(latency_sample(0.1, 0.1, 0.1, 2.5, 0.2));  // Unknown age.
+
+  const auto summary = window.summarize();
+  EXPECT_EQ(summary.source_age_frames, 2u);
+  EXPECT_NEAR(summary.source_age.max_ms, 3.5, 1e-9);
+  EXPECT_NE(video::latency_trace::format_summary(summary, 10.0).find("source age"), std::string::npos);
+
+  video::latency_trace::window_t unknown(1.0);
+  unknown.add(latency_sample(0.1, 0.1, 0.1, 2.5, 0.2));
+  EXPECT_EQ(video::latency_trace::format_summary(unknown.summarize(), 10.0).find("source age"), std::string::npos);
+}
+
 TEST(CapturePolicy, ExactAndSyntheticSourcesRejectProcessDisplayOverride) {
   EXPECT_TRUE(video::policy::may_apply_process_display_preference(video::policy::capture_selection_e::process_preferred));
   EXPECT_FALSE(video::policy::may_apply_process_display_preference(video::policy::capture_selection_e::exact_output));

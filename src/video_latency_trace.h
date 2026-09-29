@@ -35,6 +35,9 @@ namespace video::latency_trace {
   struct frame_sample_t {
     std::array<double, stage_count> stage_ms {};
     double total_ms = 0.0;
+    /// Source composition -> host claim, when the capture source reports a
+    /// composition time. Not part of host processing latency; negative if unknown.
+    double source_age_ms = -1.0;
   };
 
   /**
@@ -75,6 +78,9 @@ namespace video::latency_trace {
     /// For each spike, the stage that exceeded its own median by the most.
     std::array<std::size_t, stage_count> spike_causes {};
     frame_sample_t worst;
+    /// How old frames already were when the host claimed them (see frame_sample_t).
+    std::size_t source_age_frames = 0;
+    stage_summary_t source_age;
   };
 
   /**
@@ -127,6 +133,22 @@ namespace video::latency_trace {
         summary.stages[stage] = summarize_values([stage](const frame_sample_t &sample) {
           return sample.stage_ms[stage];
         });
+      }
+
+      std::vector<double> ages;
+      ages.reserve(_samples.size());
+      for (const auto &sample : _samples) {
+        if (sample.source_age_ms >= 0.0) {
+          ages.push_back(sample.source_age_ms);
+        }
+      }
+      summary.source_age_frames = ages.size();
+      if (!ages.empty()) {
+        std::sort(ages.begin(), ages.end());
+        auto at = [&](double fraction) {
+          return ages[std::min(ages.size() - 1, static_cast<std::size_t>(fraction * static_cast<double>(ages.size() - 1) + 0.5))];
+        };
+        summary.source_age = {at(0.5), at(0.99), ages.back()};
       }
 
       summary.spike_threshold_ms = summary.total.median_ms + _spike_margin_ms;
@@ -190,6 +212,10 @@ namespace video::latency_trace {
     out << " | worst " << summary.worst.total_ms << " ms =";
     for (std::size_t stage = 0; stage < stage_count; ++stage) {
       out << ' ' << stage_names[stage] << ' ' << summary.worst.stage_ms[stage];
+    }
+    if (summary.source_age_frames) {
+      out << " | source age " << summary.source_age.median_ms << '/' << summary.source_age.p99_ms << '/'
+          << summary.source_age.max_ms << " ms (med/p99/max)";
     }
     return out.str();
   }

@@ -2080,14 +2080,20 @@ namespace stream {
             trace_it->second.window_started = sending_at;
           }
           const auto &stages = *packet->stage_timestamps;
-          trace_it->second.window.add(video::latency_trace::make_sample(
+          auto sample = video::latency_trace::make_sample(
             *packet->host_processing_timestamp,
             stages.popped,
             stages.converted,
             stages.submitted,
             stages.output,
             sending_at
-          ));
+          );
+          // For WGC this is DWM composition -> host claim: how stale the frame
+          // was before host processing began. It depends on the display refresh.
+          if (packet->capture_timestamp && *packet->capture_timestamp <= *packet->host_processing_timestamp) {
+            sample.source_age_ms = std::chrono::duration<double, std::milli>(*packet->host_processing_timestamp - *packet->capture_timestamp).count();
+          }
+          trace_it->second.window.add(sample);
         }
       } else {
         frame_header.frame_processing_latency = 0;
