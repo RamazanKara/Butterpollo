@@ -574,6 +574,24 @@ namespace platf::dxgi {
     // config::video.wgc_pacing_smoothing; the diagnostics below run regardless so the path-a/path-b
     // bust mix and the re-anchor phase error can be measured with smoothing on *and* off.
     std::optional<std::chrono::steady_clock::time_point> last_pacing_slot;
+
+    // Tell the capture source when the pacing grid changes, so a source that
+    // produces frames faster than the stream can skip the ones never claimed.
+    bool pacing_grid_announced = false;
+    std::optional<std::chrono::steady_clock::time_point> announced_pacing_anchor;
+    auto announce_pacing_grid = [&]() {
+      if (pacing_grid_announced && announced_pacing_anchor == frame_pacing_group_start) {
+        return;
+      }
+      pacing_grid_announced = true;
+      announced_pacing_anchor = frame_pacing_group_start;
+      pacing_grid_changed(frame_pacing_group_start, client_frame_rate_adjusted);
+    };
+    auto clear_pacing_grid = util::fail_guard([&]() {
+      if (announced_pacing_anchor) {
+        pacing_grid_changed(std::nullopt, client_frame_rate_adjusted);
+      }
+    });
     uint64_t pacing_bust_woke_late = 0;      // path (a): woke past the slot deadline
     uint64_t pacing_bust_snapshot_miss = 0;  // path (b): zero-timeout snapshot found no fresh frame
     uint64_t pacing_phase_preserved = 0;     // re-anchor snapped back onto the prior grid
@@ -728,6 +746,8 @@ namespace platf::dxgi {
 
       // Start new frame pacing group if necessary, snapshot() is called with non-zero timeout
       if (status == capture_e::timeout || (status == capture_e::ok && !frame_pacing_group_start)) {
+        // The old grid is gone; the source must not hold frames for it.
+        announce_pacing_grid();
         status = snapshot(pull_free_image_cb, img_out, 200ms, *cursor);
 
         if (status == capture_e::ok && img_out) {
@@ -779,6 +799,7 @@ namespace platf::dxgi {
 
           frame_pacing_group_frames = 1;
           last_pacing_slot = std::nullopt;
+          announce_pacing_grid();
         } else if (status == platf::capture_e::timeout) {
           // The D3D11 device is protected by an unfair lock that is held the entire time that
           // IDXGIOutputDuplication::AcquireNextFrame() is running. This is normally harmless,

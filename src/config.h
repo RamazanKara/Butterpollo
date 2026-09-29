@@ -252,6 +252,7 @@ namespace config {
     double minimum_fps_target;  ///< Lowest framerate that will be used when streaming. Range 0-1000, 0 = half of client's requested framerate.
     bool wgc_pacing_smoothing;  ///< Smooth WGC delivered frame cadence under low-latency (Reflex) source caps by snapping the pacing-group re-anchor back onto the prior grid instead of the jittery arrival phase. Disable for byte-for-byte legacy pacing.
     bool wgc_direct_encoder_input;  ///< GPU encoders read the WGC helper's shared frame directly instead of a host-side snapshot copy made on the capture device.
+    bool wgc_slot_aligned_publish;  ///< The WGC helper publishes only frames the host can claim, using the host's pacing grid.
     std::string fallback_mode;
     bool ignore_encoder_probe_failure;
   };

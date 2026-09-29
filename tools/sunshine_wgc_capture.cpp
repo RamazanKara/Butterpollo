@@ -140,6 +140,34 @@ static std::condition_variable g_config_cv;
 static std::atomic<int32_t> g_activity_admission_fps {120};
 static std::atomic<uint32_t> g_activity_admission_generation {0};
 
+// Host pacing grid for slot-aligned publication (see wgc_policy::plan_publication).
+static std::mutex g_claim_grid_mutex;
+static platf::dxgi::wgc_policy::host_claim_grid_t g_claim_grid;
+
+static std::int64_t qpc_now() {
+  LARGE_INTEGER value {};
+  QueryPerformanceCounter(&value);
+  return value.QuadPart;
+}
+
+static std::int64_t qpc_frequency() {
+  static const std::int64_t frequency = []() {
+    LARGE_INTEGER value {};
+    QueryPerformanceFrequency(&value);
+    return value.QuadPart > 0 ? value.QuadPart : 10'000'000;
+  }();
+  return frequency;
+}
+
+static std::int64_t qpc_from_us(const double microseconds) {
+  return static_cast<std::int64_t>(microseconds * static_cast<double>(qpc_frequency()) / 1'000'000.0);
+}
+
+static platf::dxgi::wgc_policy::host_claim_grid_t current_claim_grid() {
+  std::lock_guard lock(g_claim_grid_mutex);
+  return g_claim_grid;
+}
+
 /**
  * @brief Flag indicating whether configuration data has been received from main process.
  */
@@ -991,6 +1019,9 @@ public:
 
     InterlockedIncrement64(&_frame_metadata->sequence);
     InterlockedExchange64(&_frame_metadata->frame_qpc, static_cast<LONG64>(frame_qpc));
+    LARGE_INTEGER published {};
+    QueryPerformanceCounter(&published);
+    InterlockedExchange64(&_frame_metadata->publish_qpc, static_cast<LONG64>(published.QuadPart));
     InterlockedIncrement64(&_frame_metadata->frame_id);
     InterlockedIncrement64(&_frame_metadata->sequence);
   }
@@ -1119,6 +1150,28 @@ private:
   std::condition_variable _delivery_cv;
   std::jthread _delivery_thread;
   std::optional<delivery_frame_t> _pending_delivery_frame;
+
+  // Slot-aligned publication: a frame the host would never claim is held
+  // uncopied and only published at its deadline if nothing newer arrived.
+  struct held_frame_t {
+    Direct3D11CaptureFrame frame {nullptr};  ///< Keeps the WGC buffer (and texture) alive.
+    winrt::com_ptr<ID3D11Texture2D> texture;
+    uint64_t frame_qpc = 0;
+    std::int64_t deadline_qpc = 0;
+  };
+  std::optional<held_frame_t> _held_frame;  ///< Guarded by _delivery_mutex.
+  bool _publishing_held_frame = false;  ///< Guarded by _delivery_mutex.
+  winrt::handle _delivery_wake_event {CreateEventW(nullptr, FALSE, FALSE, nullptr)};
+  winrt::handle _held_frame_timer {create_deadline_timer()};
+  platf::dxgi::wgc_policy::composition_interval_t _composition_intervals;  ///< Callback thread only.
+  bool _slot_aligned_pool_requested = false;  ///< Callback thread only.
+  std::atomic<std::int64_t> _last_publish_qpc {0};
+  std::atomic<uint64_t> _held_frames {0};
+  std::atomic<uint64_t> _superseded_frames {0};
+  std::atomic<uint64_t> _deadline_published_frames {0};
+  uint64_t _last_diagnostics_held_frames = 0;
+  uint64_t _last_diagnostics_superseded_frames = 0;
+  uint64_t _last_diagnostics_deadline_published_frames = 0;
   bool _delivery_stop = false;
   std::mutex _d3d_context_mutex;
   std::array<scratch_texture_t, 3> _scratch_textures;
@@ -1183,6 +1236,12 @@ public:
       return;
     }
 
+    {
+      // Release a held WGC buffer before the frame pool closes.
+      std::lock_guard lock(_delivery_mutex);
+      _held_frame.reset();
+    }
+
     cleanup_capture_session();
     cleanup_frame_pool();
 
@@ -1208,15 +1267,24 @@ private:
       std::lock_guard lock(_delivery_mutex);
       _delivery_stop = true;
       _pending_delivery_frame.reset();
+      _held_frame.reset();
       for (auto &scratch: _scratch_textures) {
         scratch.state = scratch_state_e::free;
       }
     }
 
-    _delivery_cv.notify_all();
+    wake_delivery_thread();
     if (_delivery_thread.joinable()) {
       _delivery_thread.request_stop();
       _delivery_thread.join();
+    }
+  }
+
+  /// Wakes the delivery thread whether it waits on the condition variable or on its deadline timer.
+  void wake_delivery_thread() noexcept {
+    _delivery_cv.notify_all();
+    if (_delivery_wake_event) {
+      SetEvent(_delivery_wake_event.get());
     }
   }
 
@@ -1364,7 +1432,22 @@ public:
         // Get frame timing information from the WGC frame
         uint64_t frame_qpc = frame.SystemRelativeTime().count();
         record_frame_arrival(drained_frames);
-        if (admit_activity_frame()) {
+        const auto arrival_qpc = qpc_now();
+        _composition_intervals.add(arrival_qpc, qpc_frequency() / 20);
+        if (const auto grid = current_claim_grid(); slot_aligned_publication_ready(grid)) {
+          // The host's pacing grid decides which frames it can claim, so the
+          // activity rate limit (which can drop exactly the frame the host
+          // needs) is not applied here.
+          const auto plan = platf::dxgi::wgc_policy::plan_publication(
+            grid,
+            arrival_qpc,
+            _composition_intervals.estimate(),
+            _last_publish_qpc.load(std::memory_order_relaxed),
+            slot_publish_timing()
+          );
+          publish_or_hold(std::move(frame), surface, frame_qpc, plan);
+        } else if (admit_activity_frame()) {
+          drop_held_frame();
           queue_frame_for_delivery(std::move(frame), surface, frame_qpc);
         }
       } catch (const winrt::hresult_error &ex) {
@@ -1374,6 +1457,7 @@ public:
     }
 
     // Check if we need to adjust frame buffer size
+    apply_slot_aligned_pool_request();
     check_and_adjust_frame_buffer();
   }
 
@@ -1449,6 +1533,9 @@ private:
       const auto captured = _captured_frames.load(std::memory_order_relaxed);
       const auto published = _published_frames.load(std::memory_order_relaxed);
       const auto direct_published = _direct_published_frames.load(std::memory_order_relaxed);
+      const auto held_frames = _held_frames.load(std::memory_order_relaxed);
+      const auto superseded_frames = _superseded_frames.load(std::memory_order_relaxed);
+      const auto deadline_published = _deadline_published_frames.load(std::memory_order_relaxed);
       const auto empty_drops = _frame_pool_empty_drops.load(std::memory_order_relaxed);
       const auto drained = _drained_pool_frames.load(std::memory_order_relaxed);
       const auto replaced = _delivery_replaced_frames.load(std::memory_order_relaxed);
@@ -1462,6 +1549,9 @@ private:
       const auto captured_delta = captured - _last_diagnostics_captured_frames;
       const auto published_delta = published - _last_diagnostics_published_frames;
       const auto direct_published_delta = direct_published - _last_diagnostics_direct_published_frames;
+      const auto held_delta = held_frames - _last_diagnostics_held_frames;
+      const auto superseded_delta = superseded_frames - _last_diagnostics_superseded_frames;
+      const auto deadline_published_delta = deadline_published - _last_diagnostics_deadline_published_frames;
       const auto empty_drop_delta = empty_drops - _last_diagnostics_empty_drops;
       const auto drained_delta = drained - _last_diagnostics_drained_frames;
       const auto replaced_delta = replaced - _last_diagnostics_replaced_frames;
@@ -1475,6 +1565,9 @@ private:
       _last_diagnostics_captured_frames = captured;
       _last_diagnostics_published_frames = published;
       _last_diagnostics_direct_published_frames = direct_published;
+      _last_diagnostics_held_frames = held_frames;
+      _last_diagnostics_superseded_frames = superseded_frames;
+      _last_diagnostics_deadline_published_frames = deadline_published;
       _last_diagnostics_empty_drops = empty_drops;
       _last_diagnostics_drained_frames = drained;
       _last_diagnostics_replaced_frames = replaced;
@@ -1491,6 +1584,9 @@ private:
                       << " capture_fps=" << (static_cast<double>(captured_delta) / interval_s)
                       << " publish_fps=" << (static_cast<double>(published_delta) / interval_s)
                       << " direct_published=" << direct_published_delta
+                      << " held=" << held_delta
+                      << " held_superseded=" << superseded_delta
+                      << " held_published=" << deadline_published_delta
                       << " drained=" << drained_delta
                       << " activity_rate_limited=" << activity_rate_limited_delta
                       << " empty_drops=" << empty_drop_delta
@@ -1732,9 +1828,10 @@ private:
    */
   bool try_publish_directly(const winrt::com_ptr<ID3D11Texture2D> &frame_tex, uint64_t frame_qpc) {
     std::unique_lock delivery_lock(_delivery_mutex);
-    const bool frame_delivering = std::any_of(_scratch_textures.begin(), _scratch_textures.end(), [](const auto &scratch) {
-      return scratch.state == scratch_state_e::delivering;
-    });
+    const bool frame_delivering = _publishing_held_frame ||
+                                  std::any_of(_scratch_textures.begin(), _scratch_textures.end(), [](const auto &scratch) {
+                                    return scratch.state == scratch_state_e::delivering;
+                                  });
     if (!platf::dxgi::wgc_policy::may_publish_directly(
           _delivery_stop || _shutting_down.load(std::memory_order_acquire),
           _pending_delivery_frame.has_value(),
@@ -1767,9 +1864,123 @@ private:
     }
 
     _deps->resource_manager.signal_frame_ready();
+    _last_publish_qpc.store(qpc_now(), std::memory_order_relaxed);
     _published_frames.fetch_add(1, std::memory_order_relaxed);
     _direct_published_frames.fetch_add(1, std::memory_order_relaxed);
     return true;
+  }
+
+  static winrt::com_ptr<ID3D11Texture2D> texture_from_surface(const winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DSurface &surface) {
+    winrt::com_ptr<IDirect3DDxgiInterfaceAccess> ia;
+    if (FAILED(winrt::get_unknown(surface)->QueryInterface(__uuidof(IDirect3DDxgiInterfaceAccess), ia.put_void()))) {
+      BOOST_LOG(error) << "Failed to query IDirect3DDxgiInterfaceAccess";
+      return nullptr;
+    }
+    winrt::com_ptr<ID3D11Texture2D> texture;
+    if (FAILED(ia->GetInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<::IUnknown **>(texture.put_void())))) {
+      BOOST_LOG(error) << "Failed to get ID3D11Texture2D from interface";
+      return nullptr;
+    }
+    return texture;
+  }
+
+  static platf::dxgi::wgc_policy::publish_timing_t slot_publish_timing() {
+    return {
+      .next_publish_lead_qpc = qpc_from_us(150.0),
+      .deadline_lead_qpc = qpc_from_us(250.0),
+      .arrival_tolerance_qpc = qpc_from_us(50.0),
+      .host_grace_qpc = qpc_from_us(6000.0),
+    };
+  }
+
+  /**
+   * @brief Slot-aligned publication needs the host grid and a second frame-pool
+   *        buffer, so WGC can compose the next frame while one is held.
+   */
+  bool slot_aligned_publication_ready(const platf::dxgi::wgc_policy::host_claim_grid_t &grid) {
+    if (grid.period_qpc <= 0.0 || _max_buffer_size < 2) {
+      expire_held_frame();
+      return false;
+    }
+    if (_current_buffer_size < 2) {
+      // Grow the pool after this frame is handled; never recreate it while a frame is in hand.
+      _slot_aligned_pool_requested = true;
+      return false;
+    }
+    return true;
+  }
+
+  void apply_slot_aligned_pool_request() {
+    if (!_slot_aligned_pool_requested) {
+      return;
+    }
+    _slot_aligned_pool_requested = false;
+    if (_current_buffer_size >= 2 || _max_buffer_size < 2) {
+      return;
+    }
+    _initial_buffer_size = std::max<uint32_t>(_initial_buffer_size, 2);
+    if (create_or_adjust_frame_pool(2)) {
+      BOOST_LOG(info) << "Slot-aligned publication active; frame pool keeps 2 buffers";
+    }
+  }
+
+  /// Without a grid there is no reason to keep holding: publish the held frame now.
+  void expire_held_frame() {
+    bool expired = false;
+    {
+      std::lock_guard lock(_delivery_mutex);
+      if (_held_frame) {
+        _held_frame->deadline_qpc = 0;
+        expired = true;
+      }
+    }
+    if (expired) {
+      wake_delivery_thread();
+    }
+  }
+
+  void drop_held_frame() {
+    std::lock_guard lock(_delivery_mutex);
+    if (_held_frame) {
+      _held_frame.reset();
+      _superseded_frames.fetch_add(1, std::memory_order_relaxed);
+    }
+  }
+
+  /**
+   * @brief Publish a frame now, or hold it until its deadline when the host
+   *        cannot claim it before a newer composition replaces it.
+   * A newer frame always replaces a held one, so no frame is published out of order.
+   */
+  void publish_or_hold(
+    Direct3D11CaptureFrame frame,
+    const winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DSurface &surface,
+    uint64_t frame_qpc,
+    const platf::dxgi::wgc_policy::publish_plan_t &plan
+  ) {
+    drop_held_frame();
+    if (!plan.defer) {
+      queue_frame_for_delivery(std::move(frame), surface, frame_qpc);
+      return;
+    }
+    auto texture = texture_from_surface(surface);
+    if (!texture) {
+      return;
+    }
+    {
+      std::lock_guard lock(_delivery_mutex);
+      if (_delivery_stop || _shutting_down.load(std::memory_order_acquire)) {
+        return;
+      }
+      _held_frame = held_frame_t {
+        .frame = std::move(frame),
+        .texture = std::move(texture),
+        .frame_qpc = frame_qpc,
+        .deadline_qpc = plan.deadline_qpc,
+      };
+    }
+    _held_frames.fetch_add(1, std::memory_order_relaxed);
+    wake_delivery_thread();
   }
 
   /**
@@ -1824,7 +2035,40 @@ private:
     if (!enqueue_scratch_texture(*scratch_index, frame_qpc)) {
       return;
     }
-    _delivery_cv.notify_one();
+    wake_delivery_thread();
+  }
+
+  static winrt::handle create_deadline_timer() {
+    HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    if (!timer) {
+      timer = CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_ALL_ACCESS);
+    }
+    return winrt::handle {timer};
+  }
+
+  /**
+   * @brief Sleep until shortly before a held frame's deadline or until new work arrives.
+   * The last ~200 us are spent yielding so the publish lands close to the deadline;
+   * the caller re-checks state under the delivery lock after every return.
+   */
+  void wait_for_held_deadline(const std::int64_t remaining_qpc) noexcept {
+    const auto spin_window = qpc_from_us(200.0);
+    if (remaining_qpc > spin_window && _held_frame_timer) {
+      LARGE_INTEGER due {};
+      due.QuadPart = -static_cast<LONGLONG>((remaining_qpc - spin_window) * 10000000 / qpc_frequency());
+      if (due.QuadPart < 0 && SetWaitableTimerEx(_held_frame_timer.get(), &due, 0, nullptr, nullptr, nullptr, 0)) {
+        const HANDLE handles[] {_delivery_wake_event.get(), _held_frame_timer.get()};
+        WaitForMultipleObjects(2, handles, FALSE, 50);
+        return;
+      }
+    }
+    const auto deadline = qpc_now() + std::min(remaining_qpc, spin_window);
+    while (qpc_now() < deadline) {
+      if (WaitForSingleObject(_delivery_wake_event.get(), 0) == WAIT_OBJECT_0) {
+        return;
+      }
+      SwitchToThread();
+    }
   }
 
   void delivery_thread_proc(std::stop_token stop_token) noexcept {
@@ -1845,23 +2089,60 @@ private:
 
     for (;;) {
       std::optional<delivery_frame_t> frame;
+      std::optional<held_frame_t> held;
       {
         std::unique_lock lock(_delivery_mutex);
-        _delivery_cv.wait(lock, [&]() {
-          return _delivery_stop || stop_token.stop_requested() || _pending_delivery_frame.has_value();
-        });
+        for (;;) {
+          if (_delivery_stop || stop_token.stop_requested() || _pending_delivery_frame) {
+            break;
+          }
+          if (_held_frame) {
+            const auto remaining = _held_frame->deadline_qpc - qpc_now();
+            if (remaining <= 0) {
+              break;
+            }
+            lock.unlock();
+            wait_for_held_deadline(remaining);
+            lock.lock();
+            continue;
+          }
+          _delivery_cv.wait(lock);
+        }
 
         if (_delivery_stop || stop_token.stop_requested()) {
           break;
         }
 
-        frame = std::move(_pending_delivery_frame);
-        _pending_delivery_frame.reset();
-        if (frame && frame->scratch_index < _scratch_textures.size()) {
-          _scratch_textures[frame->scratch_index].state = scratch_state_e::delivering;
+        // A held frame is always newer than a queued scratch frame (holding
+        // replaces nothing that is queued), so the queued one goes first.
+        if (_pending_delivery_frame) {
+          frame = std::move(_pending_delivery_frame);
+          _pending_delivery_frame.reset();
+          if (frame && frame->scratch_index < _scratch_textures.size()) {
+            _scratch_textures[frame->scratch_index].state = scratch_state_e::delivering;
+          }
+        } else if (_held_frame) {
+          held = std::move(_held_frame);
+          _held_frame.reset();
+          _publishing_held_frame = true;
         }
       }
       _delivery_cv.notify_all();
+
+      if (held) {
+        try {
+          copy_frame_to_shared_texture(held->texture, held->frame_qpc);
+          _deadline_published_frames.fetch_add(1, std::memory_order_relaxed);
+        } catch (const winrt::hresult_error &ex) {
+          BOOST_LOG(error) << "WinRT error publishing a held WGC frame: " << ex.code() << " - " << winrt::to_string(ex.message());
+        } catch (...) {
+          BOOST_LOG(error) << "Unknown error publishing a held WGC frame";
+        }
+        held.reset();
+        std::lock_guard lock(_delivery_mutex);
+        _publishing_held_frame = false;
+        continue;
+      }
 
       if (!frame || !frame->texture) {
         continue;
@@ -1952,6 +2233,7 @@ private:
     // Signal only after releasing the mutex so a woken consumer can acquire the
     // frame without waiting on the producer's normal release path.
     _deps->resource_manager.signal_frame_ready();
+    _last_publish_qpc.store(qpc_now(), std::memory_order_relaxed);
     _published_frames.fetch_add(1, std::memory_order_relaxed);
 
     const auto context_wait_ms = std::chrono::duration<double, std::milli>(context_wait).count();
@@ -2092,6 +2374,14 @@ private:
       return;
     }
 
+    {
+      // Never recreate the pool under a held frame's buffer; the next callback retries.
+      std::lock_guard lock(_delivery_mutex);
+      if (_held_frame || _publishing_held_frame) {
+        return;
+      }
+    }
+
     _last_buffer_check = now;
 
     // 1) Prune old drop timestamps (older than 5 seconds)
@@ -2205,6 +2495,23 @@ std::string get_temp_log_path() {
  *
  */
 void handle_ipc_message(std::span<const uint8_t> message) {
+  if (message.size() == sizeof(platf::dxgi::host_claim_grid_data_t)) {
+    platf::dxgi::host_claim_grid_data_t update {};
+    memcpy(&update, message.data(), sizeof(update));
+    if (update.magic != platf::dxgi::WGC_HOST_CLAIM_GRID_MESSAGE_MAGIC) {
+      BOOST_LOG(warning) << "Ignoring invalid WGC host claim grid update";
+      return;
+    }
+    platf::dxgi::wgc_policy::host_claim_grid_t grid;
+    if (update.rate_num > 0 && update.rate_den > 0) {
+      grid.anchor_qpc = update.anchor_qpc;
+      grid.period_qpc = static_cast<double>(qpc_frequency()) * update.rate_den / update.rate_num;
+    }
+    std::lock_guard lock(g_claim_grid_mutex);
+    g_claim_grid = grid;
+    return;
+  }
+
   if (message.size() == sizeof(platf::dxgi::activity_admission_data_t)) {
     platf::dxgi::activity_admission_data_t update {};
     memcpy(&update, message.data(), sizeof(update));

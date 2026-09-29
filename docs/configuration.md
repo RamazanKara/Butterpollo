@@ -4746,6 +4746,10 @@ Enables the Vulkan HDR layer used by the display stack when HDR Vulkan capture s
 
 Enables WGC pacing smoothing so capture re-anchors to the pacing grid instead of raw frame-arrival timing.
 
+### wgc_slot_aligned_publish
+
+Lets the Windows Graphics Capture helper publish only the frames the host can use. The host shares its pacing grid (when it will take the next frame), and the helper holds a frame uncopied if a newer composition is expected before that point, publishing it at a deadline just before the slot only if nothing newer arrived. Frames from a source that is not faster than the stream are always published immediately. The helper's activity rate limit is not applied while a grid is active, so it can no longer drop the frame the host needs. Defaults to `enabled`; set `disabled` to publish every admitted frame as before.
+
 ### wgc_direct_encoder_input
 
 Lets GPU encoders read each Windows Graphics Capture frame directly from the capture helper's shared texture instead of from a host-side snapshot copy. This removes one full-frame GPU copy and one hand-off between the capture and encoder devices per frame, which shortens and steadies host processing latency. Defaults to `enabled`; set `disabled` to restore the previous copy path. Software encoding and DXGI capture are unaffected.

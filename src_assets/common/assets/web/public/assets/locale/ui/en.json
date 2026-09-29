@@ -1769,6 +1769,10 @@
           "description": "Choose whether Vibepollo captures a physical monitor or creates a display sized for the client.",
           "label": "Streaming display"
         },
+        "wgc_slot_aligned_publish": {
+          "description": "Publish only the Windows capture frames the host will actually use. Turn it off to publish every admitted frame.",
+          "label": "Slot-aligned capture publishing"
+        },
         "wgc_direct_encoder_input": {
           "description": "Encode each Windows capture frame directly instead of copying it first. This lowers encode latency. Turn it off to use the previous copy path.",
           "label": "Direct Windows capture input"

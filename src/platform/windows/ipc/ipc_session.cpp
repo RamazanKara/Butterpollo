@@ -107,6 +107,7 @@ namespace platf::dxgi {
     struct frame_metadata_snapshot_t {
       LONG64 frame_id = 0;
       LONG64 frame_qpc = 0;
+      LONG64 publish_qpc = 0;
     };
 
     bool read_frame_metadata_snapshot(const frame_metadata_t *metadata, frame_metadata_snapshot_t &snapshot) {
@@ -125,12 +126,14 @@ namespace platf::dxgi {
         std::atomic_thread_fence(std::memory_order_acquire);
         const auto frame_id = metadata->frame_id;
         const auto frame_qpc = metadata->frame_qpc;
+        const auto publish_qpc = metadata->publish_qpc;
         std::atomic_thread_fence(std::memory_order_acquire);
 
         const auto sequence_end = metadata->sequence;
         if (sequence_start == sequence_end && (sequence_end & 1) == 0) {
           snapshot.frame_id = frame_id;
           snapshot.frame_qpc = frame_qpc;
+          snapshot.publish_qpc = publish_qpc;
           return true;
         }
 
@@ -485,6 +488,21 @@ namespace platf::dxgi {
     }
   }
 
+  bool ipc_session_t::set_host_claim_grid(const int64_t anchor_qpc, const uint32_t rate_num, const uint32_t rate_den) {
+    if (!_pipe || !_initialized || !_pipe->is_connected()) {
+      return false;
+    }
+    const host_claim_grid_data_t update {
+      .magic = WGC_HOST_CLAIM_GRID_MESSAGE_MAGIC,
+      .rate_num = rate_num,
+      .rate_den = rate_den,
+      .reserved = 0,
+      .anchor_qpc = anchor_qpc,
+    };
+    _pipe->send(std::span<const uint8_t>(reinterpret_cast<const uint8_t *>(&update), sizeof(update)));
+    return true;
+  }
+
   bool ipc_session_t::set_activity_admission_fps(const int fps) {
     if (fps <= 0) {
       return false;
@@ -725,6 +743,29 @@ namespace platf::dxgi {
     while (WaitForSingleObject(_frame_ready_event.get(), 0) == WAIT_OBJECT_0) {
     }
     _frames_acquired.fetch_add(1, std::memory_order_relaxed);
+
+    // How long a published frame waited for the host: shows whether the
+    // helper's slot-aligned publication lands just before the host's claims.
+    const auto now = std::chrono::steady_clock::now();
+    if (snapshot.publish_qpc > 0) {
+      const auto waited = qpc_time_difference(qpc_counter(), snapshot.publish_qpc);
+      _publish_to_claim_ms.push_back(std::chrono::duration<double, std::milli>(waited).count());
+    }
+    if (_publish_to_claim_window_start.time_since_epoch().count() == 0) {
+      _publish_to_claim_window_start = now;
+    } else if (now - _publish_to_claim_window_start >= std::chrono::seconds(10)) {
+      if (!_publish_to_claim_ms.empty()) {
+        auto &values = _publish_to_claim_ms;
+        std::sort(values.begin(), values.end());
+        const auto at = [&](double fraction) {
+          return values[std::min(values.size() - 1, static_cast<std::size_t>(fraction * static_cast<double>(values.size() - 1) + 0.5))];
+        };
+        BOOST_LOG(info) << "WGC helper publish to host claim (" << values.size() << " frames): med "
+                        << at(0.5) << " p99 " << at(0.99) << " max " << values.back() << " ms";
+        values.clear();
+      }
+      _publish_to_claim_window_start = now;
+    }
 
     frame_qpc_out = _frame_qpc;
     return capture_e::ok;

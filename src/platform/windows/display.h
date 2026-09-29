@@ -311,6 +311,14 @@ namespace platf::dxgi {
     virtual capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor_visible) = 0;
     virtual capture_e release_snapshot() = 0;
     virtual int complete_img(img_t *img, bool dummy) = 0;
+
+    /**
+     * @brief Called when the capture loop's pacing grid changes.
+     * @param anchor First claim of the current pacing group, or empty while re-anchoring.
+     * @param rate Claim rate; the host claims at anchor + k / rate.
+     */
+    virtual void pacing_grid_changed(const std::optional<std::chrono::steady_clock::time_point> &anchor, DXGI_RATIONAL rate) {
+    }
   };
 
   /**
@@ -541,6 +549,9 @@ namespace platf::dxgi {
      */
     capture_e snapshot_direct(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out);
 
+    /// Forward the pacing grid to the helper for slot-aligned publication.
+    void pacing_grid_changed(const std::optional<std::chrono::steady_clock::time_point> &anchor, DXGI_RATIONAL rate) override;
+
     /**
      * @brief Point a pool image at the helper's shared texture.
      * @return 0 on success, -1 on failure.
@@ -551,6 +562,7 @@ namespace platf::dxgi {
     ::video::config_t _config;
     std::string _display_name;
     bool _direct_encoder_input = false;  ///< Latched from config at init so one pool never mixes modes.
+    bool _slot_aligned_publish = false;  ///< Latched from config at init.
     bool _session_initialized_logged = false;
     bool _frame_locked = false;
     std::shared_ptr<platf::img_t> _last_cached_frame;

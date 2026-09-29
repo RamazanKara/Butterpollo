@@ -58,6 +58,7 @@ namespace platf::dxgi {
     volatile LONG64 sequence;
     volatile LONG64 frame_id;
     volatile LONG64 frame_qpc;
+    volatile LONG64 publish_qpc;  ///< QPC when the helper published this frame (diagnostics).
   };
 
   /**
@@ -103,6 +104,24 @@ namespace platf::dxgi {
     uint32_t magic;
     int32_t admission_fps;
   };
+
+  constexpr uint32_t WGC_HOST_CLAIM_GRID_MESSAGE_MAGIC = 0x57474347;  // "WGCG"
+
+  // Runtime-only update of the host's pacing grid: the host claims one frame at
+  // anchor_qpc + k * rate_den / rate_num seconds. rate_num == 0 clears the grid
+  // (the host is re-anchoring or idle), and the helper publishes immediately.
+  struct host_claim_grid_data_t {
+    uint32_t magic;
+    uint32_t rate_num;
+    uint32_t rate_den;
+    uint32_t reserved;
+    int64_t anchor_qpc;
+  };
+
+  // The helper tells control messages apart by size.
+  static_assert(sizeof(host_claim_grid_data_t) != sizeof(activity_admission_data_t));
+  static_assert(sizeof(host_claim_grid_data_t) != sizeof(config_data_t));
+  static_assert(sizeof(activity_admission_data_t) != sizeof(config_data_t));
 
   /**
    * @brief Result codes for pipe operations.

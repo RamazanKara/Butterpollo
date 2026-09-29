@@ -229,7 +229,9 @@ namespace platf::dxgi {
 
     capture_format = DXGI_FORMAT_UNKNOWN;  // Start with unknown format (prevents race condition/crash on first frame)
     _direct_encoder_input = config::video.wgc_direct_encoder_input;
-    BOOST_LOG(info) << "WGC encoder input: "sv << (_direct_encoder_input ? "direct from the helper's shared frame"sv : "host snapshot copy"sv);
+    _slot_aligned_publish = config::video.wgc_slot_aligned_publish;
+    BOOST_LOG(info) << "WGC encoder input: "sv << (_direct_encoder_input ? "direct from the helper's shared frame"sv : "host snapshot copy"sv)
+                    << ", helper publication: "sv << (_slot_aligned_publish ? "slot-aligned"sv : "every admitted frame"sv);
 
     const bool advanced_color_capture = is_hdr();
 
@@ -431,6 +433,24 @@ namespace platf::dxgi {
     _last_cached_frame = img;
 
     return capture_e::ok;
+  }
+
+  void display_wgc_ipc_vram_t::pacing_grid_changed(const std::optional<std::chrono::steady_clock::time_point> &anchor, DXGI_RATIONAL rate) {
+    if (!_ipc_session || !_slot_aligned_publish) {
+      return;
+    }
+    if (!anchor || rate.Numerator == 0 || rate.Denominator == 0) {
+      _ipc_session->set_host_claim_grid(0, 0, 0);
+      return;
+    }
+
+    // The helper works in QPC ticks; map the steady-clock anchor through a paired sample.
+    LARGE_INTEGER frequency {};
+    QueryPerformanceFrequency(&frequency);
+    const auto now_qpc = qpc_counter();
+    const auto age = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - *anchor).count();
+    const auto anchor_qpc = now_qpc - static_cast<std::int64_t>(static_cast<double>(age) * static_cast<double>(frequency.QuadPart) / 1e9);
+    _ipc_session->set_host_claim_grid(anchor_qpc, rate.Numerator, rate.Denominator);
   }
 
   int display_wgc_ipc_vram_t::alias_shared_frame(img_d3d_t &img) {

@@ -1,5 +1,8 @@
 #pragma once
 
+#include <algorithm>
+#include <array>
+#include <cstddef>
 #include <cstdint>
 
 namespace platf::dxgi::wgc_policy {
@@ -116,4 +119,128 @@ namespace platf::dxgi::wgc_policy {
            !recent_pool_pressure &&
            peak_outstanding <= static_cast<int>(current_buffer_size) - 1;
   }
+
+  // ---- Slot-aligned publication -------------------------------------------
+  //
+  // The host claims one helper frame per pacing slot: slot k = anchor + k * period.
+  // A frame published earlier than the last composition before a slot is
+  // overwritten unused, but its full-frame GPU copy still competes with the
+  // encoder's input. Knowing the host's slots, the helper can hold such a frame
+  // (uncopied) and publish it only if no newer composition arrives in time.
+
+  /// Host pacing grid in QPC ticks. period <= 0 means the host has no grid.
+  struct host_claim_grid_t {
+    std::int64_t anchor_qpc = 0;
+    double period_qpc = 0.0;
+  };
+
+  /// First host claim strictly after now, or 0 without a grid.
+  inline std::int64_t next_host_claim(const host_claim_grid_t &grid, const std::int64_t now_qpc) noexcept {
+    if (grid.period_qpc <= 0.0) {
+      return 0;
+    }
+    const double elapsed = static_cast<double>(now_qpc - grid.anchor_qpc);
+    const double slots = elapsed < 0.0 ? 0.0 : static_cast<double>(static_cast<std::int64_t>(elapsed / grid.period_qpc)) + 1.0;
+    return grid.anchor_qpc + static_cast<std::int64_t>(slots * grid.period_qpc + 0.5);
+  }
+
+  struct publish_timing_t {
+    std::int64_t next_publish_lead_qpc;  ///< A frame published on arrival must land this long before the claim.
+    std::int64_t deadline_lead_qpc;  ///< A held frame is published this long before the claim (covers timer wake-up).
+    std::int64_t arrival_tolerance_qpc;  ///< Allowed lateness of the next composition.
+    std::int64_t host_grace_qpc;  ///< How long the host waits after a claim that found no new frame.
+  };
+
+  struct publish_plan_t {
+    bool defer = false;
+    std::int64_t deadline_qpc = 0;  ///< When a deferred frame must be published if nothing newer arrived.
+  };
+
+  /**
+   * Decide whether a newly arrived frame is published now or held.
+   * Hold it only when the next composition is expected early enough to be
+   * published before the same host claim. The held frame is published at the
+   * deadline if that composition never comes (static content, slower source),
+   * so no update is lost. A host whose last claim found nothing new is still
+   * waiting for a frame, so anything arriving during that wait goes out at once.
+   */
+  inline publish_plan_t plan_publication(
+    const host_claim_grid_t &grid,
+    const std::int64_t now_qpc,
+    const std::int64_t composition_period_qpc,
+    const std::int64_t last_publish_qpc,
+    const publish_timing_t &timing
+  ) noexcept {
+    const std::int64_t next_claim = next_host_claim(grid, now_qpc);
+    if (next_claim <= 0 || composition_period_qpc <= 0) {
+      return {};
+    }
+    const auto period = static_cast<std::int64_t>(grid.period_qpc + 0.5);
+    // Only a source faster than the stream produces frames the host never claims.
+    // At or near one composition per slot (a game capped to the stream rate),
+    // holding a frame could only make it later.
+    if (composition_period_qpc * 5 > period * 3) {
+      return {};
+    }
+    const std::int64_t previous_claim = next_claim - period;
+    const bool host_waiting = now_qpc - previous_claim < timing.host_grace_qpc &&
+                              last_publish_qpc <= previous_claim - period;
+    if (host_waiting) {
+      return {};
+    }
+    // The newer composition must arrive, and be published on arrival, before the claim.
+    const std::int64_t next_composition = now_qpc + composition_period_qpc + timing.arrival_tolerance_qpc;
+    if (next_composition + timing.next_publish_lead_qpc > next_claim) {
+      return {};
+    }
+    const std::int64_t deadline = next_claim - timing.deadline_lead_qpc;
+    if (deadline <= now_qpc) {
+      return {};
+    }
+    return {true, deadline};
+  }
+
+  /**
+   * Typical recent interval between compositions (median of the last 16).
+   * A median ignores the odd late callback that a minimum would latch onto.
+   */
+  class composition_interval_t {
+  public:
+    void add(const std::int64_t arrival_qpc, const std::int64_t max_interval_qpc) noexcept {
+      if (_has_last) {
+        const auto interval = arrival_qpc - _last_qpc;
+        if (interval > 0 && interval <= max_interval_qpc) {
+          _intervals[_next] = interval;
+          _next = (_next + 1) % _intervals.size();
+          if (_count < _intervals.size()) {
+            ++_count;
+          }
+        }
+      }
+      _last_qpc = arrival_qpc;
+      _has_last = true;
+    }
+
+    /// 0 until enough samples exist.
+    std::int64_t estimate() const noexcept {
+      if (_count < minimum_samples) {
+        return 0;
+      }
+      auto sorted = _intervals;
+      std::sort(sorted.begin(), sorted.begin() + static_cast<std::ptrdiff_t>(_count));
+      return sorted[_count / 2];
+    }
+
+    void reset() noexcept {
+      *this = {};
+    }
+
+  private:
+    static constexpr std::size_t minimum_samples = 8;
+    std::array<std::int64_t, 16> _intervals {};
+    std::size_t _next = 0;
+    std::size_t _count = 0;
+    std::int64_t _last_qpc = 0;
+    bool _has_last = false;
+  };
 }  // namespace platf::dxgi::wgc_policy

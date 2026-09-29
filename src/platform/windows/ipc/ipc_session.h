@@ -14,6 +14,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 // local includes
 #include "misc_utils.h"
@@ -168,6 +169,12 @@ namespace platf::dxgi {
     bool set_activity_admission_fps(int fps);
 
     /**
+     * Send the host's pacing grid (claims at anchor + k * rate_den / rate_num s).
+     * rate_num == 0 clears it. Safe to call from the capture thread; grid changes are rare.
+     */
+    bool set_host_claim_grid(int64_t anchor_qpc, uint32_t rate_num, uint32_t rate_den);
+
+    /**
      * @brief Read the static descriptor of the shared texture without acquiring the keyed mutex.
      * The shared texture is created once at session setup and its descriptor never changes for
      * the lifetime of the session, so it is safe to read at any time.
@@ -225,6 +232,8 @@ namespace platf::dxgi {
     std::atomic<bool> _should_swap_to_dxgi {false};  ///< True if capture should fallback.
     std::atomic<bool> _force_reinit {false};  ///< True if reinit required due to errors.
     std::atomic<uint64_t> _frames_acquired {0};  ///< Count of consumed IPC frames for sampled diagnostics.
+    std::vector<double> _publish_to_claim_ms;  ///< Capture thread only; summarized every 10 s.
+    std::chrono::steady_clock::time_point _publish_to_claim_window_start {};
     std::atomic<uint64_t> _slow_event_waits {0};  ///< Count of sampled/slow frame-ready waits.
     std::atomic<uint64_t> _slow_mutex_waits {0};  ///< Count of slow keyed mutex waits.
     UINT _width = 0;  ///< Shared texture width.

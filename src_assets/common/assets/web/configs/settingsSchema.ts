@@ -706,6 +706,7 @@ export const settingsCategories: SettingsCategory[] = [
           select('capture', captureOptions),
           boolean('wgc_pacing_smoothing', { platform: 'windows' }),
           boolean('wgc_direct_encoder_input', { platform: 'windows' }),
+          boolean('wgc_slot_aligned_publish', { platform: 'windows' }),
         ],
       },
       {
@@ -811,6 +812,7 @@ export const settingsCategories: SettingsCategory[] = [
           select('encoder', [option('', '_common.auto')]),
           boolean('wgc_pacing_smoothing', { platform: 'windows' }),
           boolean('wgc_direct_encoder_input', { platform: 'windows' }),
+          boolean('wgc_slot_aligned_publish', { platform: 'windows' }),
         ],
       },
       {
@@ -1108,6 +1110,7 @@ export const settingsDefaults: Record<string, unknown> = {
   amd_quality: 'speed',
   wgc_pacing_smoothing: true,
   wgc_direct_encoder_input: true,
+  wgc_slot_aligned_publish: true,
   hevc_mode: 0,
   av1_mode: 0,
   max_bitrate: 0,
