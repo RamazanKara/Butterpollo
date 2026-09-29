@@ -31,6 +31,7 @@ Capture (Windows Graphics Capture):
 - The virtual display runs at 2x the stream rate (240 Hz for 120 fps) instead of 4x (480 Hz). In a blind A/B/C test on the phone stream, 2x had slightly lower host latency (3.17-3.19 vs 3.25-3.26 ms median). It also had much steadier frame age: how old a frame already is when the host picks it up was 1.78 ms median and about 2 ms p99 at 240 Hz, against 2.0 ms median and 4.2-5.7 ms p99 at 480 Hz. The helper also handles half as many capture callbacks. `frame_limiter_auto_virtual_framegen = enabled` brings back 4x.
 - The encoder reads the capture helper's shared frame directly. The host used to copy each frame on a separate GPU device and hand it over, which cost about 0.5 ms median and 0.8 ms p99 in an off-screen model of the pipeline. `wgc_direct_encoder_input = disabled` switches back.
 - The capture helper copies each frame once instead of twice when nothing is in the way.
+- The capture helper publishes only the frames the host will use. With a 240 Hz virtual display and a 120 fps stream, about half the frames used to be copied and then replaced before the host looked at them. The host now tells the helper when it takes its next frame. If a newer frame is due before then, the helper holds the current one without copying it and publishes it just before the host's slot only if nothing newer arrived. A game running at or below the stream rate is published immediately, as before. While this is active the helper's activity rate limit is off, so it can no longer drop the one frame the host needed. In a simulation of the pipeline it halves the helper's copies at 240 Hz, and the host gets the newest frame at least as often as before. It has not been measured on a live stream yet. `wgc_slot_aligned_publish = disabled` switches back.
 - The once-per-second display check runs on a worker thread, not the frame-pacing thread.
 - The capture device gets the same realtime GPU thread priority as the encoder device.
 
@@ -40,6 +41,7 @@ System:
 
 Diagnostics:
 - Every 10 seconds the log prints `Host latency stages`: capture, convert, submit, encode and deliver, each as median/p99/max. It also shows which stage caused each spike and how old the frame already was when the host picked it up. If something stutters, that line shows where.
+- With WGC capture the log also prints `WGC helper publish to host claim` every 10 seconds: how long a published frame waited before the host took it.
 
 ## Install
 
@@ -66,8 +68,8 @@ amd_av1_latency_mode = lowest
 ## Next
 
 - 120 Hz (1x) was inconclusive: capture dropped to 25-68 fps for part of that test. I'll look at it before touching the 1x path.
-- The capture helper still publishes more frames than the host uses.
-- Linux, NVIDIA and Intel code is inherited from Vibepollo unchanged and is not tested here yet.
+- Slot-aligned publishing needs numbers from a live stream. The `WGC helper publish to host claim` line is there to get them.
+- NVIDIA and Intel GPUs have been tested and work. Their encoder code is inherited from Vibepollo unchanged. Linux is not tested.
 
 Bug reports are welcome if they include GPU and driver, client, resolution/fps/codec, and a few `Host latency stages` log lines.
 
