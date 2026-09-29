@@ -5,10 +5,6 @@ permissions: {}
 on:
   workflow_call:
     inputs:
-      use_self_hosted:
-        required: false
-        type: boolean
-        default: false
       release_commit:
         required: true
         type: string
@@ -19,14 +15,6 @@ on:
         required: false
         type: string
         default: ''
-      artifact_source_run_id:
-        required: false
-        type: string
-        default: ''
-      build_only:
-        required: false
-        type: boolean
-        default: false
       build_tests:
         required: false
         type: boolean
@@ -61,10 +49,6 @@ on:
         required: false
         type: boolean
         default: false
-      require_signpath_signing:
-        required: false
-        type: boolean
-        default: false
       require_truehdr_runtime:
         required: false
         type: boolean
@@ -81,242 +65,39 @@ on:
         required: false
         type: string
         default: ''
-      signpath_organization_id:
-        required: false
-        type: string
-        default: 1ba0e884-7ab4-43e6-aa84-9b2c7e3fba15
-      signpath_project_slug:
-        required: false
-        type: string
-        default: Vibepollo
-      signpath_signing_policy_slug:
-        required: false
-        type: string
-        default: release-signing
-      signpath_wait_for_completion_timeout_in_seconds:
-        required: false
-        type: number
-        # Submission and completion are bounded to ten minutes. The local helper
-        # checks SignPath status every five seconds instead of exponential backoff.
-        default: 600
-      signpath_artifact_configuration_slug:
-        required: false
-        type: string
-        # Setup-EXE (outer VibepolloSetup.exe) artifact configuration slug.
-        # See docs/signpath/setup-exe.artifact-config.xml.
-        default: setup-exe
-      signpath_msi_artifact_configuration_slug:
-        required: false
-        type: string
-        # Deep-signs first-party PEs inside the MSI, then the MSI container.
-        # See docs/signpath/ for the executable consumer-MSI signing policy.
-        default: msi-file-apollo
     secrets:
       symbol_token:
-        required: false
-      signpath_api_token:
         required: false
       truehdr_runtime_token:
         required: false
 
 jobs:
-  resolve_source_artifacts:
-    name: Resolve release build artifacts
-    if: inputs.artifact_source_run_id != ''
-    runs-on: ubuntu-latest
-    outputs:
-      msi_name: ${{ steps.resolve.outputs.msi_name }}
-      source_run_id: ${{ steps.resolve.outputs.source_run_id }}
-      symbol_pack_name: ${{ steps.resolve.outputs.symbol_pack_name }}
-      symbols_artifact_id: ${{ steps.resolve.outputs.symbols_artifact_id }}
-      unsigned_msi_artifact_id: ${{ steps.resolve.outputs.unsigned_msi_artifact_id }}
-      unsigned_msi_signpath_artifact_id: ${{ steps.resolve.outputs.unsigned_msi_signpath_artifact_id }}
-      versioninfo_artifact_id: ${{ steps.resolve.outputs.versioninfo_artifact_id }}
-    permissions:
-      actions: read
-      contents: read
-    steps:
-      - name: Validate source run and artifacts
-        id: resolve
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_COMMIT: ${{ inputs.release_commit }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          RELEASE_VERSION: ${{ inputs.release_version }}
-          REQUIRE_SIGNPATH_SIGNING: ${{ inputs.require_signpath_signing }}
-          SIGNPATH_ENABLED: ${{ secrets.signpath_api_token != '' }}
-          SOURCE_RUN_ID: ${{ inputs.artifact_source_run_id }}
-          SYMBOL_PRODUCT_NAME: ${{ inputs.symbol_product_name }}
-        run: |
-          set -euo pipefail
-
-          if [[ "${REQUIRE_SIGNPATH_SIGNING}" == "true" && "${SIGNPATH_ENABLED}" != "true" ]]; then
-            echo "::error::Deferred signing requires signpath_api_token."
-            exit 1
-          fi
-
-          run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}")"
-          source_status="$(jq -r '.status' <<< "${run_json}")"
-          source_conclusion="$(jq -r '.conclusion' <<< "${run_json}")"
-          source_sha="$(jq -r '.head_sha' <<< "${run_json}")"
-          source_event="$(jq -r '.event' <<< "${run_json}")"
-          source_branch="$(jq -r '.head_branch' <<< "${run_json}")"
-          source_path="$(jq -r '.path' <<< "${run_json}")"
-
-          if [[ "${source_status}" != "completed" || "${source_conclusion}" != "success" ]]; then
-            echo "::error::Source CI run ${SOURCE_RUN_ID} is not a completed successful build (${source_status}/${source_conclusion})."
-            exit 1
-          fi
-          if [[ "${source_sha}" != "${RELEASE_COMMIT}" ]]; then
-            echo "::error::Source CI run ${SOURCE_RUN_ID} built ${source_sha}, not release commit ${RELEASE_COMMIT}."
-            exit 1
-          fi
-          if [[ "${source_event}" != "push" ]]; then
-            echo "::error::Source run must be a push run of .github/workflows/ci.yml (optionally @ref); got ${source_event} / ${source_path}."
-            exit 1
-          fi
-          if [[ "${source_path}" != ".github/workflows/ci.yml" && "${source_path}" != ".github/workflows/ci.yml@"* ]]; then
-            echo "::error::Source run must be a push run of .github/workflows/ci.yml (optionally @ref); got ${source_event} / ${source_path}."
-            exit 1
-          fi
-          if [[ "${source_branch}" != "${RELEASE_TAG}" && "${source_branch}" != "${RELEASE_TAG#v}" ]]; then
-            echo "::error::Source run ${SOURCE_RUN_ID} is for ref ${source_branch}, not release tag ${RELEASE_TAG}."
-            exit 1
-          fi
-
-          artifacts_json="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts?per_page=100")"
-          artifact_id() {
-            local artifact_name="$1"
-            mapfile -t ids < <(jq -r --arg name "${artifact_name}" '.artifacts[] | select(.name == $name and (.expired | not)) | .id' <<< "${artifacts_json}")
-            if (( ${#ids[@]} != 1 )); then
-              echo "::error::Expected exactly one unexpired '${artifact_name}' artifact in source run ${SOURCE_RUN_ID}; found ${#ids[@]}." >&2
-              exit 1
-            fi
-            printf '%s' "${ids[0]}"
-          }
-
-          release_version="${RELEASE_VERSION#v}"
-          # upload-artifact v7 names a direct archive:false upload after its file,
-          # not the configured artifact name.
-          direct_msi_artifact="${SYMBOL_PRODUCT_NAME}.msi"
-          {
-            echo "msi_name=${SYMBOL_PRODUCT_NAME}.msi"
-            echo "source_run_id=${SOURCE_RUN_ID}"
-            echo "symbol_pack_name=${SYMBOL_PRODUCT_NAME}Symbols-${release_version}-windows-x64.7z"
-            echo "symbols_artifact_id=$(artifact_id 'windows-symbols-Windows')"
-            echo "unsigned_msi_artifact_id=$(artifact_id 'unsigned-msi-package-Windows')"
-            echo "unsigned_msi_signpath_artifact_id=$(artifact_id "${direct_msi_artifact}")"
-            echo "versioninfo_artifact_id=$(artifact_id 'windows-versioninfo-Windows')"
-          } >> "${GITHUB_OUTPUT}"
-
-  fetch_vhf_gamepad_release:
-    name: Fetch pinned VHF producer release
-    if: inputs.artifact_source_run_id == ''
-    runs-on: windows-2022
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout consumer verifier
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          ref: ${{ inputs.release_commit }}
-          fetch-depth: 1
-
-      - name: Download and verify immutable producer release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_COMMIT: ${{ inputs.release_commit }}
-          VHF_ARCHIVE_SHA256: 7830a91ba281c44ae9d01e92e9086f72384a07ca1b35ee87150592f8f960361a
-          VHF_DRIVER_VER: 09/13/2026,0.1.0.34
-          VHF_PROTOCOL_VERSION: '2'
-          VHF_SOURCE_REVISION: 0b3970e1a8c839f14f20a7c8eaf48ff59b8c1986
-          VHF_TAG: v0.1.0-beta.4
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $gitlink = (git rev-parse "$($env:RELEASE_COMMIT):third-party/libvirtualgamepad").Trim()
-          if ($LASTEXITCODE -ne 0 -or $gitlink -cne $env:VHF_SOURCE_REVISION) {
-            throw "Release commit does not pin libvirtualgamepad $($env:VHF_SOURCE_REVISION); got '$gitlink'."
-          }
-
-          $packageRoot = Join-Path $env:RUNNER_TEMP 'vhf-gamepad-producer-release'
-          .\scripts\download_libvirtualgamepad_release.ps1 `
-            -Repository Nonary/libvirtualgamepad `
-            -Tag $env:VHF_TAG `
-            -ExpectedArchiveSha256 $env:VHF_ARCHIVE_SHA256 `
-            -ExpectedSourceRevision $env:VHF_SOURCE_REVISION `
-            -ExpectedDriverVer $env:VHF_DRIVER_VER `
-            -ExpectedProtocolVersion $env:VHF_PROTOCOL_VERSION `
-            -OutDir $packageRoot `
-            -GitHubToken $env:GH_TOKEN
-
-      - name: Upload verified producer package for Windows build
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: vhf-gamepad-producer-release-Windows
-          path: ${{ runner.temp }}\vhf-gamepad-producer-release
-          if-no-files-found: error
-          retention-days: ${{ inputs.release_artifact_retention_days }}
-
   build_windows:
-    name: ${{ matrix.name }}
-    needs:
-      - fetch_vhf_gamepad_release
-    if: inputs.artifact_source_run_id == '' && needs.fetch_vhf_gamepad_release.result == 'success'
-    runs-on: ${{ inputs.use_self_hosted && github.repository == 'Nonary/Vibepollo' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && fromJSON('["self-hosted", "Windows", "X64", "windows-release"]') || fromJSON('["windows-2022"]') }}
-    outputs:
-      msi_name: ${{ steps.package-windows-msi.outputs.msi_name }}
-      symbol_pack_name: ${{ steps.package-windows-symbols.outputs.symbol_pack_name }}
-      symbols_artifact_id: ${{ steps.upload-windows-symbols.outputs.artifact-id }}
-      unsigned_msi_artifact_id: ${{ steps.upload-unsigned-msi-for-package.outputs.artifact-id }}
-      unsigned_msi_signpath_artifact_id: ${{ steps.upload-unsigned-msi.outputs.artifact-id }}
-      versioninfo_artifact_id: ${{ steps.upload-windows-version-metadata.outputs.artifact-id }}
+    name: Windows
+    runs-on: windows-2022
+    timeout-minutes: 90
     env:
       NODE_VERSION: 22.22.2
-      # Leave memory for the other release runners sharing this host.
+      # Four vCPUs; mild oversubscription hides I/O while the largest
+      # translation units still fit in memory.
       CMAKE_BUILD_PARALLEL_LEVEL: 6
-      SIGNPATH_ENABLED: ${{ secrets.signpath_api_token != '' }}
-      SIGNPATH_ORGANIZATION_ID: ${{ inputs.signpath_organization_id }}
-      SIGNPATH_PROJECT_SLUG: ${{ inputs.signpath_project_slug }}
-      SIGNPATH_SIGNING_POLICY_SLUG: ${{ inputs.signpath_signing_policy_slug }}
-      SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG: ${{ inputs.signpath_msi_artifact_configuration_slug }}
-      SIGNPATH_ARTIFACT_CONFIGURATION_SLUG: ${{ inputs.signpath_artifact_configuration_slug }}
       TRUEHDR_RUNTIME_ROOT: ${{ github.workspace }}\.vibeshine-deps\truehdr-runtime
       # PyroWave C API commit; its bitstream matches the PyroWave Moonlight clients.
       PYROWAVE_COMMIT: 89f7e47d4abbf650c91fae766728af866c5e32a0
+      # Pinned VHF gamepad producer release. The CMake arguments in "Build
+      # Windows" repeat these values literally.
+      VHF_TAG: v0.1.0-beta.4
+      VHF_ARCHIVE_SHA256: 7830a91ba281c44ae9d01e92e9086f72384a07ca1b35ee87150592f8f960361a
+      VHF_SOURCE_REVISION: 0b3970e1a8c839f14f20a7c8eaf48ff59b8c1986
+      VHF_DRIVER_VER: 09/13/2026,0.1.0.34
+      VHF_PROTOCOL_VERSION: '2'
     defaults:
       run:
         shell: msys2 {0}
     permissions:
       actions: read
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Windows
-            os: windows-2022
-            arch: x86_64
-            msystem: ucrt64
-            toolchain: ucrt-x86_64
     steps:
-
-      - name: Prepare self-hosted build tools
-        if: runner.environment == 'self-hosted'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          foreach ($tool in @('git', 'cmake', '7z')) {
-            Get-Command $tool -ErrorAction Stop | Out-Null
-          }
-          "DOTNET_INSTALL_DIR=$(Join-Path $env:RUNNER_TEMP 'dotnet')" >> $env:GITHUB_ENV
-          $wixRoot = Join-Path ${env:ProgramFiles(x86)} 'WiX Toolset v3.14'
-          if (-not (Test-Path (Join-Path $wixRoot 'bin\candle.exe'))) {
-            throw 'Install WiX 3.14 on the self-hosted runner before building.'
-          }
-          "WIX=$wixRoot\" >> $env:GITHUB_ENV
-          (Join-Path $wixRoot 'bin') >> $env:GITHUB_PATH
-
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
@@ -344,32 +125,28 @@ jobs:
         shell: pwsh
         run: cmake -P .\packaging\windows\wix\tests\test_sortable_product_guid_contract.cmake
 
-      - name: Download verified VHF producer package
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
-        with:
-          name: vhf-gamepad-producer-release-Windows
-          path: ${{ runner.temp }}\vhf-gamepad-producer-release
-
-      - name: Revalidate VHF producer package for packaging
+      - name: Download pinned VHF producer release
         shell: pwsh
         env:
-          VHF_ARCHIVE_SHA256: 7830a91ba281c44ae9d01e92e9086f72384a07ca1b35ee87150592f8f960361a
-          VHF_DRIVER_VER: 09/13/2026,0.1.0.34
-          VHF_PROTOCOL_VERSION: '2'
-          VHF_SOURCE_REVISION: 0b3970e1a8c839f14f20a7c8eaf48ff59b8c1986
-          VHF_TAG: v0.1.0-beta.4
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ inputs.release_commit }}
         run: |
           $ErrorActionPreference = 'Stop'
+          $gitlink = (git rev-parse "$($env:RELEASE_COMMIT):third-party/libvirtualgamepad").Trim()
+          if ($LASTEXITCODE -ne 0 -or $gitlink -cne $env:VHF_SOURCE_REVISION) {
+            throw "Release commit does not pin libvirtualgamepad $($env:VHF_SOURCE_REVISION); got '$gitlink'."
+          }
+
           $packageRoot = Join-Path $env:RUNNER_TEMP 'vhf-gamepad-producer-release'
           .\scripts\download_libvirtualgamepad_release.ps1 `
-            -ValidateOnly `
             -Repository Nonary/libvirtualgamepad `
             -Tag $env:VHF_TAG `
             -ExpectedArchiveSha256 $env:VHF_ARCHIVE_SHA256 `
             -ExpectedSourceRevision $env:VHF_SOURCE_REVISION `
             -ExpectedDriverVer $env:VHF_DRIVER_VER `
             -ExpectedProtocolVersion $env:VHF_PROTOCOL_VERSION `
-            -OutDir $packageRoot
+            -OutDir $packageRoot `
+            -GitHubToken $env:GH_TOKEN
           "VHF_PACKAGE_ROOT=$packageRoot" >> $env:GITHUB_ENV
 
       - name: Resolve Windows build version
@@ -402,39 +179,37 @@ jobs:
 
       - name: Setup Dependencies Windows
         id: setup-msys2
-        # if a dependency needs to be pinned, see https://github.com/LizardByte/build-deps/pull/186
         uses: msys2/setup-msys2@4f806de0a5a7294ffabaff804b38a9b435a73bda  # v2.30.0
         with:
-          msystem: ${{ matrix.msystem }}
+          msystem: ucrt64
           update: true
           cache: true
           install: >-
             git
-            mingw-w64-${{ matrix.toolchain }}-boost
-            mingw-w64-${{ matrix.toolchain }}-cmake
-            mingw-w64-${{ matrix.toolchain }}-cppwinrt
-            mingw-w64-${{ matrix.toolchain }}-curl-winssl
-            mingw-w64-${{ matrix.toolchain }}-gcc
-            mingw-w64-${{ matrix.toolchain }}-MinHook
-            mingw-w64-${{ matrix.toolchain }}-miniupnpc
-            mingw-w64-${{ matrix.toolchain }}-ninja
-            mingw-w64-${{ matrix.toolchain }}-nlohmann-json
-            mingw-w64-${{ matrix.toolchain }}-onevpl
-            mingw-w64-${{ matrix.toolchain }}-openssl
-            mingw-w64-${{ matrix.toolchain }}-opus
-            mingw-w64-${{ matrix.toolchain }}-tools
-            mingw-w64-${{ matrix.toolchain }}-vulkan-headers
+            mingw-w64-ucrt-x86_64-boost
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-cppwinrt
+            mingw-w64-ucrt-x86_64-curl-winssl
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-MinHook
+            mingw-w64-ucrt-x86_64-miniupnpc
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-nlohmann-json
+            mingw-w64-ucrt-x86_64-onevpl
+            mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-opus
+            mingw-w64-ucrt-x86_64-tools
+            mingw-w64-ucrt-x86_64-vulkan-headers
 
       - name: Cache PyroWave
         id: cache-pyrowave
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: ${{ runner.temp }}/pyrowave-install
-          key: pyrowave-${{ runner.os }}-${{ matrix.msystem }}-${{ env.PYROWAVE_COMMIT }}-${{ hashFiles('scripts/build_pyrowave.sh') }}
+          key: pyrowave-${{ runner.os }}-ucrt64-${{ env.PYROWAVE_COMMIT }}-${{ hashFiles('scripts/build_pyrowave.sh') }}
 
       - name: Build PyroWave
         if: steps.cache-pyrowave.outputs.cache-hit != 'true'
-        shell: msys2 {0}
         env:
           PYROWAVE_ROOT: ${{ runner.temp }}/pyrowave-install
           PYROWAVE_WORKDIR_WIN: ${{ runner.temp }}/pyrowave-work
@@ -468,7 +243,6 @@ jobs:
           "nodejs-path=$nodePath"
 
       - name: Install WiX Toolset
-        if: runner.environment != 'self-hosted'
         shell: pwsh
         run: |
           choco install wixtoolset -y
@@ -518,11 +292,7 @@ jobs:
           "SUNSHINE_TRUEHDR_RUNTIME_DIR=$env:TRUEHDR_RUNTIME_ROOT" >> $env:GITHUB_ENV
 
       - name: Build Windows
-        shell: msys2 {0}
         env:
-          # MSYSTEM is a built-in environment variable of MSYS2.
-          # Do not use this environment variable name.
-          MATRIX_MSYSTEM: ${{ matrix.msystem }}
           BRANCH: ${{ github.head_ref || github.ref_name }}
           COMMIT: ${{ inputs.release_commit }}
           REQUIRE_TRUEHDR_RUNTIME: ${{ inputs.require_truehdr_runtime }}
@@ -554,7 +324,6 @@ jobs:
             -DSUNSHINE_VHF_GAMEPAD_DRIVER_VER=09/13/2026,0.1.0.34
             -DSUNSHINE_VHF_GAMEPAD_PROTOCOL_VERSION=2
           )
-          echo "Using verified VHF producer release v0.1.0-beta.4"
           truehdr_runtime_arg=()
           if [[ "${REQUIRE_TRUEHDR_RUNTIME}" == "true" ]]; then
             truehdr_runtime_arg=(
@@ -594,7 +363,6 @@ jobs:
           echo "::remove-matcher owner=gcc::"
 
       - name: Test native AMF lifecycle behavior
-        shell: msys2 {0}
         run: |
           set -euo pipefail
           c++ \
@@ -699,7 +467,6 @@ jobs:
           }
 
       - name: Strip Windows binaries
-        shell: msys2 {0}
         run: |
           set -euo pipefail
 
@@ -726,60 +493,22 @@ jobs:
             fi
           done
 
-      # WiX already installed before configure so env:WIX is available
-
-      - name: Validate SignPath configuration
-        shell: msys2 {0}
-        env:
-          REQUIRE_SIGNPATH_SIGNING: ${{ inputs.require_signpath_signing }}
-        run: |
-          set -euo pipefail
-
-          if [[ "${REQUIRE_SIGNPATH_SIGNING}" == "true" && "${SIGNPATH_ENABLED}" != "true" ]]; then
-            echo "SignPath signing is required for this run, but signpath_api_token was not provided." >&2
-            exit 1
-          fi
-
-          if [[ "${SIGNPATH_ENABLED}" == "true" ]]; then
-            echo "Windows installer will be submitted to SignPath after GitHub artifact upload."
-            echo "SignPath project: ${SIGNPATH_PROJECT_SLUG} / ${SIGNPATH_SIGNING_POLICY_SLUG}"
-            echo "Two origin-verified requests: (1) MSI deep-sign '${SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG}', (2) setup EXE '${SIGNPATH_ARTIFACT_CONFIGURATION_SLUG}'."
-            echo "Both artifact configurations must exist in the SignPath portal (see docs/signpath/)."
-            if [[ -z "${SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG}" ]]; then
-              echo "signpath_msi_artifact_configuration_slug is required so SignPath can deep-sign the MSI payload (sunshine.exe, tools, uninstall.exe, DLLs)." >&2
-              exit 1
-            fi
-            if [[ -z "${SIGNPATH_ARTIFACT_CONFIGURATION_SLUG}" ]]; then
-              echo "signpath_artifact_configuration_slug is required so SignPath can sign the outer setup EXE with an explicit PE configuration." >&2
-              exit 1
-            fi
-          else
-            echo "signpath_api_token was not provided; Windows installer artifact will remain unsigned."
-          fi
-
       - name: Package Windows MSI
         id: package-windows-msi
-        shell: msys2 {0}
         run: |
-          mkdir -p unsigned-signpath-msi
-          cd build
-
           set -euo pipefail
+          mkdir -p unsigned-msi
+          cmake --build build --target package_msi --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
 
-          # Build only the MSI first. SignPath credentials stay out of this
-          # step so the MSI is signed from a GitHub artifact with origin
-          # verification, including nested files such as uninstall.exe.
-          cmake --build . --target package_msi --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
-
-          msi_path=$(ls -t ./cpack_artifacts/*.msi 2>/dev/null | head -n 1 || true)
+          msi_path=$(ls -t build/cpack_artifacts/*.msi 2>/dev/null | head -n 1 || true)
           if [[ -z "${msi_path}" ]]; then
             echo "Expected MSI was not produced." >&2
-            find ./cpack_artifacts -maxdepth 2 -type f -print >&2 || true
+            find build/cpack_artifacts -maxdepth 2 -type f -print >&2 || true
             exit 1
           fi
 
           msi_name="$(basename "${msi_path}")"
-          cp "${msi_path}" "../unsigned-signpath-msi/${msi_name}"
+          cp "${msi_path}" "unsigned-msi/${msi_name}"
           echo "msi_name=${msi_name}" >> "${GITHUB_OUTPUT}"
 
       - name: Verify unsigned MSI contains the pinned VHF package
@@ -790,7 +519,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $extractRoot = Join-Path $env:RUNNER_TEMP 'unsigned-vhf-msi-extract'
           New-Item -ItemType Directory -Path $extractRoot -Force | Out-Null
-          $msiPath = Join-Path $PWD "unsigned-signpath-msi\$($env:MSI_NAME)"
+          $msiPath = Join-Path $PWD "unsigned-msi\$($env:MSI_NAME)"
           $process = Start-Process msiexec.exe -ArgumentList @('/a', $msiPath, '/qn', "TARGETDIR=$extractRoot") -Wait -PassThru
           if ($process.ExitCode -ne 0) {
             throw "Administrative extraction of unsigned MSI failed with exit code $($process.ExitCode)."
@@ -800,11 +529,11 @@ jobs:
             -ValidateOnly `
             -PrebuiltPackageDir $env:VHF_PACKAGE_ROOT `
             -PackageDir $packageDir `
-            -ReleaseTag v0.1.0-beta.4 `
-            -ExpectedReleaseAssetSha256 7830a91ba281c44ae9d01e92e9086f72384a07ca1b35ee87150592f8f960361a `
-            -ExpectedSourceRevision 0b3970e1a8c839f14f20a7c8eaf48ff59b8c1986 `
-            -ExpectedDriverVer '09/13/2026,0.1.0.34' `
-            -ExpectedProtocolVersion 2
+            -ReleaseTag $env:VHF_TAG `
+            -ExpectedReleaseAssetSha256 $env:VHF_ARCHIVE_SHA256 `
+            -ExpectedSourceRevision $env:VHF_SOURCE_REVISION `
+            -ExpectedDriverVer $env:VHF_DRIVER_VER `
+            -ExpectedProtocolVersion $env:VHF_PROTOCOL_VERSION
           $expected = @(
             'cleanup.ps1',
             'driver/VibeshineVhfGamepad.cat',
@@ -830,7 +559,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $extractRoot = Join-Path $env:RUNNER_TEMP 'unsigned-pyrowave-msi-extract'
           New-Item -ItemType Directory -Path $extractRoot -Force | Out-Null
-          $msiPath = Join-Path $PWD "unsigned-signpath-msi\$($env:MSI_NAME)"
+          $msiPath = Join-Path $PWD "unsigned-msi\$($env:MSI_NAME)"
           $process = Start-Process msiexec.exe -ArgumentList @('/a', $msiPath, '/qn', "TARGETDIR=$extractRoot") -Wait -PassThru
           if ($process.ExitCode -ne 0) {
             throw "Administrative extraction of unsigned MSI failed with exit code $($process.ExitCode)."
@@ -853,797 +582,67 @@ jobs:
           }
           Write-Host 'The MSI ships the PyroWave runtime and its license texts.'
 
-      - name: Upload unsigned MSI for SignPath
-        id: upload-unsigned-msi
+      - name: Upload unsigned MSI
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: unsigned-msi-${{ matrix.name }}
-          path: unsigned-signpath-msi/${{ steps.package-windows-msi.outputs.msi_name }}
-          if-no-files-found: error
-          retention-days: ${{ inputs.release_artifact_retention_days }}
-          archive: false
-          overwrite: true
-
-      - name: Upload unsigned MSI for package job
-        id: upload-unsigned-msi-for-package
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: unsigned-msi-package-${{ matrix.name }}
-          path: unsigned-signpath-msi/${{ steps.package-windows-msi.outputs.msi_name }}
+          name: unsigned-msi-package-Windows
+          path: unsigned-msi/${{ steps.package-windows-msi.outputs.msi_name }}
           if-no-files-found: error
           retention-days: ${{ inputs.release_artifact_retention_days }}
           overwrite: true
 
       - name: Upload Windows symbols package
         if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols || inputs.upload_symbols_artifact
-        id: upload-windows-symbols
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: windows-symbols-${{ matrix.name }}
+          name: windows-symbols-Windows
           path: symbols/${{ steps.package-windows-symbols.outputs.symbol_pack_name }}
           if-no-files-found: error
           retention-days: ${{ inputs.release_artifact_retention_days }}
           overwrite: true
 
-      - name: Upload Windows version metadata
-        id: upload-windows-version-metadata
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: windows-versioninfo-${{ matrix.name }}
-          path: build/generated_versioninfo/windows_versioninfo_generated.h
-          if-no-files-found: error
-          retention-days: ${{ inputs.release_artifact_retention_days }}
-          overwrite: true
-
-      - name: Debug wix
-        if: always() && steps.package-windows-msi.outcome == 'failure'
-        shell: pwsh
-        run: |
-          $log = Join-Path $PWD 'build\cpack_artifacts\_CPack_Packages\win64\WIX\wix.log'
-          if (Test-Path -LiteralPath $log) {
-            Get-Content -LiteralPath $log
-          } else {
-            Write-Host "WiX log was not found: $log"
-          }
-
-  release_artifacts:
-    name: Select release artifacts
-    needs:
-      - build_windows
-      - resolve_source_artifacts
-    if: >-
-      ${{ always() && !cancelled() &&
-          ((inputs.artifact_source_run_id == '' && needs.build_windows.result == 'success') ||
-           (inputs.artifact_source_run_id != '' && needs.resolve_source_artifacts.result == 'success')) }}
-    runs-on: ubuntu-latest
-    outputs:
-      msi_name: ${{ steps.select.outputs.msi_name }}
-      source_run_id: ${{ steps.select.outputs.source_run_id }}
-      symbol_pack_name: ${{ steps.select.outputs.symbol_pack_name }}
-      symbols_artifact_id: ${{ steps.select.outputs.symbols_artifact_id }}
-      unsigned_msi_artifact_id: ${{ steps.select.outputs.unsigned_msi_artifact_id }}
-      unsigned_msi_signpath_artifact_id: ${{ steps.select.outputs.unsigned_msi_signpath_artifact_id }}
-      versioninfo_artifact_id: ${{ steps.select.outputs.versioninfo_artifact_id }}
-    steps:
-      - name: Select current or deferred build
-        id: select
-        env:
-          DEFERRED_MSI_NAME: ${{ needs.resolve_source_artifacts.outputs.msi_name }}
-          DEFERRED_SOURCE_RUN_ID: ${{ needs.resolve_source_artifacts.outputs.source_run_id }}
-          DEFERRED_SYMBOL_PACK_NAME: ${{ needs.resolve_source_artifacts.outputs.symbol_pack_name }}
-          DEFERRED_SYMBOLS_ARTIFACT_ID: ${{ needs.resolve_source_artifacts.outputs.symbols_artifact_id }}
-          DEFERRED_UNSIGNED_MSI_PACKAGE_ARTIFACT_ID: ${{ needs.resolve_source_artifacts.outputs.unsigned_msi_artifact_id }}
-          DEFERRED_UNSIGNED_MSI_ARTIFACT_ID: ${{ needs.resolve_source_artifacts.outputs.unsigned_msi_signpath_artifact_id }}
-          DEFERRED_VERSIONINFO_ARTIFACT_ID: ${{ needs.resolve_source_artifacts.outputs.versioninfo_artifact_id }}
-          CURRENT_MSI_NAME: ${{ needs.build_windows.outputs.msi_name }}
-          CURRENT_SYMBOL_PACK_NAME: ${{ needs.build_windows.outputs.symbol_pack_name }}
-          CURRENT_SYMBOLS_ARTIFACT_ID: ${{ needs.build_windows.outputs.symbols_artifact_id }}
-          CURRENT_UNSIGNED_MSI_PACKAGE_ARTIFACT_ID: ${{ needs.build_windows.outputs.unsigned_msi_artifact_id }}
-          CURRENT_UNSIGNED_MSI_ARTIFACT_ID: ${{ needs.build_windows.outputs.unsigned_msi_signpath_artifact_id }}
-          CURRENT_VERSIONINFO_ARTIFACT_ID: ${{ needs.build_windows.outputs.versioninfo_artifact_id }}
-          REQUESTED_SOURCE_RUN_ID: ${{ inputs.artifact_source_run_id }}
-        run: |
-          set -euo pipefail
-          if [[ -n "${REQUESTED_SOURCE_RUN_ID}" ]]; then
-            prefix=DEFERRED
-          else
-            prefix=CURRENT
-          fi
-
-          msi_name_var="${prefix}_MSI_NAME"
-          symbol_pack_var="${prefix}_SYMBOL_PACK_NAME"
-          symbols_id_var="${prefix}_SYMBOLS_ARTIFACT_ID"
-          unsigned_msi_package_id_var="${prefix}_UNSIGNED_MSI_PACKAGE_ARTIFACT_ID"
-          unsigned_msi_id_var="${prefix}_UNSIGNED_MSI_ARTIFACT_ID"
-          versioninfo_id_var="${prefix}_VERSIONINFO_ARTIFACT_ID"
-          source_run_id="${DEFERRED_SOURCE_RUN_ID:-${GITHUB_RUN_ID}}"
-          {
-            echo "msi_name=${!msi_name_var}"
-            echo "source_run_id=${source_run_id}"
-            echo "symbol_pack_name=${!symbol_pack_var}"
-            echo "symbols_artifact_id=${!symbols_id_var}"
-            echo "unsigned_msi_artifact_id=${!unsigned_msi_package_id_var}"
-            echo "unsigned_msi_signpath_artifact_id=${!unsigned_msi_id_var}"
-            echo "versioninfo_artifact_id=${!versioninfo_id_var}"
-          } >> "${GITHUB_OUTPUT}"
-
-  sign_windows_msi:
-    name: Sign Windows MSI
-    needs:
-      - release_artifacts
-    if: always() && !cancelled() && inputs.build_only == false && needs.release_artifacts.result == 'success'
-    runs-on: windows-2022
-    timeout-minutes: 20
-    outputs:
-      signed_msi_artifact_id: ${{ steps.upload-signed-msi.outputs.artifact-id }}
-    env:
-      SIGNPATH_ENABLED: ${{ secrets.signpath_api_token != '' }}
-      SIGNPATH_ORGANIZATION_ID: ${{ inputs.signpath_organization_id }}
-      SIGNPATH_PROJECT_SLUG: ${{ inputs.signpath_project_slug }}
-      SIGNPATH_SIGNING_POLICY_SLUG: ${{ inputs.signpath_signing_policy_slug }}
-      SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG: ${{ inputs.signpath_msi_artifact_configuration_slug }}
-    permissions:
-      actions: read
-      contents: read
-    steps:
-      - name: Checkout signing helper
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-
-      - name: Download deferred unsigned MSI for SignPath
-        if: inputs.artifact_source_run_id != ''
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
-        with:
-          artifact-ids: ${{ needs.release_artifacts.outputs.unsigned_msi_artifact_id }}
-          github-token: ${{ github.token }}
-          path: deferred-signpath-msi
-          run-id: ${{ needs.release_artifacts.outputs.source_run_id }}
-
-      - name: Re-upload deferred unsigned MSI for SignPath
-        if: inputs.artifact_source_run_id != ''
-        id: upload-deferred-unsigned-msi
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: deferred-unsigned-msi-Windows
-          path: deferred-signpath-msi/${{ needs.release_artifacts.outputs.msi_name }}
-          if-no-files-found: error
-          retention-days: 1
-          archive: false
-          overwrite: true
-
-      - name: Select current-run SignPath MSI artifact
-        id: select-signpath-msi-artifact
+      - name: Package Windows installer
         shell: pwsh
         env:
-          CURRENT_ARTIFACT_ID: ${{ needs.release_artifacts.outputs.unsigned_msi_signpath_artifact_id }}
-          DEFERRED_ARTIFACT_ID: ${{ steps.upload-deferred-unsigned-msi.outputs.artifact-id }}
-          DEFERRED_BUILD: ${{ inputs.artifact_source_run_id != '' }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $artifactId = if ($env:DEFERRED_BUILD -eq 'true') {
-            $env:DEFERRED_ARTIFACT_ID
-          } else {
-            $env:CURRENT_ARTIFACT_ID
-          }
-          if ([string]::IsNullOrWhiteSpace($artifactId)) {
-            throw 'The current-run SignPath MSI artifact ID was not resolved.'
-          }
-          "artifact_id=$artifactId" >> $env:GITHUB_OUTPUT
-
-      - name: Submit and wait for SignPath MSI signing request
-        if: env.SIGNPATH_ENABLED == 'true'
-        uses: ./.github/actions/signpath-submit-and-wait
-        with:
-          api-token: ${{ secrets.signpath_api_token }}
-          organization-id: ${{ env.SIGNPATH_ORGANIZATION_ID }}
-          project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
-          signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}
-          artifact-configuration-slug: ${{ env.SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG }}
-          github-artifact-id: ${{ steps.select-signpath-msi-artifact.outputs.artifact_id }}
-          github-token: ${{ github.token }}
-          output-artifact-path: signed-signpath-msi/${{ needs.release_artifacts.outputs.msi_name }}
-          timeout-seconds: ${{ inputs.signpath_wait_for_completion_timeout_in_seconds }}
-
-      - name: Stage signed Windows MSI
-        if: env.SIGNPATH_ENABLED == 'true'
-        shell: pwsh
-        env:
-          MSI_NAME: ${{ needs.release_artifacts.outputs.msi_name }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          $signedRoot = Join-Path $PWD 'signed-signpath-msi'
-          if (-not (Test-Path -LiteralPath $signedRoot)) {
-            throw "SignPath MSI output directory was not created: $signedRoot"
-          }
-
-          $matches = @(Get-ChildItem -LiteralPath $signedRoot -Recurse -File -Filter $env:MSI_NAME)
-          if ($matches.Count -ne 1) {
-            Get-ChildItem -LiteralPath $signedRoot -Recurse -File | ForEach-Object { Write-Host $_.FullName }
-            throw "Expected exactly one signed MSI named '$($env:MSI_NAME)', found $($matches.Count)."
-          }
-
-          $msiDir = Join-Path $PWD 'signed-msi'
-          New-Item -ItemType Directory -Path $msiDir -Force | Out-Null
-          Copy-Item -LiteralPath $matches[0].FullName -Destination (Join-Path $msiDir $env:MSI_NAME) -Force
-
-      - name: Upload signed MSI
-        if: env.SIGNPATH_ENABLED == 'true'
-        id: upload-signed-msi
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: signed-msi-Windows
-          path: signed-msi/${{ needs.release_artifacts.outputs.msi_name }}
-          if-no-files-found: error
-          retention-days: 1
-          overwrite: true
-
-      - name: SignPath disabled
-        if: env.SIGNPATH_ENABLED != 'true'
-        run: Write-Host "SignPath token was not provided; MSI will remain unsigned."
-
-  package_windows:
-    name: Package Windows
-    needs:
-      - release_artifacts
-      - sign_windows_msi
-    if: always() && !cancelled() && needs.release_artifacts.result == 'success' && needs.sign_windows_msi.result == 'success'
-    runs-on: windows-2022
-    outputs:
-      installer_name: ${{ steps.package-windows.outputs.installer_name }}
-      unsigned_installer_artifact_id: ${{ steps.upload-unsigned-installer-for-finalize.outputs.artifact-id }}
-      unsigned_installer_signpath_artifact_id: ${{ steps.upload-unsigned-installer.outputs.artifact-id }}
-    env:
-      SIGNPATH_ENABLED: ${{ secrets.signpath_api_token != '' }}
-    permissions:
-      actions: read
-      contents: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          ref: ${{ inputs.release_commit }}
-          fetch-depth: 1
-
-      - name: Download signed MSI
-        if: env.SIGNPATH_ENABLED == 'true'
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
-        with:
-          artifact-ids: ${{ needs.sign_windows_msi.outputs.signed_msi_artifact_id }}
-          path: signed-msi
-
-      - name: Download unsigned MSI
-        if: env.SIGNPATH_ENABLED != 'true'
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
-        with:
-          artifact-ids: ${{ needs.release_artifacts.outputs.unsigned_msi_artifact_id }}
-          github-token: ${{ github.token }}
-          path: signed-msi
-          run-id: ${{ needs.release_artifacts.outputs.source_run_id }}
-
-      - name: Download Windows version metadata
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
-        with:
-          artifact-ids: ${{ needs.release_artifacts.outputs.versioninfo_artifact_id }}
-          github-token: ${{ github.token }}
-          path: build/generated_versioninfo
-          run-id: ${{ needs.release_artifacts.outputs.source_run_id }}
-
-      - name: Package Windows
-        id: package-windows
-        shell: pwsh
-        env:
-          MSI_NAME: ${{ needs.release_artifacts.outputs.msi_name }}
+          MSI_NAME: ${{ steps.package-windows-msi.outputs.msi_name }}
           SYMBOL_PRODUCT_NAME: ${{ inputs.symbol_product_name }}
         run: |
           $ErrorActionPreference = 'Stop'
 
           $installerName = "$($env:SYMBOL_PRODUCT_NAME)Setup.exe"
-          $signedMsi = Join-Path (Join-Path $PWD 'signed-msi') $env:MSI_NAME
-          if (-not (Test-Path -LiteralPath $signedMsi)) {
-            throw "MSI artifact was not downloaded: $signedMsi"
-          }
-
-          New-Item -ItemType Directory -Path (Join-Path $PWD 'build') -Force | Out-Null
+          $msiPath = Join-Path $PWD "unsigned-msi\$($env:MSI_NAME)"
           & (Join-Path $PWD 'packaging/windows/bootstrapper/build_bootstrapper.ps1') `
             -BuildDir (Join-Path $PWD 'build') `
-            -MsiPath $signedMsi `
-            -OutputName $installerName `
-            -DisableSignPath
+            -MsiPath $msiPath `
+            -OutputName $installerName
 
-          $installerExe = Join-Path (Join-Path $PWD 'build/cpack_artifacts') $installerName
+          $installerExe = Join-Path $PWD "build\cpack_artifacts\$installerName"
           if (-not (Test-Path -LiteralPath $installerExe)) {
-            Get-ChildItem -Path (Join-Path $PWD 'build/cpack_artifacts') -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
             throw "Expected setup executable was not produced: $installerExe"
           }
-
-          $unsignedDir = Join-Path $PWD 'unsigned-signpath'
-          New-Item -ItemType Directory -Path $unsignedDir -Force | Out-Null
-          Copy-Item -LiteralPath $installerExe -Destination (Join-Path $unsignedDir $installerName) -Force
-          "installer_name=$installerName" >> $env:GITHUB_OUTPUT
-
-      - name: Upload unsigned installer
-        id: upload-unsigned-installer
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: unsigned-installer-Windows
-          path: unsigned-signpath/${{ steps.package-windows.outputs.installer_name }}
-          if-no-files-found: error
-          retention-days: 1
-          archive: false
-          overwrite: true
-
-      - name: Upload unsigned installer for finalize job
-        id: upload-unsigned-installer-for-finalize
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: unsigned-installer-finalize-Windows
-          path: unsigned-signpath/${{ steps.package-windows.outputs.installer_name }}
-          if-no-files-found: error
-          retention-days: 1
-          overwrite: true
-
-  sign_windows_installer:
-    name: Sign Windows installer
-    needs:
-      - package_windows
-    if: always() && !cancelled() && needs.package_windows.result == 'success'
-    runs-on: windows-2022
-    timeout-minutes: 20
-    outputs:
-      signed_installer_artifact_id: ${{ steps.upload-signed-installer.outputs.artifact-id }}
-    env:
-      SIGNPATH_ENABLED: ${{ secrets.signpath_api_token != '' }}
-      SIGNPATH_ORGANIZATION_ID: ${{ inputs.signpath_organization_id }}
-      SIGNPATH_PROJECT_SLUG: ${{ inputs.signpath_project_slug }}
-      SIGNPATH_SIGNING_POLICY_SLUG: ${{ inputs.signpath_signing_policy_slug }}
-      SIGNPATH_ARTIFACT_CONFIGURATION_SLUG: ${{ inputs.signpath_artifact_configuration_slug }}
-    permissions:
-      actions: read
-      contents: read
-    steps:
-      - name: Checkout signing helper
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-
-      - name: Submit and wait for SignPath installer signing request
-        if: env.SIGNPATH_ENABLED == 'true'
-        uses: ./.github/actions/signpath-submit-and-wait
-        with:
-          api-token: ${{ secrets.signpath_api_token }}
-          organization-id: ${{ env.SIGNPATH_ORGANIZATION_ID }}
-          project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
-          signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}
-          artifact-configuration-slug: ${{ env.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
-          github-artifact-id: ${{ needs.package_windows.outputs.unsigned_installer_signpath_artifact_id }}
-          github-token: ${{ github.token }}
-          output-artifact-path: signed-signpath/${{ needs.package_windows.outputs.installer_name }}
-          timeout-seconds: ${{ inputs.signpath_wait_for_completion_timeout_in_seconds }}
-
-      - name: Stage signed Windows installer
-        if: env.SIGNPATH_ENABLED == 'true'
-        shell: pwsh
-        env:
-          INSTALLER_NAME: ${{ needs.package_windows.outputs.installer_name }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          $signedRoot = Join-Path $PWD 'signed-signpath'
-          if (-not (Test-Path -LiteralPath $signedRoot)) {
-            throw "SignPath output directory was not created: $signedRoot"
-          }
-
-          $matches = @(Get-ChildItem -LiteralPath $signedRoot -Recurse -File -Filter $env:INSTALLER_NAME)
-          if ($matches.Count -ne 1) {
-            Get-ChildItem -LiteralPath $signedRoot -Recurse -File | ForEach-Object { Write-Host $_.FullName }
-            throw "Expected exactly one signed installer named '$($env:INSTALLER_NAME)', found $($matches.Count)."
-          }
-
-          $artifactDir = Join-Path $PWD 'signed-installer'
-          New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
-          Copy-Item -LiteralPath $matches[0].FullName -Destination (Join-Path $artifactDir $env:INSTALLER_NAME) -Force
-
-      - name: Upload signed installer
-        if: env.SIGNPATH_ENABLED == 'true'
-        id: upload-signed-installer
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: signed-installer-Windows
-          path: signed-installer/${{ needs.package_windows.outputs.installer_name }}
-          if-no-files-found: error
-          retention-days: 1
-          overwrite: true
-
-      - name: SignPath disabled
-        if: env.SIGNPATH_ENABLED != 'true'
-        run: Write-Host "SignPath token was not provided; installer will remain unsigned."
-
-  finalize_windows:
-    name: Finalize Windows artifacts
-    needs:
-      - release_artifacts
-      - sign_windows_msi
-      - package_windows
-      - sign_windows_installer
-    if: always() && !cancelled() && needs.release_artifacts.result == 'success' && needs.sign_windows_msi.result == 'success' && needs.package_windows.result == 'success' && needs.sign_windows_installer.result == 'success'
-    runs-on: windows-2022
-    env:
-      SIGNPATH_ENABLED: ${{ secrets.signpath_api_token != '' }}
-    permissions:
-      actions: read
-      contents: read
-    steps:
-      - name: Download signed installer
-        if: env.SIGNPATH_ENABLED == 'true'
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
-        with:
-          artifact-ids: ${{ needs.sign_windows_installer.outputs.signed_installer_artifact_id }}
-          path: artifacts
-
-      - name: Download unsigned installer
-        if: env.SIGNPATH_ENABLED != 'true'
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
-        with:
-          artifact-ids: ${{ needs.package_windows.outputs.unsigned_installer_artifact_id }}
-          path: artifacts
-
-      - name: Download signed MSI
-        if: env.SIGNPATH_ENABLED == 'true'
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
-        with:
-          artifact-ids: ${{ needs.sign_windows_msi.outputs.signed_msi_artifact_id }}
-          path: signed-msi
-
-      - name: Download symbols package
-        if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols || inputs.upload_symbols_artifact
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
-        with:
-          artifact-ids: ${{ needs.release_artifacts.outputs.symbols_artifact_id }}
-          github-token: ${{ github.token }}
-          path: symbols
-          run-id: ${{ needs.release_artifacts.outputs.source_run_id }}
+          $artifactRoot = Join-Path $PWD 'artifacts'
+          New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
+          Copy-Item -LiteralPath $installerExe -Destination $artifactRoot -Force
 
       - name: Include symbols in build artifact
         if: inputs.upload_symbols_artifact
         shell: pwsh
         env:
-          SYMBOL_PACK_NAME: ${{ needs.release_artifacts.outputs.symbol_pack_name }}
+          SYMBOL_PACK_NAME: ${{ steps.package-windows-symbols.outputs.symbol_pack_name }}
         run: |
           $ErrorActionPreference = 'Stop'
           $symbolPack = Join-Path (Join-Path $PWD 'symbols') $env:SYMBOL_PACK_NAME
           if (-not (Test-Path -LiteralPath $symbolPack)) {
-            Get-ChildItem -Path symbols -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
             throw "Private symbol pack not found: $symbolPack"
           }
-          New-Item -ItemType Directory -Path (Join-Path $PWD 'artifacts') -Force | Out-Null
           Copy-Item -LiteralPath $symbolPack -Destination (Join-Path $PWD 'artifacts') -Force
-
-      - name: Verify SignPath signatures
-        if: env.SIGNPATH_ENABLED == 'true'
-        shell: pwsh
-        env:
-          INSTALLER_NAME: ${{ needs.package_windows.outputs.installer_name }}
-          MSI_NAME: ${{ needs.release_artifacts.outputs.msi_name }}
-          REQUIRE_TRUEHDR_RUNTIME: ${{ inputs.require_truehdr_runtime }}
-          SIGNPATH_SIGNING_POLICY_SLUG: ${{ inputs.signpath_signing_policy_slug }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          # Production signing must produce a fully trusted (Valid) Authenticode chain. The
-          # test-signing policy signs with an untrusted SignPath test certificate, whose chain
-          # is not Valid on the runner, so in that mode accept an untrusted but intact
-          # signature. A HashMismatch still means bytes changed after signing and must fail.
-          # Switching to a real production signing policy automatically re-enables the strict
-          # Valid requirement with no further edits.
-          $allowUntrustedSignatures = ($env:SIGNPATH_SIGNING_POLICY_SLUG -eq 'test-signing')
-
-          function Test-Signed([string]$Path) {
-            $sig = Get-AuthenticodeSignature -LiteralPath $Path
-            if ($null -eq $sig.SignerCertificate) { return $false }
-            if ($allowUntrustedSignatures) {
-              return ($sig.Status -ne 'NotSigned' -and $sig.Status -ne 'HashMismatch')
-            }
-            return ($sig.Status -eq 'Valid')
-          }
-
-          # signtool.exe is not on PATH on a bare windows-2022 runner. Prefer PATH, then fall
-          # back to the newest x64 signtool under the installed Windows SDK.
-          function Resolve-SignTool {
-            $command = Get-Command signtool.exe -ErrorAction SilentlyContinue
-            if ($null -ne $command) { return $command.Source }
-            $kitsRoot = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots' -Name KitsRoot10 -ErrorAction SilentlyContinue).KitsRoot10
-            if (-not [string]::IsNullOrWhiteSpace($kitsRoot)) {
-              $candidate = Get-ChildItem -Path (Join-Path $kitsRoot 'bin') -Directory -Filter '10.*' -ErrorAction SilentlyContinue |
-                Sort-Object { [version] $_.Name } -Descending |
-                ForEach-Object { Join-Path $_.FullName 'x64\signtool.exe' } |
-                Where-Object { Test-Path -LiteralPath $_ } |
-                Select-Object -First 1
-              if ($candidate) { return $candidate }
-            }
-            throw 'signtool.exe was not found on PATH or under the Windows SDK KitsRoot10.'
-          }
-
-          $failures = New-Object System.Collections.Generic.List[string]
-
-          $installer = Join-Path (Join-Path $PWD 'artifacts') $env:INSTALLER_NAME
-          if (-not (Test-Path -LiteralPath $installer)) { throw "Signed installer not found: $installer" }
-          if (Test-Signed $installer) {
-            $subj = (Get-AuthenticodeSignature -LiteralPath $installer).SignerCertificate.Subject
-            Write-Host "[verify] OK   setup EXE signed: $($env:INSTALLER_NAME)  ($subj)"
-          } else {
-            $failures.Add("setup EXE is UNSIGNED: $($env:INSTALLER_NAME)")
-          }
-
-          $signedMsi = Join-Path (Join-Path $PWD 'signed-msi') $env:MSI_NAME
-          if (-not (Test-Path -LiteralPath $signedMsi)) { throw "Signed MSI not found: $signedMsi" }
-          if (Test-Signed $signedMsi) {
-            Write-Host "[verify] OK   MSI container signed: $($env:MSI_NAME)"
-          } else {
-            $failures.Add("MSI container is UNSIGNED: $($env:MSI_NAME)")
-          }
-
-          $extractDir = Join-Path ([System.IO.Path]::GetTempPath()) ("msi-verify-" + [System.Guid]::NewGuid().ToString('N'))
-          New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
-          $log = Join-Path $extractDir 'admin-extract.log'
-          $argLine = '/a "{0}" /qn TARGETDIR="{1}" /l*v "{2}"' -f $signedMsi, $extractDir, $log
-          $proc = Start-Process -FilePath 'msiexec.exe' -ArgumentList $argLine -Wait -PassThru
-          if ($proc.ExitCode -ne 0) {
-            if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Tail 60 | ForEach-Object { Write-Host $_ } }
-            throw "Administrative MSI extraction failed (exit $($proc.ExitCode))."
-          }
-
-          $virtualDisplayRoot = Join-Path $extractDir 'Apollo\drivers\sunshine'
-          $virtualDisplayCatalog = Join-Path $virtualDisplayRoot 'SunshineVirtualDisplayDriver.cat'
-          $virtualDisplayInf = Join-Path $virtualDisplayRoot 'SunshineVirtualDisplayDriver.inf'
-          $virtualDisplayDll = Join-Path $virtualDisplayRoot 'SunshineVirtualDisplayDriver.dll'
-          $expectedSignPathFoundationSigner = 'CN=SignPath Foundation, O=SignPath Foundation, L=Lewes, S=Delaware, C=US'
-          if (-not (Test-Path -LiteralPath $virtualDisplayCatalog -PathType Leaf)) {
-            $failures.Add('Sunshine virtual display catalog is missing from the signed MSI')
-          } elseif (Test-Signed $virtualDisplayCatalog) {
-            $catalogSignature = Get-AuthenticodeSignature -LiteralPath $virtualDisplayCatalog
-            Write-Host "[verify] OK   virtual display catalog signed: $($catalogSignature.SignerCertificate.Subject) ($($catalogSignature.Status))"
-            if (-not $allowUntrustedSignatures -and
-                $catalogSignature.SignerCertificate.Subject -ne $expectedSignPathFoundationSigner) {
-              $failures.Add("virtual display catalog signer is not SignPath Foundation: $($catalogSignature.SignerCertificate.Subject)")
-            }
-            if (-not $allowUntrustedSignatures) {
-              $signtool = Resolve-SignTool
-              foreach ($catalogPayload in @($virtualDisplayInf, $virtualDisplayDll)) {
-                & $signtool verify '/v' '/pa' '/c' $virtualDisplayCatalog $catalogPayload
-                if ($LASTEXITCODE -ne 0) {
-                  $payloadName = Split-Path -Leaf $catalogPayload
-                  $failures.Add("virtual display catalog does not validate $payloadName")
-                }
-              }
-            }
-          } else {
-            $catalogSignature = Get-AuthenticodeSignature -LiteralPath $virtualDisplayCatalog
-            $failures.Add("Sunshine virtual display catalog is unsigned or untrusted (status=$($catalogSignature.Status))")
-          }
-
-          $firstParty = @(
-            'sunshine.exe','uninstall.exe','zlib1.dll',
-            'sunshinesvc.exe','dxgi-info.exe','audio-info.exe',
-            'sunshine_wgc_capture.exe','sunshine_display_helper.exe',
-            'virtualdisplay_probe.exe','VkLayer_sunshine_hdr.dll'
-          )
-          $optionalFirstParty = @('vibeshine_truehdr.dll')
-            $vendorSkip = @(
-              'SudoVDA.dll','nefconc.exe','SunshineVirtualDisplayDriver.dll','virtualdisplay_probe.exe',
-              'VkLayer_sunshine_hdr.dll','VibeshineVhfGamepad.dll','VibeshineVhfGamepadDeviceSetup.exe',
-              'nvngx_truehdr.dll','nvngx_vsr.dll'
-            )
-
-          $allPe = @(Get-ChildItem -LiteralPath $extractDir -Recurse -File |
-            Where-Object { $_.Extension -in '.exe', '.dll' })
-
-          foreach ($name in $firstParty) {
-            $hits = @($allPe | Where-Object { $_.Name -ieq $name })
-            if ($hits.Count -eq 0) {
-              $failures.Add("first-party PE missing from MSI: $name")
-              continue
-            }
-            foreach ($f in $hits) {
-              if (Test-Signed $f.FullName) {
-                Write-Host "[verify] OK   nested signed: $($f.Name)"
-              } else {
-                $failures.Add("nested first-party PE is UNSIGNED: $($f.FullName)")
-              }
-            }
-          }
-
-          foreach ($name in $optionalFirstParty) {
-            $hits = @($allPe | Where-Object { $_.Name -ieq $name })
-            if ($hits.Count -eq 0) {
-              if ($env:REQUIRE_TRUEHDR_RUNTIME -eq 'true') {
-                $failures.Add("required TrueHDR first-party PE missing from MSI: $name")
-              }
-              continue
-            }
-            foreach ($f in $hits) {
-              if (Test-Signed $f.FullName) {
-                Write-Host "[verify] OK   nested signed: $($f.Name)"
-              } else {
-                $failures.Add("nested TrueHDR first-party PE is UNSIGNED: $($f.FullName)")
-              }
-            }
-          }
-
-          foreach ($f in $allPe) {
-            if ($vendorSkip -contains $f.Name) {
-              $sig = Get-AuthenticodeSignature -LiteralPath $f.FullName
-              Write-Host "[verify] skip vendor/catalog file: $($f.Name) (status=$($sig.Status), signer=$($sig.SignerCertificate.Subject))"
-            }
-          }
-
-          # The immutable producer release arrives unsigned. This repository's
-          # MSI request signs exactly the CAT and setup tool; INF, DLL,
-          # manifest, install/cleanup scripts, and release lock stay byte-pinned.
-          $vhfPackageDir = Join-Path $extractDir 'Apollo\drivers\vhf-gamepad'
-          $vhfManifestPath = Join-Path $vhfPackageDir 'manifest.json'
-          if (-not (Test-Path -LiteralPath $vhfManifestPath -PathType Leaf)) {
-            $failures.Add('VHF gamepad manifest is missing from the signed MSI')
-          } else {
-            $vhfRequired = @(
-              'cleanup.ps1',
-              'driver\VibeshineVhfGamepad.inf',
-              'driver\VibeshineVhfGamepad.dll',
-              'driver\VibeshineVhfGamepad.cat',
-              'install.ps1',
-              'manifest.json',
-              'release-lock.json',
-              'tools\VibeshineVhfGamepadDeviceSetup.exe'
-            )
-            foreach ($relative in $vhfRequired) {
-              $path = Join-Path $vhfPackageDir $relative
-              if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -le 0) {
-                $failures.Add("VHF gamepad package is incomplete: $relative")
-              }
-            }
-            try {
-                $vhfActualLayout = @(Get-ChildItem -LiteralPath $vhfPackageDir -Recurse -File | ForEach-Object {
-                  $_.FullName.Substring($vhfPackageDir.Length).TrimStart('\', '/').Replace('\', '/')
-                } | Sort-Object)
-                $vhfExpectedLayout = @($vhfRequired | ForEach-Object { $_.Replace('\', '/') } | Sort-Object)
-                if (($vhfActualLayout -join "`n") -cne ($vhfExpectedLayout -join "`n")) {
-                  throw "installed VHF layout is not exact: $($vhfActualLayout -join ', ')"
-                }
-                $vhfManifest = Get-Content -LiteralPath $vhfManifestPath -Raw | ConvertFrom-Json
-                $vhfManifestPayload = @(
-                  'driver/VibeshineVhfGamepad.cat',
-                  'driver/VibeshineVhfGamepad.dll',
-                  'driver/VibeshineVhfGamepad.inf',
-                  'tools/VibeshineVhfGamepadDeviceSetup.exe'
-                )
-                if ($vhfManifest.schema_version -ne 1 -or
-                    $vhfManifest.source_revision -cne '0b3970e1a8c839f14f20a7c8eaf48ff59b8c1986' -or
-                    $vhfManifest.driver_ver -cne '09/13/2026,0.1.0.34' -or
-                    [uint16] $vhfManifest.protocol_version -ne 2 -or
-                    $vhfManifest.platform -cne 'x64' -or
-                    $vhfManifest.signing.channel -cne 'msi-request-signing') {
-                  throw 'manifest metadata does not match the pinned beta.2 producer release'
-                }
-                $manifestPaths = @($vhfManifest.files | ForEach-Object { [string] $_.path } | Sort-Object)
-                if (($manifestPaths -join "`n") -cne ($vhfManifestPayload -join "`n")) {
-                  throw 'manifest payload list is not exact'
-                }
-                $vhfDownstreamSigned = @(
-                  'driver/VibeshineVhfGamepad.cat',
-                  'tools/VibeshineVhfGamepadDeviceSetup.exe'
-                )
-                $vhfUnsignedProducer = @(
-                  'driver/VibeshineVhfGamepad.cat',
-                  'driver/VibeshineVhfGamepad.dll',
-                  'tools/VibeshineVhfGamepadDeviceSetup.exe'
-                )
-                if ((@($vhfManifest.signing.signed_downstream) -join "`n") -cne ($vhfDownstreamSigned -join "`n") -or
-                    (@($vhfManifest.signing.unsigned_payloads) -join "`n") -cne ($vhfUnsignedProducer -join "`n") -or
-                    $vhfManifest.signing.catalog_membership.basis -cne 'fresh-inf2cat' -or
-                    $vhfManifest.signing.catalog_membership.generator -cne 'Inf2Cat') {
-                  throw 'manifest signing ownership or fresh Inf2Cat evidence is invalid'
-                }
-                foreach ($entry in @($vhfManifest.files)) {
-                  if ($null -eq $entry -or [string]::IsNullOrWhiteSpace($entry.path) -or
-                      [string]::IsNullOrWhiteSpace($entry.sha256) -or
-                      $entry.path -match '(^|/)\.\.(/|$)|^[A-Za-z]:|^[/\\]') {
-                    throw 'manifest contains an invalid file entry'
-                  }
-                  $path = Join-Path $vhfPackageDir ($entry.path -replace '/', '\\')
-                  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-                    throw "manifest file is missing: $($entry.path)"
-                  }
-                  $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
-                  if ($vhfDownstreamSigned -contains $entry.path) {
-                    if ($actual -ceq $entry.sha256.ToLowerInvariant()) {
-                      throw "downstream-signed payload was not rewritten by SignPath: $($entry.path)"
-                    }
-                    continue
-                  }
-                  if ($actual -ne $entry.sha256.ToLowerInvariant()) {
-                    throw "manifest hash mismatch: $($entry.path)"
-                  }
-                }
-                $vhfCatalog = Join-Path $vhfPackageDir 'driver\VibeshineVhfGamepad.cat'
-                $vhfDll = Join-Path $vhfPackageDir 'driver\VibeshineVhfGamepad.dll'
-                $vhfTool = Join-Path $vhfPackageDir 'tools\VibeshineVhfGamepadDeviceSetup.exe'
-                if (-not (Test-Signed $vhfCatalog)) { throw 'VHF catalog is unsigned or untrusted' }
-                if (-not (Test-Signed $vhfTool)) { throw 'VHF setup tool is unsigned or untrusted' }
-                $vhfDllSignature = Get-AuthenticodeSignature -LiteralPath $vhfDll
-                if ($vhfDllSignature.Status -ne [System.Management.Automation.SignatureStatus]::NotSigned -or
-                    $null -ne $vhfDllSignature.SignerCertificate) {
-                  throw 'catalog-bound VHF DLL was unexpectedly Authenticode-signed'
-                }
-                $vhfCatalogSignature = Get-AuthenticodeSignature -LiteralPath $vhfCatalog
-                $vhfToolSignature = Get-AuthenticodeSignature -LiteralPath $vhfTool
-                if ($vhfCatalogSignature.SignerCertificate.Thumbprint -cne $vhfToolSignature.SignerCertificate.Thumbprint) {
-                  throw 'VHF catalog and setup tool were signed by different identities'
-                }
-                if (-not $allowUntrustedSignatures) {
-                  if ($vhfCatalogSignature.SignerCertificate.Subject -ne $expectedSignPathFoundationSigner -or
-                      $vhfToolSignature.SignerCertificate.Subject -ne $expectedSignPathFoundationSigner) {
-                    throw "VHF catalog/setup signer is not SignPath Foundation: catalog='$($vhfCatalogSignature.SignerCertificate.Subject)'; setup='$($vhfToolSignature.SignerCertificate.Subject)'"
-                  }
-                  $signTool = Resolve-SignTool
-                  foreach ($payload in @(
-                    (Join-Path $vhfPackageDir 'driver\VibeshineVhfGamepad.inf'),
-                    (Join-Path $vhfPackageDir 'driver\VibeshineVhfGamepad.dll')
-                  )) {
-                    & $signTool verify '/v' '/pa' '/c' $vhfCatalog $payload
-                    if ($LASTEXITCODE -ne 0) { throw "VHF catalog membership verification failed: $payload" }
-                  }
-                }
-                $vhfReleaseLockPath = Join-Path $vhfPackageDir 'release-lock.json'
-                $vhfReleaseLock = Get-Content -LiteralPath $vhfReleaseLockPath -Raw | ConvertFrom-Json
-                if ($null -eq $vhfReleaseLock -or $vhfReleaseLock.schema_version -ne 2) {
-                  throw 'release lock is missing or unsupported'
-                }
-                $vhfManifestHash = (Get-FileHash -LiteralPath $vhfManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
-                if ($vhfReleaseLock.channel -cne 'production' -or
-                    $vhfReleaseLock.repository -cne 'Nonary/libvirtualgamepad' -or
-                    $vhfReleaseLock.release_tag -cne 'v0.1.0-beta.4' -or
-                    $vhfReleaseLock.release_asset_name -cne 'libvirtualgamepad-0.1.0-beta.4-windows-x64.zip' -or
-                    $vhfReleaseLock.release_asset_sha256 -cne '7830a91ba281c44ae9d01e92e9086f72384a07ca1b35ee87150592f8f960361a' -or
-                    $vhfReleaseLock.source_revision -cne $vhfManifest.source_revision -or
-                    $vhfReleaseLock.driver_ver -cne $vhfManifest.driver_ver -or
-                    [uint16] $vhfReleaseLock.protocol_version -ne [uint16] $vhfManifest.protocol_version -or
-                    $vhfReleaseLock.manifest_sha256 -cne $vhfManifestHash -or
-                    $vhfReleaseLock.signing_channel -cne 'msi-request-signing' -or
-                    (@($vhfReleaseLock.signed_downstream) -join "`n") -cne ($vhfDownstreamSigned -join "`n")) {
-                  throw 'release lock does not match the pinned producer or signed VHF manifest'
-                }
-                foreach ($entry in @($vhfManifest.files)) {
-                  $lockedHash = $vhfReleaseLock.producer_payload_sha256.PSObject.Properties[[string] $entry.path]
-                  if ($null -eq $lockedHash -or [string] $lockedHash.Value -cne [string] $entry.sha256) {
-                    throw "release lock payload hash mismatch: $($entry.path)"
-                  }
-                }
-                foreach ($scriptName in @('install.ps1', 'cleanup.ps1')) {
-                  $lockedHash = $vhfReleaseLock.installer_script_sha256.PSObject.Properties[$scriptName]
-                  $scriptHash = (Get-FileHash -LiteralPath (Join-Path $vhfPackageDir $scriptName) -Algorithm SHA256).Hash.ToLowerInvariant()
-                  if ($null -eq $lockedHash -or [string] $lockedHash.Value -cne $scriptHash) {
-                    throw "release lock installer-script hash mismatch: $scriptName"
-                  }
-                }
-                Write-Host '[verify] OK   pinned producer VHF package and downstream signatures verified'
-            } catch {
-              $failures.Add("VHF gamepad package verification failed: $($_.Exception.Message)")
-            }
-          }
-
-          Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
-
-          if ($failures.Count -gt 0) {
-            Write-Host "::error::SignPath nested-signing verification failed ($($failures.Count) issue(s))."
-            $failures | ForEach-Object { Write-Host "::error:: - $_" }
-            throw "SignPath verification failed. Confirm the consumer-MSI artifact configuration deep-signs nested PEs in the SignPath portal (see docs/signpath/)."
-          }
-
-          Write-Host "[verify] All first-party PEs are signed (outer setup EXE, MSI, and nested binaries)."
 
       - name: Record release artifact provenance
         shell: pwsh
         env:
           RELEASE_COMMIT: ${{ inputs.release_commit }}
           RELEASE_TAG: ${{ inputs.release_tag }}
-          SOURCE_BUILD_RUN_ID: ${{ needs.release_artifacts.outputs.source_run_id }}
+          SOURCE_BUILD_RUN_ID: ${{ github.run_id }}
         run: |
           $ErrorActionPreference = 'Stop'
           $artifactRoot = Join-Path $PWD 'artifacts'
@@ -1663,15 +662,7 @@ jobs:
           }
           $manifestPath = Join-Path $artifactRoot 'release-provenance.json'
           $provenance | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $manifestPath -Encoding utf8
-          Write-Host "Recorded release provenance for $($env:RELEASE_TAG) from CI run $($env:SOURCE_BUILD_RUN_ID)."
-
-      - name: Upload release provenance
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: release-provenance
-          path: artifacts/release-provenance.json
-          if-no-files-found: error
-          overwrite: true
+          Write-Host "Recorded release provenance for $($env:RELEASE_COMMIT) from CI run $($env:SOURCE_BUILD_RUN_ID)."
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -1807,3 +798,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Failed to upload private symbol pack '$symbolPack'." }
 
           Write-Host "Uploaded $assetName to $($env:SYMBOLS_REPO) release $symbolReleaseTag (id $releaseId)."
+
+      - name: Debug wix
+        if: always() && steps.package-windows-msi.outcome == 'failure'
+        shell: pwsh
+        run: |
+          $log = Join-Path $PWD 'build\cpack_artifacts\_CPack_Packages\win64\WIX\wix.log'
+          if (Test-Path -LiteralPath $log) {
+            Get-Content -LiteralPath $log
+          } else {
+            Write-Host "WiX log was not found: $log"
+          }

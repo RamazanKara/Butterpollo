@@ -78,11 +78,9 @@ add_custom_target(package_msi
     COMMENT "Building MSI installer via CPack (WiX)"
 )
 
-# This target never signs: it always builds an unsigned installer. Release
-# signing is done exclusively through SignPath origin verification in CI
-# (.github/workflows/ci-windows.yml, docs/signpath/), which invokes
-# build_bootstrapper.ps1 directly with the already-signed MSI. A runner-local
-# signature could never satisfy origin verification anyway.
+# This target never signs: it always builds an unsigned installer. CI
+# (.github/workflows/ci-windows.yml) publishes unsigned installers too and calls
+# build_bootstrapper.ps1 directly with the MSI it just packaged.
 set(SUNSHINE_BOOTSTRAPPER_SIGNPATH_ARGS -DisableSignPath)
 
 # Build custom elevated installer EXE that wraps the generated MSI
