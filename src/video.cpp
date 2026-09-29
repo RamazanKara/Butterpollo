@@ -46,6 +46,7 @@ extern "C" {
 #include "nvenc/nvenc_base.h"
 #include "platform/common.h"
 #include "process.h"
+#include "pyrowave/pyrowave_protocol.h"
 #include "sync.h"
 #include "video.h"
 #include "video_encoder_probe_policy.h"
@@ -777,6 +778,7 @@ namespace video {
       oss << "encoder=" << config::video.encoder
           << "|hevc=" << config::video.hevc_mode
           << "|av1=" << config::video.av1_mode
+          << "|pyrowave=" << (config::video.pyrowave ? 1 : 0)
           << "|amd_coder=" << config::video.amd.amd_coder
           << "|amd_ltr=" << config::video.amd.amd_ltr_frames
           << "|amd_queue=" << config::video.amd.amd_input_queue_size
@@ -1602,6 +1604,68 @@ namespace video {
     std::array<pending_timestamp_slot_t, 256> pending_timestamps {};
   };
 
+#ifdef SUNSHINE_ENABLE_PYROWAVE
+  // PyroWave codes every frame on its own, so there is nothing to refresh or
+  // invalidate: IDR requests and reference-frame invalidation are no-ops, and a
+  // bitrate change only resizes the next frame's budget.
+  class pyrowave_encode_session_t: public encode_session_t {
+  public:
+    explicit pyrowave_encode_session_t(std::unique_ptr<platf::pyrowave_encode_device_t> encode_device):
+        device(std::move(encode_device)) {
+    }
+
+    int convert(platf::img_t &img) override {
+      if (!device) {
+        return -1;
+      }
+      return device->convert(img);
+    }
+
+    void request_idr_frame() override {
+    }
+
+    void request_normal_frame() override {
+    }
+
+    void invalidate_ref_frames(int64_t, int64_t) override {
+    }
+
+    bool set_bitrate(int bitrate_kbps) override {
+      if (!device) {
+        return false;
+      }
+      device->set_bitrate(bitrate_kbps);
+      return true;
+    }
+
+    bool encode_frame(platf::pyrowave_encoded_frame_t &frame) {
+      return device && device->encode_frame(frame);
+    }
+
+    /// Encode-thread stamps of the capture that the next encode_frame() carries.
+    void stage_capture_input(std::chrono::steady_clock::time_point popped, std::chrono::steady_clock::time_point converted) {
+      staged_popped = popped;
+      staged_converted = converted;
+    }
+
+    /// Consume the staged stamps (valid for one frame only).
+    std::optional<std::pair<std::chrono::steady_clock::time_point, std::chrono::steady_clock::time_point>> take_staged_input() {
+      std::optional<std::pair<std::chrono::steady_clock::time_point, std::chrono::steady_clock::time_point>> staged;
+      if (staged_popped && staged_converted) {
+        staged.emplace(*staged_popped, *staged_converted);
+      }
+      staged_popped.reset();
+      staged_converted.reset();
+      return staged;
+    }
+
+  private:
+    std::unique_ptr<platf::pyrowave_encode_device_t> device;
+    std::optional<std::chrono::steady_clock::time_point> staged_popped;
+    std::optional<std::chrono::steady_clock::time_point> staged_converted;
+  };
+#endif
+
   // Sticky per-session HDR state, persists across capture reinits so a transient SDR
   // display reading cannot downgrade an HDR stream's colorspace or poison its metadata.
   struct hdr_latch_t {
@@ -1909,7 +1973,7 @@ namespace video {
 
   int start_capture_sync(capture_thread_sync_ctx_t &ctx);
   void end_capture_sync(capture_thread_sync_ctx_t &ctx);
-  int start_capture_async(capture_thread_async_ctx_t &ctx);
+  int start_capture_async(capture_thread_async_ctx_t &ctx, const encoder_t &encoder);
   void end_capture_async(capture_thread_async_ctx_t &ctx);
 
   // Keep a reference counter to ensure the capture thread only runs when other threads have a reference to the capture thread
@@ -2718,6 +2782,38 @@ namespace video {
   };
 #endif
 
+#ifdef SUNSHINE_ENABLE_PYROWAVE
+  // PyroWave: intra-only wavelet codec (videoFormat 3) for PyroWave-enabled
+  // Moonlight clients. It runs next to whichever encoder serves H.264/HEVC/AV1
+  // and is deliberately absent from `encoders`, so it is never auto-selected;
+  // probe_pyrowave() validates it separately. Only the h264 slot is filled
+  // because codec_from_config() maps videoFormat 3 there. SDR is 8-bit (luma +
+  // left-cosited 4:2:0 or full 4:4:4 chroma planes), HDR10 is 10-bit 4:2:0 in
+  // 16-bit planes; HDR 4:4:4 has no pixel format so it fails closed.
+  encoder_t pyrowave {
+    "pyrowave"sv,
+    std::make_unique<encoder_platform_formats_pyrowave>(
+      platf::mem_type_e::dxgi,
+      platf::pix_fmt_e::nv12,
+      platf::pix_fmt_e::p010,
+      platf::pix_fmt_e::nv12,
+      platf::pix_fmt_e::unknown
+    ),
+    {},  // AV1 (unused)
+    {},  // HEVC (unused)
+    {
+      {},  // Common options
+      {},  // SDR-specific options
+      {},  // HDR-specific options
+      {},  // YUV444 SDR-specific options
+      {},  // YUV444 HDR-specific options
+      {},  // Fallback options
+      "pyrowave"s,
+    },
+    PARALLEL_ENCODING | YUV444_SUPPORT
+  };
+#endif
+
   static const std::vector<encoder_t *> encoders {
 #ifdef _WIN32
     &nvenc,
@@ -2751,10 +2847,30 @@ namespace video {
   static encoder_t *chosen_encoder;
   int active_hevc_mode;
   int active_av1_mode;
+  bool active_pyrowave = false;
+  bool active_pyrowave_yuv444 = false;
+  bool active_pyrowave_hdr = false;
   bool last_encoder_probe_supported_ref_frames_invalidation = false;
   std::array<bool, 3> last_encoder_probe_supported_yuv444_for_codec = {};
   std::atomic<std::int64_t> last_negative_hdr_advertisement_probe_ns {0};
   std::mutex encoder_probe_mutex;
+
+  /**
+   * @brief Encoder that serves a client configuration.
+   * @details PyroWave sessions (videoFormat 3) always use the PyroWave encoder,
+   *          whichever encoder the probe chose for H.264/HEVC/AV1. RTSP rejects
+   *          videoFormat 3 when PyroWave is unavailable.
+   */
+  const encoder_t *session_encoder_for(const config_t &config) {
+    if (config.videoFormat == pyrowave::VIDEO_FORMAT_PYROWAVE) {
+#ifdef SUNSHINE_ENABLE_PYROWAVE
+      return &pyrowave;
+#else
+      return nullptr;
+#endif
+    }
+    return chosen_encoder;
+  }
 
   namespace {
     struct encoder_probe_status_t {
@@ -3749,6 +3865,40 @@ namespace video {
     return 0;
   }
 
+#ifdef SUNSHINE_ENABLE_PYROWAVE
+  int encode_pyrowave(
+    int64_t frame_nr,
+    pyrowave_encode_session_t &session,
+    safe::mail_raw_t::queue_t<packet_t> &packets,
+    void *channel_data,
+    std::optional<std::chrono::steady_clock::time_point> frame_timestamp,
+    std::optional<std::chrono::steady_clock::time_point> capture_timestamp,
+    std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp
+  ) {
+    const auto staged_input = session.take_staged_input();
+
+    platf::pyrowave_encoded_frame_t encoded;
+    if (!session.encode_frame(encoded)) {
+      BOOST_LOG(error) << "PyroWave: encode failed"sv;
+      return -1;
+    }
+
+    // Every PyroWave frame is intra-coded, so every packet is an IDR frame on the wire.
+    auto packet = std::make_unique<packet_raw_generic>(std::move(encoded.data), frame_nr, true);
+    packet->channel_data = channel_data;
+    packet->frame_timestamp = frame_timestamp;
+    packet->capture_timestamp = capture_timestamp ? capture_timestamp : frame_timestamp;
+    packet->host_processing_timestamp = host_processing_timestamp;
+    if (host_processing_timestamp && staged_input) {
+      packet->stage_timestamps = packet_raw_t::stage_timestamps_t {staged_input->first, staged_input->second, encoded.submitted, encoded.output};
+    }
+    packet->packet_enqueue_timestamp = std::chrono::steady_clock::now();
+    packets->raise(std::move(packet));
+
+    return 0;
+  }
+#endif
+
   int encode(
     int64_t frame_nr,
     encode_session_t &session,
@@ -3768,6 +3918,11 @@ namespace video {
     } else if (auto amf_session = dynamic_cast<amf_encode_session_t *>(&session)) {
       result = encode_amf(frame_nr, *amf_session, packets, channel_data, frame_timestamp, capture_timestamp, host_processing_timestamp);
     }
+#ifdef SUNSHINE_ENABLE_PYROWAVE
+    else if (auto pyrowave_session = dynamic_cast<pyrowave_encode_session_t *>(&session)) {
+      result = encode_pyrowave(frame_nr, *pyrowave_session, packets, channel_data, frame_timestamp, capture_timestamp, host_processing_timestamp);
+    }
+#endif
 
     encode_duration_logger.collect_and_log(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - encode_start).count());
     return result;
@@ -4446,6 +4601,15 @@ namespace video {
     return std::make_unique<nvenc_encode_session_t>(std::move(encode_device));
   }
 
+#ifdef SUNSHINE_ENABLE_PYROWAVE
+  std::unique_ptr<pyrowave_encode_session_t> make_pyrowave_encode_session(const config_t &client_config, std::unique_ptr<platf::pyrowave_encode_device_t> encode_device) {
+    if (!encode_device->init_encoder(client_config, encode_device->colorspace)) {
+      return nullptr;
+    }
+    return std::make_unique<pyrowave_encode_session_t>(std::move(encode_device));
+  }
+#endif
+
   using initialization_cancel_t = std::function<bool()>;
 
   bool acquire_amf_initialization_fence_until(
@@ -4648,6 +4812,12 @@ namespace video {
       if (gate_contended_out) *gate_contended_out = gate_contended;
       return session;
     }
+#ifdef SUNSHINE_ENABLE_PYROWAVE
+    else if (dynamic_cast<platf::pyrowave_encode_device_t *>(encode_device.get())) {
+      auto pyrowave_encode_device = boost::dynamic_pointer_cast<platf::pyrowave_encode_device_t>(std::move(encode_device));
+      return make_pyrowave_encode_session(config, std::move(pyrowave_encode_device));
+    }
+#endif
 
     return nullptr;
   }
@@ -5008,6 +5178,9 @@ namespace video {
     // fail_guard teardown moves the session out after the encode loop exits.
     auto *const native_session = dynamic_cast<amf_encode_session_t *>(session.get());
     const bool native_amf_session = native_session != nullptr;
+#ifdef SUNSHINE_ENABLE_PYROWAVE
+    auto *const pyrowave_session = dynamic_cast<pyrowave_encode_session_t *>(session.get());
+#endif
 #ifdef _WIN32
     const bool legacy_amf_session = session_encoder == &amdvce_ffmpeg;
 #else
@@ -5489,6 +5662,11 @@ namespace video {
           if (native_session && !placeholder_input) {
             native_session->stage_capture_input(image_popped_at, std::chrono::steady_clock::now());
           }
+#ifdef SUNSHINE_ENABLE_PYROWAVE
+          if (pyrowave_session && !placeholder_input) {
+            pyrowave_session->stage_capture_input(image_popped_at, std::chrono::steady_clock::now());
+          }
+#endif
 
 #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
           if (refresh_rtx_hdr_metadata_if_needed(
@@ -5659,6 +5837,13 @@ namespace video {
     }
 
     auto colorspace = colorspace_from_client_config(config, hdr_display);
+#ifdef SUNSHINE_ENABLE_PYROWAVE
+    if (&encoder == &pyrowave && !colorspace_is_hdr(colorspace)) {
+      // PyroWave clients read every SDR frame as 8-bit, whatever dynamicRange
+      // requested; only HDR10 frames carry 10-bit values.
+      colorspace.bit_depth = 8;
+    }
+#endif
 
     platf::pix_fmt_e pix_fmt;
     if (config.chromaSamplingType == 1) {
@@ -5702,6 +5887,11 @@ namespace video {
     } else if (dynamic_cast<const encoder_platform_formats_amf *>(encoder.platform_formats.get())) {
       result = disp.make_amf_encode_device(pix_fmt);
     }
+#ifdef SUNSHINE_ENABLE_PYROWAVE
+    else if (dynamic_cast<const encoder_platform_formats_pyrowave *>(encoder.platform_formats.get())) {
+      result = disp.make_pyrowave_encode_device(pix_fmt);
+    }
+#endif
 
     if (result) {
       result->colorspace = colorspace;
@@ -5742,6 +5932,14 @@ namespace video {
   }
 
   std::optional<sync_session_t> make_synced_session(std::shared_ptr<platf::display_t> disp, const encoder_t &encoder, platf::img_t &img, sync_session_ctx_t &ctx) {
+    if (ctx.config.videoFormat == pyrowave::VIDEO_FORMAT_PYROWAVE) {
+      // capture() sends PyroWave to async capture. The shared synchronous
+      // pipeline encodes every session with the probed encoder, which would
+      // hand a PyroWave client an H.264 stream.
+      BOOST_LOG(error) << "PyroWave sessions cannot join the synchronous capture pipeline"sv;
+      return std::nullopt;
+    }
+
     sync_session_t encode_session;
 
     encode_session.ctx = &ctx;
@@ -6165,7 +6363,12 @@ namespace video {
     // worker selected its first context's display for every later context,
     // which made a second Remote Monitor silently capture the wrong output.
     capture_thread_async_ctx_t source_ctx {};
-    if (start_capture_async(source_ctx) != 0) {
+    const auto *capture_encoder = session_encoder_for(config);
+    if (!capture_encoder) {
+      BOOST_LOG(error) << "No encoder available for async capture"sv;
+      return;
+    }
+    if (start_capture_async(source_ctx, *capture_encoder) != 0) {
       return;
     }
     auto stop_source = util::fail_guard([&]() {
@@ -6222,7 +6425,7 @@ namespace video {
         display = source_ctx.display_wp->lock();
       }
 
-      auto *enc_ptr = chosen_encoder;
+      auto *enc_ptr = session_encoder_for(config);
       if (!enc_ptr) {
         BOOST_LOG(error) << "No encoder available for async capture"sv;
         return;
@@ -6391,7 +6594,7 @@ namespace video {
     void *channel_data
   ) {
     // Snapshot the encoder pointer to avoid races with concurrent probe_encoders() calls
-    auto *encoder = chosen_encoder;
+    const auto *encoder = session_encoder_for(config);
     if (!encoder) {
       BOOST_LOG(error) << "No encoder available for capture"sv;
       return;
@@ -6438,7 +6641,7 @@ namespace video {
   };
 
   int validate_config(std::shared_ptr<platf::display_t> disp, const encoder_t &encoder, const config_t &config) {
-    const int max_attempts = config.videoFormat >= 1 ? 3 : 1;  // HEVC/AV1 can fail transiently during probing
+    const int max_attempts = (config.videoFormat == 1 || config.videoFormat == 2) ? 3 : 1;  // HEVC/AV1 can fail transiently during probing
     // The tight submission/wall-clock bounds exist for AMF drivers that stall in
     // INPUT_FULL; probing for every other encoder keeps the pre-existing limits
     // so this AMD-only change cannot alter NVENC/QSV/software negotiation.
@@ -6459,6 +6662,8 @@ namespace video {
           return "HEVC"sv;
         case 2:
           return "AV1"sv;
+        case pyrowave::VIDEO_FORMAT_PYROWAVE:
+          return "PyroWave"sv;
         default:
           return "codec"sv;
       }
@@ -6557,6 +6762,15 @@ namespace video {
         if (!packet->is_idr()) {
           BOOST_LOG(error) << "First packet type is not an IDR frame"sv;
           return util::false_v<util::optional_t<int>>;
+        }
+
+        if (config.videoFormat == pyrowave::VIDEO_FORMAT_PYROWAVE) {
+          const auto &magic = pyrowave::CONTAINER_MAGIC;
+          if (packet->data_size() <= pyrowave::CONTAINER_HEADER_SIZE ||
+              !std::equal(magic.begin(), magic.end(), packet->data())) {
+            BOOST_LOG(error) << "PyroWave probe produced a malformed frame container"sv;
+            return util::false_v<util::optional_t<int>>;
+          }
         }
 
         int flag = 0;
@@ -6904,6 +7118,62 @@ namespace video {
     return true;
   }
 
+#ifdef SUNSHINE_ENABLE_PYROWAVE
+  struct pyrowave_probe_result_t {
+    bool sdr = false;
+    bool yuv444 = false;
+    bool hdr = false;
+  };
+
+  /**
+   * @brief Validate PyroWave on the adapter the encoder probe settled on.
+   * @details Runs only when the pyrowave option is on. SDR 4:2:0 gates the
+   *          codec; 4:4:4 and HDR10 4:2:0 are optional modes. Every mode gets a
+   *          synthetic capture surface of its own format on that adapter, so this
+   *          exercises the real conversion, fence and Vulkan import path.
+   */
+  pyrowave_probe_result_t probe_pyrowave(const std::optional<platf::adapter_id_t> &adapter) {
+    pyrowave_probe_result_t result;
+    if (!config::video.pyrowave) {
+      return result;
+    }
+
+    const auto validate = [&](const int chroma_sampling_type, const int dynamic_range) {
+      config_t config {};
+      config.width = 1920;
+      config.height = 1080;
+      config.framerate = 60;
+      config.encodingFramerate = 60000;
+      config.bitrate = 200000;
+      config.client_requested_bitrate = config.bitrate;
+      config.slicesPerFrame = 1;
+      config.encoderCscMode = 2;  // BT.709 limited range, as PyroWave clients request.
+      config.videoFormat = pyrowave::VIDEO_FORMAT_PYROWAVE;
+      config.dynamicRange = dynamic_range;
+      config.chromaSamplingType = chroma_sampling_type;
+
+      auto disp = make_synthetic_probe_display(platf::mem_type_e::dxgi, config, adapter);
+      if (!disp) {
+        BOOST_LOG(warning) << "PyroWave probe: could not create a D3D11 surface on the probe adapter"sv;
+        return false;
+      }
+      return validate_config(disp, pyrowave, config) >= 0;
+    };
+
+    BOOST_LOG(info) << "Trying encoder [pyrowave]"sv;
+    result.sdr = validate(0, 0);
+    if (!result.sdr) {
+      BOOST_LOG(warning) << "Encoder [pyrowave] failed; PyroWave will not be offered to clients"sv;
+      return result;
+    }
+    result.yuv444 = validate(1, 0);
+    result.hdr = validate(0, 1);
+    BOOST_LOG(info) << "Found PyroWave encoder (4:4:4: "sv << (result.yuv444 ? "yes"sv : "no"sv)
+                    << ", HDR10: "sv << (result.hdr ? "yes"sv : "no"sv) << ')';
+    return result;
+  }
+#endif
+
   int probe_encoders() {
     std::lock_guard<std::mutex> lock(encoder_probe_mutex);
     const auto probe_target = resolve_probe_target();
@@ -6964,6 +7234,9 @@ namespace video {
     }
     const auto previous_active_hevc_mode = active_hevc_mode;
     const auto previous_active_av1_mode = active_av1_mode;
+    const auto previous_active_pyrowave = active_pyrowave;
+    const auto previous_active_pyrowave_yuv444 = active_pyrowave_yuv444;
+    const auto previous_active_pyrowave_hdr = active_pyrowave_hdr;
     const auto previous_last_ref_frames_invalidation = last_encoder_probe_supported_ref_frames_invalidation;
     const auto previous_last_yuv444_for_codec = last_encoder_probe_supported_yuv444_for_codec;
     auto previous_encoder = chosen_encoder;
@@ -6971,6 +7244,9 @@ namespace video {
     auto restore_previous_probe_state = util::fail_guard([&]() {
       active_hevc_mode = previous_active_hevc_mode;
       active_av1_mode = previous_active_av1_mode;
+      active_pyrowave = previous_active_pyrowave;
+      active_pyrowave_yuv444 = previous_active_pyrowave_yuv444;
+      active_pyrowave_hdr = previous_active_pyrowave_hdr;
       last_encoder_probe_supported_ref_frames_invalidation = previous_last_ref_frames_invalidation;
       last_encoder_probe_supported_yuv444_for_codec = previous_last_yuv444_for_codec;
     });
@@ -7253,10 +7529,24 @@ namespace video {
       successful_cache_key.adapter_identity_resolved = owned_cache_key->adapter_identity_resolved;
     }
 #endif
+#ifdef SUNSHINE_ENABLE_PYROWAVE
+    // PyroWave rides alongside the chosen encoder on the same adapter.
+    const auto pyrowave_probe = probe_pyrowave(successful_probe_adapter ? successful_probe_adapter : required_adapter);
+    active_pyrowave = pyrowave_probe.sdr;
+    active_pyrowave_yuv444 = pyrowave_probe.sdr && pyrowave_probe.yuv444;
+    active_pyrowave_hdr = pyrowave_probe.sdr && pyrowave_probe.hdr;
+#else
+    active_pyrowave = false;
+    active_pyrowave_yuv444 = false;
+    active_pyrowave_hdr = false;
+#endif
     const advertised_encoder_capabilities_t successful_capabilities {
       .hevc_mode = active_hevc_mode,
       .av1_mode = active_av1_mode,
       .yuv444_for_codec = last_encoder_probe_supported_yuv444_for_codec,
+      .pyrowave = active_pyrowave,
+      .pyrowave_yuv444 = active_pyrowave_yuv444,
+      .pyrowave_hdr = active_pyrowave_hdr,
     };
     update_probe_cache(
       successful_cache_key,
@@ -7387,8 +7677,10 @@ namespace video {
   }
 #endif
 
-  int start_capture_async(capture_thread_async_ctx_t &capture_thread_ctx) {
-    capture_thread_ctx.encoder_p = chosen_encoder;
+  // The capture worker opens its display for the session's encoder: a PyroWave
+  // session needs a D3D11 capture display even when the probe chose software.
+  int start_capture_async(capture_thread_async_ctx_t &capture_thread_ctx, const encoder_t &encoder) {
+    capture_thread_ctx.encoder_p = &encoder;
     capture_thread_ctx.reinit_event.reset();
 
     capture_thread_ctx.capture_ctx_queue = std::make_shared<safe::queue_t<capture_ctx_t>>(30);

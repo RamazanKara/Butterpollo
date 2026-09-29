@@ -49,7 +49,7 @@ namespace video {
        SDR encoding colorspace (encoderCscMode >> 1) : 0 - BT.601, 1 - BT.709, 2 - BT.2020 */
     int encoderCscMode;
 
-    int videoFormat;  // 0 - H.264, 1 - HEVC, 2 - AV1
+    int videoFormat;  // 0 - H.264, 1 - HEVC, 2 - AV1, 3 - PyroWave
 
     /* Encoding color depth (bit depth): 0 - 8-bit, 1 - 10-bit
        HDR encoding activates when color depth is higher than 8-bit and the display which is being captured is operating in HDR mode */
@@ -85,6 +85,9 @@ namespace video {
     // subtracts FEC/audio/control overhead from `bitrate` for the encoder.
     // Same as `bitrate` for clients that don't send maximumBitrateKbps.
     int client_requested_bitrate;
+    // Largest frame payload the video transport can protect with FEC, in bytes;
+    // 0 when unknown. Intra-only PyroWave frames are budgeted against it.
+    std::size_t max_frame_bytes = 0;
   };
 
   platf::mem_type_e map_base_dev_type(AVHWDeviceType type);
@@ -180,6 +183,24 @@ namespace video {
     }
   };
 
+#ifdef SUNSHINE_ENABLE_PYROWAVE
+  struct encoder_platform_formats_pyrowave: encoder_platform_formats_t {
+    encoder_platform_formats_pyrowave(
+      const platf::mem_type_e &dev_type,
+      const platf::pix_fmt_e &pix_fmt_8bit,
+      const platf::pix_fmt_e &pix_fmt_10bit,
+      const platf::pix_fmt_e &pix_fmt_yuv444_8bit,
+      const platf::pix_fmt_e &pix_fmt_yuv444_10bit
+    ) {
+      encoder_platform_formats_t::dev_type = dev_type;
+      encoder_platform_formats_t::pix_fmt_8bit = pix_fmt_8bit;
+      encoder_platform_formats_t::pix_fmt_10bit = pix_fmt_10bit;
+      encoder_platform_formats_t::pix_fmt_yuv444_8bit = pix_fmt_yuv444_8bit;
+      encoder_platform_formats_t::pix_fmt_yuv444_10bit = pix_fmt_yuv444_10bit;
+    }
+  };
+#endif
+
   struct encoder_t {
     std::string_view name;
 
@@ -262,6 +283,9 @@ namespace video {
           return hevc;
         case 2:
           return av1;
+        case 3:
+          // PyroWave is a separate encoder that only fills its H.264 slot.
+          return h264;
       }
     }
 
@@ -313,6 +337,11 @@ namespace video {
   extern encoder_t amdvce_ffmpeg;
   extern encoder_t quicksync;
   extern encoder_t mediafoundation;
+#endif
+
+#ifdef SUNSHINE_ENABLE_PYROWAVE
+  // Serves videoFormat 3 next to the probed encoder; never auto-selected.
+  extern encoder_t pyrowave;
 #endif
 
 #if defined(__linux__) || defined(linux) || defined(__linux) || defined(__FreeBSD__)
@@ -442,6 +471,11 @@ namespace video {
 
   extern int active_hevc_mode;
   extern int active_av1_mode;
+  // PyroWave modes validated by the last successful probe (all false when the
+  // pyrowave option is off or the build has no PyroWave support).
+  extern bool active_pyrowave;
+  extern bool active_pyrowave_yuv444;
+  extern bool active_pyrowave_hdr;
   extern bool last_encoder_probe_supported_ref_frames_invalidation;
   extern std::array<bool, 3> last_encoder_probe_supported_yuv444_for_codec;  // 0 - H.264, 1 - HEVC, 2 - AV1
 
@@ -453,6 +487,9 @@ namespace video {
     int hevc_mode = 0;
     int av1_mode = 0;
     std::array<bool, 3> yuv444_for_codec {};
+    bool pyrowave = false;
+    bool pyrowave_yuv444 = false;
+    bool pyrowave_hdr = false;
   };
 
   advertised_encoder_capabilities_t advertised_encoder_capabilities(
