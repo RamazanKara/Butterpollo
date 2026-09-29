@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n';
 
 import ReleaseNotes from '@/components/settings/ReleaseNotes.vue';
 import LinuxCaptureStatus from '@/components/settings/LinuxCaptureStatus.vue';
-import { ApiError, apiDelete, apiGet, apiPost } from '@/api/client';
+import { ApiError, apiDelete, apiGet, apiPost } from '@/services/api';
 import {
   AppButton,
   ConfirmDialog,

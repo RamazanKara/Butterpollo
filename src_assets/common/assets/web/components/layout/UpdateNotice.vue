@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { apiGet } from '@/api/client';
+import { apiGet } from '@/services/api';
 import { AppButton, InlineAlert } from '@/components/ui';
 import { useSystemStore } from '@/stores/system';
 import type { ChangelogEntry } from '@/utils/changelog';

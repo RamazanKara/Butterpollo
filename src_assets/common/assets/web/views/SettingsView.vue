@@ -17,7 +17,7 @@ import {
   dummyPlugVsyncState,
 } from '@/utils/displayHealth';
 
-import { ApiError, apiGet, apiPatch, apiPost } from '@/api/client';
+import { ApiError, apiGet, apiPatch, apiPost } from '@/services/api';
 import DisplayModeOverrides from '@/components/settings/DisplayModeOverrides.vue';
 import DisplayRecoverySettings from '@/components/settings/DisplayRecoverySettings.vue';
 import GlobalPrepCommands from '@/components/settings/GlobalPrepCommands.vue';

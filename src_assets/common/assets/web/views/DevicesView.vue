@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, toRaw } from 'vue';
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges';
 import { useI18n } from 'vue-i18n';
 
-import { ApiError, apiGet, apiPost } from '@/api/client';
+import { ApiError, apiGet, apiPost } from '@/services/api';
 import {
   AppButton,
   ConfirmDialog,

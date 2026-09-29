@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 
-import { ApiError, apiPost } from '@/api/client';
+import { ApiError, apiPost } from '@/services/api';
 import { AppButton, InlineAlert, PageHeader, StatusBadge, UiIcon } from '@/components/ui';
 
 const { t } = useI18n();

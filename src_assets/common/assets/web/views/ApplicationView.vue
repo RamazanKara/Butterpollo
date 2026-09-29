@@ -4,7 +4,7 @@ import { useUnsavedChanges } from '@/composables/useUnsavedChanges';
 import { useI18n } from 'vue-i18n';
 import { useRoute, useRouter } from 'vue-router';
 
-import { ApiError, apiGet, apiPost } from '@/api/client';
+import { ApiError, apiGet, apiPost } from '@/services/api';
 import AppCompatibilitySettings from '@/components/app-edit/AppCompatibilitySettings.vue';
 import { parseAppExtras } from '@/utils/appCompatibility';
 import AppEditCoverModal from '@/components/app-edit/AppEditCoverModal.vue';

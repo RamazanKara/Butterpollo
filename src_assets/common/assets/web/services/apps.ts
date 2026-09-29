@@ -1,4 +1,4 @@
-import { apiDelete, apiGet, apiPost } from '@/api/client';
+import { apiDelete, apiGet, apiPost } from '@/services/api';
 import type { ServerApp } from '@/components/app-edit/types';
 import { asArray } from '@/utils/format';
 

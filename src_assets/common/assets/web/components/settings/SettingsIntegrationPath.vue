@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 
-import { apiGet } from '@/api/client';
+import { apiGet } from '@/services/api';
 import { AppButton, StatusBadge } from '@/components/ui';
 
 type StatusTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger';

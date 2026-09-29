@@ -4,7 +4,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 
 import LinuxCaptureStatus from '@/components/settings/LinuxCaptureStatus.vue';
-import { ApiError, apiGet, apiPost } from '@/api/client';
+import { ApiError, apiGet, apiPost } from '@/services/api';
 import {
   AppButton,
   ConfirmDialog,

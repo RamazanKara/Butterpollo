@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 
-import { apiGet, apiRequest, type ApiPayload } from '@/api/client';
+import { apiGet, apiRequest, type ApiPayload } from '@/services/api';
 import { AppButton, InlineAlert, StatusBadge } from '@/components/ui';
 
 type Edge = 'left' | 'right' | 'above' | 'below';

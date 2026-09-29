@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 
-import { ApiError, apiGet } from '@/api/client';
+import { ApiError, apiGet } from '@/services/api';
 import {
   AppButton,
   EmptyState,

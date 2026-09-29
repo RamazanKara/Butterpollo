@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
 
-import { apiGet, apiPost, clearCsrfToken } from '@/api/client';
+import { apiGet, apiPost, clearCsrfToken } from '@/services/api';
 import { hostReadiness, type ReadinessMetadata } from '@/utils/hostReadiness';
 import type { SessionStatus } from '@/types/sessions';
 

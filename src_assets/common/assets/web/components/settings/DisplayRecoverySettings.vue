@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 
-import { apiGet, apiPost } from '@/api/client';
+import { apiGet, apiPost } from '@/services/api';
 import { AppButton, StatusBadge } from '@/components/ui';
 import type { StatusTone } from '@/components/ui/types';
 

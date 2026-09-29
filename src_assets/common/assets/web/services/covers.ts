@@ -1,4 +1,4 @@
-import { apiPost } from '@/api/client';
+import { apiPost } from '@/services/api';
 import type { CoverCandidate } from '@/components/app-edit/AppEditCoverModal.types';
 
 const GAME_DATABASE_URL = 'https://raw.githubusercontent.com/LizardByte/GameDB/gh-pages';

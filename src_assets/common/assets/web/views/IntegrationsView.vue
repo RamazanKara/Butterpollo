@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 
-import { ApiError, apiGet, apiPost } from '@/api/client';
+import { ApiError, apiGet, apiPost } from '@/services/api';
 import {
   AppButton,
   ConfirmDialog,
