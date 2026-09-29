@@ -501,7 +501,6 @@ const virtualDisplayOnlyOverrideKeys = new Set([
   'dd_virtual_display_permanent_count',
   'dd_paused_virtual_display_timeout_secs',
   'frame_limiter_auto_virtual_framegen',
-  'dd_use_sunshine_virtual_display_driver',
   'vulkan_hdr_layer',
 ]);
 function overrideVisibleForDisplay(key: string): boolean {
@@ -1560,9 +1559,7 @@ function normalizedDeviceId(value: unknown): string {
 
 function isVirtualDisplaySelection(value: string): boolean {
   const normalized = value.trim().toLocaleLowerCase();
-  return (
-    normalized === 'sunshine:virtual_display' || normalized === 'sunshine:sudovda_virtual_display'
-  );
+  return normalized === 'sunshine:virtual_display';
 }
 
 function effectiveAppOutput(): string {

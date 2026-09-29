@@ -87,7 +87,6 @@ body:
       options:
         - Desktop Duplication API (Windows)
         - Windows.Graphics.Capture (Windows)
-        - SudoVDA virtual display
         - Unknown
     validations:
       required: false

@@ -221,9 +221,6 @@ namespace display_helper::v2 {
   public:
     virtual ~IVirtualDisplayDriver() = default;
 
-    virtual bool disable() = 0;
-    virtual bool enable() = 0;
-    virtual bool is_available() = 0;
     virtual std::string device_id() = 0;
   };
 

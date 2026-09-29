@@ -18,7 +18,6 @@ namespace sunshine::virtual_display_package_contract {
 
   inline constexpr std::string_view driver_destination = "@SUNSHINE_VDD_DRIVER_DESTINATION@";
   inline constexpr std::string_view vulkan_layer_destination = "@SUNSHINE_VDD_VULKAN_LAYER_DESTINATION@";
-  inline constexpr std::string_view sudovda_destination = "@SUNSHINE_VDD_SUDOVDA_DESTINATION@";
   inline constexpr std::string_view truehdr_repository = "@SUNSHINE_VDD_TRUEHDR_REPOSITORY@";
   inline constexpr std::string_view truehdr_release_tag = "@SUNSHINE_VDD_TRUEHDR_RELEASE_TAG@";
   inline constexpr std::string_view libvirtualdisplay_repository = "@SUNSHINE_VDD_LIBVIRTUALDISPLAY_REPOSITORY@";
@@ -30,8 +29,6 @@ namespace sunshine::virtual_display_package_contract {
   inline constexpr std::string_view local_signing_mode = "@SUNSHINE_VDD_LOCAL_SIGNING_MODE@";
   inline constexpr std::string_view installer_powershell_architecture = "@SUNSHINE_VDD_INSTALLER_POWERSHELL_ARCHITECTURE@";
   inline constexpr std::string_view command_line_quoting = "@SUNSHINE_VDD_COMMAND_LINE_QUOTING@";
-  inline constexpr std::string_view default_backend = "@SUNSHINE_VDD_DEFAULT_BACKEND@";
-  inline constexpr std::string_view rollback_backend = "@SUNSHINE_VDD_ROLLBACK_BACKEND@";
 
   inline constexpr unsigned health_check_width = @SUNSHINE_VDD_HEALTH_CHECK_WIDTH@u;
   inline constexpr unsigned health_check_height = @SUNSHINE_VDD_HEALTH_CHECK_HEIGHT@u;
@@ -49,13 +46,9 @@ namespace sunshine::virtual_display_package_contract {
   inline constexpr bool factory_reset_requires_install_sentinel = @SUNSHINE_VDD_FACTORY_RESET_REQUIRES_INSTALL_SENTINEL_CPP@;
   inline constexpr bool ci_requires_valid_release_signatures = @SUNSHINE_VDD_CI_REQUIRES_VALID_RELEASE_SIGNATURES_CPP@;
   inline constexpr bool ci_self_sign_without_persistent_secret = @SUNSHINE_VDD_CI_SELF_SIGN_WITHOUT_PERSISTENT_SECRET_CPP@;
-  inline constexpr bool upgrade_shows_driver_choice = @SUNSHINE_VDD_UPGRADE_SHOWS_DRIVER_CHOICE_CPP@;
-  inline constexpr bool install_selection_seeds_runtime_flag = @SUNSHINE_VDD_INSTALL_SELECTION_SEEDS_RUNTIME_FLAG_CPP@;
-  inline constexpr bool cli_preserves_driver_selection = @SUNSHINE_VDD_CLI_PRESERVES_DRIVER_SELECTION_CPP@;
   inline constexpr bool uninstall_passes_removal_choice = @SUNSHINE_VDD_UNINSTALL_PASSES_REMOVAL_CHOICE_CPP@;
   inline constexpr bool forward_quoted_cli_arguments = @SUNSHINE_VDD_FORWARD_QUOTED_CLI_ARGUMENTS_CPP@;
   inline constexpr bool direct_msi_conflicts_block = @SUNSHINE_VDD_DIRECT_MSI_CONFLICTS_BLOCK_CPP@;
   inline constexpr bool admin_install_preuninstall = @SUNSHINE_VDD_ADMIN_INSTALL_PREUNINSTALL_CPP@;
   inline constexpr bool driver_reboot_returns_3010 = @SUNSHINE_VDD_DRIVER_REBOOT_RETURNS_3010_CPP@;
-  inline constexpr bool runtime_sudovda_fallback_enabled = @SUNSHINE_VDD_RUNTIME_SUDOVDA_FALLBACK_ENABLED_CPP@;
 }  // namespace sunshine::virtual_display_package_contract

@@ -533,108 +533,25 @@ namespace VDISPLAY_SUNSHINE {
   void cleanup_retained_ensure_display();
 }  // namespace VDISPLAY_SUNSHINE
 
-namespace VDISPLAY_SUDOVDA {
-  using VDISPLAY::DRIVER_STATUS;
-  using VDISPLAY::VirtualDisplayCreationResult;
-  using VDISPLAY::VirtualDisplayInfo;
-  using VDISPLAY::VirtualDisplayRecoveryParams;
-  using VDISPLAY::ensure_display_result;
-
-  void closeVDisplayDevice();
-  DRIVER_STATUS openVDisplayDevice();
-  bool ensure_driver_is_ready();
-  bool startPingThread(std::function<void()> failCb);
-  void setWatchdogFeedingEnabled(bool enable);
-  bool renderAdapterRequestProvenanceMatches(
-    const GUID &guid,
-    const LUID &requested_luid,
-    std::string_view context
-  );
-  bool setRenderAdapterByLuid(const LUID &adapter_luid, const std::wstring &adapter_name, std::uint64_t dedicated_video_memory, std::uint64_t shared_system_memory);
-  bool setRenderAdapterByName(const std::wstring &adapterName);
-  bool setRenderAdapterWithMostDedicatedMemory();
-  void ensureVirtualDisplayRegistryDefaults();
-  std::optional<VirtualDisplayCreationResult> createVirtualDisplay(
-    const char *s_client_uid,
-    const char *s_client_name,
-    const char *s_hdr_profile,
-    uint32_t width,
-    uint32_t height,
-    uint32_t fps,
-    const GUID &guid,
-    uint32_t base_fps_millihz,
-    bool framegen_refresh_active,
-    int framegen_refresh_multiplier,
-    std::optional<bool> hdr_requested,
-    bool allow_pending_enumeration,
-    bool replace_existing,
-    bool preserve_peer_displays
-  );
-  void applyHdrProfileToOutput(const char *s_client_name, const char *s_hdr_profile, const char *s_device_id);
-  void restorePhysicalHdrProfiles();
-  bool removeVirtualDisplay(const GUID &guid);
-  bool removeAllVirtualDisplays();
-  void schedule_virtual_display_recovery_monitor(const VirtualDisplayRecoveryParams &params);
-  void cancel_virtual_display_recovery_monitor(const GUID &guid);
-  void cancel_all_virtual_display_recovery_monitors();
-  void request_virtual_display_recovery_shutdown();
-  void join_virtual_display_recovery_monitors();
-  bool is_virtual_display_guid_tracked(const GUID &guid);
-  std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name);
-  std::optional<std::string> resolveVirtualDisplayDeviceIdForClient(const std::string &client_name);
-  std::optional<std::string> resolveActiveVirtualDisplayDeviceId(const std::string &preferred_output_identifier, const std::string &client_name, bool allow_any_fallback);
-  std::optional<std::string> resolveActiveVirtualDisplayDeviceIdForStableId(
-    const std::string &stable_id,
-    const std::string &preferred_output_identifier,
-    const std::string &client_name,
-    bool allow_any_fallback
-  );
-  std::optional<std::string> resolveAnyVirtualDisplayDeviceId();
-  bool is_virtual_display_output(const std::string &output_identifier);
-  bool is_virtual_display_selection(const std::string &output_identifier);
-  uint64_t client_uuid_to_vdd_display_id(const GUID &client_guid);
-  GUID sharedVirtualDisplayGuid();
-  bool isSudaVDADriverInstalled();
-  std::vector<VirtualDisplayInfo> enumerateSudaVDADisplays();
-  uuid_util::uuid_t persistentVirtualDisplayUuid();
-  bool has_active_physical_display();
-  bool should_auto_enable_virtual_display();
-  ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid);
-  void cleanup_ensure_display(const ensure_display_result &result);
-  bool has_retained_ensure_display();
-  void cleanup_retained_ensure_display();
-}  // namespace VDISPLAY_SUDOVDA
-
-namespace {
-  bool use_sunshine_driver() {
-    return config::video.dd.use_sunshine_virtual_display_driver;
-  }
-}  // namespace
-
 namespace VDISPLAY {
   void closeVDisplayDevice() {
     VDISPLAY_SUNSHINE::closeVDisplayDevice();
-    VDISPLAY_SUDOVDA::closeVDisplayDevice();
   }
 
   DRIVER_STATUS openVDisplayDevice() {
-    return use_sunshine_driver() ? VDISPLAY_SUNSHINE::openVDisplayDevice() : VDISPLAY_SUDOVDA::openVDisplayDevice();
+    return VDISPLAY_SUNSHINE::openVDisplayDevice();
   }
 
   bool ensure_driver_is_ready() {
-    return use_sunshine_driver() ? VDISPLAY_SUNSHINE::ensure_driver_is_ready() : VDISPLAY_SUDOVDA::ensure_driver_is_ready();
+    return VDISPLAY_SUNSHINE::ensure_driver_is_ready();
   }
 
   bool startPingThread(std::function<void()> failCb) {
-    return use_sunshine_driver() ? VDISPLAY_SUNSHINE::startPingThread(std::move(failCb)) : VDISPLAY_SUDOVDA::startPingThread(std::move(failCb));
+    return VDISPLAY_SUNSHINE::startPingThread(std::move(failCb));
   }
 
   void setWatchdogFeedingEnabled(bool enable) {
-    if (use_sunshine_driver()) {
-      VDISPLAY_SUNSHINE::setWatchdogFeedingEnabled(enable);
-    } else {
-      VDISPLAY_SUDOVDA::setWatchdogFeedingEnabled(enable);
-    }
+    VDISPLAY_SUNSHINE::setWatchdogFeedingEnabled(enable);
   }
 
   bool setRenderAdapterByLuid(
@@ -643,27 +560,20 @@ namespace VDISPLAY {
     const std::uint64_t dedicated_video_memory,
     const std::uint64_t shared_system_memory
   ) {
-    return use_sunshine_driver() ?
-             VDISPLAY_SUNSHINE::setRenderAdapterByLuid(
-               adapter_luid,
-               adapter_name,
-               dedicated_video_memory,
-               shared_system_memory
-             ) :
-             VDISPLAY_SUDOVDA::setRenderAdapterByLuid(
-               adapter_luid,
-               adapter_name,
-               dedicated_video_memory,
-               shared_system_memory
-             );
+    return VDISPLAY_SUNSHINE::setRenderAdapterByLuid(
+      adapter_luid,
+      adapter_name,
+      dedicated_video_memory,
+      shared_system_memory
+    );
   }
 
   bool setRenderAdapterByName(const std::wstring &adapterName) {
-    return use_sunshine_driver() ? VDISPLAY_SUNSHINE::setRenderAdapterByName(adapterName) : VDISPLAY_SUDOVDA::setRenderAdapterByName(adapterName);
+    return VDISPLAY_SUNSHINE::setRenderAdapterByName(adapterName);
   }
 
   bool setRenderAdapterWithMostDedicatedMemory() {
-    return use_sunshine_driver() ? VDISPLAY_SUNSHINE::setRenderAdapterWithMostDedicatedMemory() : VDISPLAY_SUDOVDA::setRenderAdapterWithMostDedicatedMemory();
+    return VDISPLAY_SUNSHINE::setRenderAdapterWithMostDedicatedMemory();
   }
 
   bool applyConfiguredRenderAdapterPreference(const std::string_view context) {
@@ -712,25 +622,15 @@ namespace VDISPLAY {
         << platf::adapter_resolution_status_name(desired.status) << ").";
       return false;
     }
-    return use_sunshine_driver() ?
-             VDISPLAY_SUNSHINE::renderAdapterRequestProvenanceMatches(
-               guid,
-               *desired.luid,
-               context
-             ) :
-             VDISPLAY_SUDOVDA::renderAdapterRequestProvenanceMatches(
-               guid,
-               *desired.luid,
-               context
-             );
+    return VDISPLAY_SUNSHINE::renderAdapterRequestProvenanceMatches(
+      guid,
+      *desired.luid,
+      context
+    );
   }
 
   void ensureVirtualDisplayRegistryDefaults() {
-    if (use_sunshine_driver()) {
-      VDISPLAY_SUNSHINE::ensureVirtualDisplayRegistryDefaults();
-    } else {
-      VDISPLAY_SUDOVDA::ensureVirtualDisplayRegistryDefaults();
-    }
+    VDISPLAY_SUNSHINE::ensureVirtualDisplayRegistryDefaults();
   }
 
   std::optional<VirtualDisplayCreationResult> createVirtualDisplay(
@@ -749,80 +649,59 @@ namespace VDISPLAY {
     bool replace_existing,
     bool preserve_peer_displays
   ) {
-    if (use_sunshine_driver()) {
-      return VDISPLAY_SUNSHINE::createVirtualDisplay(s_client_uid, s_client_name, s_hdr_profile, width, height, fps, guid, base_fps_millihz, framegen_refresh_active, framegen_refresh_multiplier, hdr_requested, allow_pending_enumeration, replace_existing, preserve_peer_displays);
-    }
-    return VDISPLAY_SUDOVDA::createVirtualDisplay(s_client_uid, s_client_name, s_hdr_profile, width, height, fps, guid, base_fps_millihz, framegen_refresh_active, framegen_refresh_multiplier, hdr_requested, allow_pending_enumeration, replace_existing, preserve_peer_displays);
+    return VDISPLAY_SUNSHINE::createVirtualDisplay(s_client_uid, s_client_name, s_hdr_profile, width, height, fps, guid, base_fps_millihz, framegen_refresh_active, framegen_refresh_multiplier, hdr_requested, allow_pending_enumeration, replace_existing, preserve_peer_displays);
   }
 
   void applyHdrProfileToOutput(const char *s_client_name, const char *s_hdr_profile, const char *s_device_id) {
-    if (use_sunshine_driver()) {
-      VDISPLAY_SUNSHINE::applyHdrProfileToOutput(s_client_name, s_hdr_profile, s_device_id);
-    } else {
-      VDISPLAY_SUDOVDA::applyHdrProfileToOutput(s_client_name, s_hdr_profile, s_device_id);
-    }
+    VDISPLAY_SUNSHINE::applyHdrProfileToOutput(s_client_name, s_hdr_profile, s_device_id);
   }
 
   void restorePhysicalHdrProfiles() {
     VDISPLAY_SUNSHINE::restorePhysicalHdrProfiles();
-    VDISPLAY_SUDOVDA::restorePhysicalHdrProfiles();
   }
 
   bool removeVirtualDisplay(const GUID &guid) {
-    return use_sunshine_driver() ? VDISPLAY_SUNSHINE::removeVirtualDisplay(guid) : VDISPLAY_SUDOVDA::removeVirtualDisplay(guid);
+    return VDISPLAY_SUNSHINE::removeVirtualDisplay(guid);
   }
 
   bool removeAllVirtualDisplays() {
-    return use_sunshine_driver() ? VDISPLAY_SUNSHINE::removeAllVirtualDisplays() : VDISPLAY_SUDOVDA::removeAllVirtualDisplays();
+    return VDISPLAY_SUNSHINE::removeAllVirtualDisplays();
   }
 
   void schedule_virtual_display_recovery_monitor(const VirtualDisplayRecoveryParams &params) {
-    if (use_sunshine_driver()) {
-      VDISPLAY_SUNSHINE::schedule_virtual_display_recovery_monitor(params);
-    } else {
-      VDISPLAY_SUDOVDA::schedule_virtual_display_recovery_monitor(params);
-    }
+    VDISPLAY_SUNSHINE::schedule_virtual_display_recovery_monitor(params);
   }
 
   void cancel_virtual_display_recovery_monitor(const GUID &guid) {
-    // The display may have been created by either backend before a
-    // configuration change, so cancel the matching identity in both.
     VDISPLAY_SUNSHINE::cancel_virtual_display_recovery_monitor(guid);
-    VDISPLAY_SUDOVDA::cancel_virtual_display_recovery_monitor(guid);
   }
 
   void cancel_all_virtual_display_recovery_monitors() {
-    // A retained display may have been created by either backend before a
-    // configuration change. Cancellation is non-destructive and non-latching,
-    // so cover both registries and allow the next session to arm fresh workers.
     VDISPLAY_SUNSHINE::cancel_all_virtual_display_recovery_monitors();
-    VDISPLAY_SUDOVDA::cancel_all_virtual_display_recovery_monitors();
   }
 
   void request_virtual_display_recovery_shutdown() {
     VDISPLAY_SUNSHINE::request_virtual_display_recovery_shutdown();
-    VDISPLAY_SUDOVDA::request_virtual_display_recovery_shutdown();
   }
 
   void join_virtual_display_recovery_monitors() {
     VDISPLAY_SUNSHINE::join_virtual_display_recovery_monitors();
-    VDISPLAY_SUDOVDA::join_virtual_display_recovery_monitors();
   }
 
   bool is_virtual_display_guid_tracked(const GUID &guid) {
-    return use_sunshine_driver() ? VDISPLAY_SUNSHINE::is_virtual_display_guid_tracked(guid) : VDISPLAY_SUDOVDA::is_virtual_display_guid_tracked(guid);
+    return VDISPLAY_SUNSHINE::is_virtual_display_guid_tracked(guid);
   }
 
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name) {
-    return use_sunshine_driver() ? VDISPLAY_SUNSHINE::resolveVirtualDisplayDeviceId(display_name) : VDISPLAY_SUDOVDA::resolveVirtualDisplayDeviceId(display_name);
+    return VDISPLAY_SUNSHINE::resolveVirtualDisplayDeviceId(display_name);
   }
 
   std::optional<std::string> resolveVirtualDisplayDeviceIdForClient(const std::string &client_name) {
-    return use_sunshine_driver() ? VDISPLAY_SUNSHINE::resolveVirtualDisplayDeviceIdForClient(client_name) : VDISPLAY_SUDOVDA::resolveVirtualDisplayDeviceIdForClient(client_name);
+    return VDISPLAY_SUNSHINE::resolveVirtualDisplayDeviceIdForClient(client_name);
   }
 
   std::optional<std::string> resolveActiveVirtualDisplayDeviceId(const std::string &preferred_output_identifier, const std::string &client_name, bool allow_any_fallback) {
-    return use_sunshine_driver() ? VDISPLAY_SUNSHINE::resolveActiveVirtualDisplayDeviceId(preferred_output_identifier, client_name, allow_any_fallback) : VDISPLAY_SUDOVDA::resolveActiveVirtualDisplayDeviceId(preferred_output_identifier, client_name, allow_any_fallback);
+    return VDISPLAY_SUNSHINE::resolveActiveVirtualDisplayDeviceId(preferred_output_identifier, client_name, allow_any_fallback);
   }
 
   std::optional<std::string> resolveActiveVirtualDisplayDeviceIdForStableId(
@@ -831,27 +710,19 @@ namespace VDISPLAY {
     const std::string &client_name,
     bool allow_any_fallback
   ) {
-    if (use_sunshine_driver()) {
-      return VDISPLAY_SUNSHINE::resolveActiveVirtualDisplayDeviceIdForStableId(stable_id, preferred_output_identifier, client_name, allow_any_fallback);
-    }
-    return VDISPLAY_SUDOVDA::resolveActiveVirtualDisplayDeviceIdForStableId(
-      stable_id,
-      preferred_output_identifier,
-      client_name,
-      allow_any_fallback
-    );
+    return VDISPLAY_SUNSHINE::resolveActiveVirtualDisplayDeviceIdForStableId(stable_id, preferred_output_identifier, client_name, allow_any_fallback);
   }
 
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId() {
-    return use_sunshine_driver() ? VDISPLAY_SUNSHINE::resolveAnyVirtualDisplayDeviceId() : VDISPLAY_SUDOVDA::resolveAnyVirtualDisplayDeviceId();
+    return VDISPLAY_SUNSHINE::resolveAnyVirtualDisplayDeviceId();
   }
 
   bool is_virtual_display_output(const std::string &output_identifier) {
-    return use_sunshine_driver() ? VDISPLAY_SUNSHINE::is_virtual_display_output(output_identifier) : VDISPLAY_SUDOVDA::is_virtual_display_output(output_identifier);
+    return VDISPLAY_SUNSHINE::is_virtual_display_output(output_identifier);
   }
 
   bool is_virtual_display_selection(const std::string &output_identifier) {
-    return use_sunshine_driver() ? VDISPLAY_SUNSHINE::is_virtual_display_selection(output_identifier) : VDISPLAY_SUDOVDA::is_virtual_display_selection(output_identifier);
+    return VDISPLAY_SUNSHINE::is_virtual_display_selection(output_identifier);
   }
 
   std::vector<std::wstring> matchDisplay(std::wstring sMatch) {
@@ -868,29 +739,24 @@ namespace VDISPLAY {
   }
 
   bool isVirtualDisplayDriverInstalled() {
-    return use_sunshine_driver() ? VDISPLAY_SUNSHINE::isVirtualDisplayDriverInstalled() : VDISPLAY_SUDOVDA::isSudaVDADriverInstalled();
+    return VDISPLAY_SUNSHINE::isVirtualDisplayDriverInstalled();
   }
 
   std::vector<VirtualDisplayInfo> enumerateVirtualDisplays() {
-    return use_sunshine_driver() ? VDISPLAY_SUNSHINE::enumerateVirtualDisplays() : VDISPLAY_SUDOVDA::enumerateSudaVDADisplays();
+    return VDISPLAY_SUNSHINE::enumerateVirtualDisplays();
   }
 
   bool has_active_physical_display() {
-    return use_sunshine_driver() ? VDISPLAY_SUNSHINE::has_active_physical_display() : VDISPLAY_SUDOVDA::has_active_physical_display();
+    return VDISPLAY_SUNSHINE::has_active_physical_display();
   }
 
   bool should_auto_enable_virtual_display() {
-    return use_sunshine_driver() ? VDISPLAY_SUNSHINE::should_auto_enable_virtual_display() : VDISPLAY_SUDOVDA::should_auto_enable_virtual_display();
+    return VDISPLAY_SUNSHINE::should_auto_enable_virtual_display();
   }
 
   ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid) {
-    const bool sunshine_backend = use_sunshine_driver();
-    auto result = sunshine_backend ?
-                    VDISPLAY_SUNSHINE::ensure_display(required_adapter_luid) :
-                    VDISPLAY_SUDOVDA::ensure_display(required_adapter_luid);
-    result.backend = sunshine_backend ?
-                       ensure_display_backend_e::sunshine :
-                       ensure_display_backend_e::sudovda;
+    auto result = VDISPLAY_SUNSHINE::ensure_display(required_adapter_luid);
+    result.backend = ensure_display_backend_e::sunshine;
     return result;
   }
 
@@ -925,27 +791,19 @@ namespace VDISPLAY {
       case ensure_display_backend_e::sunshine:
         VDISPLAY_SUNSHINE::cleanup_ensure_display(result);
         return;
-      case ensure_display_backend_e::sudovda:
-        VDISPLAY_SUDOVDA::cleanup_ensure_display(result);
-        return;
       case ensure_display_backend_e::none:
         return;
     }
   }
 
   bool has_retained_ensure_display() {
-    // A retained display can outlive a configuration switch between
-    // backends. Query both ownership registries instead of assuming the
-    // currently selected backend owns all retained state.
-    return VDISPLAY_SUNSHINE::has_retained_ensure_display() ||
-           VDISPLAY_SUDOVDA::has_retained_ensure_display();
+    return VDISPLAY_SUNSHINE::has_retained_ensure_display();
   }
 
   void cleanup_retained_ensure_display() {
-    // Each backend must remove the GUID it actually retained. Do not rebuild
-    // a persistent identity here: driver-accepted state can diverge from the
+    // Remove the GUID the driver actually retained. Do not rebuild a
+    // persistent identity here: driver-accepted state can diverge from the
     // deterministic probe UUID and may not be visible to Windows yet.
     VDISPLAY_SUNSHINE::cleanup_retained_ensure_display();
-    VDISPLAY_SUDOVDA::cleanup_retained_ensure_display();
   }
 }  // namespace VDISPLAY

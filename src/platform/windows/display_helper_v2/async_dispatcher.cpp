@@ -8,13 +8,11 @@ namespace display_helper::v2 {
     VerificationOperation &verification_operation,
     RecoveryOperation &recovery_operation,
     RecoveryValidationOperation &recovery_validation_operation,
-    IVirtualDisplayDriver &virtual_display,
     IClock &clock)
     : apply_operation_(apply_operation),
       verification_operation_(verification_operation),
       recovery_operation_(recovery_operation),
       recovery_validation_operation_(recovery_validation_operation),
-      virtual_display_(virtual_display),
       clock_(clock),
       worker_(&AsyncDispatcher::worker_loop, this),
       timer_worker_(&AsyncDispatcher::timer_loop, this) {}
@@ -36,14 +34,12 @@ namespace display_helper::v2 {
     const ApplyRequest &request,
     const CancellationToken &token,
     std::chrono::milliseconds delay,
-    bool reset_virtual_display,
     std::function<void(const ApplyOutcome &)> completion) {
     enqueue_task([
       this,
       request,
       token,
       delay,
-      reset_virtual_display,
       completion = std::move(completion)
     ]() mutable {
       auto remaining_delay = delay;
@@ -60,91 +56,7 @@ namespace display_helper::v2 {
         remaining_delay -= slice;
       }
 
-      ApplyOutcome virtual_reset_outcome;
-      virtual_reset_outcome.virtual_display_requested = request.virtual_layout.has_value();
-      if (reset_virtual_display) {
-        if (token.is_cancelled()) {
-          virtual_reset_outcome.status = ApplyStatus::Fatal;
-          completion(virtual_reset_outcome);
-          return;
-        }
-        // Closing/reopening the virtual-display handle changes Windows'
-        // display stack before ApplyOperation can reach its topology boundary.
-        // Use the same durable guard first, then carry that fact through every
-        // early return so the state machine cannot discard recovery too soon.
-        virtual_reset_outcome.durable_recovery_attempted = true;
-        virtual_reset_outcome.durable_recovery_armed =
-          apply_operation_.arm_durable_recovery_boundary();
-        if (token.is_cancelled()) {
-          virtual_reset_outcome.status = ApplyStatus::Fatal;
-          completion(virtual_reset_outcome);
-          return;
-        }
-        virtual_reset_outcome.display_may_have_changed = true;
-        if (!virtual_display_.disable()) {
-          virtual_reset_outcome.status = ApplyStatus::Fatal;
-          completion(virtual_reset_outcome);
-          return;
-        }
-        bool virtual_display_disabled = true;
-        auto restore_disabled_device = [&]() {
-          if (virtual_display_disabled && !virtual_display_.enable()) {
-            BOOST_LOG(warning) << "Display helper v2: failed to re-enable virtual display after cancellation.";
-          }
-          virtual_display_disabled = false;
-        };
-        auto sleep_with_cancel = [&](std::chrono::milliseconds duration) {
-          constexpr auto kCancellationSlice = std::chrono::milliseconds(100);
-          auto remaining = duration;
-          while (remaining > std::chrono::milliseconds::zero()) {
-            if (token.is_cancelled()) {
-              return false;
-            }
-            const auto slice = remaining > kCancellationSlice ? kCancellationSlice : remaining;
-            clock_.sleep_for(slice);
-            remaining -= slice;
-          }
-          return !token.is_cancelled();
-        };
-        if (!sleep_with_cancel(std::chrono::milliseconds(500))) {
-          restore_disabled_device();
-          virtual_reset_outcome.status = ApplyStatus::Fatal;
-          completion(virtual_reset_outcome);
-          return;
-        }
-        if (token.is_cancelled()) {
-          restore_disabled_device();
-          virtual_reset_outcome.status = ApplyStatus::Fatal;
-          completion(virtual_reset_outcome);
-          return;
-        }
-        if (!virtual_display_.enable()) {
-          virtual_reset_outcome.status = ApplyStatus::Fatal;
-          completion(virtual_reset_outcome);
-          return;
-        }
-        virtual_display_disabled = false;
-        if (!sleep_with_cancel(std::chrono::milliseconds(1000))) {
-          virtual_reset_outcome.status = ApplyStatus::Fatal;
-          completion(virtual_reset_outcome);
-          return;
-        }
-      }
-
-      auto outcome = apply_operation_.run(
-        request,
-        token,
-        virtual_reset_outcome.durable_recovery_armed,
-        virtual_reset_outcome.durable_recovery_attempted);
-      outcome.virtual_display_requested = outcome.virtual_display_requested ||
-                                         virtual_reset_outcome.virtual_display_requested;
-      outcome.display_may_have_changed = outcome.display_may_have_changed ||
-                                           virtual_reset_outcome.display_may_have_changed;
-      outcome.durable_recovery_armed = outcome.durable_recovery_armed ||
-                                        virtual_reset_outcome.durable_recovery_armed;
-      outcome.durable_recovery_attempted = outcome.durable_recovery_attempted ||
-                                            virtual_reset_outcome.durable_recovery_attempted;
-      completion(outcome);
+      completion(apply_operation_.run(request, token));
     });
   }
 

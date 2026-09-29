@@ -43,11 +43,9 @@ namespace {
       const display_helper::v2::ApplyRequest &request,
       const display_helper::v2::CancellationToken &,
       std::chrono::milliseconds delay,
-      bool reset_virtual_display,
       std::function<void(const display_helper::v2::ApplyOutcome &)> completion) override {
       apply_request = request;
       apply_delay = delay;
-      apply_reset_virtual_display = reset_virtual_display;
       apply_completion = std::move(completion);
       apply_dispatch_count += 1;
     }
@@ -115,7 +113,6 @@ namespace {
 
     display_helper::v2::ApplyRequest apply_request;
     std::chrono::milliseconds apply_delay {0};
-    bool apply_reset_virtual_display = false;
     int apply_dispatch_count = 0;
     std::function<void(const display_helper::v2::ApplyOutcome &)> apply_completion;
 
@@ -187,28 +184,11 @@ namespace {
 
   class FakeVirtualDisplayDriver final : public display_helper::v2::IVirtualDisplayDriver {
   public:
-    bool disable() override {
-      disabled = true;
-      return true;
-    }
-
-    bool enable() override {
-      enabled = true;
-      return true;
-    }
-
-    bool is_available() override {
-      return available;
-    }
-
     std::string device_id() override {
       ++device_id_calls;
       return current_device_id;
     }
 
-    bool available = true;
-    bool disabled = false;
-    bool enabled = false;
     std::string current_device_id {"virtual"};
     int device_id_calls = 0;
   };
@@ -296,7 +276,6 @@ namespace {
 
   struct StateMachineHarness {
     FakeClock clock;
-    display_helper::v2::ApplyPolicy policy {clock};
     FakeDispatcher dispatcher;
     FakeVirtualDisplayDriver virtual_display;
     FakeDisplaySettings display_settings;
@@ -324,7 +303,6 @@ namespace {
     display_helper::v2::SystemPorts system_ports {workarounds, task_manager, heartbeat, clock, cancellation};
     display_helper::v2::ApplyPipeline apply_pipeline {
       dispatcher,
-      policy,
       system_ports,
       [this](display_helper::v2::Message message) { messages.push_back(std::move(message)); }
     };
@@ -1419,24 +1397,6 @@ TEST(DisplayHelperV2StateMachine, FailedReplacementKeepsPriorLeaseButUsesNewDisc
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Waiting);
   EXPECT_FALSE(harness.state_machine.recovery_armed());
   EXPECT_EQ(harness.task_manager.deleted, 1);
-}
-
-TEST(DisplayHelperV2StateMachine, VirtualDisplayResetTriggersDispatch) {
-  StateMachineHarness harness;
-  display_helper::v2::ApplyRequest request;
-  request.configuration = display_device::SingleDisplayConfiguration {};
-  request.virtual_layout = "extended";
-
-  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {request, harness.cancellation.current_generation()});
-
-  display_helper::v2::ApplyOutcome outcome;
-  outcome.status = display_helper::v2::ApplyStatus::NeedsVirtualDisplayReset;
-  outcome.virtual_display_requested = true;
-
-  harness.dispatcher.apply_completion(outcome);
-  harness.drain_messages();
-
-  EXPECT_TRUE(harness.dispatcher.apply_reset_virtual_display);
 }
 
 // A virtual identity replacement during APPLY is coalesced behind the current

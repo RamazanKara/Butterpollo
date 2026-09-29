@@ -8077,7 +8077,7 @@ namespace VDISPLAY_SUNSHINE {
   }
 
   bool is_virtual_display_selection(const std::string &output_identifier) {
-    return VDISPLAY::policy::is_virtual_display_selection(output_identifier, false);
+    return VDISPLAY::policy::is_virtual_display_selection(output_identifier);
   }
 
   std::vector<VirtualDisplayInfo> enumerateVirtualDisplays() {

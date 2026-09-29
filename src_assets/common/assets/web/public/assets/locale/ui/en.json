@@ -1227,10 +1227,6 @@
           "description": "Adds recovery packets to each video frame. The 20% default handles ordinary packet loss; higher values use more bandwidth.",
           "label": "Network recovery (FEC)"
         },
-        "dd_use_sunshine_virtual_display_driver": {
-          "description": "Recommended. Uses Vibepollo's bundled driver for per-client and shared virtual screens. Turn this off only to fall back to SudoVDA.",
-          "label": "Use the Vibepollo Display Driver"
-        },
         "frame_limiter_disable_vsync": {
           "description": "Controls the manual limiter. Automatic virtual-screen game smoothness temporarily disables VSYNC while its pacing policy is active."
         },
@@ -1769,9 +1765,6 @@
         "description": "Reports the driver observed by the host after its most recent runtime check.",
         "error_title": "Display status unavailable",
         "error_body": "The host could not refresh virtual-display status. The last observation is still shown.",
-        "drivers": {
-          "unknown": "Unknown driver"
-        },
         "states": {
           "failed": "Unavailable"
         },
@@ -1782,7 +1775,7 @@
           },
           "failed": {
             "title": "Driver is unavailable",
-            "description": "{driver} did not respond to the latest runtime check. Repair or reinstall the selected driver before using a virtual display."
+            "description": "{driver} did not respond to the latest runtime check. Repair or reinstall the driver before using a virtual display."
           },
           "uninitialized": {
             "title": "Driver has not been initialized",
@@ -1801,17 +1794,15 @@
             "description": "The host has not reported a valid virtual-display driver observation. Check the host service and try again."
           }
         },
-        "configured": "Configured selection: {driver}",
         "observed": "Observed by host: {driver}",
         "observed_unknown": "Observed by host: no driver result yet",
-        "configured_mismatch": "Settings select {configured}, while the latest runtime observation was {observed}. Save the selection and restart Vibepollo before relying on its status.",
         "status_code": "Runtime status code: {code}",
         "refresh": "Refresh status",
         "refreshing": "Refreshing status",
         "dummy_plug_title": "The Disable VSYNC override is required for the dummy-plug HDR workaround",
         "dummy_plug_description": "While this workaround is enabled, Vibepollo forces the Disable VSYNC override on and locks it. Disabling the workaround leaves your saved VSYNC choice unchanged.",
         "vsync_forced": "Required by the active physical dummy-plug HDR workaround. The Disable VSYNC override is shown as enabled and cannot be changed until the workaround is disabled.",
-        "next_step": "Select a driver in Display settings, save, and start a stream to produce a fresh runtime check."
+        "next_step": "Start a stream or restart Vibepollo to produce a fresh runtime check."
       },
       "linux": {
         "title": "Display readiness",

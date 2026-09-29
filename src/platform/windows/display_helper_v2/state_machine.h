@@ -89,19 +89,13 @@ namespace display_helper::v2 {
   public:
     ApplyPipeline(
       IAsyncDispatcher &dispatcher,
-      ApplyPolicy &policy,
       SystemPorts &system,
       std::function<void(Message)> enqueue)
       : dispatcher_(dispatcher),
-        policy_(policy),
         system_(system),
         enqueue_(std::move(enqueue)) {}
 
-    PolicyDecision maybe_reset_virtual_display(ApplyStatus status, bool virtual_display_requested) const {
-      return policy_.maybe_reset_virtual_display(status, virtual_display_requested);
-    }
-
-    std::uint64_t dispatch_apply(const ApplyRequest &request, std::chrono::milliseconds delay, bool reset_virtual_display) {
+    std::uint64_t dispatch_apply(const ApplyRequest &request, std::chrono::milliseconds delay) {
       const auto token = system_.token();
       const auto generation = token.generation();
 
@@ -109,7 +103,6 @@ namespace display_helper::v2 {
         request,
         token,
         delay,
-        reset_virtual_display,
         [enqueue = enqueue_, generation](const ApplyOutcome &outcome) {
           ApplyCompleted completed;
           completed.status = outcome.status;
@@ -183,7 +176,6 @@ namespace display_helper::v2 {
 
   private:
     IAsyncDispatcher &dispatcher_;
-    ApplyPolicy &policy_;
     SystemPorts &system_;
     std::function<void(Message)> enqueue_;
   };
@@ -421,7 +413,7 @@ namespace display_helper::v2 {
     bool dispatch_next_transient_disconnect_verification();
     void dispatch_transient_disconnect_repair();
     void dispatch_settings_only_repair();
-    void dispatch_apply_worker(const ApplyRequest &request, std::chrono::milliseconds delay, bool reset_virtual_display);
+    void dispatch_apply_worker(const ApplyRequest &request, std::chrono::milliseconds delay);
     void queue_after_active_mutation(
       DeferredMutationCommand command,
       const char *label,

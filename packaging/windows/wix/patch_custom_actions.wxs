@@ -14,8 +14,6 @@
     <Property Id="REMOVEVIRTUALDISPLAYDRIVER" Value="0" Secure="yes"/>
     <Property Id="REMOVEVIRTUALGAMEPADDRIVER" Value="0" Secure="yes"/>
     <Property Id="FACTORYRESET" Value="0" Secure="yes"/>
-    <Property Id="INSTALL_SUDOVDA" Value="1" Secure="yes"/>
-    <Property Id="INSTALL_VIRTUAL_DISPLAY_DRIVER" Secure="yes"/>
     <Property Id="INSTALL_VIRTUAL_GAMEPAD_DRIVER" Value="$(var.VhfGamepadDriverBundled)" Secure="yes"/>
     <Property Id="ALLOW_LOCAL_VIRTUAL_GAMEPAD_TEST_PACKAGE" Value="$(var.VhfGamepadAllowLocalTest)" Secure="yes"/>
     <Property Id="SKIP_REMOVE_CONFLICTING_PRODUCTS" Value="0" Secure="yes"/>
@@ -30,7 +28,6 @@
       <ComponentRef Id="RemoveLegacyApolloUninstallKey"/>
       <ComponentRef Id="Fw_Exceptions"/>
       <ComponentRef Id="StartMenuShortcut"/>
-      <ComponentRef Id="SudoVdaRegistryDefaults"/>
       <ComponentRef Id="ArpCustomUninstallEntry"/>
     </Feature>
     <InstallExecuteSequence>
@@ -62,14 +59,11 @@
       <!-- Post-install chores -->
       <Custom Action="SetResetAcls" After="InstallFiles">NOT REMOVE</Custom>
       <Custom Action="ResetAcls" After="SetResetAcls">NOT REMOVE</Custom>
-      <Custom Action="SetInstallSudovda" After="ResetAcls">NOT REMOVE AND INSTALL_SUDOVDA = "1"</Custom>
-      <Custom Action="InstallSudovda" After="SetInstallSudovda">NOT REMOVE AND INSTALL_SUDOVDA = "1"</Custom>
-      <Custom Action="SetInstallVirtualDisplayDriver" After="InstallSudovda">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER &lt;&gt; "0"</Custom>
-      <Custom Action="InstallVirtualDisplayDriver" After="SetInstallVirtualDisplayDriver">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER &lt;&gt; "0"</Custom>
+      <Custom Action="SetInstallVirtualDisplayDriver" After="ResetAcls">NOT REMOVE</Custom>
+      <Custom Action="InstallVirtualDisplayDriver" After="SetInstallVirtualDisplayDriver">NOT REMOVE</Custom>
       <Custom Action="SetInstallVirtualGamepadDriver" After="InstallVirtualDisplayDriver">NOT REMOVE AND INSTALL_VIRTUAL_GAMEPAD_DRIVER &lt;&gt; "0"</Custom>
       <Custom Action="InstallVirtualGamepadDriver" After="SetInstallVirtualGamepadDriver">NOT REMOVE AND INSTALL_VIRTUAL_GAMEPAD_DRIVER &lt;&gt; "0"</Custom>
-      <!-- Vibepollo registers the Vulkan HDR layer on every install (SudoVDA needs it too,
-           not just the virtual-display driver), so keep this gated only on NOT REMOVE. -->
+      <!-- Vibepollo registers the Vulkan HDR layer on every install, so keep this gated only on NOT REMOVE. -->
       <Custom Action="SetRegisterVulkanHdrLayer" After="InstallVirtualGamepadDriver">NOT REMOVE</Custom>
       <Custom Action="RegisterVulkanHdrLayer" After="SetRegisterVulkanHdrLayer">NOT REMOVE</Custom>
       <!-- Tightened to NOT Installed so repair/upgrade does not rerun install-time migration work. -->
@@ -87,9 +81,8 @@
       <!-- Remove Virtual Display Driver only when explicitly requested by uninstall properties. -->
       <Custom Action="SetUnregisterVulkanHdrLayer" After="RestoreNvPrefsUndo">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
       <Custom Action="UnregisterVulkanHdrLayer" After="SetUnregisterVulkanHdrLayer">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
-      <Custom Action="SetUninstallSudovda" After="UnregisterVulkanHdrLayer">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND REMOVEVIRTUALDISPLAYDRIVER = "1"</Custom>
-      <Custom Action="UninstallSudovda" After="SetUninstallSudovda">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND REMOVEVIRTUALDISPLAYDRIVER = "1"</Custom>
-      <Custom Action="SetUninstallVirtualDisplayDriver" After="UninstallSudovda">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND REMOVEVIRTUALDISPLAYDRIVER = "1"</Custom>
+      <!-- Also removes SudoVDA, which earlier releases installed. -->
+      <Custom Action="SetUninstallVirtualDisplayDriver" After="UnregisterVulkanHdrLayer">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND REMOVEVIRTUALDISPLAYDRIVER = "1"</Custom>
       <Custom Action="UninstallVirtualDisplayDriver" After="SetUninstallVirtualDisplayDriver">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND REMOVEVIRTUALDISPLAYDRIVER = "1"</Custom>
       <!-- The root cleanup is always available, even when this MSI no longer
            bundles the VHF package. Its exact-INF Driver Store cleanup is also

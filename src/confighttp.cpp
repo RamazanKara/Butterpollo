@@ -2561,27 +2561,12 @@ namespace confighttp {
           return "unknown";
       }
     };
-    const auto driver_selection_name = [](const VDISPLAY::DRIVER_SELECTION selection) -> const char * {
-      switch (selection) {
-        case VDISPLAY::DRIVER_SELECTION::VIBESHINE:
-          return "vibeshine";
-        case VDISPLAY::DRIVER_SELECTION::SUDOVDA:
-          return "sudovda";
-        case VDISPLAY::DRIVER_SELECTION::UNKNOWN:
-        default:
-          return nullptr;
-      }
-    };
-    const auto configured_driver = config::video.dd.use_sunshine_virtual_display_driver
-                                     ? "vibeshine"
-                                     : "sudovda";
     nlohmann::json driver_metadata = {
-      {"configured", configured_driver},
       {"status", driver_status_name(driver_status)},
       {"status_code", static_cast<int>(driver_status)},
     };
-    if (const auto active_name = driver_selection_name(active_driver)) {
-      driver_metadata["active"] = active_name;
+    if (active_driver == VDISPLAY::DRIVER_SELECTION::VIBESHINE) {
+      driver_metadata["active"] = "vibeshine";
     } else {
       driver_metadata["active"] = nullptr;
     }

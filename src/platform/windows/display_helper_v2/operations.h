@@ -137,18 +137,6 @@ namespace display_helper::v2 {
     std::vector<std::string> exclusions_;
   };
 
-  class ApplyPolicy {
-  public:
-    explicit ApplyPolicy(IClock &clock);
-
-    PolicyDecision maybe_reset_virtual_display(ApplyStatus status, bool virtual_display_requested);
-
-  private:
-    IClock &clock_;
-    std::chrono::steady_clock::time_point last_reset_ {};
-    std::chrono::milliseconds reset_cooldown_ {std::chrono::seconds(30)};
-  };
-
   class ApplyOperation {
   public:
     using MutationBoundary = TopologyTransition::MutationBoundary;
@@ -158,19 +146,13 @@ namespace display_helper::v2 {
       IClock &clock,
       MutationBoundary mutation_boundary = {});
 
-    ApplyOutcome run(
-      const ApplyRequest &request,
-      const CancellationToken &token,
-      bool durable_recovery_already_armed = false,
-      bool durable_recovery_already_attempted = false);
-    /// Arms the same durable recovery boundary used by topology/settings
-    /// work. AsyncDispatcher uses this before a virtual-display reset, which
-    /// can change the desktop before ApplyOperation::run begins.
-    bool arm_durable_recovery_boundary();
+    ApplyOutcome run(const ApplyRequest &request, const CancellationToken &token);
     bool set_refresh_rate(const std::string &device_id, unsigned int numerator, unsigned int denominator);
     bool reset_staged_apply_state();
 
   private:
+    /// Arms the durable recovery boundary used by topology/settings work.
+    bool arm_durable_recovery_boundary();
     void apply_monitor_positions(const ApplyRequest &request, const CancellationToken &token);
     void apply_refresh_rate_overrides(const ApplyRequest &request, const CancellationToken &token);
 

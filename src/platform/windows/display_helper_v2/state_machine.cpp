@@ -83,8 +83,6 @@ namespace display_helper::v2 {
           return "InvalidRequest";
         case ApplyStatus::VerificationFailed:
           return "VerificationFailed";
-        case ApplyStatus::NeedsVirtualDisplayReset:
-          return "NeedsVirtualDisplayReset";
         case ApplyStatus::Retryable:
           return "Retryable";
         case ApplyStatus::Fatal:
@@ -460,16 +458,15 @@ namespace display_helper::v2 {
     auto repair = current_request_;
     repair.settings_only_repair = true;
     repair.repair_target = resolved_target_;
-    dispatch_apply_worker(repair, std::chrono::milliseconds(0), false);
+    dispatch_apply_worker(repair, std::chrono::milliseconds(0));
   }
 
   void StateMachine::dispatch_apply_worker(
     const ApplyRequest &request,
-    std::chrono::milliseconds delay,
-    bool reset_virtual_display) {
+    std::chrono::milliseconds delay) {
     active_mutation_worker_ = ActiveMutationWorker {
       .kind = MutationWorkerKind::Apply,
-      .generation = apply_.dispatch_apply(request, delay, reset_virtual_display),
+      .generation = apply_.dispatch_apply(request, delay),
     };
   }
 
@@ -942,7 +939,7 @@ namespace display_helper::v2 {
     }
 
     transition(State::InProgress, ApplyAction::Apply);
-    dispatch_apply_worker(current_request_, std::chrono::milliseconds(0), false);
+    dispatch_apply_worker(current_request_, std::chrono::milliseconds(0));
   }
 
   void StateMachine::handle_virtual_display_repair_intent(const VirtualDisplayRepairIntent &intent) {
@@ -985,7 +982,7 @@ namespace display_helper::v2 {
     retarget_virtual_display_device_id_if_needed(resolved_device_id);
     verification_reapply_available_ = true;
     transition(State::InProgress, ApplyAction::Apply);
-    dispatch_apply_worker(current_request_, std::chrono::milliseconds(0), false);
+    dispatch_apply_worker(current_request_, std::chrono::milliseconds(0));
   }
 
   void StateMachine::handle_revert_command(const RevertCommand &command) {
@@ -1365,16 +1362,6 @@ namespace display_helper::v2 {
       return;
     }
 
-    if (completed.status == ApplyStatus::NeedsVirtualDisplayReset) {
-      const auto decision = apply_.maybe_reset_virtual_display(
-        completed.status,
-        completed.virtual_display_requested);
-      if (decision == PolicyDecision::ResetVirtualDisplay) {
-        dispatch_apply_worker(current_request_, std::chrono::milliseconds(0), true);
-        return;
-      }
-    }
-
     if (transient_disconnect_settlement_requested_) {
       transient_disconnect_repair_in_flight_ = false;
       if (dispatch_next_transient_disconnect_verification()) {
@@ -1529,7 +1516,7 @@ namespace display_helper::v2 {
       transition(State::InProgress, ApplyAction::Apply, ApplyStatus::VerificationFailed);
       auto repair_request = current_request_;
       repair_request.topology = expected_topology_;
-      dispatch_apply_worker(repair_request, std::chrono::milliseconds(0), false);
+      dispatch_apply_worker(repair_request, std::chrono::milliseconds(0));
       return;
     }
 
@@ -1899,7 +1886,7 @@ namespace display_helper::v2 {
       retarget_virtual_display_device_id_if_needed(resolved);
       verification_reapply_available_ = true;
       transition(State::InProgress, ApplyAction::Apply);
-      dispatch_apply_worker(current_request_, std::chrono::milliseconds(0), false);
+      dispatch_apply_worker(current_request_, std::chrono::milliseconds(0));
       return;
     }
 
@@ -1947,7 +1934,7 @@ namespace display_helper::v2 {
       retarget_virtual_display_device_id_if_needed(resolved);
       verification_reapply_available_ = true;
       transition(State::InProgress, ApplyAction::Apply);
-      dispatch_apply_worker(current_request_, std::chrono::milliseconds(0), false);
+      dispatch_apply_worker(current_request_, std::chrono::milliseconds(0));
       return;
     }
 

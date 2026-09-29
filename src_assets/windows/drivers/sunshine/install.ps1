@@ -791,9 +791,11 @@ function Get-DisplayDriverPublishedNamesByOriginalName {
 
         # The protected Windows INF cache is a language-independent fallback
         # for legacy pnputil builds whose text labels may be localized.
-        foreach ($publishedName in @(Get-SunshineDriverPublishedNamesFromInfCache)) {
-            if (-not $publishedNames.Contains($publishedName)) {
-                [void]$publishedNames.Add($publishedName)
+        if ($expectedOriginalNames.Contains('SunshineVirtualDisplayDriver.inf')) {
+            foreach ($publishedName in @(Get-SunshineDriverPublishedNamesFromInfCache)) {
+                if (-not $publishedNames.Contains($publishedName)) {
+                    [void]$publishedNames.Add($publishedName)
+                }
             }
         }
     }
@@ -944,6 +946,21 @@ function Remove-DeviceNodeForHardwareId {
 
 function Remove-DeviceNode {
     Remove-DeviceNodeForHardwareId -HardwareId $hardwareId -Label 'Sunshine virtual display'
+}
+
+# Earlier releases also installed SudoVDA as a rollback virtual display driver.
+# The package no longer ships it, so the uninstall that removes this driver also
+# removes the SudoVDA device node and its Driver Store packages.
+function Remove-SudoVdaDriver {
+    Remove-DeviceNodeForHardwareId -HardwareId 'root\sudomaker\sudovda' -Label 'SudoVDA'
+    foreach ($publishedName in @(Get-DisplayDriverPublishedNamesByOriginalName -OriginalNames @('SudoVDA.inf'))) {
+        try {
+            Write-Host "[SunshineVirtualDisplay] Removing SudoVDA driver package $publishedName."
+            Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/delete-driver', $publishedName, '/uninstall', '/force')
+        } catch {
+            Write-Warning $_.Exception.Message
+        }
+    }
 }
 
 function Test-TemporaryVirtualDisplay {
@@ -1150,6 +1167,11 @@ if ($Uninstall) {
     Remove-DriverPackage
     Remove-CertificateIfPresent -StoreName 'TrustedPublisher'
     Remove-CertificateIfPresent -StoreName 'Root'
+    try {
+        Remove-SudoVdaDriver
+    } catch {
+        Write-Warning "[SunshineVirtualDisplay] SudoVDA cleanup failed: $($_.Exception.Message)"
+    }
     Write-Host '[SunshineVirtualDisplay] Uninstall complete.'
     exit 0
 }

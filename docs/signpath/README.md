@@ -150,7 +150,6 @@ bound to a Windows **catalog** (`.cat`). Re-Authenticode-signing a driver DLL
 invalidates the catalog hash and **breaks driver installation**. These must be
 **excluded** from the `msi-file-apollo` deep-sign:
 
-- `Apollo\drivers\sudovda\SudoVDA.dll`, `Apollo\drivers\sudovda\nefconc.exe` (CN=sudovda / Nefarius)
 - `Apollo\drivers\sunshine\SunshineVirtualDisplayDriver.dll` (+ `.cat`),
   `Apollo\drivers\sunshine\virtualdisplay_probe.exe`,
   `Apollo\drivers\sunshine\nefconc.exe`,

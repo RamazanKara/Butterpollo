@@ -168,7 +168,6 @@ const virtualDisplayOnlyKeys = new Set([
   'dd_virtual_display_permanent_count',
   'dd_paused_virtual_display_timeout_secs',
   'frame_limiter_auto_virtual_framegen',
-  'dd_use_sunshine_virtual_display_driver',
   'vulkan_hdr_layer',
 ]);
 

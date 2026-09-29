@@ -81,7 +81,7 @@ test('Windows keeps automatic smoothness and platform-specific controls', async 
   await expect(page.locator('#setting-frame_limiter_auto_virtual_framegen')).toBeVisible();
   await expect(page.getByText('Display readiness')).toHaveCount(0);
   await page.goto('/settings?category=display');
-  await expect(page.locator('#setting-dd_use_sunshine_virtual_display_driver')).toBeVisible();
+  await expect(page.locator('#setting-dd_activate_virtual_display')).toBeVisible();
 });
 
 test('HTTP save rejection retains the draft', async ({ page }) => {

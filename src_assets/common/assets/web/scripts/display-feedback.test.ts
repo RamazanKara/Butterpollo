@@ -24,7 +24,7 @@ test('Windows driver health accepts the runtime status contract without false re
   for (const [status, expected] of statuses) {
     const health = windowsDisplayHealth({
       platform: 'windows',
-      virtual_display_driver: { active: 'vibeshine', configured: 'vibeshine', status },
+      virtual_display_driver: { active: 'vibeshine', status },
     });
     assert.equal(health.state, expected);
     assert.equal(health.activeDriver, 'vibeshine');
@@ -43,31 +43,17 @@ test('Windows driver health accepts the runtime status contract without false re
   assert.equal(
     windowsDisplayHealth({
       platform: 'windows',
-      virtual_display_driver: { configured: 'sudovda', status: 1, active: null },
+      virtual_display_driver: { status: 1, active: null },
     }).state,
     'uninitialized',
   );
   assert.equal(
     windowsDisplayHealth({
       platform: 'windows',
-      virtual_display_driver: { configured: 'vibeshine', status_code: -3, active: 'vibeshine' },
+      virtual_display_driver: { status_code: -3, active: 'vibeshine' },
     }).state,
     'watchdog_failed',
   );
-});
-
-test('driver health identifies the observed driver independently of a draft selection', () => {
-  const health = windowsDisplayHealth({
-    platform: 'windows',
-    virtual_display_driver: {
-      active: 'sudovda',
-      configured: 'vibeshine',
-      status: 'ready',
-    },
-  });
-  assert.equal(health.activeDriver, 'sudovda');
-  assert.equal(health.configuredDriver, 'vibeshine');
-  assert.equal(health.state, 'ready');
 });
 
 test('driver status is Windows-only and Linux metadata remains absent', () => {

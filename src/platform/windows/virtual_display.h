@@ -17,7 +17,6 @@
 
 namespace VDISPLAY {
   inline constexpr const char *VIRTUAL_DISPLAY_SELECTION = "sunshine:virtual_display";
-  inline constexpr const char *SUDOVDA_VIRTUAL_DISPLAY_SELECTION = "sunshine:sudovda_virtual_display";
 
   struct advanced_color_profile_result_t {
     bool api_available = false;
@@ -87,14 +86,10 @@ namespace VDISPLAY {
     WATCHDOG_FAILED = -3
   };
 
-  // Identifies the driver whose status was most recently observed by the
-  // runtime. This is deliberately separate from the current config choice:
-  // changing the setting does not retroactively change an already-observed
-  // probe result.
+  // Whether the runtime has observed the virtual display driver's status yet.
   enum class DRIVER_SELECTION {
     UNKNOWN,
     VIBESHINE,
-    SUDOVDA,
   };
 
   extern HANDLE VIRTUAL_DISPLAY_DRIVER_HANDLE;
@@ -261,7 +256,6 @@ namespace VDISPLAY {
   enum class ensure_display_backend_e : std::uint8_t {
     none,
     sunshine,
-    sudovda,
   };
 
   struct ensure_display_result {

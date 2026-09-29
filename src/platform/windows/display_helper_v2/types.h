@@ -30,7 +30,6 @@ namespace display_helper::v2 {
     HelperUnavailable,
     InvalidRequest,
     VerificationFailed,
-    NeedsVirtualDisplayReset,
     Retryable,
     Fatal,
     HdrStateFailed,
@@ -40,13 +39,6 @@ namespace display_helper::v2 {
     Current,
     Previous,
     Golden,
-  };
-
-  enum class PolicyDecision {
-    Proceed,
-    Retry,
-    ResetVirtualDisplay,
-    SkipToNextTier,
   };
 
   enum class WatchdogStatus {

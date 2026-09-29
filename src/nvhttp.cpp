@@ -992,8 +992,6 @@ namespace nvhttp {
         config_requests_virtual =
           *launch_session->virtual_display_mode_override != config::video_t::virtual_display_mode_e::disabled;
       }
-      const bool forced_sudavda_virtual_display =
-        config::video.output_name == VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION;
       const bool client_requests_virtual = launch_session->client_virtual_display_override.value_or(
         launch_session->client_requests_virtual_display
       );
@@ -1002,7 +1000,7 @@ namespace nvhttp {
                                             !*launch_session->client_virtual_display_override;
       bool request_virtual_display = proc::display_policy::resolve_virtual_display_request(
         (config_requests_virtual && !launch_requests_physical) ||
-          launch_session->virtual_display || session_requests_virtual || forced_sudavda_virtual_display,
+          launch_session->virtual_display || session_requests_virtual,
         app_display_override
       ) || client_requests_virtual;
       const auto requested_virtual_display_mode =
@@ -1275,7 +1273,7 @@ namespace nvhttp {
             proc::initVDisplayDriver();
             const auto driver_status = proc::vDisplayDriverStatus.load(std::memory_order_acquire);
             if (driver_status != VDISPLAY::DRIVER_STATUS::OK) {
-              BOOST_LOG(warning) << "SudaVDA driver unavailable (status=" << static_cast<int>(driver_status) << "). Continuing with best-effort virtual display creation.";
+              BOOST_LOG(warning) << "Virtual display driver unavailable (status=" << static_cast<int>(driver_status) << "). Continuing with best-effort virtual display creation.";
             }
           }
 

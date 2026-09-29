@@ -1740,28 +1740,6 @@ this option to replace the running app immediately. The default is `true`.
     </tr>
 </table>
 
-### dd_use_sunshine_virtual_display_driver
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            When enabled, Vibepollo uses the Vibepollo Display Driver for virtual display streams. Disable this to switch back to the bundled SudoVDA rollback driver.
-            @note{Applies to Windows only.}
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}true@endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            dd_use_sunshine_virtual_display_driver = true
-            @endcode</td>
-    </tr>
-</table>
-
 ### dd_activate_virtual_display
 
 <table>

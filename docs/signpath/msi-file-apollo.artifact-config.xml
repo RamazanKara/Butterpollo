@@ -12,9 +12,9 @@
            <authenticode-sign/> directly under <msi-file> signs the container LAST.
 
   STRATEGY 1 (recommended): explicit enumeration of first-party PEs only.
-  This NEVER touches the genuinely third-party files (SudoVDA.dll + sudovda.cat,
-  signed by sudovda@su.mk; nefconc.exe, signed by Nefarius; nvngx_truehdr.dll,
-  the NVIDIA RTX Video SDK runtime), nor any file a catalog hashes.
+  This NEVER touches the genuinely third-party files (nefconc.exe, signed by
+  Nefarius; nvngx_truehdr.dll, the NVIDIA RTX Video SDK runtime), nor any file a
+  catalog hashes.
 
   Only two files in the whole package are catalog-bound, because each driver's
   INF copies exactly one binary:
@@ -113,9 +113,7 @@
         Apollo/drivers/vhf-gamepad/driver/VibeshineVhfGamepad.dll
 
       Third-party, already signed by their own publishers. Re-signing would
-      both misattribute them and break sudovda's catalog:
-        Apollo/drivers/sudovda/SudoVDA.dll        (+ sudovda.cat)  CN=sudovda@su.mk
-        Apollo/drivers/sudovda/nefconc.exe        CN=Nefarius Software Solutions e.U.
+      misattribute them:
         Apollo/drivers/sunshine/nefconc.exe       CN=Nefarius Software Solutions e.U.
         nvngx_truehdr.dll                  NVIDIA RTX Video SDK runtime
     -->

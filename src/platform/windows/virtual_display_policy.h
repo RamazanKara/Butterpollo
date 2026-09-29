@@ -153,12 +153,8 @@ namespace VDISPLAY::policy {
     return true;
   }
 
-  constexpr bool is_virtual_display_selection(
-    const std::string_view value,
-    const bool accept_sudovda_alias
-  ) noexcept {
-    return equals_ascii_ci(value, "sunshine:virtual_display") ||
-           (accept_sudovda_alias && equals_ascii_ci(value, "sunshine:sudovda_virtual_display"));
+  constexpr bool is_virtual_display_selection(const std::string_view value) noexcept {
+    return equals_ascii_ci(value, "sunshine:virtual_display");
   }
 
   constexpr bool adapter_preference_allows_creation(const bool preference_applied) noexcept {
@@ -291,8 +287,8 @@ namespace VDISPLAY::policy {
   }
 
   // A retained target remains owned after the driver accepts it, even when
-  // Windows has not published a monitor/tracker entry yet. Sunshine supplies
-  // a lease here; SudoVDA supplies accepted render-adapter provenance.
+  // Windows has not published a monitor/tracker entry yet. The driver lease
+  // supplies that ownership signal.
   constexpr bool retained_target_is_owned(
     const bool tracked_by_windows,
     const bool driver_owned

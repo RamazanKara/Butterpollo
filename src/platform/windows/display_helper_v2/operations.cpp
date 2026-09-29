@@ -227,26 +227,6 @@ namespace display_helper::v2 {
     return outcome;
   }
 
-  ApplyPolicy::ApplyPolicy(IClock &clock)
-    : clock_(clock) {}
-
-  PolicyDecision ApplyPolicy::maybe_reset_virtual_display(ApplyStatus status, bool virtual_display_requested) {
-    if (status != ApplyStatus::NeedsVirtualDisplayReset || !virtual_display_requested) {
-      return PolicyDecision::Proceed;
-    }
-
-    const auto now = clock_.now();
-    if (last_reset_.time_since_epoch().count() != 0) {
-      const auto elapsed = now - last_reset_;
-      if (elapsed < reset_cooldown_) {
-        return PolicyDecision::Proceed;
-      }
-    }
-
-    last_reset_ = now;
-    return PolicyDecision::ResetVirtualDisplay;
-  }
-
   ApplyOperation::ApplyOperation(
     IDisplaySettings &display,
     IClock &clock,
@@ -262,15 +242,11 @@ namespace display_helper::v2 {
 
   ApplyOutcome ApplyOperation::run(
     const ApplyRequest &request,
-    const CancellationToken &token,
-    bool durable_recovery_already_armed,
-    bool durable_recovery_already_attempted) {
+    const CancellationToken &token) {
     ApplyOutcome outcome;
     outcome.virtual_display_requested = request.virtual_layout.has_value();
-    bool durable_recovery_armed = durable_recovery_already_armed;
-    bool durable_recovery_attempted = durable_recovery_already_armed || durable_recovery_already_attempted;
-    outcome.durable_recovery_armed = durable_recovery_armed;
-    outcome.durable_recovery_attempted = durable_recovery_attempted;
+    bool durable_recovery_armed = false;
+    bool durable_recovery_attempted = false;
     const auto ensure_durable_recovery = [this, &durable_recovery_armed, &durable_recovery_attempted]() {
       if (durable_recovery_armed) {
         return true;

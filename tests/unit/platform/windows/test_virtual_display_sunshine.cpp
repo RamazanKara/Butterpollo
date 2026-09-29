@@ -154,11 +154,9 @@ TEST(SunshineVirtualDisplay, ActivePhysicalDisplayDetectionIsScopedToConfiguredA
   // has_active_physical_display(), so no virtual display was created and capture — which is pinned
   // to adapter_name — then failed with "Failed to locate an output device".
   // The adapter check needs DXGI and QueryDisplayConfig, so this pins the wiring:
-  // both drivers must route their answer through it.
-  for (const auto &relative_path : {
-         std::string {"src/platform/windows/virtual_display_sunshine.cpp"},
-         std::string {"src/platform/windows/virtual_display_sudovda.cpp"},
-       }) {
+  // the driver must route its answer through it.
+  {
+    const std::string relative_path {"src/platform/windows/virtual_display_sunshine.cpp"};
     const auto source = read_source(relative_path);
     const auto detection_pos = source.find("has_active_physical_display() {");
     ASSERT_NE(detection_pos, std::string::npos) << relative_path;
@@ -178,15 +176,12 @@ TEST(SunshineVirtualDisplay, ActivePhysicalDisplayDetectionIsScopedToConfiguredA
 }
 
 TEST(SunshineVirtualDisplay, ConfiguredRenderAdapterIsNeverSilentlyReplaced) {
-  for (const auto &relative_path : {
-         std::string {"src/platform/windows/virtual_display_sunshine.cpp"},
-         std::string {"src/platform/windows/virtual_display_sudovda.cpp"},
-       }) {
-    const auto source = read_source(relative_path);
-    expect_contains(source, "return VDISPLAY::applyConfiguredRenderAdapterPreference(context);");
-  }
+  expect_contains(
+    read_source("src/platform/windows/virtual_display_sunshine.cpp"),
+    "return VDISPLAY::applyConfiguredRenderAdapterPreference(context);"
+  );
 
-  // The driver-specific wrappers delegate to the shared policy, which reports
+  // The driver wrapper delegates to the shared policy, which reports
   // an unusable preference and never substitutes a highest-VRAM adapter.
   const auto shared_source = read_source("src/platform/windows/virtual_display.cpp");
   const auto preference_pos = shared_source.find("bool applyConfiguredRenderAdapterPreference(");
@@ -322,11 +317,10 @@ TEST(SunshineVirtualDisplay, DetectsDriverIdentityFromDriverSignals) {
 }
 
 TEST(SunshineVirtualDisplay, AcceptsVirtualDisplaySentinel) {
-  EXPECT_TRUE(VDISPLAY::policy::is_virtual_display_selection("sunshine:virtual_display", false));
-  EXPECT_TRUE(VDISPLAY::policy::is_virtual_display_selection("SUNSHINE:VIRTUAL_DISPLAY", false));
-  EXPECT_FALSE(VDISPLAY::policy::is_virtual_display_selection("sunshine:sudovda_virtual_display", false));
-  EXPECT_TRUE(VDISPLAY::policy::is_virtual_display_selection("sunshine:sudovda_virtual_display", true));
-  EXPECT_FALSE(VDISPLAY::policy::is_virtual_display_selection("DISPLAY1", true));
+  EXPECT_TRUE(VDISPLAY::policy::is_virtual_display_selection("sunshine:virtual_display"));
+  EXPECT_TRUE(VDISPLAY::policy::is_virtual_display_selection("SUNSHINE:VIRTUAL_DISPLAY"));
+  EXPECT_FALSE(VDISPLAY::policy::is_virtual_display_selection("sunshine:sudovda_virtual_display"));
+  EXPECT_FALSE(VDISPLAY::policy::is_virtual_display_selection("DISPLAY1"));
 }
 
 TEST(SunshineVirtualDisplay, HdrActivationRequiresWindowsHdrSupportAndTenBit) {

@@ -22,7 +22,6 @@ export interface ReadinessMetadata {
     layouts?: string[];
   };
   virtual_display_driver?: {
-    configured?: string;
     active?: string | null;
     status?: string;
     status_code?: number;

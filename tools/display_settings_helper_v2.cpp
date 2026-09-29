@@ -660,7 +660,6 @@ int main(int argc, char *argv[]) {
   display_helper::v2::AtomicFileTextStorage golden_status_storage;
   display_helper::v2::GoldenHealth golden_health(golden_status_storage, active_snapshots.golden_status.string());
   display_helper::v2::RestoreState restore_state;
-  display_helper::v2::ApplyPolicy apply_policy(clock);
   display_helper::v2::WinVirtualDisplayDriver virtual_display;
   display_helper::v2::WinPlatformWorkarounds workarounds;
   display_helper::v2::WinScheduledTaskManager task_manager;
@@ -687,7 +686,6 @@ int main(int argc, char *argv[]) {
     verification_operation,
     recovery_operation,
     recovery_validation,
-    virtual_display,
     clock
   );
 
@@ -726,7 +724,7 @@ int main(int argc, char *argv[]) {
   auto enqueue_message = [&](display_helper::v2::Message message) {
     queue.push(std::move(message));
   };
-  display_helper::v2::ApplyPipeline apply_pipeline(dispatcher, apply_policy, system_ports, enqueue_message);
+  display_helper::v2::ApplyPipeline apply_pipeline(dispatcher, system_ports, enqueue_message);
   display_helper::v2::RecoveryPipeline recovery_pipeline(dispatcher, system_ports, enqueue_message);
   display_helper::v2::SnapshotLedger snapshot_ledger(snapshot_service, persistence, clock);
 

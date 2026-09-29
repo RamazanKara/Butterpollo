@@ -19,7 +19,6 @@ namespace display_helper::v2 {
       const ApplyRequest &request,
       const CancellationToken &token,
       std::chrono::milliseconds delay,
-      bool reset_virtual_display,
       std::function<void(const ApplyOutcome &)> completion) = 0;
 
     virtual void dispatch_verification(
@@ -77,7 +76,6 @@ namespace display_helper::v2 {
       VerificationOperation &verification_operation,
       RecoveryOperation &recovery_operation,
       RecoveryValidationOperation &recovery_validation_operation,
-      IVirtualDisplayDriver &virtual_display,
       IClock &clock);
 
     ~AsyncDispatcher();
@@ -86,7 +84,6 @@ namespace display_helper::v2 {
       const ApplyRequest &request,
       const CancellationToken &token,
       std::chrono::milliseconds delay,
-      bool reset_virtual_display,
       std::function<void(const ApplyOutcome &)> completion) override;
 
     void dispatch_verification(
@@ -134,7 +131,6 @@ namespace display_helper::v2 {
     VerificationOperation &verification_operation_;
     RecoveryOperation &recovery_operation_;
     RecoveryValidationOperation &recovery_validation_operation_;
-    IVirtualDisplayDriver &virtual_display_;
     IClock &clock_;
 
     std::mutex mutex_;

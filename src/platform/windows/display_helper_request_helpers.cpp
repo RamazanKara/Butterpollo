@@ -628,9 +628,9 @@ namespace display_helper_integration::helpers {
 
     if (!layout_flags.isolated) {
       // For non-primary Extended mode, ensure the physical monitor retains primary
-      // status by explicitly preserving monitor positions. When the virtual display
-      // is created by the SUDOVDA driver it may land at (0,0), inadvertently stealing
-      // primary from the physical monitor.
+      // status by explicitly preserving monitor positions. A newly created virtual
+      // display may land at (0,0), inadvertently stealing primary from the
+      // physical monitor.
       if (layout_flags.arrangement == display_helper_integration::VirtualDisplayArrangement::Extended) {
         const std::string virtual_device_id =
           (resolved_virtual_device_id && !resolved_virtual_device_id->empty()) ? *resolved_virtual_device_id : default_device_id;

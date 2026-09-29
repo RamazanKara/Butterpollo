@@ -41,7 +41,6 @@ TEST(SunshineVirtualDisplayPackaging, RequiredPayloadIsTypedAndInstalledInDedica
   EXPECT_TRUE(contains(contract::optional_driver_files, "SunshineVirtualDisplayDriver.cer"));
   EXPECT_EQ(contract::driver_destination, "drivers/sunshine");
   EXPECT_EQ(contract::vulkan_layer_destination, "drivers/sunshine/vulkan-layer");
-  EXPECT_EQ(contract::sudovda_destination, "drivers/sudovda");
 }
 
 TEST(SunshineVirtualDisplayPackaging, VulkanHdrLayerContractIsOptOutAndCoLocated) {
@@ -80,14 +79,14 @@ TEST(SunshineVirtualDisplayPackaging, InstallerReplacesOnlyChangedSunshinePackag
 TEST(SunshineVirtualDisplayPackaging, WixUsesSystem64PowerShellAndSemanticActionOrder) {
   EXPECT_EQ(contract::installer_powershell_architecture, "system64");
   EXPECT_LT(position(contract::install_sequence, "install_files"), position(contract::install_sequence, "reset_acls"));
-  EXPECT_LT(position(contract::install_sequence, "install_sudovda"), position(contract::install_sequence, "install_sunshine_driver"));
+  EXPECT_LT(position(contract::install_sequence, "reset_acls"), position(contract::install_sequence, "install_sunshine_driver"));
   EXPECT_LT(position(contract::install_sequence, "install_sunshine_driver"), position(contract::install_sequence, "register_vulkan_layer"));
   EXPECT_LT(position(contract::install_sequence, "register_vulkan_layer"), position(contract::install_sequence, "migrate_config"));
 }
 
 TEST(SunshineVirtualDisplayPackaging, UninstallUnregistersLayersAndDriversBeforeFileRemoval) {
   EXPECT_LT(position(contract::uninstall_sequence, "restore_nvidia_preferences"), position(contract::uninstall_sequence, "unregister_vulkan_layer"));
-  EXPECT_LT(position(contract::uninstall_sequence, "unregister_vulkan_layer"), position(contract::uninstall_sequence, "uninstall_sudovda"));
+  EXPECT_LT(position(contract::uninstall_sequence, "unregister_vulkan_layer"), position(contract::uninstall_sequence, "uninstall_sunshine_driver"));
   EXPECT_LT(position(contract::uninstall_sequence, "uninstall_sunshine_driver"), position(contract::uninstall_sequence, "remove_files"));
   EXPECT_TRUE(contract::uninstall_passes_removal_choice);
 }
@@ -126,18 +125,12 @@ TEST(SunshineVirtualDisplayPackaging, AdministrativeInstallNeverPreUninstallsPro
 TEST(SunshineVirtualDisplayPackaging, DriverRestartWarningsHaveExplicitMarkers) {
   EXPECT_EQ(contract::driver_reboot_markers, std::to_array<std::string_view>({
     "VIRTUAL_DISPLAY_RESTART_REQUIRED",
-    "[SunshineVirtualDisplay] A reboot is required",
-    "[SudoVDA] A reboot is required"
+    "[SunshineVirtualDisplay] A reboot is required"
   }));
 }
 
 TEST(SunshineVirtualDisplayPackaging, DriverRestartWarningUsesMsiRebootExitCode) {
   EXPECT_TRUE(contract::driver_reboot_returns_3010);
-}
-
-TEST(SunshineVirtualDisplayPackaging, RuntimeOffersSudoVdaAsTheExplicitFallbackBackend) {
-  EXPECT_TRUE(contract::runtime_sudovda_fallback_enabled);
-  EXPECT_EQ(contract::rollback_backend, "sudovda");
 }
 
 TEST(SunshineVirtualDisplayPackaging, RenderAdapterSelectionUsesConfiguredThenDedicatedHardware) {
@@ -156,22 +149,9 @@ TEST(SunshineVirtualDisplayPackaging, DriverRefreshUsesThePinnedReleasePayload) 
   EXPECT_TRUE(contract::refresh_before_msi);
 }
 
-TEST(SunshineVirtualDisplayPackaging, RuntimeDriverChoiceSeedsTheInstallerPreference) {
-  EXPECT_TRUE(contract::install_selection_seeds_runtime_flag);
-  EXPECT_TRUE(contract::cli_preserves_driver_selection);
-}
-
 TEST(SunshineVirtualDisplayPackaging, CiSigningPolicyAllowsEphemeralDriverCertificateOnly) {
   EXPECT_TRUE(contract::ci_requires_valid_release_signatures);
   EXPECT_TRUE(contract::ci_self_sign_without_persistent_secret);
-}
-
-TEST(SunshineVirtualDisplayPackaging, InstallerKeepsSudoVdaRollbackAndSunshineDriverDefault) {
-  EXPECT_EQ(contract::default_backend, "sunshine");
-  EXPECT_EQ(contract::rollback_backend, "sudovda");
-  EXPECT_TRUE(contract::upgrade_shows_driver_choice);
-  EXPECT_TRUE(contract::install_selection_seeds_runtime_flag);
-  EXPECT_TRUE(contract::cli_preserves_driver_selection);
 }
 
 #endif

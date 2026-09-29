@@ -937,7 +937,6 @@ namespace config {
 #else
       0,  // snapshot_restore_hotkey_modifiers
 #endif
-      true,  // use_sunshine_virtual_display_driver
       false,  // activate_virtual_display
       0,  // virtual_display_scale_percent
       0,  // virtual_display_permanent_count
@@ -1885,6 +1884,13 @@ namespace config {
       video.adapter_pnp_id.clear();
     }
     string_f(vars, "output_name", video.output_name);
+    if (video.output_name == "sunshine:sudovda_virtual_display"sv) {
+      static bool warned = false;
+      if (!std::exchange(warned, true)) {
+        BOOST_LOG(warning) << "config: [output_name] SudoVDA virtual display is no longer supported; using the virtual display instead.";
+      }
+      video.output_name = "sunshine:virtual_display";
+    }
 
     const auto virtual_display_mode_it = vars.find("virtual_display_mode");
     const bool virtual_display_mode_specified =
@@ -1936,7 +1942,6 @@ namespace config {
       video.dd.paused_virtual_display_timeout_secs = std::max(0, value);
     }
     bool_f(vars, "dd_always_restore_from_golden", video.dd.always_restore_from_golden);
-    bool_f(vars, "dd_use_sunshine_virtual_display_driver", video.dd.use_sunshine_virtual_display_driver);
     bool_f(vars, "dd_activate_virtual_display", video.dd.activate_virtual_display);
     {
       int value = video.dd.virtual_display_scale_percent;
@@ -2275,6 +2280,7 @@ namespace config {
     // without "Unrecognized configurable option" warnings.
     static constexpr std::array retired_keys {
       "dd_display_helper_engine"sv,
+      "dd_use_sunshine_virtual_display_driver"sv,
     };
     std::erase_if(vars, [](const auto &entry) {
       const std::string_view key = entry.first;
@@ -2629,7 +2635,6 @@ namespace config {
         "dd_snapshot_exclude_devices",
         "dd_snapshot_restore_hotkey",
         "dd_snapshot_restore_hotkey_modifiers",
-        "dd_use_sunshine_virtual_display_driver",
         "dd_activate_virtual_display",
         "dd_virtual_display_scale",
         "dd_virtual_display_permanent_count",
@@ -3134,7 +3139,6 @@ namespace config {
       const auto prev_dd_revert_delay = video.dd.config_revert_delay;
       const auto prev_dd_revert_on_disconnect = video.dd.config_revert_on_disconnect;
       const auto prev_dd_paused_virtual_display_timeout_secs = video.dd.paused_virtual_display_timeout_secs;
-      const auto prev_dd_use_sunshine_virtual_display_driver = video.dd.use_sunshine_virtual_display_driver;
       const auto prev_dd_activate_virtual_display = video.dd.activate_virtual_display;
       const auto prev_dd_virtual_display_scale_percent = video.dd.virtual_display_scale_percent;
       const auto prev_dd_virtual_display_permanent_count = video.dd.virtual_display_permanent_count;
@@ -3204,7 +3208,6 @@ namespace config {
                                      (prev_dd_revert_delay != video.dd.config_revert_delay) ||
                                      (prev_dd_revert_on_disconnect != video.dd.config_revert_on_disconnect) ||
                                      (prev_dd_paused_virtual_display_timeout_secs != video.dd.paused_virtual_display_timeout_secs) ||
-                                     (prev_dd_use_sunshine_virtual_display_driver != video.dd.use_sunshine_virtual_display_driver) ||
                                      (prev_dd_activate_virtual_display != video.dd.activate_virtual_display) ||
                                      (prev_dd_virtual_display_scale_percent != video.dd.virtual_display_scale_percent) ||
                                      (prev_dd_virtual_display_permanent_count != video.dd.virtual_display_permanent_count) ||

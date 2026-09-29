@@ -377,24 +377,6 @@ TEST(DisplayHelperV2ReconnectController, BrokenPipeRequestsRestart) {
   EXPECT_FALSE(controller.update_connection(false));
 }
 
-TEST(DisplayHelperV2ApplyPolicy, RespectsVirtualDisplayCooldown) {
-  FakeClock clock;
-  display_helper::v2::ApplyPolicy policy(clock);
-
-  EXPECT_EQ(
-    policy.maybe_reset_virtual_display(display_helper::v2::ApplyStatus::NeedsVirtualDisplayReset, true),
-    display_helper::v2::PolicyDecision::ResetVirtualDisplay);
-
-  EXPECT_EQ(
-    policy.maybe_reset_virtual_display(display_helper::v2::ApplyStatus::NeedsVirtualDisplayReset, true),
-    display_helper::v2::PolicyDecision::Proceed);
-
-  clock.advance(std::chrono::seconds(31));
-  EXPECT_EQ(
-    policy.maybe_reset_virtual_display(display_helper::v2::ApplyStatus::NeedsVirtualDisplayReset, true),
-    display_helper::v2::PolicyDecision::ResetVirtualDisplay);
-}
-
 TEST(DisplayHelperV2ApplyOperation, UsesExplicitTopologyAsSingleStagingBase) {
   FakeClock clock;
   FakeDisplaySettings display;

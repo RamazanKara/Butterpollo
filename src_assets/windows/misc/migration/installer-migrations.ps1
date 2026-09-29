@@ -1,7 +1,3 @@
-param(
-    [string]$InstallVirtualDisplayDriver = ''
-)
-
 $ErrorActionPreference = 'Stop'
 
 # Windows PowerShell 5.1 treats UTF-8 files without a BOM as ANSI when using
@@ -28,98 +24,6 @@ function Write-Utf8TextFile {
     )
 
     [System.IO.File]::WriteAllText($Path, $Value, $utf8NoBom)
-}
-
-function Convert-InstallerBooleanValue {
-    param(
-        [AllowNull()]
-        [string]$Value
-    )
-
-    if ([string]::IsNullOrWhiteSpace($Value)) {
-        return $null
-    }
-
-    switch ($Value.Trim().ToLowerInvariant()) {
-        { $_ -in @('1', 'true', 'yes', 'on', 'enable', 'enabled') } { return $true }
-        { $_ -in @('0', 'false', 'no', 'off', 'disable', 'disabled') } { return $false }
-        default { return $null }
-    }
-}
-
-function Set-SunshineConfigOption {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$ConfigPath,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Name,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Value
-    )
-
-    $configDir = Split-Path -Parent $ConfigPath
-    if (-not (Test-Path -LiteralPath $configDir)) {
-        New-Item -ItemType Directory -Force -Path $configDir | Out-Null
-    }
-
-    $line = '{0} = {1}' -f $Name, $Value
-    if (-not (Test-Path -LiteralPath $ConfigPath)) {
-        Write-Utf8TextFile -Path $ConfigPath -Value ($line + [Environment]::NewLine)
-        return $true
-    }
-
-    $original = Read-Utf8TextFile -Path $ConfigPath
-    $pattern = '(?im)^(\s*)' + [System.Text.RegularExpressions.Regex]::Escape($Name) + '(\s*=\s*)([^#;\r\n]*)(\s*(?:[#;].*)?)$'
-    $updated = [System.Text.RegularExpressions.Regex]::Replace(
-        $original,
-        $pattern,
-        {
-            param($match)
-
-            return '{0}{1}{2}{3}{4}' -f `
-                $match.Groups[1].Value, `
-                $Name, `
-                $match.Groups[2].Value, `
-                $Value, `
-                $match.Groups[4].Value
-        },
-        1
-    )
-
-    if ($updated -ceq $original) {
-        $separator = if ($original.EndsWith("`n") -or $original.EndsWith("`r")) { '' } else { [Environment]::NewLine }
-        $updated = $original + $separator + $line + [Environment]::NewLine
-    }
-
-    if ($updated -ceq $original) {
-        return $false
-    }
-
-    Write-Utf8TextFile -Path $ConfigPath -Value $updated
-    return $true
-}
-
-function Update-SunshineVirtualDriverPreference {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$RootDir,
-
-        [AllowNull()]
-        [string]$InstallVirtualDisplayDriver
-    )
-
-    $enabled = Convert-InstallerBooleanValue -Value $InstallVirtualDisplayDriver
-    if ($null -eq $enabled) {
-        return $false
-    }
-
-    $configPath = Join-Path $RootDir 'config\sunshine.conf'
-    return Set-SunshineConfigOption `
-        -ConfigPath $configPath `
-        -Name 'dd_use_sunshine_virtual_display_driver' `
-        -Value $(if ($enabled) { 'enabled' } else { 'disabled' })
 }
 
 function Convert-LegacySplitEncodeValue {
@@ -422,10 +326,6 @@ $candidateJsonFiles = @(
 ) | Select-Object -Unique
 
 $changedAny = $false
-if (Update-SunshineVirtualDriverPreference -RootDir $rootDir -InstallVirtualDisplayDriver $InstallVirtualDisplayDriver) {
-    Write-Output 'Updated Vibepollo Display Driver preference from installer selection.'
-    $changedAny = $true
-}
 
 foreach ($configPath in $candidateConfigs) {
     if (Update-SplitFrameEncodingInConfig -ConfigPath $configPath) {

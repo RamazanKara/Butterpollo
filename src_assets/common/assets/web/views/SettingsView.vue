@@ -237,10 +237,6 @@ const supportsDisplayDeviceEnumeration = computed(
 const dummyPlugVsync = computed(() =>
   dummyPlugVsyncState(values.dd_wa_dummy_plug_hdr10, values.frame_limiter_disable_vsync),
 );
-const selectedWindowsDisplayDriver = computed(() =>
-  configBoolean(values.dd_use_sunshine_virtual_display_driver) ? 'vibeshine' : 'sudovda',
-);
-
 const physicalDisplaySelected = computed(
   () => String(values.virtual_display_mode ?? '') === 'disabled',
 );
@@ -1062,7 +1058,6 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
           <WindowsDisplayStatus
             v-if="isWindowsHost && !isSearching && ['everyday', 'display'].includes(activeCategory)"
             :metadata="hostMetadata"
-            :selected-driver="selectedWindowsDisplayDriver"
             :loading="loading"
             :refreshing="displayStatusRefreshing"
             :error="displayStatusError"

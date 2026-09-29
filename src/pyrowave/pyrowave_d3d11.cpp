@@ -102,7 +102,7 @@ namespace pyrowave {
       pyrowave_device device = nullptr;
       auto result = create_device_with_priority(0, 0, &luid, &device);
       if (result != PYROWAVE_SUCCESS) {
-        // Virtual-display adapters (SudoVDA, the Vibepollo display driver) have
+        // Virtual-display adapters (such as the Vibepollo display driver) have
         // their own DXGI LUID but no Vulkan device. Their surfaces live on the
         // physical GPU, which is found by its PCI ids instead.
         BOOST_LOG(info) << "PyroWave: no Vulkan device for adapter LUID "

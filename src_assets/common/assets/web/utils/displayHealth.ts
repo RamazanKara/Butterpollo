@@ -1,6 +1,6 @@
 import { configBoolean } from './settings.ts';
 
-export type WindowsDisplayDriver = 'vibeshine' | 'sudovda';
+export type WindowsDisplayDriver = 'vibeshine';
 
 export type WindowsDisplayDriverState =
   | 'ready'
@@ -11,7 +11,6 @@ export type WindowsDisplayDriverState =
   | 'unknown';
 
 export interface WindowsDisplayDriverMetadata {
-  configured?: unknown;
   active?: unknown;
   status?: unknown;
   status_code?: unknown;
@@ -26,7 +25,6 @@ export interface DisplayMetadataWithDriver {
 export interface WindowsDisplayHealth {
   state: WindowsDisplayDriverState;
   activeDriver?: WindowsDisplayDriver;
-  configuredDriver?: WindowsDisplayDriver;
   statusCode?: number;
 }
 
@@ -34,7 +32,6 @@ const driverAliases: Record<string, WindowsDisplayDriver> = {
   built_in: 'vibeshine',
   builtin: 'vibeshine',
   sunshine: 'vibeshine',
-  sudovda: 'sudovda',
   vibeshine: 'vibeshine',
 };
 
@@ -89,24 +86,19 @@ function numericStatus(value: unknown): number | undefined {
 /**
  * Turn the read-only host observation into a UI state.
  *
- * Missing active-driver metadata is intentionally unknown. A config default
- * or a virtual-display readiness flag cannot prove that a driver responded.
+ * Missing active-driver metadata is intentionally unknown. A virtual-display
+ * readiness flag cannot prove that the driver responded.
  */
 export function windowsDisplayHealth(
   metadata: DisplayMetadataWithDriver | null | undefined,
 ): WindowsDisplayHealth {
   const driver = metadata?.virtual_display_driver;
   const statusCode = numericStatus(driver?.status_code);
-  const configuredDriver = normalizeDriver(driver?.configured);
   const activeDriver = normalizeDriver(driver?.active);
   const parsedState = normalizeStatus(driver?.status ?? statusCode);
   return {
-    state:
-      parsedState === 'unknown' && driver && configuredDriver && !activeDriver
-        ? 'uninitialized'
-        : parsedState,
+    state: parsedState === 'unknown' && driver && !activeDriver ? 'uninitialized' : parsedState,
     activeDriver,
-    configuredDriver,
     statusCode,
   };
 }

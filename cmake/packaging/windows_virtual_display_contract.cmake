@@ -19,7 +19,6 @@ set(SUNSHINE_VDD_TRUEHDR_FILES vibeshine_truehdr.dll nvngx_truehdr.dll)
 
 set(SUNSHINE_VDD_DRIVER_DESTINATION "drivers/sunshine")
 set(SUNSHINE_VDD_VULKAN_LAYER_DESTINATION "drivers/sunshine/vulkan-layer")
-set(SUNSHINE_VDD_SUDOVDA_DESTINATION "drivers/sudovda")
 set(SUNSHINE_VDD_TRUEHDR_REPOSITORY "Nonary/vibeshine_truehdr_runtime")
 set(SUNSHINE_VDD_TRUEHDR_RELEASE_TAG "v1.0.0")
 set(SUNSHINE_VDD_LIBVIRTUALDISPLAY_REPOSITORY "Nonary/libvirtualdisplay")
@@ -36,14 +35,11 @@ set(SUNSHINE_VDD_PREBUILT_SCOPE "pinned_release")
 set(SUNSHINE_VDD_LOCAL_SIGNING_MODE "self_signed_catalog")
 set(SUNSHINE_VDD_INSTALLER_POWERSHELL_ARCHITECTURE "system64")
 set(SUNSHINE_VDD_COMMAND_LINE_QUOTING "windows_backslash_quote")
-set(SUNSHINE_VDD_DEFAULT_BACKEND "sunshine")
-set(SUNSHINE_VDD_ROLLBACK_BACKEND "sudovda")
 set(SUNSHINE_VDD_CONFLICT_PRODUCT_NAMES Sunshine Apollo Vibepollo Vibeshine)
 set(SUNSHINE_VDD_MSI_INSTALL_OPERATIONS /i /package)
 set(SUNSHINE_VDD_DRIVER_REBOOT_MARKERS
     VIRTUAL_DISPLAY_RESTART_REQUIRED
-    "[SunshineVirtualDisplay] A reboot is required"
-    "[SudoVDA] A reboot is required")
+    "[SunshineVirtualDisplay] A reboot is required")
 set(SUNSHINE_VDD_RENDER_ADAPTER_SELECTION_ORDER
     configured_adapter
     highest_dedicated_memory
@@ -56,14 +52,12 @@ set(SUNSHINE_VDD_HEALTH_RECOVERY_SEQUENCE restart_device disable_device enable_d
 set(SUNSHINE_VDD_INSTALL_SEQUENCE
     install_files
     reset_acls
-    install_sudovda
     install_sunshine_driver
     register_vulkan_layer
     migrate_config)
 set(SUNSHINE_VDD_UNINSTALL_SEQUENCE
     restore_nvidia_preferences
     unregister_vulkan_layer
-    uninstall_sudovda
     uninstall_sunshine_driver
     remove_files)
 
@@ -78,12 +72,8 @@ set(SUNSHINE_VDD_CONFLICT_NAMES_EXACT ON)
 set(SUNSHINE_VDD_FACTORY_RESET_REQUIRES_INSTALL_SENTINEL ON)
 set(SUNSHINE_VDD_CI_REQUIRES_VALID_RELEASE_SIGNATURES ON)
 set(SUNSHINE_VDD_CI_SELF_SIGN_WITHOUT_PERSISTENT_SECRET ON)
-set(SUNSHINE_VDD_UPGRADE_SHOWS_DRIVER_CHOICE ON)
-set(SUNSHINE_VDD_INSTALL_SELECTION_SEEDS_RUNTIME_FLAG ON)
-set(SUNSHINE_VDD_CLI_PRESERVES_DRIVER_SELECTION ON)
 set(SUNSHINE_VDD_UNINSTALL_PASSES_REMOVAL_CHOICE ON)
 set(SUNSHINE_VDD_FORWARD_QUOTED_CLI_ARGUMENTS ON)
 set(SUNSHINE_VDD_DIRECT_MSI_CONFLICTS_BLOCK ON)
 set(SUNSHINE_VDD_ADMIN_INSTALL_PREUNINSTALL OFF)
 set(SUNSHINE_VDD_DRIVER_REBOOT_RETURNS_3010 ON)
-set(SUNSHINE_VDD_RUNTIME_SUDOVDA_FALLBACK_ENABLED ON)

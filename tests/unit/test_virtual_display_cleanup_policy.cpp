@@ -67,12 +67,6 @@ TEST(VirtualDisplayCleanupPolicy, SunshineLeaseOwnedGuidSurvivesMissingWindowsEn
   EXPECT_TRUE(VDISPLAY::policy::retained_target_is_owned(true, false));
 }
 
-TEST(VirtualDisplayCleanupPolicy, SudoVdaAcceptedProvenanceOwnsUnenumeratedGuid) {
-  // SudoVDA has no Sunshine lease tracker; accepted render-adapter
-  // provenance is the ownership signal until Windows publishes the target.
-  EXPECT_TRUE(VDISPLAY::policy::retained_target_is_owned(false, true));
-}
-
 TEST(VirtualDisplayCleanupPolicy, CompletedProbeAlwaysReleasesItsTemporaryDisplay) {
   EXPECT_TRUE(VDISPLAY::policy::should_cleanup_temporary_probe(true));
   EXPECT_FALSE(VDISPLAY::policy::should_cleanup_temporary_probe(false));

@@ -12,15 +12,13 @@ async function setupWindowsHost(
   page: Page,
   options: {
     driverStatus?: DriverStatus | number;
-    activeDriver?: 'vibeshine' | 'sudovda' | null;
-    configuredDriver?: 'vibeshine' | 'sudovda';
+    activeDriver?: 'vibeshine' | null;
     config?: Record<string, unknown>;
   } = {},
 ) {
   const config = {
     capture: 'wgc',
     virtual_display_mode: 'per_client',
-    dd_use_sunshine_virtual_display_driver: options.configuredDriver !== 'sudovda',
     dd_wa_dummy_plug_hdr10: false,
     frame_limiter_disable_vsync: false,
     ...options.config,
@@ -51,7 +49,6 @@ async function setupWindowsHost(
         windows_build_number: 26100,
         encoder_status: { state: 'ready', h264: true },
         virtual_display_driver: {
-          configured: options.configuredDriver ?? 'vibeshine',
           active: options.activeDriver === undefined ? 'vibeshine' : options.activeDriver,
           status: options.driverStatus ?? 'unknown',
           status_code: typeof options.driverStatus === 'number' ? options.driverStatus : undefined,
@@ -91,17 +88,6 @@ for (const [name, status] of [
     });
   });
 }
-
-test('Windows display status keeps observed and configured drivers distinct', async ({ page }) => {
-  await setupWindowsHost(page, {
-    activeDriver: 'sudovda',
-    configuredDriver: 'vibeshine',
-    driverStatus: 'ready',
-  });
-  await page.goto('/settings?category=display');
-  await expect(page.locator('#windows-display-status')).toContainText('Observed by host: SudoVDA');
-  await expect(page.locator('#windows-display-status')).toContainText('Settings select Vibepollo');
-});
 
 test('active dummy-plug HDR dependency is visible on desktop and narrow layouts', async ({
   page,

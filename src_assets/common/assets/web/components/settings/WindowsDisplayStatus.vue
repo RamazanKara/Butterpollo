@@ -6,14 +6,12 @@ import {
   isWindowsHost,
   windowsDisplayHealth,
   type DisplayMetadataWithDriver,
-  type WindowsDisplayDriver,
   type WindowsDisplayDriverState,
 } from '@/utils/displayHealth';
 
 const props = withDefaults(
   defineProps<{
     metadata: DisplayMetadataWithDriver | null;
-    selectedDriver?: WindowsDisplayDriver;
     loading?: boolean;
     refreshing?: boolean;
     error?: string;
@@ -32,14 +30,7 @@ const emit = defineEmits<{
 const { t } = useI18n();
 const health = computed(() => windowsDisplayHealth(props.metadata));
 const visible = computed(() => isWindowsHost(props.metadata));
-const selectedDriver = computed(() => props.selectedDriver ?? health.value.configuredDriver);
-
-const driverName = (driver?: WindowsDisplayDriver): string => {
-  if (!driver) return t('ui.settings.windows_display.drivers.unknown');
-  return t(
-    `config.virtual_display_driver_${driver === 'vibeshine' ? 'vibeshine' : 'sudovda'}_name`,
-  );
-};
+const driverName = computed(() => t('config.virtual_display_driver_vibeshine_name'));
 
 const stateTone = computed<'success' | 'warning' | 'danger' | 'neutral'>(() => {
   switch (health.value.state) {
@@ -67,29 +58,14 @@ const stateTitle = computed(() =>
 
 const stateMessage = computed(() =>
   t(`ui.settings.windows_display.messages.${health.value.state}.description`, {
-    driver: driverName(health.value.activeDriver ?? selectedDriver.value),
+    driver: driverName.value,
   }),
 );
 
 const observedDriverText = computed(() => {
   if (!health.value.activeDriver) return t('ui.settings.windows_display.observed_unknown');
-  return t('ui.settings.windows_display.observed', {
-    driver: driverName(health.value.activeDriver),
-  });
+  return t('ui.settings.windows_display.observed', { driver: driverName.value });
 });
-
-const configuredMismatch = computed(
-  () =>
-    Boolean(health.value.activeDriver && selectedDriver.value) &&
-    health.value.activeDriver !== selectedDriver.value,
-);
-
-const mismatchText = computed(() =>
-  t('ui.settings.windows_display.configured_mismatch', {
-    configured: driverName(selectedDriver.value),
-    observed: driverName(health.value.activeDriver),
-  }),
-);
 
 const repairVisible = computed(() =>
   ['failed', 'uninitialized', 'version_incompatible', 'watchdog_failed', 'unknown'].includes(
@@ -152,9 +128,6 @@ function isState(value: WindowsDisplayDriverState): boolean {
       {{ error }}
     </InlineAlert>
     <div v-else class="windows-display-status__body">
-      <p class="windows-display-status__configured">
-        {{ t('ui.settings.windows_display.configured', { driver: driverName(selectedDriver) }) }}
-      </p>
       <p class="windows-display-status__observed">{{ observedDriverText }}</p>
       <InlineAlert
         class="windows-display-status__alert"
@@ -167,9 +140,6 @@ function isState(value: WindowsDisplayDriverState): boolean {
           {{ t('ui.settings.windows_display.status_code', { code: health.statusCode }) }}
         </span>
       </InlineAlert>
-      <p v-if="configuredMismatch" class="windows-display-status__mismatch">
-        {{ mismatchText }}
-      </p>
       <p v-if="isState('unknown')" class="windows-display-status__next-step">
         {{ t('ui.settings.windows_display.next_step') }}
       </p>
@@ -231,7 +201,6 @@ function isState(value: WindowsDisplayDriverState): boolean {
   font-size: 12px;
 }
 
-.windows-display-status__mismatch,
 .windows-display-status__next-step {
   margin-top: var(--vs-space-12) !important;
 }

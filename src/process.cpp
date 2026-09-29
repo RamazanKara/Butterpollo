@@ -579,7 +579,6 @@ namespace proc {
       using dd_config_option_e = config::video_t::dd_t::config_option_e;
       const auto dd_config_option =
         launch_session->dd_config_option_override.value_or(config::video.dd.configuration_option);
-      const bool forced_sudavda_virtual_display = config::video.output_name == VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION;
       const auto effective_virtual_display_mode =
         launch_session->virtual_display_mode_override.value_or(config::video.virtual_display_mode);
       const bool headless_mode =
@@ -621,7 +620,7 @@ namespace proc {
       });
       const bool framegen_requires_virtual = framegen_policy.requires_virtual_display;
 
-      if (forced_sudavda_virtual_display || output_selects_virtual) {
+      if (output_selects_virtual) {
         launch_session->virtual_display = true;
       }
 
@@ -647,7 +646,7 @@ namespace proc {
           !video::allow_encoder_probing() ||
           VDISPLAY::should_auto_enable_virtual_display();
 
-        if (should_use_virtual_display && dd_conflicts_with_virtual_display && !forced_sudavda_virtual_display) {
+        if (should_use_virtual_display && dd_conflicts_with_virtual_display) {
           if (session_requests_virtual || app_requests_virtual || client_requests_virtual) {
             BOOST_LOG(info) << "Skipping virtual display activation because display device configuration is set to ensure-only-display.";
           }
@@ -790,7 +789,7 @@ namespace proc {
           BOOST_LOG(warning) << "Virtual display creation failed.";
         }
       } else {
-        BOOST_LOG(warning) << "SudoVDA driver unavailable (status="
+        BOOST_LOG(warning) << "Virtual display driver unavailable (status="
                            << static_cast<int>(vDisplayDriverStatus.load(std::memory_order_acquire)) << ")";
       }
     } else if (already_has_virtual_guid) {
