@@ -3318,23 +3318,33 @@ TEST(DisplayHelperV2StateMachine, TickDrivesScheduledRestoreRetries) {
   EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, dispatches_after_first + 1);
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Recovery);
 
-  // Fail again, then exhaust the primary window: ticks stop retrying.
+  // Fail again. The display change the failed restore itself emits lands in
+  // the post-failure quiet period and cannot bypass the backoff.
   harness.dispatcher.recovery_completion(recovery_fail);
   harness.drain_messages();
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::EventLoop);
-  harness.clock.advance(std::chrono::minutes(3));
-  harness.state_machine.handle_tick();
-  harness.state_machine.handle_tick();
-  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, dispatches_after_first + 1);
-
-  // A generic event from the failed restore cannot reopen the exhausted
-  // window or bypass the existing event/backoff admission rule.
   harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
     display_helper::v2::DisplayEvent::DisplayChange,
     harness.cancellation.current_generation()});
   EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, dispatches_after_first + 1);
 
-  // Identity-bearing evidence re-opens an event window and retries immediately.
+  // Exhaust the primary window: ticks stop retrying.
+  harness.clock.advance(std::chrono::minutes(3));
+  harness.state_machine.handle_tick();
+  harness.state_machine.handle_tick();
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, dispatches_after_first + 1);
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::EventLoop);
+
+  // Once the window is exhausted, even a generic display change is new
+  // topology evidence (monitor power transitions may not report a device
+  // arrival). It opens one bounded window and retries immediately.
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DisplayChange,
+    harness.cancellation.current_generation()});
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, dispatches_after_first + 2);
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Recovery);
+
+  // Further evidence while that attempt runs does not start a second one.
   harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
     display_helper::v2::DisplayEvent::DeviceArrival,
     harness.cancellation.current_generation()});
