@@ -6542,10 +6542,17 @@ namespace video {
 #endif
       if (encode_result == encode_run_result_e::initialization_failed) {
 #ifdef _WIN32
-        if (&session_encoder != &amdvce_experimental && &session_encoder != &amdvce_ffmpeg) {
+  #ifdef SUNSHINE_ENABLE_PYROWAVE
+        // A PyroWave session has no other encoder to fall back to, so a
+        // persistent Vulkan failure must end the stream, not spin.
+        const bool pyrowave_session = &session_encoder == &pyrowave;
+  #else
+        constexpr bool pyrowave_session = false;
+  #endif
+        if (&session_encoder != &amdvce_experimental && &session_encoder != &amdvce_ffmpeg && !pyrowave_session) {
           continue;
         }
-        if (native_amf_lifecycle_gate.is_quarantined()) {
+        if (!pyrowave_session && native_amf_lifecycle_gate.is_quarantined()) {
           BOOST_LOG(error) << "AMF: ending the stream after a watchdog timeout; host restart is required before retrying AMD encoding"sv;
           return;
         }
