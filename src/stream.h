@@ -93,7 +93,6 @@ namespace stream {
 
     struct shared_runtime_finalize_context_t {
       bool ignore_current_rtsp_teardown {false};
-      bool ignore_current_webrtc_teardown {false};
       bool apply_deferred_config {true};
       bool force_display_revert_when_idle {false};
       std::optional<std::array<std::uint8_t, 16>> virtual_display_guid_bytes;
@@ -165,8 +164,6 @@ namespace stream {
   };
 
   std::vector<session_info_t> get_all_session_info();
-
-  void request_idr_for_all_sessions();
 
   /**
    * @brief Apply a new encoder bitrate to active streaming sessions at runtime.

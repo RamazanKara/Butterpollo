@@ -52,7 +52,6 @@ extern "C" {
 #include "video_encoder_probe_policy.h"
 #include "video_policy.h"
 #include "video_timestamp_policy.h"
-#include "webrtc_stream.h"
 
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
   #include "platform/linux/cuda.h"
@@ -149,7 +148,7 @@ namespace video {
       // first-video deadline, so this wait has to come out of what is left of it
       // rather than starting a fresh window afterwards. Windows are measured
       // from APPLY completion, so the remaining budget is rebased the same way.
-      // Unbounded applies (WebRTC, recovery, non-stream) keep the full windows.
+      // Unbounded applies (recovery, non-stream) keep the full windows.
       const auto stream_start_budget = display_helper_integration::remaining_stream_start_budget();
       const auto bounded_window = [&stream_start_budget](std::chrono::milliseconds window, std::chrono::milliseconds since_apply) {
         return stream_start_budget ? std::min(window, since_apply + *stream_start_budget) : window;
@@ -3745,9 +3744,6 @@ namespace video {
 
       packet->replacements = &session.replacements;
       packet->channel_data = channel_data;
-      if (webrtc_stream::has_active_sessions()) {
-        webrtc_stream::submit_video_packet(*packet);
-      }
       packet->packet_enqueue_timestamp = std::chrono::steady_clock::now();
       packets->raise(std::move(packet));
     }
@@ -3780,9 +3776,6 @@ namespace video {
     packet->frame_timestamp = frame_timestamp;
     packet->capture_timestamp = capture_timestamp ? capture_timestamp : frame_timestamp;
     packet->host_processing_timestamp = host_processing_timestamp;
-    if (webrtc_stream::has_active_sessions()) {
-      webrtc_stream::submit_video_packet(*packet);
-    }
     packet->packet_enqueue_timestamp = std::chrono::steady_clock::now();
     packets->raise(std::move(packet));
 
@@ -3821,9 +3814,6 @@ namespace video {
       if (ts.host_processing_timestamp && ts.popped && ts.converted && ts.submitted &&
           encoded_frame.output_ready_at.time_since_epoch().count() != 0) {
         packet->stage_timestamps = packet_raw_t::stage_timestamps_t {*ts.popped, *ts.converted, *ts.submitted, encoded_frame.output_ready_at};
-      }
-      if (webrtc_stream::has_active_sessions()) {
-        webrtc_stream::submit_video_packet(*packet);
       }
       packet->packet_enqueue_timestamp = std::chrono::steady_clock::now();
       packets->raise(std::move(packet));

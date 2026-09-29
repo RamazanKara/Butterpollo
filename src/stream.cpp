@@ -60,7 +60,6 @@ extern "C" {
 #include "utility.h"
 #include "uuid.h"
 #include "video_latency_trace.h"
-#include "webrtc_stream.h"
 #ifdef _WIN32
   #include "platform/windows/frame_limiter.h"
   #include "platform/windows/display.h"
@@ -756,20 +755,6 @@ namespace stream {
 
   static auto broadcast = safe::make_shared<broadcast_ctx_t>(start_broadcast, end_broadcast);
 
-  void request_idr_for_all_sessions() {
-    auto ref = broadcast.ref();
-    if (!ref) {
-      return;
-    }
-    auto lg = ref->control_server._sessions.lock();
-    for (auto *session : *ref->control_server._sessions) {
-      if (!session || !session->video.idr_events) {
-        continue;
-      }
-      session->video.idr_events->raise(true);
-    }
-  }
-
   int set_bitrate_for_sessions(const std::string &client_uuid, int bitrate_kbps) {
     if (bitrate_kbps <= 0) {
       return 0;
@@ -925,10 +910,7 @@ namespace stream {
     }
 
     BOOST_LOG(info) << "Stream-start actions applied after user session became available.";
-    platf::frame_limiter_streaming_start(
-      platf::frame_limiter_owner::rtsp,
-      deferred->policy
-    );
+    platf::frame_limiter_streaming_start(deferred->policy);
     session::start_shared_platform_if_needed();
     return true;
   }
@@ -2955,19 +2937,13 @@ namespace stream {
 
     bool has_capture_runtime_owner(const shared_runtime_finalize_context_t &context) {
       const auto rtsp_teardown_count = teardown_sessions.load(std::memory_order_acquire);
-      const auto webrtc_teardown_count = webrtc_stream::teardown_session_count();
       const bool other_rtsp_teardown =
         rtsp_teardown_count > (context.ignore_current_rtsp_teardown ? 1U : 0U);
-      const bool other_webrtc_teardown =
-        webrtc_teardown_count > (context.ignore_current_webrtc_teardown ? 1U : 0U);
 
       return rtsp_stream::has_pending_launch_or_startup() ||
              rtsp_stream::session_count_no_cleanup() > 0 ||
              running_sessions.load(std::memory_order_acquire) != 0 ||
-             other_rtsp_teardown ||
-             webrtc_stream::has_active_or_pending_sessions() ||
-             webrtc_stream::has_capture_active() ||
-             other_webrtc_teardown;
+             other_rtsp_teardown;
     }
 
     bool has_shared_runtime_owner(const shared_runtime_finalize_context_t &context) {
@@ -3266,8 +3242,7 @@ namespace stream {
       // unrecoverable part. Everything below waits on the process-wide lifecycle
       // gate, which other threads legitimately hold for much longer than
       // kJoinDeadline: proc_t::terminate() blocks per undo command, nvhttp
-      // launch/resume runs execute() plus two encoder probes under it, and the
-      // WebRTC start holds it across a 15s apply-verification budget. This path
+      // launch/resume runs execute() plus two encoder probes under it. This path
       // also calls proc::proc.pause(true) under that gate, which with
       // terminate_on_pause runs the same multi-second terminate() inline.
       // Trapping on any of that is a false positive that would kill every other
@@ -3337,12 +3312,7 @@ namespace stream {
       const bool last_rtsp_session = --running_sessions == 0;
       bool finalized_shared_runtime = false;
       if (last_rtsp_session) {
-        webrtc_stream::set_rtsp_sessions_active(false);
-        const bool rtsp_pending = rtsp_stream::has_pending_launch_or_startup();
-        const bool webrtc_active =
-          webrtc_stream::has_active_or_pending_sessions() ||
-          webrtc_stream::has_teardown_in_progress();
-        if (!rtsp_pending && !webrtc_active) {
+        if (!rtsp_stream::has_pending_launch_or_startup()) {
           proc::proc.pause(true);
         }
         const bool is_paused = proc::proc.current_app_id() > 0;
@@ -3361,13 +3331,10 @@ namespace stream {
         };
         const bool shared_runtime_still_owned =
           session::has_shared_runtime_owner(finalize_context);
-        platf::frame_limiter_streaming_stop(
-          platf::frame_limiter_owner::rtsp,
-          is_paused || shared_runtime_still_owned
-        );
+        platf::frame_limiter_streaming_stop(is_paused || shared_runtime_still_owned);
 #else
 #ifdef __linux__
-        platf::frame_limiter_streaming_stop(platf::frame_limiter_owner::rtsp);
+        platf::frame_limiter_streaming_stop();
 #endif
         const session::shared_runtime_finalize_context_t finalize_context {
           .ignore_current_rtsp_teardown = true,
@@ -3449,10 +3416,6 @@ namespace stream {
 
       // If this is the first session, invoke the platform callbacks
       if (++running_sessions == 1) {
-        if (!webrtc_stream::has_active_or_pending_sessions()) {
-          webrtc_stream::set_rtsp_capture_config(session.config.monitor, session.config.audio);
-        }
-        webrtc_stream::set_rtsp_sessions_active(true);
 #if defined(_WIN32) || defined(__linux__)
         if (!session.config.monitor.input_only) {
           // Apply the stream-owned limiter independently of application launch.
@@ -3498,14 +3461,11 @@ namespace stream {
             defer_stream_start_actions(std::move(deferred));
             BOOST_LOG(info) << "Stream-start actions deferred until user session is ready.";
           } else {
-            platf::frame_limiter_streaming_start(
-              platf::frame_limiter_owner::rtsp,
-              policy
-            );
+            platf::frame_limiter_streaming_start(policy);
             session::start_shared_platform_if_needed();
           }
 #else
-          platf::frame_limiter_streaming_start(platf::frame_limiter_owner::rtsp, policy);
+          platf::frame_limiter_streaming_start(policy);
           session::start_shared_platform_if_needed();
 #endif
         } else {

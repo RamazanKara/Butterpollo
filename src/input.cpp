@@ -594,7 +594,6 @@ namespace input {
   std::optional<std::pair<float, float>> client_to_touchport(std::shared_ptr<input_t> &input, const std::pair<float, float> &val, const std::pair<float, float> &size) {
     auto &touch_port_event = input->touch_port_event;
     auto &touch_port = input->touch_port;
-    // Browser viewers have separate input ownership but share capture metadata.
     // Read the latest port without consuming it or blocking the input worker.
     if (auto latest_port = touch_port_event->view(0ms)) {
       touch_port = *latest_port;

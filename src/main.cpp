@@ -36,7 +36,6 @@
 #include "uuid.h"
 #include "video.h"
 #include "state_storage.h"
-#include "webrtc_stream.h"
 #ifdef _WIN32
   #include <shobjidl.h>
 
@@ -748,8 +747,7 @@ int main(int argc, char *argv[]) {
 #ifdef _WIN32
   const auto has_startup_stream_activity = [] {
     return rtsp_stream::has_pending_launch_or_startup() ||
-           rtsp_stream::session_count() != 0 ||
-           webrtc_stream::has_active_or_pending_sessions();
+           rtsp_stream::session_count() != 0;
   };
 #endif
 

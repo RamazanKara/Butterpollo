@@ -234,9 +234,6 @@ namespace nvhttp {
    */
   bool unpair_client(std::string_view uuid);
 
-  bool has_client_uuid(std::string_view uuid);
-  bool get_client_always_use_virtual_display(const std::string &uuid);
-
   /**
    * @brief Get all paired clients.
    * @return The list of all paired clients.
@@ -283,29 +280,7 @@ namespace nvhttp {
   bool get_client_prefer_10bit_sdr(const std::string &uuid);
 
   /**
-   * @brief Get a copy of a client's runtime config overrides.
-   */
-  std::unordered_map<std::string, std::string> get_client_config_overrides(const std::string &uuid);
-
-  /**
-   * @brief Encoder capabilities safe to expose to the browser WebRTC UI.
-   * @details Resolves the same selected-adapter capability view used for HTTP
-   *          protocol advertisement. A false `probe_complete` means the host
-   *          has not safely verified an encoder for the current capture target.
-   */
-  struct web_stream_capabilities_t {
-    bool probe_complete {false};
-    bool h264 {false};
-    bool hevc {false};
-    bool av1 {false};
-    bool hevc_hdr {false};
-    bool av1_hdr {false};
-  };
-
-  web_stream_capabilities_t get_web_stream_capabilities();
-
-  /**
-   * @brief Serialize shared stream start and final teardown across RTSP and WebRTC.
+   * @brief Serialize shared stream start and final teardown.
    *
    * Acquire after the RTSP launch-request mutex, before protocol capture locks.
    * Starts hold it from their first idle-state observation through pending-owner

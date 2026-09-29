@@ -3,7 +3,7 @@
 #include <chrono>
 
 namespace display_helper::v2::timing {
-  // Preserve the full apply/verification envelope for WebRTC, recovery, and
+  // Preserve the full apply/verification envelope for recovery and
   // other callers that are not racing an RTSP client's first-video timeout.
   inline constexpr auto kApplyStartupBudget = std::chrono::seconds(15);
 

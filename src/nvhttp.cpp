@@ -83,7 +83,6 @@
 #include "stream.h"
 #include "system_tray.h"
 #include "video.h"
-#include "webrtc_stream.h"
 #include "zwpad.h"
 
 using namespace std::literals;
@@ -175,10 +174,7 @@ namespace nvhttp {
       return rtsp_stream::has_pending_launch_or_startup() ||
              rtsp_stream::session_count_no_cleanup() > 0 ||
              stream::session::running_sessions.load(std::memory_order_acquire) != 0 ||
-             stream::session::teardown_sessions.load(std::memory_order_acquire) != 0 ||
-             webrtc_stream::has_active_or_pending_sessions() ||
-             webrtc_stream::has_capture_active() ||
-             webrtc_stream::has_teardown_in_progress();
+             stream::session::teardown_sessions.load(std::memory_order_acquire) != 0;
     }
 
   }  // namespace
@@ -191,10 +187,7 @@ namespace nvhttp {
       rtsp_stream::has_pending_launch_or_startup() ||
       rtsp_stream::session_count_no_cleanup() > 0 ||
       stream::session::running_sessions.load(std::memory_order_acquire) != 0 ||
-      stream::session::teardown_sessions.load(std::memory_order_acquire) != 0 ||
-      webrtc_stream::has_active_or_pending_sessions() ||
-      webrtc_stream::has_capture_active() ||
-      webrtc_stream::has_teardown_in_progress();
+      stream::session::teardown_sessions.load(std::memory_order_acquire) != 0;
     if (!has_stream_activity && remote_display_topology::instance().managed_client_identity_count() == 0) {
       config::clear_runtime_config_overrides();
       config::apply_config_now();
@@ -1762,10 +1755,7 @@ namespace nvhttp {
       return rtsp_stream::has_pending_launch_or_startup() ||
              rtsp_stream::session_count_no_cleanup() > 0 ||
              stream::session::running_sessions.load(std::memory_order_acquire) != 0 ||
-             stream::session::teardown_sessions.load(std::memory_order_acquire) != 0 ||
-             webrtc_stream::has_active_or_pending_sessions() ||
-             webrtc_stream::has_capture_active() ||
-             webrtc_stream::has_teardown_in_progress();
+             stream::session::teardown_sessions.load(std::memory_order_acquire) != 0;
     }
 
     http_encoder_capabilities_t advertised_encoder_capabilities_for_http() {
@@ -1807,19 +1797,6 @@ namespace nvhttp {
   }  // namespace
 #endif
 
-  web_stream_capabilities_t get_web_stream_capabilities() {
-    const auto snapshot = advertised_encoder_capabilities_for_http();
-    const auto &caps = snapshot.advertised;
-    const bool probe_complete = snapshot.probe_complete;
-    return {
-      .probe_complete = probe_complete,
-      .h264 = probe_complete,
-      .hevc = probe_complete && caps.hevc_mode >= 2,
-      .av1 = probe_complete && caps.av1_mode >= 2,
-      .hevc_hdr = probe_complete && caps.hevc_mode >= 3,
-      .av1_hdr = probe_complete && caps.av1_mode >= 3,
-    };
-  }
 
     // uniqueID, session
     std::unordered_map<std::string, pair_session_t> map_id_sess;
@@ -4537,7 +4514,7 @@ namespace nvhttp {
 
       bool no_active_sessions = !has_stream_session_activity();
       // Runtime overrides are global process state. Do not reapply them while
-      // another RTSP/WebRTC session is active, otherwise a second client can mutate
+      // another session is active, otherwise a second client can mutate
       // active stream limits (e.g. fps/encoding-related settings) mid-session.
       const bool update_runtime_overrides = no_active_sessions;
 
@@ -4628,7 +4605,7 @@ namespace nvhttp {
           runtime_overrides_applied = true;
         }
       } else {
-        BOOST_LOG(debug) << "Launch while an RTSP/WebRTC session is already active; preserving current runtime overrides.";
+        BOOST_LOG(debug) << "Launch while a session is already active; preserving current runtime overrides.";
       }
 
       // Prevent interleaving with hot-apply while we prep/start a session.
@@ -5589,9 +5566,6 @@ namespace nvhttp {
       VDISPLAY::cancel_all_virtual_display_recovery_monitors();
 #endif
 
-      // Force Close is a host-side lifecycle action, so it must close either
-      // transport before the process/display teardown, not just classic RTSP.
-      webrtc_stream::shutdown_all_sessions();
       BOOST_LOG(info) << "Force stop: terminating streaming sessions before app and display teardown."sv;
       terminate_streams_and_app(true, false, true);
     }
@@ -6374,44 +6348,6 @@ namespace nvhttp {
     return disconnect.disconnected || monitor_disconnected;
   }
 
-  bool has_client_uuid(std::string_view uuid) {
-    std::lock_guard<std::mutex> lock(client_mutex);
-    for (const auto &named_cert : client_root.named_devices) {
-      if (named_cert->uuid == uuid) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  bool get_client_always_use_virtual_display(const std::string &uuid) {
-    std::lock_guard<std::mutex> lock(client_mutex);
-    for (const auto &named_cert : client_root.named_devices) {
-      if (named_cert->uuid == uuid) {
-        return named_cert->always_use_virtual_display;
-      }
-    }
-    return false;
-  }
-
-  std::unordered_map<std::string, std::string> get_client_config_overrides(const std::string &uuid) {
-    std::lock_guard<std::mutex> lock(client_mutex);
-    for (const auto &named_cert : client_root.named_devices) {
-      if (named_cert->uuid == uuid) {
-        auto overrides = named_cert->config_overrides;
-#ifdef _WIN32
-        if (!named_cert->hdr_profile.empty() && !overrides.contains("rtx_hdr_peak_brightness")) {
-          if (const auto profile_peak = VDISPLAY::hdr_profile_peak_luminance_nits(named_cert->hdr_profile)) {
-            const auto effective_peak = std::clamp<std::uint32_t>(*profile_peak, 400, 2000);
-            overrides.insert_or_assign("rtx_hdr_peak_brightness", std::to_string(effective_peak));
-          }
-        }
-#endif
-        return overrides;
-      }
-    }
-    return {};
-  }
 
   void update_session_info(stream::session_t &session, const std::string &name, const crypto::PERM newPerm) {
     stream::session::update_device_info(session, name, newPerm);

@@ -15,11 +15,6 @@
 
 namespace platf {
 
-  enum class frame_limiter_owner : std::uint8_t {
-    rtsp = 1u << 0,
-    webrtc = 1u << 1,
-  };
-
   enum class frame_limiter_provider {
     none,
     auto_detect,
@@ -41,14 +36,8 @@ namespace platf {
     rtss_status_t rtss;
   };
 
-  void frame_limiter_streaming_start(
-    frame_limiter_owner owner,
-    const framegen::stream_start_policy_t &policy
-  );
-  void frame_limiter_streaming_stop(
-    frame_limiter_owner owner,
-    bool keep_rtss_running = false
-  );
+  void frame_limiter_streaming_start(const framegen::stream_start_policy_t &policy);
+  void frame_limiter_streaming_stop(bool keep_rtss_running = false);
   void frame_limiter_streaming_refresh();
 
   bool frame_limiter_prepare_launch(const framegen::stream_start_policy_t &policy);

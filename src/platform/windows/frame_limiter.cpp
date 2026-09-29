@@ -75,7 +75,7 @@ namespace platf {
 
     frame_limiter_provider g_active_provider = frame_limiter_provider::none;
     std::mutex g_lifecycle_mutex;
-    std::uint8_t g_stream_owner_mask = 0;
+    bool g_stream_active = false;
     bool g_nvcp_started = false;
     bool g_rtss_cleanup_needed = false;
     bool g_nvcp_force_vsync_off = false;
@@ -91,17 +91,6 @@ namespace platf {
     bool g_prev_rtss_frame_limit_type_set = false;
     std::string g_prev_capture_mode;
     bool g_prev_capture_mode_set = false;
-
-    const char *frame_limiter_owner_to_string(frame_limiter_owner owner) {
-      switch (owner) {
-        case frame_limiter_owner::rtsp:
-          return "rtsp";
-        case frame_limiter_owner::webrtc:
-          return "webrtc";
-        default:
-          return "unknown";
-      }
-    }
 
     frame_limiter_provider parse_provider(const std::string &value) {
       std::string normalized;
@@ -192,24 +181,13 @@ namespace platf {
     }
   }
 
-  void frame_limiter_streaming_start(
-    frame_limiter_owner owner,
-    const framegen::stream_start_policy_t &policy
-  ) {
+  void frame_limiter_streaming_start(const framegen::stream_start_policy_t &policy) {
     std::scoped_lock lock {g_lifecycle_mutex};
-    const auto owner_bit = static_cast<std::uint8_t>(owner);
-    if ((g_stream_owner_mask & owner_bit) != 0) {
-      BOOST_LOG(debug) << "Frame limiter start ignored for existing " << frame_limiter_owner_to_string(owner) << " owner.";
+    if (g_stream_active) {
+      BOOST_LOG(debug) << "Frame limiter start ignored for existing rtsp owner.";
       return;
     }
-    if (g_stream_owner_mask != 0) {
-      g_stream_owner_mask |= owner_bit;
-      BOOST_LOG(debug) << "Frame limiter " << frame_limiter_owner_to_string(owner)
-                       << " owner joined existing stream overrides (owner mask="
-                       << static_cast<unsigned int>(g_stream_owner_mask) << ").";
-      return;
-    }
-    g_stream_owner_mask = owner_bit;
+    g_stream_active = true;
 
     g_active_provider = frame_limiter_provider::none;
     g_nvcp_started = false;
@@ -492,21 +470,12 @@ namespace platf {
     return rtss_warmup_process();
   }
 
-  void frame_limiter_streaming_stop(
-    frame_limiter_owner owner,
-    bool keep_rtss_running
-  ) {
+  void frame_limiter_streaming_stop(bool keep_rtss_running) {
     std::scoped_lock lock {g_lifecycle_mutex};
-    const auto owner_bit = static_cast<std::uint8_t>(owner);
-    if ((g_stream_owner_mask & owner_bit) == 0) {
+    if (!g_stream_active) {
       return;
     }
-    g_stream_owner_mask &= static_cast<std::uint8_t>(~owner_bit);
-    if (g_stream_owner_mask != 0) {
-      BOOST_LOG(debug) << "Frame limiter stop deferred after releasing " << frame_limiter_owner_to_string(owner)
-                       << "; remaining owner mask=" << static_cast<unsigned int>(g_stream_owner_mask) << ".";
-      return;
-    }
+    g_stream_active = false;
 
     if (g_stream_policy_overrides_active) {
       config::frame_limiter.enable = g_prev_frame_limiter_enabled;

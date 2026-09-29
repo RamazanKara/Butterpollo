@@ -49,7 +49,6 @@
   #include "src/remote_display_topology.h"
   #include "src/state_storage.h"
   #include "src/stream.h"
-  #include "src/webrtc_stream.h"
 
   #include <display_device/noop_audio_context.h>
   #include <display_device/noop_settings_persistence.h>
@@ -1442,7 +1441,7 @@ namespace {
   }
 
   // Watchdog state for helper liveness during active streams. start/stop are
-  // called from many threads (RTSP/WebRTC session end, app termination,
+  // called from many threads (RTSP session end, app termination,
   // paused-session cleanup, hotkeys, and process shutdown). A stopping worker
   // remains owned here until a non-worker caller joins it: detaching it would
   // let it access helper globals after CRT teardown.
@@ -1469,8 +1468,7 @@ namespace {
   constexpr auto kVirtualDisplayReenableCooldown = std::chrono::seconds(3);
 
   static bool stream_is_active_or_pending() {
-    return stream::session::running_sessions.load(std::memory_order_acquire) != 0 ||
-           webrtc_stream::has_active_or_pending_sessions();
+    return stream::session::running_sessions.load(std::memory_order_acquire) != 0;
   }
 
   static void adopt_watchdog_session_generation(std::uint64_t generation) {

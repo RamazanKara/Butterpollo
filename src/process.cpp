@@ -95,7 +95,6 @@
 #include "utility.h"
 #include "uuid.h"
 #include "video.h"
-#include "webrtc_stream.h"
 
 #ifdef _WIN32
   // from_utf8() string conversion function
@@ -573,7 +572,7 @@ namespace proc {
       [](std::uint8_t b) { return b != 0; }
     );
 
-    // Preserve an upstream resolver's decision. For Web UI and WebRTC launches,
+    // Preserve an upstream resolver's decision. For Web UI launches,
     // resolve the same app/client display policy locally before any VDD exists.
     bool should_use_virtual_display = launch_session->virtual_display;
     if (!launch_session->virtual_display_request_resolved) {

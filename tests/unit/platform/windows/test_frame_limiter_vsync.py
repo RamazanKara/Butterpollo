@@ -93,7 +93,7 @@ int main() {
     policy.auto_virtual_framegen_limiter=policy_kind==1;
     policy.physical_framegen_capture=policy_kind==2;
     policy.capture_fix_enabled=policy_kind==3;
-    platf::frame_limiter_streaming_start(platf::frame_limiter_owner::rtsp,policy);
+    platf::frame_limiter_streaming_start(policy);
     assert(config::frame_limiter.disable_vsync==vsync);
     assert(platf::frame_limiter_get_status().disable_vsync==vsync);
     assert(calls.size()==1);
@@ -109,12 +109,12 @@ int main() {
      assert(calls.back().limit && !calls.back().disable_limit);
     }
     const auto call_count=calls.size();
-    platf::frame_limiter_streaming_start(platf::frame_limiter_owner::webrtc,policy);
+    platf::frame_limiter_streaming_start(policy);
     assert(calls.size()==call_count);
     const auto stop_count=stops;
-    platf::frame_limiter_streaming_stop(platf::frame_limiter_owner::rtsp);
-    assert(stops==stop_count);
-    platf::frame_limiter_streaming_stop(platf::frame_limiter_owner::webrtc);
+    platf::frame_limiter_streaming_stop();
+    assert(stops==stop_count+1);
+    platf::frame_limiter_streaming_stop();
     assert(stops==stop_count+1);
     assert(config::frame_limiter.enable);
     assert(config::frame_limiter.provider==provider);

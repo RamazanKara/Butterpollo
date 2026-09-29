@@ -333,9 +333,9 @@ TEST(RemoteDisplayTopology, AppExitWaitsForEveryCaptureBeforeMutatingTopology) {
   });
   const auto app = coordinator.reserve_normal_game_identity("game", "Game", {});
   auto rtsp = coordinator.retain_normal_game_capture("game", app.token);
-  auto webrtc = coordinator.retain_normal_game_capture("game", app.token);
+  auto second = coordinator.retain_normal_game_capture("game", app.token);
   ASSERT_TRUE(rtsp);
-  ASSERT_TRUE(webrtc);
+  ASSERT_TRUE(second);
   EXPECT_FALSE(coordinator.normal_game_release_pending());
 
   coordinator.release_normal_game_identity("game", app.token);
@@ -348,7 +348,7 @@ TEST(RemoteDisplayTopology, AppExitWaitsForEveryCaptureBeforeMutatingTopology) {
   rtsp.reset();
   coordinator.release_drained_normal_game_identities();
   EXPECT_TRUE(operations.empty());
-  webrtc.reset();
+  second.reset();
   // A reference destructor may run on the video thread or a failed startup
   // path. Only the caller holding the lifecycle gate may change the display.
   EXPECT_TRUE(operations.empty());
