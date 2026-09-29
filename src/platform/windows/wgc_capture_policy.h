@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
 namespace platf::dxgi::wgc_policy {
   inline constexpr std::uint32_t low_latency_initial_buffer_size = 1;
@@ -226,9 +227,13 @@ namespace platf::dxgi::wgc_policy {
       if (_count < minimum_samples) {
         return 0;
       }
+      // Sort the whole fixed array, unused slots last, so every bound is a constant.
       auto sorted = _intervals;
-      std::sort(sorted.begin(), sorted.begin() + static_cast<std::ptrdiff_t>(_count));
-      return sorted[_count / 2];
+      for (std::size_t i = _count; i < sorted.size(); ++i) {
+        sorted[i] = std::numeric_limits<std::int64_t>::max();
+      }
+      std::sort(sorted.begin(), sorted.end());
+      return sorted[std::min(_count, sorted.size()) / 2];
     }
 
     void reset() noexcept {
