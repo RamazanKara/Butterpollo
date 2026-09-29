@@ -362,6 +362,7 @@ sunshine_register_component(NAME test_component_rtsp_pending_policy TEST_SOURCE 
 sunshine_register_component(NAME test_component_hdr_request_policy TEST_SOURCE unit/test_hdr_request_policy.cpp)
 sunshine_register_component(NAME test_component_single_flight TEST_SOURCE unit/test_single_flight.cpp)
 sunshine_register_component(NAME test_component_video_timestamp_policy TEST_SOURCE unit/test_video_timestamp_policy.cpp)
+sunshine_register_component(NAME test_component_zwpad TEST_SOURCE unit/test_zwpad.cpp)
 sunshine_register_component(NAME test_component_remote_display_topology TEST_SOURCE unit/test_remote_display_topology.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/remote_display_topology.cpp"
     LINK_LIBRARIES nlohmann_json::nlohmann_json)
@@ -518,8 +519,6 @@ if(WIN32)
         LINK_LIBRARIES sunshine_test_moonlight_headers)
     sunshine_register_component(NAME test_component_virtual_display_cleanup_policy TEST_SOURCE unit/test_virtual_display_cleanup_policy.cpp)
 endif()
-
-sunshine_register_component(NAME test_component_hdr_request TEST_SOURCE unit/test_hdr_request_policy.cpp)
 
 # Production-code regression harnesses exercise Windows policies on the native
 # host. They are part of the suite, so a missing interpreter or compiler is a

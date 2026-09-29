@@ -1,18 +1,16 @@
-# Input disconnect regression tests
+# Input regression tests
 
-Run from the repository root:
+These scripts compile production input handlers against deterministic stubs
+and recording platform backends. They do not inject input into the test
+machine. ctest runs them as `regression_delayed_mouse_release`,
+`regression_windows_absolute_mouse` and `regression_windows_mouse_keys`; each
+also runs directly from the repository root:
 
 ```sh
 python3 tests/input/test_delayed_mouse_release.py
-python3 tests/input/test_disconnect_release.py
+python3 tests/input/test_windows_absolute_mouse.py
+python3 tests/input/test_windows_mouse_keys.py
 ```
-
-These scripts compile the production handlers with a deterministic task worker
-and recording platform backends. They do not inject input into the test machine.
-They cover all keycodes, changed mappings and flags, overlapping clients and
-remaps, synthetic modifiers, repeat cancellation, all five mouse buttons,
-controller removal and neutralization, touch/pen device lifetime, and late
-packets.
 
 The scripts do not replace a full platform build or driver-level testing.
 
