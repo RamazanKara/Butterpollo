@@ -61,10 +61,6 @@ namespace platf {
       };
     }
 
-    std::uint32_t integer_fps_to_millihz(int fps) {
-      return fps > 0 ? framegen::saturating_refresh_millihz(static_cast<std::uint32_t>(fps), 1000) : 0;
-    }
-
     void log_nvcp_fractional_rounding(const frame_limit_t &limit) {
       if (limit.is_fractional()) {
         BOOST_LOG(warning) << "NVIDIA Control Panel only supports whole-number frame limits; rounding "

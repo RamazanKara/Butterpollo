@@ -20,7 +20,10 @@ The Windows packaging configuration validates the virtual-display, VHF gamepad a
 Run in an MSYS2 UCRT64 shell, with Node.js on PATH and the verified packaging inputs from CI:
 
 ```sh
-cmake -S . -B build -G Ninja   -DCMAKE_BUILD_TYPE=Release   -DBUILD_TESTS=ON   -DBUILD_WERROR=ON
+cmake -S . -B build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_TESTS=ON \
+  -DBUILD_WERROR=ON
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure --timeout 120
 ```

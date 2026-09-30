@@ -151,20 +151,6 @@ namespace proc {
       return name.find('=') == std::string::npos;
     }
 
-    std::optional<DWORD> foreground_window_process_id() {
-      HWND hwnd = GetForegroundWindow();
-      if (!hwnd) {
-        return std::nullopt;
-      }
-
-      DWORD pid = 0;
-      if (!GetWindowThreadProcessId(hwnd, &pid) || pid == 0) {
-        return std::nullopt;
-      }
-
-      return pid;
-    }
-
     std::vector<DWORD> process_group_pids(const bp::group &group) {
       std::vector<DWORD> pids;
       if (!group) {
