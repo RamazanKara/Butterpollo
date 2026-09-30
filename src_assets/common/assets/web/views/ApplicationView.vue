@@ -2989,6 +2989,8 @@ onBeforeUnmount(() => {
 .editor-section__heading,
 .editor-loading {
   display: grid;
+  min-inline-size: 0;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .application-page {
@@ -3078,6 +3080,7 @@ onBeforeUnmount(() => {
 .editor-section__heading p,
 .editor-danger p {
   color: var(--vs-color-text-secondary);
+  overflow-wrap: anywhere;
 }
 
 .editor-section__heading--actions,

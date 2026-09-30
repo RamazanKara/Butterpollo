@@ -28,17 +28,16 @@ async function host(page: Page, config: Record<string, unknown> = {}) {
       }
     } else if (path === '/api/metadata') {
       body = {
-        platform: 'linux',
+        platform: 'windows',
         version: '1.0.0',
         encoder_status: { state: 'ready', h264: true },
         virtual_display: { capable: true, ready: true },
         capture_status: {
-          configured_backend: 'kms',
+          configured_backend: 'wgc',
           observed_backend: 'unknown',
           managed_event_driven: false,
           virtual_display_configured: true,
         },
-        linux: { session_role: 'desktop' },
       };
     } else if (path === '/api/session/status') {
       body = { status: true, activeSessions: 0, appRunning: false, lastEncoderProbeFailed: false };

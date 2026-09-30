@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 type FixtureOptions = {
-  platform?: 'windows' | 'linux' | 'macos';
+  platform?: 'windows';
 };
 
 const devices = [
@@ -103,7 +103,7 @@ async function installFixture(page: Page, options: FixtureOptions = {}) {
 test('device filters search display metadata, sort deterministically, and keep drafts hidden by filters', async ({
   page,
 }) => {
-  await installFixture(page, { platform: 'linux' });
+  await installFixture(page, { platform: 'windows' });
   await page.goto('/devices');
   await expect(page.getByRole('heading', { name: 'Devices', exact: true })).toBeVisible();
   await expect(page.getByText('Search devices', { exact: true })).toBeVisible();

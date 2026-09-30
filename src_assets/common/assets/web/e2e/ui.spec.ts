@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 
 async function host(
   page: Page,
-  platform = 'linux',
+  platform = 'windows',
   config: Record<string, unknown> = {},
   ready = true,
   providers: Record<string, boolean> = {},
@@ -26,7 +26,7 @@ async function host(
         patches.push(patch);
         Object.assign(config, patch);
         body = { status: true, deferred: true, restartRequired: 'port' in patch };
-      } else body = { status: true, capture: 'kms', virtual_display_mode: 'per_client', ...config };
+      } else body = { status: true, capture: 'wgc', virtual_display_mode: 'per_client', ...config };
     } else if (path === '/api/metadata')
       body = {
         platform,
@@ -39,13 +39,13 @@ async function host(
           reason: ready ? '' : 'driver_or_outputs_unavailable',
         },
         capture_status: {
-          configured_backend: 'kms',
+          configured_backend: 'wgc',
           observed_backend: 'unknown',
           managed_event_driven: false,
           virtual_display_configured: true,
         },
-        linux: { session_role: 'desktop' },
         windows_build_number: 26100,
+        gpus: [{ description: 'NVIDIA GeForce RTX 5090', pnp_id: 'PCI-NVIDIA-5090' }],
       };
     else if (path === '/api/session/status')
       body = { status: true, activeSessions: 0, appRunning: false, lastEncoderProbeFailed: false };
@@ -66,13 +66,13 @@ async function host(
 test('settings deep links open advanced encoders and back navigation preserves drafts', async ({
   page,
 }) => {
-  await host(page, 'linux', { encoder: 'vaapi' });
-  await page.goto('/settings?category=video#setting-vaapi_strict_rc_buffer');
-  await expect(page.locator('#setting-vaapi_strict_rc_buffer')).toBeVisible();
-  await page.locator('#setting-vaapi_strict_rc_buffer').check();
+  await host(page, 'windows', { encoder: 'nvenc' });
+  await page.goto('/settings?category=video#setting-nvenc_spatial_aq');
+  await expect(page.locator('#setting-nvenc_spatial_aq')).toBeVisible();
+  await page.locator('#setting-nvenc_spatial_aq').check();
   await page.getByRole('button', { name: 'Everyday setup', exact: true }).click();
   await page.goBack();
-  await expect(page.locator('#setting-vaapi_strict_rc_buffer')).toBeChecked();
+  await expect(page.locator('#setting-nvenc_spatial_aq')).toBeChecked();
 });
 
 test('Windows keeps automatic smoothness and platform-specific controls', async ({ page }) => {
@@ -133,11 +133,11 @@ test('bulk unpair requires a confirmation and calls the existing endpoint', asyn
   await expect.poll(() => calls).toBe(1);
 });
 
-test('Linux maintenance offers logs and display setup', async ({ page }) => {
+test('Windows maintenance offers logs and display recovery', async ({ page }) => {
   await host(page);
   await page.goto('/maintenance');
-  await expect(page.getByRole('link', { name: 'Open and download logs' })).toBeVisible();
-  await expect(page.getByRole('link', { name: 'Display settings' })).toBeVisible();
+  await expect(page.locator('a[href="/api/logs/export"]')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Golden display recovery' })).toBeVisible();
   await expect(page.getByText('Updates and release notes', { exact: true })).toBeVisible();
 });
 
@@ -180,15 +180,16 @@ test('all canonical pages render without client-side exceptions', async ({ page 
   expect(errors).toEqual([]);
 });
 
-test('Linux adapters remain editable while unsupported provider destinations stay hidden', async ({
-  page,
-}) => {
+test('Windows adapters remain editable while retired settings stay absent', async ({ page }) => {
   const patches = await host(page);
   await page.goto('/settings?category=display#setting-adapter_name');
-  await page.locator('#setting-adapter_name').fill('/dev/dri/renderD129');
+  await page.locator('#setting-adapter_name').selectOption('PCI-NVIDIA-5090');
   await page.getByRole('button', { name: 'Save changes', exact: true }).click();
   await expect.poll(() => patches.length).toBe(1);
-  expect(patches[0]).toEqual({ adapter_name: '/dev/dri/renderD129' });
+  expect(patches[0]).toEqual({
+    adapter_name: 'NVIDIA GeForce RTX 5090',
+    adapter_pnp_id: 'PCI-NVIDIA-5090',
+  });
   await page.getByRole('searchbox', { name: 'Search settings' }).fill('mangohud');
   await expect(page.locator('.settings-destinations a')).toHaveCount(0);
 });
@@ -332,7 +333,7 @@ test('appearance controls persist the chosen theme and follow system appearance'
 
 test('unknown readiness does not render as ready', async ({ page }) => {
   await host(page);
-  await page.route('**/api/metadata', (route) => route.fulfill({ json: { platform: 'linux' } }));
+  await page.route('**/api/metadata', (route) => route.fulfill({ json: { platform: 'windows' } }));
   await page.goto('/');
   await expect(page.locator('.readiness-panel')).toHaveAttribute('data-tone', 'neutral');
   await expect(page.getByRole('link', { name: 'Review setup', exact: true })).toBeVisible();
@@ -389,9 +390,25 @@ for (const width of [320, 390, 768, 1100, 1440]) {
       await page.goto(`/${path}`);
       await expect(page.locator('main h1')).toBeVisible();
       await expect(page.locator('.vs-loading-skeleton')).toHaveCount(0);
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
-        true,
-      );
+      const layout = await page.evaluate(() => ({
+        fits: document.documentElement.scrollWidth <= innerWidth,
+        widths: [
+          innerWidth,
+          document.documentElement.scrollWidth,
+          document.body.scrollWidth,
+          scrollX,
+        ],
+        overflowing: [...document.querySelectorAll('body *')]
+          .filter((element) => element.getBoundingClientRect().right + scrollX > innerWidth)
+          .map((element) => ({
+            tag: element.tagName,
+            id: element.id,
+            class: element.className,
+            right: element.getBoundingClientRect().right + scrollX,
+          }))
+          .slice(0, 12),
+      }));
+      expect(layout.fits, `${path}: ${JSON.stringify(layout)}`).toBe(true);
       await page.screenshot({
         path: testInfo.outputPath(`${(path || 'overview').replaceAll('/', '-')}-${width}.png`),
         fullPage: true,
@@ -451,18 +468,19 @@ test('overview stops a running application only after confirmation', async ({ pa
   ).toBeVisible();
 });
 
-test('unmigrated Linux services are neither offered nor called', async ({ page }) => {
-  await host(page, 'linux');
+test('retired backends and provider services are absent from the Windows UI', async ({ page }) => {
+  await host(page, 'windows');
   const providerRequests: string[] = [];
   page.on('request', (request) => {
     if (/\/api\/frame-limiter\//.test(request.url())) providerRequests.push(request.url());
   });
   await page.goto('/integrations');
   await expect(page.locator('#integration-mangohud')).toHaveCount(0);
-  await page.goto('/settings');
-  await expect(
-    page.locator('#setting-virtual_display_mode, #setting-frame_limiter_provider'),
-  ).toHaveCount(0);
+  await page.goto('/settings?category=video');
+  const captureOptions = await page.locator('#setting-capture option').allTextContents();
+  expect(captureOptions.join(' ')).not.toMatch(/KMS|X11|Wayland|VideoToolbox/i);
+  const encoderOptions = await page.locator('#setting-encoder option').allTextContents();
+  expect(encoderOptions.join(' ')).not.toMatch(/VA-API|VideoToolbox|FFmpeg AMF|Media Foundation/i);
   await expect(page.locator('.linux-capture')).toHaveCount(0);
   expect(providerRequests).toEqual([]);
 });
@@ -554,7 +572,7 @@ test('app behavior validates edited scaling and can return explicit options to d
   expect(saved?.['use-app-identity']).toBeUndefined();
 });
 
-for (const platform of ['linux', 'windows'] as const) {
+for (const platform of ['windows'] as const) {
   test(`${platform} logs download requests the retained bundle even with an empty viewer`, async ({
     page,
   }) => {
@@ -576,7 +594,7 @@ for (const platform of ['linux', 'windows'] as const) {
   });
 }
 
-test('Linux shows the host update notice across pages and retries failed checks', async ({
+test('Windows shows the host update notice across pages and retries failed checks', async ({
   page,
 }) => {
   await host(page);
@@ -620,7 +638,7 @@ test('Linux shows the host update notice across pages and retries failed checks'
   await expect(notice.getByText('Vibepollo 1.1.0 is available')).toBeVisible();
 });
 
-test('Linux stable install does not advertise a prerelease without opt-in', async ({ page }) => {
+test('Windows stable install does not advertise a prerelease without opt-in', async ({ page }) => {
   await host(page);
   await page.route('**/api/updates', async (route) => {
     await route.fulfill({
@@ -632,3 +650,28 @@ test('Linux stable install does not advertise a prerelease without opt-in', asyn
   await response;
   await expect(page.locator('.update-notice')).toHaveCount(0);
 });
+
+for (const configuredLevel of [undefined, 1]) {
+  test(`prerelease logging defaults to info and preserves explicit level ${configuredLevel}`, async ({
+    page,
+  }) => {
+    await host(
+      page,
+      'windows',
+      configuredLevel === undefined ? {} : { min_log_level: configuredLevel },
+    );
+    await page.route('**/api/metadata', (route) =>
+      route.fulfill({
+        json: {
+          platform: 'windows',
+          version: '2.0.0-beta.3-butter.4',
+          prerelease: 'beta',
+          windows_build_number: 26100,
+        },
+      }),
+    );
+    await page.goto('/settings?category=host#setting-min_log_level');
+    await expect(page.locator('#setting-min_log_level')).toHaveValue(String(configuredLevel ?? 2));
+    await expect(page.getByRole('link', { name: 'Classic interface' })).toHaveCount(0);
+  });
+}

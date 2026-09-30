@@ -3,7 +3,7 @@ import { test, expect, type Page } from '@playwright/test';
 const appUuid = '11111111-1111-4111-8111-111111111111';
 
 interface HostOptions {
-  platform?: 'windows' | 'linux';
+  platform?: 'windows' | 'unknown';
   apps?: Array<Record<string, unknown>>;
 }
 
@@ -139,10 +139,10 @@ test('existing application preserves explicit false and zero, and retired fields
   });
 });
 
-test('Linux applications hide Windows-only controls', async ({ page }) => {
+test('Missing host metadata hides controls until Windows is confirmed', async ({ page }) => {
   await setupHost(page, {
-    platform: 'linux',
-    apps: [{ uuid: appUuid, name: 'Linux app' }],
+    platform: 'unknown',
+    apps: [{ uuid: appUuid, name: 'App on an unknown host' }],
   });
   await page.goto(`/library/${appUuid}`);
   await expect(page.locator('#app-auto-detach')).toBeVisible();

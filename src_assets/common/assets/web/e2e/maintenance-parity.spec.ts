@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 
 interface HostOptions {
-  platform?: 'windows' | 'linux';
+  platform?: 'windows';
 }
 
 async function setupHost(page: Page, options: HostOptions = {}) {
