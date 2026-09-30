@@ -42,7 +42,13 @@ print('PAIRING independent RSA/AES proof verified',flush=True)
 # The administrator explicitly grants this fixture permission to launch.
 clients=session.get(web+'/api/clients/list',timeout=10).json()['clients']
 paired=next(c for c in clients if c['name']==uid)
-r=session.post(web+'/api/clients/update',json={'uuid':paired['uuid'],'perm':0x071f1f00},timeout=10);r.raise_for_status()
+settings={'uuid':paired['uuid'],'perm':0x071f1f00}
+hooks_path=artifact/'client-hooks.txt' if os.environ.get('BUTTERPOLLO_TEST_CLIENT_HOOKS')=='1' else None
+if hooks_path:
+    hooks_path.unlink(missing_ok=True)
+    settings.update({'do':[{'cmd':f'echo connected-$(SUNSHINE_CLIENT_NAME)>"{hooks_path}"'}],
+                     'undo':[{'cmd':f'echo disconnected-$(SUNSHINE_CLIENT_NAME)>>"{hooks_path}"'}]})
+r=session.post(web+'/api/clients/update',json=settings,timeout=10);r.raise_for_status()
 client=requests.Session();client.verify=False;client.cert=(str(artifact/'client.pem'),str(artifact/'client-key.pem'))
 info=ET.fromstring(client.get(https+'/serverinfo',timeout=10).text);assert info.findtext('PairStatus')=='1'
 apps=ET.fromstring(client.get(https+'/applist',timeout=10).text);app=apps.find('App');assert app is not None
@@ -60,4 +66,12 @@ except subprocess.TimeoutExpired as error:
 finally:
     client.get(https+'/cancel',timeout=10)
     session.post(web+'/api/clients/unpair',json={'uuid':paired['uuid']},timeout=10).raise_for_status()
+if hooks_path:
+    deadline=time.monotonic()+5
+    while time.monotonic()<deadline:
+        lines=hooks_path.read_text().splitlines() if hooks_path.exists() else []
+        if lines==['connected-'+uid,'disconnected-'+uid]:break
+        time.sleep(.05)
+    assert lines==['connected-'+uid,'disconnected-'+uid],lines
+    print('CLIENT CONNECT/DISCONNECT HOOKS PASS',flush=True)
 print('INTEROPERABILITY PASS',flush=True)
