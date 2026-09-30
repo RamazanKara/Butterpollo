@@ -59,7 +59,6 @@ namespace config {
     bool double_refreshrate;
 
     // ffmpeg params
-    int qp;  // higher == more compression and less quality
 
     int hevc_mode;
     int av1_mode;
@@ -122,21 +121,6 @@ namespace config {
       int amd_av1_tiles;  // Native AV1 tile override (0=auto; experimental 1/2/4)
     } amd;
 
-    struct {
-      int vt_allow_sw;
-      int vt_require_sw;
-      int vt_realtime;
-      int vt_coder;
-    } vt;
-
-    struct {
-      bool strict_rc_buffer;
-    } vaapi;
-
-    struct {
-      int tune;  // 0=default, 1=hq, 2=ll, 3=ull, 4=lossless
-      int rc_mode;  // 0=driver, 1=cqp, 2=cbr, 4=vbr
-    } vk;
 
     // NVIDIA TrueHDR (RTX HDR) SDR->HDR synthesis. Conversion is opt-in per app via
     // runtime overrides.
@@ -234,7 +218,6 @@ namespace config {
       int virtual_display_scale_percent;  ///< Virtual-display scale percent (-1 is automatic; 0 preserves the compositor's choice).
       int virtual_display_permanent_count;  ///< Number of always-present Sunshine virtual displays to request when explicitly configured.
       bool virtual_display_permanent_count_configured;  ///< False preserves installs that predate this setting.
-      std::vector<std::string> virtual_display_outputs;  ///< Linux connector names reserved for private streaming displays; empty enables managed-VKMS discovery.
       std::vector<std::string> snapshot_exclude_devices;  ///< Device IDs to skip when saving display snapshots.
       mode_remapping_t mode_remapping;
       workarounds_t wa;
@@ -247,7 +230,6 @@ namespace config {
     bool wgc_direct_encoder_input;  ///< GPU encoders read the WGC helper's shared frame directly instead of a host-side snapshot copy made on the capture device.
     bool wgc_slot_aligned_publish;  ///< The WGC helper publishes only frames the host can claim, using the host's pacing grid.
     std::string fallback_mode;
-    bool ignore_encoder_probe_failure;
   };
 
   struct audio_t {
@@ -298,7 +280,6 @@ namespace config {
     std::string file_state;
     std::string vibeshine_file_state;
 
-    std::string external_ip;
   };
 
   struct input_t {
@@ -311,9 +292,6 @@ namespace config {
     std::string gamepad;
     bool motion_as_ds4;
     bool touchpad_as_ds4;
-    // When forcing DS5 emulation via Inputtino, randomize the virtual controller MAC
-    // to avoid client-side config mixing when controllers are swapped.
-    bool ds5_inputtino_randomize_mac;
 
     bool keyboard;
     bool mouse;
@@ -337,21 +315,11 @@ namespace config {
 
     bool enable {false};
 
-    // Provider selector. Linux defaults to Proton with a MangoHUD overlay;
-    // Windows defaults to RTSS or NVIDIA Control Panel.
-    // Supported values: "auto", "mangohud", "proton", "mangohud-proton",
-    // "nvidia-control-panel", "rtss", "none".
+    // Supported providers: "auto", "rtss", "nvidia-control-panel", "none".
     std::string provider;
 
     // Optional FPS limit override in millihertz. 0 uses the stream's requested FPS.
     std::uint32_t fps_limit_millihz {0};
-
-    // Linux MangoHUD overlay presentation. "custom" preserves the user's
-    // configuration; 1-4 select MangoHUD's standard built-in presets.
-    std::string mangohud_preset {"custom"};
-    bool mangohud_always_show_graph {false};
-    // MangoHUD's own limiter timing. Early favors smooth pacing; late favors latency.
-    std::string mangohud_limiter_method {"late"};
 
     // When enabled, Sunshine forces the NVIDIA driver VSYNC setting to Off during streams when available.
     // When NVIDIA overrides are unavailable, the display helper falls back to the highest refresh rate instead.
@@ -536,10 +504,8 @@ namespace config {
   runtime_output_override_lease_t set_runtime_output_name_override_with_lease(std::string output_name);
   bool clear_runtime_output_name_override_if_lease(runtime_output_override_lease_t lease);
 
-#ifdef _WIN32
   // The lock-screen virtual-output retry worker is owned work.  Main stops
   // and joins it before configuration, display-helper, and mail teardown.
   void request_deferred_virtual_output_reapply_shutdown();
   void join_deferred_virtual_output_reapply_worker();
-#endif
 }  // namespace config

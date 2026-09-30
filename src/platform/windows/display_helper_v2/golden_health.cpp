@@ -1,6 +1,5 @@
 #include "src/platform/windows/display_helper_v2/golden_health.h"
 
-#ifdef _WIN32
 
   #include <algorithm>
   #include <utility>
@@ -122,5 +121,3 @@ namespace display_helper::v2 {
     }
   }
 }  // namespace display_helper::v2
-
-#endif  // _WIN32

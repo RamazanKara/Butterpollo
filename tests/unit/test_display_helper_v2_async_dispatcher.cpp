@@ -2,7 +2,6 @@
  * @file tests/unit/test_display_helper_v2_async_dispatcher.cpp
  * @brief Unit tests for display helper v2 async dispatcher.
  */
-#ifdef _WIN32
 
 #include "../tests_common.h"
 
@@ -155,5 +154,3 @@ TEST(DisplayHelperV2AsyncDispatcher, AppliesAfterCancellableDelay) {
     std::chrono::milliseconds::zero());
   EXPECT_EQ(total_sleep, std::chrono::milliseconds(250));
 }
-
-#endif  // _WIN32

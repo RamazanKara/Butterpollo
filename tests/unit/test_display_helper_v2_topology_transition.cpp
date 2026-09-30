@@ -2,7 +2,6 @@
  * @file tests/unit/test_display_helper_v2_topology_transition.cpp
  * @brief Focused regression tests for post-activation topology readiness.
  */
-#ifdef _WIN32
 
 #include "../tests_common.h"
 
@@ -167,5 +166,3 @@ TEST(DisplayHelperV2TopologyTransition, CancellationAtMutationBoundaryStopsBefor
   EXPECT_FALSE(outcome.display_may_have_changed);
   EXPECT_EQ(display.apply_topology_calls, 0);
 }
-
-#endif  // _WIN32

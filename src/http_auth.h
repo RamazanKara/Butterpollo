@@ -276,7 +276,6 @@ namespace confighttp {
      * @param token Token string.
      * @return Username or `std::nullopt` if not found/expired.
      */
-    std::optional<std::string> get_username_for_token(const std::string &token);
     std::optional<std::string> get_hash_for_token(const std::string &token) const;
     /**
      * @brief Count active session tokens.

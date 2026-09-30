@@ -4,9 +4,7 @@
  */
 #pragma once
 
-#ifdef _WIN32
   #include <WinSock2.h>
-#endif
 
 #ifndef BOOST_PROCESS_V2_HEADER_ONLY
   #define BOOST_PROCESS_V2_HEADER_ONLY
@@ -15,11 +13,6 @@
 #include <boost/asio/system_executor.hpp>
 #include <boost/process/v2/environment.hpp>
 #include <boost/process/v2/process.hpp>
-#ifndef _WIN32
-  #include <boost/process/v2/posix/default_launcher.hpp>
-  #include <boost/process/v2/start_dir.hpp>
-  #include <boost/process/v2/stdio.hpp>
-#endif
 #include <algorithm>
 #include <boost/filesystem/path.hpp>
 #include <boost/system/error_code.hpp>
@@ -31,13 +24,8 @@
 #include <type_traits>
 #include <vector>
 
-#ifdef _WIN32
   #include <processthreadsapi.h>
   #include <Windows.h>
-#else
-  #include <csignal>
-  #include <unistd.h>
-#endif
 
 namespace boost_process_shim {
 
@@ -48,7 +36,6 @@ namespace boost_process_shim {
 
   namespace detail {
     inline std::string to_utf8(const std::wstring &input) {
-#ifdef _WIN32
       if (input.empty()) {
         return {};
       }
@@ -60,14 +47,9 @@ namespace boost_process_shim {
       output.resize((size_t) required);
       WideCharToMultiByte(CP_UTF8, 0, input.data(), (int) input.size(), output.data(), required, nullptr, nullptr);
       return output;
-#else
-      (void) input;
-      return {};
-#endif
     }
 
     inline std::wstring from_utf8(const std::string &input) {
-#ifdef _WIN32
       if (input.empty()) {
         return {};
       }
@@ -79,19 +61,11 @@ namespace boost_process_shim {
       output.resize((size_t) required);
       MultiByteToWideChar(CP_UTF8, 0, input.data(), (int) input.size(), output.data(), required);
       return output;
-#else
-      (void) input;
-      return {};
-#endif
     }
 
     template<typename Char>
     inline bool names_equal(const std::basic_string<Char> &lhs, const std::basic_string<Char> &rhs) {
-#ifdef _WIN32
       return boost::iequals(lhs, rhs);
-#else
-      return lhs == rhs;
-#endif
     }
   }  // namespace detail
 
@@ -169,7 +143,6 @@ namespace boost_process_shim {
 
     static basic_environment current() {
       basic_environment env;
-#ifdef _WIN32
       if constexpr (std::is_same_v<Char, wchar_t>) {
         for (auto kvp : v2::environment::current()) {
           env._entries.push_back(entry {kvp.key().wstring(), kvp.value().wstring()});
@@ -181,11 +154,6 @@ namespace boost_process_shim {
           env._entries.push_back(entry {detail::to_utf8(name), detail::to_utf8(value)});
         }
       }
-#else
-      for (auto kvp : v2::environment::current()) {
-        env._entries.push_back(entry {kvp.key().string(), kvp.value().string()});
-      }
-#endif
       return env;
     }
 
@@ -230,26 +198,12 @@ namespace boost_process_shim {
         }
         return process_environment_t(env_buffer);
       } else {
-#ifdef _WIN32
         std::vector<std::wstring> env_buffer;
         env_buffer.reserve(_entries.size());
         for (const auto &entry : _entries) {
           env_buffer.push_back(detail::from_utf8(entry.get_name()) + L"=" + detail::from_utf8(entry.to_string()));
         }
         return process_environment_t(env_buffer);
-#else
-        // process_environment's string-range overload stores pointers into the
-        // supplied strings. Those strings are local to this function, so the
-        // pointers would dangle before the child is spawned. A pair range is
-        // not convertible to Boost's string view and therefore selects the
-        // overload that copies entries into the process_environment instance.
-        std::vector<std::pair<std::string, std::string>> env_buffer;
-        env_buffer.reserve(_entries.size());
-        for (const auto &entry : _entries) {
-          env_buffer.emplace_back(entry.get_name(), entry.to_string());
-        }
-        return v2::process_environment(env_buffer);
-#endif
       }
     }
 
@@ -277,9 +231,7 @@ namespace boost_process_shim {
 
   using environment = basic_environment<char>;
   using native_environment = environment;
-#ifdef _WIN32
   using wenvironment = basic_environment<wchar_t>;
-#endif
 
   class child {
   public:
@@ -377,16 +329,12 @@ namespace boost_process_shim {
   class group {
   public:
     group() {
-#ifdef _WIN32
       job_ = CreateJobObjectW(nullptr, nullptr);
       if (job_) {
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION info {};
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
         SetInformationJobObject(job_, JobObjectExtendedLimitInformation, &info, sizeof(info));
       }
-#else
-      pgid_ = -1;
-#endif
     }
 
     ~group() {
@@ -394,13 +342,8 @@ namespace boost_process_shim {
     }
 
     group(group &&other) noexcept {
-#ifdef _WIN32
       job_ = other.job_;
       other.job_ = nullptr;
-#else
-      pgid_ = other.pgid_;
-      other.pgid_ = -1;
-#endif
     }
 
     group &operator=(group &&other) noexcept {
@@ -408,13 +351,8 @@ namespace boost_process_shim {
         return *this;
       }
       detach();
-#ifdef _WIN32
       job_ = other.job_;
       other.job_ = nullptr;
-#else
-      pgid_ = other.pgid_;
-      other.pgid_ = -1;
-#endif
       return *this;
     }
 
@@ -422,96 +360,42 @@ namespace boost_process_shim {
     group &operator=(const group &) = delete;
 
     bool valid() const {
-#ifdef _WIN32
       return job_ != nullptr;
-#else
-      return pgid_ > 0;
-#endif
     }
 
     explicit operator bool() const {
       return valid();
     }
 
-#ifdef _WIN32
     using native_handle_type = HANDLE;
-#else
-    using native_handle_type = pid_t;
-#endif
 
     native_handle_type native_handle() const {
-#ifdef _WIN32
       return job_;
-#else
-      return pgid_;
-#endif
     }
 
     void detach() {
-#ifdef _WIN32
       if (job_) {
         CloseHandle(job_);
         job_ = nullptr;
       }
-#else
-      pgid_ = -1;
-#endif
     }
 
     void terminate(std::error_code &ec) {
       ec.clear();
-#ifdef _WIN32
       if (!job_) {
         return;
       }
       if (!TerminateJobObject(job_, 1)) {
         ec = std::error_code((int) GetLastError(), std::system_category());
       }
-#else
-      if (pgid_ > 0) {
-        if (::kill(-pgid_, SIGKILL) != 0) {
-          ec = std::error_code(errno, std::system_category());
-        }
-      }
-#endif
     }
 
-#ifndef _WIN32
-    void set_leader(pid_t pgid) {
-      pgid_ = pgid;
-    }
-#endif
 
   private:
-#ifdef _WIN32
     HANDLE job_ {nullptr};
-#else
-    pid_t pgid_ {-1};
-#endif
   };
 
   namespace detail {
-#ifndef _WIN32
-    struct posix_group_initer {
-      group *grp;
-
-      std::error_code on_exec_setup(v2::posix::default_launcher &, const v2::filesystem::path &, const char *const *) {
-        if (!grp) {
-          return {};
-        }
-        if (::setpgid(0, 0) != 0) {
-          return std::error_code(errno, std::system_category());
-        }
-        return {};
-      }
-
-      void on_success(v2::posix::default_launcher &launcher, const v2::filesystem::path &, const char *const *) {
-        if (grp) {
-          grp->set_leader(static_cast<pid_t>(launcher.pid));
-        }
-      }
-    };
-#endif
   }  // namespace detail
 
   namespace this_process {
@@ -519,11 +403,9 @@ namespace boost_process_shim {
       return environment::current();
     }
 
-#ifdef _WIN32
     inline wenvironment wenv() {
       return wenvironment::current();
     }
-#endif
   }  // namespace this_process
 
   inline std::filesystem::path search_path(const std::string &filename) {

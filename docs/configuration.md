@@ -720,30 +720,6 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
-### ds5_inputtino_randomize_mac
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            Randomize the MAC-Address for the generated virtual controller.
-            @hint{Only applies on linux for gamepads created as PS5-style controllers}
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}
-            enabled
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            ds5_inputtino_randomize_mac = enabled
-            @endcode</td>
-    </tr>
-</table>
-
 ## Audio/Video
 
 ### audio_sink
@@ -1165,73 +1141,6 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>shared</td>
         <td>Reuse a single virtual display for all clients. Faster reconnects, but only one virtual layout is maintained.</td>
-    </tr>
-</table>
-
-### virtual_display_outputs
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            Linux-only list of DRM connector names reserved for private streaming displays.
-            Separate names with commas, or provide a JSON string array. Leave this empty to
-            auto-discover outputs created by the packaged <code>vibeshine-vkms.service</code>.
-            The Linux DRM driver, connector broker, and service assets are supplied by the
-            bundled <code>libvirtualdisplay</code> dependency.
-            Explicit connector names are useful for a forced-EDID or hardware dummy output.
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">Empty (auto-discover the managed VKMS pool)</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            virtual_display_outputs = Virtual-1, Virtual-2
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Linux setup</td>
-        <td colspan="2">@code{}
-            sudo vibepollo driver install
-            sudo systemctl enable --now vibeshine-vkms.service
-            @endcode
-            Native packages and <code>vibeshine-drm-setup.service</code> attempt this installation
-            automatically; use the first command to install or retry it manually. The privileged
-            helper always uses the fixed, root-owned
-            <code>/usr/libexec/vibeshine</code> path, independent of the application install prefix.
-            Replacing the module file does not replace a module already loaded by the compositor.
-            Compare <code>modinfo -F version vibeshine_drm</code> with
-            <code>cat /sys/module/vibeshine_drm/version</code> and reboot before testing when they differ.
-            The module supports Linux 6.16 or newer and exposes four independent virtual connectors
-            with a deterministic HDR10 EDID, BT.2020/PQ metadata, 8-16 bits per component, and
-            10-bit RGB plane formats. Vibepollo enables one only for a stream, applies the requested
-            mode, layout, and HDR state through KScreen, captures that exact connector, and restores
-            the prior topology afterward.
-            KDE Plasma/KWin and <code>kscreen-doctor</code> are required for managed topology.
-            Vibepollo uses direct DRM/KMS capture for managed HDR output so the 10-bit scanout reaches
-            the encoder. The custom driver also notifies capture after completed presentation changes and
-            exports the exact pinned primary-plane DMA-BUF for that sequence. Sparse changes are captured
-            immediately, while faster changes are coalesced to the stream's requested maximum frame rate
-            without re-querying KMS state. Managed outputs expose no cursor or overlay planes, so KWin
-            composites the complete monitor image into that primary framebuffer. An older module without
-            this ABI is rejected rather than polled. KWin ScreenCast remains the recommended compositor
-            capture path for SDR.
-            <br><br>
-            If the custom module cannot be built or loaded (including on older kernels or when
-            the kernel rejects an untrusted module signature), managed virtual displays remain unavailable.
-            Vibepollo deliberately does not fall back to CPU-backed stock <code>vkms</code> scanout.
-            Arch Linux and CachyOS packages use DKMS to sign future rebuilds with a persistent local
-            key and verify the embedded signer before accepting the module. Stock Arch and CachyOS
-            kernels need no separate signing step: accepting the normal package-install confirmation
-            is enough, including with Secure Boot through Limine or systemd-boot. Only a custom kernel
-            that enforces trusted module signatures requires shim. The package installation detects
-            this and launches the one-time signing-key authorization prompt automatically; reboot and
-            approve the pending firmware confirmations once. Future updates remain automatic. Install
-            the matching kernel headers before retrying a failed module build.
-        </td>
     </tr>
 </table>
 
@@ -2061,27 +1970,6 @@ this option to replace the running app immediately. The default is `true`.
     </tr>
 </table>
 
-### external_ip
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            If no external IP address is given, Sunshine will attempt to automatically detect external ip-address.
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">Automatic</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            external_ip = 123.456.789.12
-            @endcode</td>
-    </tr>
-</table>
-
 ### lan_encryption_mode
 
 <table>
@@ -2459,30 +2347,6 @@ this option to replace the running app immediately. The default is `true`.
         <td>Example</td>
         <td colspan="2">@code{}
             fec_percentage = 20
-            @endcode</td>
-    </tr>
-</table>
-
-### qp
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            Quantization Parameter. Some devices don't support Constant Bit Rate. For those devices, QP is used instead.
-            @warning{Higher value means more compression, but less quality.}
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}
-            28
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            qp = 28
             @endcode</td>
     </tr>
 </table>
@@ -2892,88 +2756,6 @@ are detected during the stream. The host log reports hook readiness or failure.
         <td>Example</td>
         <td colspan="2">@code{}
             frame_limiter_fps_limit = 59.94
-            @endcode</td>
-    </tr>
-</table>
-
-### mangohud_limiter_method
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            Linux-only timing used when <code>frame_limiter_provider = mangohud</code>.
-            <code>early</code> waits before presentation for smoother pacing at the cost of
-            more latency. <code>late</code> waits after presentation for lower latency, but
-            cannot limit frame-generated output. The Proton limiter supports frame generation.
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}late@endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            mangohud_limiter_method = early
-            @endcode</td>
-    </tr>
-    <tr>
-        <td rowspan="2">Choices</td>
-        <td>early</td><td>Smoother frame pacing with more latency.</td>
-    </tr>
-    <tr><td>late</td><td>Lower latency; does not limit frame-generated output.</td></tr>
-</table>
-
-### mangohud_preset
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            Linux-only MangoHUD metrics and layout preset used for games launched during a stream.
-            Use <code>custom</code> to retain the metrics from the user's MangoHud configuration,
-            or select one of MangoHud's standard built-in presets.
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}custom@endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            mangohud_preset = 3
-            @endcode</td>
-    </tr>
-    <tr>
-        <td rowspan="5">Choices</td>
-        <td>custom</td><td>Use the metrics and layout from the user's MangoHud configuration.</td>
-    </tr>
-    <tr><td>1</td><td>FPS only.</td></tr>
-    <tr><td>2</td><td>Horizontal.</td></tr>
-    <tr><td>3</td><td>Extended.</td></tr>
-    <tr><td>4</td><td>Detailed.</td></tr>
-</table>
-
-### mangohud_always_show_graph
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            Linux-only option that keeps the MangoHud overlay visible and enables its live
-            frame-time graph for every managed game launch.
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}disabled@endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            mangohud_always_show_graph = enabled
             @endcode</td>
     </tr>
 </table>
@@ -3963,230 +3745,9 @@ distribution, not only a single maximum. Restore `0` if there is no repeatable b
 
 ## VideoToolbox Encoder
 
-### vt_coder
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            The entropy encoding to use.
-            @note{This option only applies when using macOS.}
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}
-            auto
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            vt_coder = auto
-            @endcode</td>
-    </tr>
-    <tr>
-        <td rowspan="3">Choices</td>
-        <td>auto</td>
-        <td>let ffmpeg decide</td>
-    </tr>
-    <tr>
-        <td>cabac</td>
-        <td>context adaptive binary arithmetic coding - faster decode</td>
-    </tr>
-    <tr>
-        <td>cavlc</td>
-        <td>context adaptive variable-length coding - higher quality</td>
-    </tr>
-</table>
-
-### vt_software
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            Force Video Toolbox to use software encoding.
-            @note{This option only applies when using macOS.}
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}
-            auto
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            vt_software = auto
-            @endcode</td>
-    </tr>
-    <tr>
-        <td rowspan="4">Choices</td>
-        <td>auto</td>
-        <td>let ffmpeg decide</td>
-    </tr>
-    <tr>
-        <td>disabled</td>
-        <td>disable software encoding</td>
-    </tr>
-    <tr>
-        <td>allowed</td>
-        <td>allow software encoding</td>
-    </tr>
-    <tr>
-        <td>forced</td>
-        <td>force software encoding</td>
-    </tr>
-</table>
-
-### vt_realtime
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            Realtime encoding.
-            @note{This option only applies when using macOS.}
-            @warning{Disabling realtime encoding might result in a delayed frame encoding or frame drop.}
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}
-            enabled
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            vt_realtime = enabled
-            @endcode</td>
-    </tr>
-</table>
-
 ## VA-API Encoder
 
-### vaapi_strict_rc_buffer
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            Enabling this option can avoid dropped frames over the network during scene changes, but video quality may
-            be reduced during motion.
-            @note{This option only applies for H.264 and HEVC when using VA-API [encoder](#encoder) on AMD GPUs.}
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}
-            disabled
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            vaapi_strict_rc_buffer = enabled
-            @endcode</td>
-    </tr>
-</table>
-
 ## Vulkan Encoder
-
-### vk_tune
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            Encoder tuning preset. Low latency modes reduce encoding delay at the cost of quality.
-            @note{This option only applies when using Vulkan [encoder](#encoder).}
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}
-            2
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            vk_tune = 1
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Options</td>
-        <td>0 (default)</td>
-        <td>Let the driver decide</td>
-    </tr>
-    <tr>
-        <td></td>
-        <td>1 (hq)</td>
-        <td>High Quality</td>
-    </tr>
-    <tr>
-        <td></td>
-        <td>2 (ll)</td>
-        <td>Low Latency</td>
-    </tr>
-    <tr>
-        <td></td>
-        <td>3 (ull)</td>
-        <td>Ultra Low Latency</td>
-    </tr>
-    <tr>
-        <td></td>
-        <td>4 (lossless)</td>
-        <td>Lossless</td>
-    </tr>
-</table>
-
-### vk_rc_mode
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            Rate control mode for encoding. Auto lets the driver decide.
-            @note{This option only applies when using Vulkan [encoder](#encoder).}
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}
-            2
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            vk_rc_mode = 4
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Options</td>
-        <td>0</td>
-        <td>Auto (driver decides)</td>
-    </tr>
-    <tr>
-        <td></td>
-        <td>1</td>
-        <td>CQP (Constant QP)</td>
-    </tr>
-    <tr>
-        <td></td>
-        <td>2</td>
-        <td>CBR (Constant Bitrate)</td>
-    </tr>
-    <tr>
-        <td></td>
-        <td>4</td>
-        <td>VBR (Variable Bitrate)</td>
-    </tr>
-</table>
 
 ## Software Encoder
 
@@ -4345,14 +3906,6 @@ Sets how long a paused virtual display may remain ready before the display helpe
 
 Sets the virtual-display scale override. The default, `0` (Retain), keeps your chosen scale for future streams. On Windows, connect to the virtual display and choose **Scale** in **Settings > System > Display**; subsequent streams using that virtual display retain your choice. Choose an explicit percentage to change desktop scaling without changing the requested pixel resolution. On Windows, scaling is applied through the DPI setter without changing the virtual monitor's reported physical size. The optional `-1` setting chooses a scale based on resolution.
 
-### dd_wa_hdr_toggle
-
-Enables the display-helper HDR-toggle workaround for display stacks that require an explicit HDR transition.
-
-### dd_wa_hdr_toggle_delay
-
-Sets the delay, in milliseconds, used by the display-helper HDR-toggle workaround.
-
 ### rtx_hdr
 
 Enables RTX HDR processing when the active NVIDIA environment supports it.
@@ -4433,10 +3986,6 @@ Configures commands that run when any application changes streaming state.
 
 Hides the interactive controls in the system-tray menu.
 
-### ignore_encoder_probe_failure
-
-Allows streaming to continue when the encoder capability probe cannot complete.
-
 ### keep_sink_default
 
 Keeps the selected audio sink as the system default while streaming.
@@ -4448,10 +3997,6 @@ Enables legacy application ordering for clients and integrations that require it
 ### limit_framerate
 
 When enabled, limits encoding to the launch-requested stream cadence while retaining the separately announced capture cadence used by Artemis Warp. Fractional frame rates are preserved. When disabled, encoding follows the announced cadence. Warp bitrate compensation remains subject to `max_bitrate`.
-
-### nvenc_intra_refresh
-
-Uses NVIDIA intra refresh instead of full keyframes when supported.
 
 ### nvenc_temporal_aq
 
@@ -4469,7 +4014,7 @@ Sets the maximum network packet size used for streaming. Set `0` to use the defa
 
 | Previous          |                            Next |
 |:------------------|--------------------------------:|
-| [Legal](legal.md) | [App Examples](app_examples.md) |
+| Legal | App Examples |
 
 </div>
 

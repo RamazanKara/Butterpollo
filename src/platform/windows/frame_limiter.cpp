@@ -3,7 +3,6 @@
  * @brief Frame limiter provider selection and orchestration.
  */
 
-#ifdef _WIN32
 
   #include "frame_limiter.h"
 
@@ -199,7 +198,7 @@ namespace platf {
     const bool capture_fix_enabled = policy.capture_fix_enabled;
     const bool physical_framegen_policy_enabled = policy.physical_framegen_capture;
     const bool policy_overrides_enabled = capture_fix_enabled || auto_framegen_policy_enabled || physical_framegen_policy_enabled;
-    const bool frame_limit_enabled = config::frame_limiter.enable || policy_overrides_enabled || (policy.lossless_rtss_limit && *policy.lossless_rtss_limit > 0);
+    const bool frame_limit_enabled = config::frame_limiter.enable || policy_overrides_enabled;
     const bool nvidia_gpu_present = platf::has_nvidia_gpu();
     const bool amd_gpu_present = has_amd_gpu();
     const bool nvcp_ready = frame_limiter_nvcp::is_available();
@@ -272,9 +271,6 @@ namespace platf {
                                                 (policy.fps_scaled > 0 ?
                                                    static_cast<std::uint32_t>(policy.fps_scaled) :
                                                    framegen::normalize_refresh_millihz(policy.fps));
-    if (policy.lossless_rtss_limit && *policy.lossless_rtss_limit > 0) {
-      effective_limit_millihz = integer_fps_to_millihz(*policy.lossless_rtss_limit);
-    }
     if (config::frame_limiter.fps_limit_millihz > 0) {
       effective_limit_millihz = config::frame_limiter.fps_limit_millihz;
     }
@@ -286,7 +282,6 @@ namespace platf {
                      << " effective_limit=" << effective_limit.fps()
                      << " effective_limit_millihz=" << effective_limit.millihz
                      << " capture_fix=" << capture_fix_enabled
-                     << " lossless_rtss_limit=" << (policy.lossless_rtss_limit ? *policy.lossless_rtss_limit : 0)
                      << " frame_generation_provider=" << policy.frame_generation_provider
                      << " frame_generation_enabled=" << policy.frame_generation_enabled
                      << " uses_virtual_display=" << policy.uses_virtual_display
@@ -424,7 +419,7 @@ namespace platf {
     const bool capture_fix_enabled = policy.capture_fix_enabled;
     const bool auto_framegen_policy_enabled = policy.auto_virtual_framegen_limiter;
     const bool physical_framegen_policy_enabled = policy.physical_framegen_capture;
-    const bool frame_limit_enabled = config::frame_limiter.enable || capture_fix_enabled || auto_framegen_policy_enabled || physical_framegen_policy_enabled || (policy.lossless_rtss_limit && *policy.lossless_rtss_limit > 0);
+    const bool frame_limit_enabled = config::frame_limiter.enable || capture_fix_enabled || auto_framegen_policy_enabled || physical_framegen_policy_enabled;
     if (!frame_limit_enabled) {
       return false;
     }
@@ -577,5 +572,3 @@ namespace platf {
   }
 
 }  // namespace platf
-
-#endif  // _WIN32

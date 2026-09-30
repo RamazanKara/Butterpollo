@@ -4,7 +4,6 @@
  */
 #pragma once
 
-#ifdef _WIN32
 
   #include <cstdint>
   #include <chrono>
@@ -125,5 +124,3 @@ namespace platf::display_helper_client {
     std::chrono::steady_clock::time_point operation_deadline =
       std::chrono::steady_clock::time_point::max());
 }  // namespace platf::display_helper_client
-
-#endif

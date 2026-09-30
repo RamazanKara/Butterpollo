@@ -2,7 +2,6 @@
  * @file src/nvenc/nvenc_d3d11_native.cpp
  * @brief Definitions for native Direct3D11 NVENC encoder.
  */
-#ifdef _WIN32
   // this include
   #include "nvenc_d3d11_native.h"
   #include "nvenc_api.h"
@@ -72,4 +71,3 @@ namespace nvenc {
   }
 
 }  // namespace nvenc
-#endif

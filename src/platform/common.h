@@ -21,9 +21,6 @@
 
 // lib includes
 #include <boost/core/noncopyable.hpp>
-#ifndef _WIN32
-  #include <boost/asio.hpp>
-#endif
 
 // local includes
 #include "src/boost_process_shim.h"
@@ -226,10 +223,7 @@ namespace platf {
 
   enum class mem_type_e {
     system,  ///< System memory
-    vaapi,  ///< VAAPI
     dxgi,  ///< DXGI
-    cuda,  ///< CUDA
-    videotoolbox,  ///< VideoToolbox
     vulkan,  ///< Vulkan video memory
     unknown  ///< Unknown
   };
@@ -796,7 +790,6 @@ namespace platf {
    * @brief Check if GPUs/drivers have changed since the last call to this function.
    * @return `true` if a change has occurred or if it is unknown whether a change occurred.
    */
-  bool needs_encoder_reenumeration();
 
   namespace bp = boost_process_shim;
 
@@ -1093,7 +1086,6 @@ namespace platf {
 
   std::string resolve_render_device();
   bool has_elevated_privileges(bool all_caps = true);
-  [[nodiscard]] bool drop_elevated_privileges(bool all_caps = true);
   [[nodiscard]] bool drop_effective_elevated_privileges(bool all_caps);
 
 }  // namespace platf

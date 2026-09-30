@@ -3,7 +3,6 @@
  * @brief Entry point for sunshine_display_helper.exe: the FSM-based display
  *        helper engine (v2).
  */
-#ifdef _WIN32
 
   #include <algorithm>
   #include <array>
@@ -1181,5 +1180,3 @@ int main(int argc, char *argv[]) {
   logging::log_flush();
   return exit_code;
 }
-
-#endif  // _WIN32

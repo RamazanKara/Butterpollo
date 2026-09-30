@@ -4,7 +4,6 @@
  */
 #pragma once
 
-#ifdef _WIN32
 
 namespace platf::frame_limiter_nvcp {
 
@@ -14,5 +13,3 @@ namespace platf::frame_limiter_nvcp {
   void restore_pending_overrides();
 
 }  // namespace platf::frame_limiter_nvcp
-
-#endif  // _WIN32

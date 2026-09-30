@@ -3,7 +3,6 @@
  * @brief Declarations for CUDA NVENC encoder with Direct3D11 input surfaces.
  */
 #pragma once
-#ifdef _WIN32
   // lib includes
   #include <ffnvcodec/dynlink_cuda.h>
 
@@ -85,4 +84,3 @@ namespace nvenc {
   };
 
 }  // namespace nvenc
-#endif

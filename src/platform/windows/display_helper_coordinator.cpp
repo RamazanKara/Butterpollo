@@ -1,6 +1,5 @@
 #include "display_helper_coordinator.h"
 
-#ifdef _WIN32
 
   #include "display_helper_integration.h"
   #include "virtual_display.h"
@@ -29,5 +28,3 @@ namespace platf::display_helper {
     VDISPLAY::setWatchdogFeedingEnabled(enable);
   }
 }  // namespace platf::display_helper
-
-#endif

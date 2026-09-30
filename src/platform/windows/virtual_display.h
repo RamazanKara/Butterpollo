@@ -228,7 +228,6 @@ namespace VDISPLAY {
     const std::string &edid_product_code
   );
 
-  std::vector<std::wstring> matchDisplay(std::wstring sMatch);
 
   struct VirtualDisplayInfo {
     std::wstring device_name;

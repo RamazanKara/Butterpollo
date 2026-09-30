@@ -1,9 +1,6 @@
 <script setup lang="ts">
-import { supportsManagedLinuxDisplay } from '@/utils/providerCapabilities';
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
-
-import LinuxCaptureStatus from '@/components/settings/LinuxCaptureStatus.vue';
 import { ApiError, apiGet, apiPost } from '@/services/api';
 import {
   AppButton,
@@ -17,12 +14,10 @@ import {
 import type { SessionStatus } from '@/types/sessions';
 import { useSystemStore } from '@/stores/system';
 import { PROJECT_REPOSITORY_URL } from '@/utils/project';
-
 interface MutationResponse {
   status?: boolean | string;
   error?: string;
 }
-
 interface OverviewWarning {
   key: string;
   title: string;
@@ -30,7 +25,6 @@ interface OverviewWarning {
   to: string;
   action: string;
 }
-
 const { locale, t } = useI18n();
 const system = useSystemStore();
 const session = ref<SessionStatus | null>(null);
@@ -43,16 +37,13 @@ const stopping = ref(false);
 const stopNotice = ref('');
 const stopError = ref('');
 let pollTimer: number | undefined;
-
 function errorMessage(cause: unknown, fallback: string): string {
   return cause instanceof ApiError ? fallback : cause instanceof Error ? cause.message : fallback;
 }
-
 async function refresh(silent = false): Promise<void> {
   if (refreshing.value) return;
   refreshing.value = true;
   if (!silent) loading.value = true;
-
   void system.refreshHost();
   const nextErrors: string[] = [];
   try {
@@ -60,17 +51,14 @@ async function refresh(silent = false): Promise<void> {
   } catch (cause) {
     nextErrors.push(errorMessage(cause, t('ui.overview.errors.streamStatus')));
   }
-
   fetchErrors.value = [...new Set(nextErrors)];
   lastUpdatedAt.value = Date.now();
   refreshing.value = false;
   loading.value = false;
 }
-
 const isStreaming = computed(() =>
   Boolean(session.value?.appRunning || (session.value?.activeSessions ?? 0) > 0),
 );
-
 const warnings = computed<OverviewWarning[]>(() => {
   const result: OverviewWarning[] = [];
   if (fetchErrors.value.length) {
@@ -107,8 +95,11 @@ const warnings = computed<OverviewWarning[]>(() => {
   }
   return result;
 });
-
-const readiness = computed<{ label: string; detail: string; tone: StatusTone }>(() => {
+const readiness = computed<{
+  label: string;
+  detail: string;
+  tone: StatusTone;
+}>(() => {
   if (isStreaming.value) {
     return {
       label: t('ui.overview.readiness.streaming'),
@@ -118,14 +109,14 @@ const readiness = computed<{ label: string; detail: string; tone: StatusTone }>(
   }
   if (system.health === 'unknown')
     return {
-      label: t('ui.settings.linux.states.unknown'),
-      detail: t('ui.settings.linux.unverified'),
+      label: t('ui.status.unknown'),
+      detail: t('ui.status.unverified'),
       tone: 'neutral',
     };
   if (system.health === 'warning' && !warnings.value.length)
     return {
       label: t('ui.status.needs_attention'),
-      detail: t('ui.settings.linux.check_setup'),
+      detail: t('ui.status.check_setup'),
       tone: 'warning',
     };
   if (warnings.value.length) {
@@ -141,7 +132,6 @@ const readiness = computed<{ label: string; detail: string; tone: StatusTone }>(
     tone: 'success',
   };
 });
-
 const lastUpdatedLabel = computed(() =>
   lastUpdatedAt.value
     ? new Intl.DateTimeFormat(locale.value || undefined, {
@@ -150,7 +140,6 @@ const lastUpdatedLabel = computed(() =>
       }).format(lastUpdatedAt.value)
     : t('ui.overview.notUpdated'),
 );
-
 const readinessIcon = computed(() => {
   if (readiness.value.tone === 'warning') return 'alert-triangle';
   if (readiness.value.tone === 'neutral') return 'info';
@@ -187,13 +176,11 @@ const stopConfirmDescription = computed(() =>
     ? t('ui.sessions.confirm.stop_rtsp_all_description')
     : t('ui.sessions.confirm.stop_rtsp_description'),
 );
-
 function requestStop(): void {
   stopError.value = '';
   stopNotice.value = '';
   stopConfirmOpen.value = true;
 }
-
 async function confirmStop(): Promise<void> {
   stopping.value = true;
   stopError.value = '';
@@ -209,19 +196,16 @@ async function confirmStop(): Promise<void> {
     stopping.value = false;
   }
 }
-
 function onVisibilityChange(): void {
   if (document.visibilityState === 'visible') void refresh(true);
 }
-
 onMounted(() => {
   void refresh();
   pollTimer = window.setInterval(() => {
     if (document.visibilityState === 'visible') void refresh(true);
-  }, 10_000);
+  }, 10000);
   document.addEventListener('visibilitychange', onVisibilityChange);
 });
-
 onBeforeUnmount(() => {
   if (pollTimer) window.clearInterval(pollTimer);
   document.removeEventListener('visibilitychange', onVisibilityChange);
@@ -343,15 +327,7 @@ onBeforeUnmount(() => {
           <UiIcon name="chevron-right" :size="16" />
         </RouterLink>
       </section>
-      <LinuxCaptureStatus
-        v-if="system.metadata?.platform === 'linux' && supportsManagedLinuxDisplay(system.metadata)"
-        :metadata="system.metadata"
-        :virtual-mode="
-          system.metadata.capture_status?.virtual_display_configured === false
-            ? 'disabled'
-            : undefined
-        "
-      />
+
       <footer class="overview-footer">
         <span
           >{{ t('ui.overview.installedVersion') }}
@@ -536,9 +512,6 @@ onBeforeUnmount(() => {
 .workspace-link:hover > svg,
 .workspace-link:hover .workspace-link__icon {
   color: var(--vs-color-accent-default);
-}
-.overview-page :deep(.linux-capture) {
-  margin-bottom: 0;
 }
 .overview-footer {
   display: flex;

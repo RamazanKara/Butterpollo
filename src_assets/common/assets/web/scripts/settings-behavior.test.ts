@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { hostReadiness, linuxCaptureState } from '../utils/hostReadiness.ts';
+import { hostReadiness } from '../utils/hostReadiness.ts';
 import { acknowledgeSettings, configBoolean, settingError } from '../utils/settings.ts';
 import { settingsFields } from '../configs/settingsSchema.ts';
 import {
@@ -11,40 +11,11 @@ import {
   parseNetworkPort,
 } from '../utils/network.ts';
 
-test('capture verification requires observed event-driven KMS, never configuration alone', () => {
-  const configured = {
-    virtual_display: { ready: true },
-    capture_status: { configured_backend: 'kms' },
-  };
-  assert.equal(linuxCaptureState(configured), 'configured');
-  assert.equal(
-    linuxCaptureState({
-      ...configured,
-      capture_status: { ...configured.capture_status, managed_event_driven: true },
-    }),
-    'configured',
-  );
-  assert.equal(
-    linuxCaptureState({
-      ...configured,
-      capture_status: { observed_backend: 'kms', managed_event_driven: true },
-    }),
-    'active',
-  );
-  assert.equal(linuxCaptureState({}, 'disabled'), 'physical');
-  assert.equal(
-    linuxCaptureState({ capture_status: { virtual_display_configured: false } }),
-    'physical',
-  );
-  assert.equal(linuxCaptureState({ virtual_display: { ready: false } }), 'unavailable');
-  assert.equal(linuxCaptureState({}), 'unknown');
-});
-
 test('readiness remains unknown until encoder readiness is known; physical capture does not require virtual outputs', () => {
   assert.equal(hostReadiness(null, false, false), 'unknown');
-  assert.equal(hostReadiness({ platform: 'linux' }, false, false), 'unknown');
+  assert.equal(hostReadiness({ platform: 'windows' }, false, false), 'unknown');
   const physical = {
-    platform: 'linux',
+    platform: 'windows',
     encoder_status: { state: 'ready' as const },
     virtual_display: { ready: false },
     capture_status: { virtual_display_configured: false },
@@ -56,8 +27,9 @@ test('readiness remains unknown until encoder readiness is known; physical captu
       false,
       false,
     ),
-    'warning',
+    'healthy',
   );
+  assert.equal(hostReadiness({ encoder_status: { state: 'failed' } }, false, false), 'warning');
   assert.equal(hostReadiness(physical, true, false), 'streaming');
   assert.equal(hostReadiness(physical, true, true), 'warning');
 });
@@ -129,7 +101,6 @@ test('every runtime override has an editor or belongs to the adapter pair', asyn
 
 test('every backend option has a settings field or a dedicated integration destination', async () => {
   const { readFileSync } = await import('node:fs');
-  const { settingsDestinations } = await import('../configs/settingsSchema.ts');
   // Deprecated aliases and tuning knobs that are only set in the configuration file.
   const fileOnly = new Set([
     'amd_av1_tiles',
@@ -144,12 +115,6 @@ test('every backend option has a settings field or a dedicated integration desti
   const keys = [...source.matchAll(/\b\w+_f\s*\(\s*vars\s*,\s*"(\w+)"/g)].map((match) => match[1]);
   assert.ok(keys.length > 100);
   for (const key of keys) {
-    assert.ok(
-      key === 'adapter_pnp_id' ||
-        fileOnly.has(key) ||
-        settingsFields.has(key) ||
-        settingsDestinations.some((destination) => destination.keys.includes(key)),
-      key,
-    );
+    assert.ok(key === 'adapter_pnp_id' || fileOnly.has(key) || settingsFields.has(key), key);
   }
 });

@@ -4,7 +4,6 @@
  */
 #pragma once
 
-#ifdef _WIN32
 
   #include "src/platform/windows/rtss_integration.h"
   #include "src/framegen_policy.h"
@@ -46,5 +45,3 @@ namespace platf {
   frame_limiter_status_t frame_limiter_get_status();
 
 }  // namespace platf
-
-#endif  // _WIN32

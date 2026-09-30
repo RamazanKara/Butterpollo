@@ -182,7 +182,6 @@ and configuration write formats remain compatible.
   support from the current encoder-probe cache. Reading metadata never initiates a probe.
 - Provider actions are shown only when the corresponding `providers` capability is explicitly
   true. A missing capability means unavailable.
-- Linux `linux.session_role`: `desktop`, `greeter`, or `unknown`.
 - Linux `virtual_display.reason`: empty when ready; otherwise
   `driver_or_outputs_unavailable` or `session_or_output_unavailable`.
 - Linux `capture_status`: `configured_backend`, `virtual_display_configured`,

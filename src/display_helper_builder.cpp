@@ -40,10 +40,6 @@ namespace display_helper_integration {
     return *this;
   }
 
-  DisplayApplyBuilder &DisplayApplyBuilder::set_hdr_toggle_flag(const bool enable) {
-    attach_hdr_toggle_flag_ = enable;
-    return *this;
-  }
 
   DisplayApplyBuilder &DisplayApplyBuilder::set_topology(const DisplayTopologyDefinition &topology) {
     topology_ = topology;

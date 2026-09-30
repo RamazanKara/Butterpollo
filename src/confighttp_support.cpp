@@ -3,7 +3,6 @@
  * @brief Support log export and crash bundle HTTP endpoints (Windows-only).
  */
 
-#ifdef _WIN32
 
   // standard includes
   #include <algorithm>
@@ -1560,5 +1559,3 @@ namespace confighttp {
     }
   }
 }  // namespace confighttp
-
-#endif  // _WIN32

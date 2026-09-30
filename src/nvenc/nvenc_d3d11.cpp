@@ -5,7 +5,6 @@
 // local includes
 #include "src/logging.h"
 
-#ifdef _WIN32
   #include "nvenc_d3d11.h"
   #include "nvenc_api.h"
 
@@ -99,4 +98,3 @@ namespace nvenc {
   }
 
 }  // namespace nvenc
-#endif

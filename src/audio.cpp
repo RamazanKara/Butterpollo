@@ -31,7 +31,6 @@ namespace audio {
   static void stop_audio_control(audio_ctx_t &);
   static void apply_surround_params(opus_stream_config_t &stream, const stream_params_t &params);
 
-#if defined(_WIN32) || defined(__linux__)
   struct retained_audio_t {
     std::unique_ptr<platf::audio_control_t> control;
     platf::sink_t sink;
@@ -118,7 +117,6 @@ namespace audio {
     });
     restore_audio_control(ctx);
   }
-#endif
 
   int map_stream(int channels, bool quality);
 
@@ -279,7 +277,6 @@ namespace audio {
 
     // Only the first to start a session may change the default sink
     if (!ref->sink_flag->exchange(true, std::memory_order_acquire)) {
-#ifdef _WIN32
       if (policy::capture_sink_without_routing(config::audio.sink_capture_only, config::audio.sink, config::audio.virtual_sink, sink)) {
         // Pin capture even if this endpoint is currently the default. Later
         // default changes must not redirect capture or require restoration.
@@ -287,7 +284,6 @@ namespace audio {
           return;
         }
       } else
-#endif
       {
         // If the selected sink is different than the current one, change sinks.
         ref->restore_sink = ref->sink.host != sink;
@@ -380,27 +376,19 @@ namespace audio {
   }
 
   void app_termination_requested() {
-#if defined(_WIN32) || defined(__linux__)
     release_retained_audio();
-#endif
   }
 
   void app_started() {
-#if defined(_WIN32) || defined(__linux__)
     audio_state.app_started();
-#endif
   }
 
   void audio_owner_acquired() {
-#if defined(_WIN32) || defined(__linux__)
     audio_state.owner_acquired();
-#endif
   }
 
   void audio_owner_released() {
-#if defined(_WIN32) || defined(__linux__)
     audio_state.owner_released();
-#endif
   }
 
   bool is_audio_ctx_sink_available(const audio_ctx_t &ctx) {
@@ -427,14 +415,12 @@ namespace audio {
 
     ctx.sink_flag = std::make_unique<std::atomic_bool>(false);
 
-#if defined(_WIN32) || defined(__linux__)
     audio_state.wait_for_restore();
     if (reclaim_retained_audio(ctx)) {
       BOOST_LOG(info) << "Audio retained for resumable app; reclaimed on reconnect."sv;
       fg.disable();
       return 0;
     }
-#endif
 
     // The default sink has not been replaced yet.
     ctx.restore_sink = false;
@@ -461,7 +447,6 @@ namespace audio {
       return;
     }
 
-#if defined(_WIN32) || defined(__linux__)
     if (retain_audio_control(ctx)) {
       BOOST_LOG(info) << "Audio retained for resumable app after final transport owner ended."sv;
       return;
@@ -470,37 +455,6 @@ namespace audio {
     BOOST_LOG(info) << "Restoring audio state after terminal app end."sv;
     restore_audio_control(ctx);
     return;
-#else
-    const auto release_action = lifecycle::final_owner_release_action(
-      ctx.restore_sink,
-      false,
-      false
-    );
-
-    if (release_action != lifecycle::release_action_e::restore) {
-      return;
-    }
-
-    // restore audio-sink if applicable
-    if (!ctx.restore_sink) {
-      return;
-    }
-
-    // Change back to the host sink, unless there was none
-    const std::string &sink = ctx.sink.host.empty() ? config::audio.sink : ctx.sink.host;
-    if (!sink.empty()) {
-      // Best effort, it's allowed to fail. Windows restores the endpoint
-      // captured for each role instead of applying the console sink to all of
-      // them.
-      ctx.control->restore_sink(sink);
-    }
-
-    // Ensure Steam Streaming Speakers aren't left as the default device.
-    // If the original device is temporarily unavailable (e.g., DisplayPort audio
-    // reconnecting after virtual display teardown), the platform layer can keep
-    // retrying that exact device in the background after moving away from Steam.
-    ctx.control->reset_default_device(sink);
-#endif
   }
 
   void apply_surround_params(opus_stream_config_t &stream, const stream_params_t &params) {

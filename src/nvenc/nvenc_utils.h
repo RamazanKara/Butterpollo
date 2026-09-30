@@ -5,10 +5,8 @@
 #pragma once
 
 // platform includes
-#ifdef _WIN32
   #include <winsock2.h>
   #include <dxgiformat.h>
-#endif
 
 // lib includes
 #include <ffnvcodec/nvEncodeAPI.h>
@@ -20,9 +18,7 @@
 
 namespace nvenc {
 
-#ifdef _WIN32
   DXGI_FORMAT dxgi_format_from_nvenc_format(NV_ENC_BUFFER_FORMAT format);
-#endif
 
   NV_ENC_BUFFER_FORMAT nvenc_format_from_sunshine_format(platf::pix_fmt_e format);
 

@@ -26,19 +26,11 @@ namespace platf::services {
     class process_environment_provider_t: public environment_provider_t {
     public:
       int set(const std::string &name, const std::string &value) override {
-#ifdef _WIN32
         return _putenv_s(name.c_str(), value.c_str());
-#else
-        return setenv(name.c_str(), value.c_str(), 1);
-#endif
       }
 
       int unset(const std::string &name) override {
-#ifdef _WIN32
         return _putenv_s(name.c_str(), "");
-#else
-        return unsetenv(name.c_str());
-#endif
       }
 
       std::optional<std::string> get(const std::string &name) const override {

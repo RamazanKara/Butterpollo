@@ -2,7 +2,6 @@
  * @file src/platform/windows/display_helper_request_helpers.cpp
  */
 
-#ifdef _WIN32
 
   #include "display_helper_request_helpers.h"
 
@@ -802,5 +801,3 @@ namespace display_helper_integration::helpers {
     return builder.build();
   }
 }  // namespace display_helper_integration::helpers
-
-#endif  // _WIN32

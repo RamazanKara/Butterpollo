@@ -29,7 +29,6 @@
 #include "rtsp.h"
 #include "utility.h"
 
-#ifdef _WIN32
   #include "platform/windows/virtual_display.h"
 
 namespace VDISPLAY {
@@ -37,7 +36,6 @@ namespace VDISPLAY {
   enum class DRIVER_SELECTION;
 }
 
-#endif
 
 #define FALLBACK_DESKTOP_UUID "EAAC6159-089A-46A9-9E24-6436885F6610"
 #define TERMINATE_APP_UUID "E16CBE1B-295D-4632-9A76-EC4180C857D3"
@@ -48,7 +46,6 @@ namespace bp = boost_process_shim;
 namespace proc {
   using file_t = util::safe_ptr_v2<FILE, int, fclose>;
 
-#ifdef _WIN32
   extern std::atomic<VDISPLAY::DRIVER_STATUS> vDisplayDriverStatus;
   extern std::atomic<VDISPLAY::DRIVER_SELECTION> vDisplayDriverSelection;
   struct vdisplay_driver_status_snapshot_t {
@@ -59,7 +56,6 @@ namespace proc {
   void setVDisplayDriverStatus(VDISPLAY::DRIVER_STATUS status);
   void setVDisplayDriverStatus(VDISPLAY::DRIVER_STATUS status, VDISPLAY::DRIVER_SELECTION selection);
   void initVDisplayDriver();
-#endif
 
   typedef config::prep_cmd_t cmd_t;
 
@@ -70,7 +66,6 @@ namespace proc {
     std::chrono::steady_clock::time_point launch_started_at {};
   };
 
-#ifdef _WIN32
   struct running_app_state_t {
     bool has_active_app {false};
     bool trackable {false};
@@ -79,7 +74,6 @@ namespace proc {
     std::string working_dir;
     uint32_t root_pid {0};
   };
-#endif
 
   /**
    * pre_cmds -- guaranteed to be executed unless any of the commands fail.
@@ -145,10 +139,7 @@ namespace proc {
     bool frame_generation_enabled {false};
     // Retired Lossless Scaling launch-session fields. They stay false/unset so
     // the shared stream-start frame generation policy sees no Lossless provider.
-    bool lossless_scaling_framegen {false};
-    std::string frame_generation_provider {"lossless-scaling"};
-    std::optional<double> lossless_scaling_target_fps;
-    std::optional<int> lossless_scaling_rtss_limit;
+    std::string frame_generation_provider {"none"};
     std::optional<config::video_t::dd_t::config_option_e> dd_config_option_override;
 
     // Per-application overrides for global config keys (raw config-file value representation).
@@ -209,21 +200,16 @@ namespace proc {
     bool last_run_app_frame_gen_limiter_fix() const;
     bool is_launch_deferred() const;
     bool has_trackable_running_app() const;
-    bool foreground_window_matches_running_app();
-#ifdef _WIN32
     running_app_state_t running_app_state() const;
     bool running_app_contains_pid(uint32_t pid);
-#endif
 
     // Hot-update app list and environment without disrupting a running app
     void update_apps(std::vector<ctx_t> &&apps, bp::environment &&env);
-#ifdef _WIN32
     bool update_active_app_live_rtx_hdr_overrides(const std::string &app_uuid);
     bool update_active_app_live_rtx_hdr_overrides(
       const std::string &app_uuid,
       const std::unordered_map<std::string, std::string> &rtx_hdr_overrides
     );
-#endif
 
     // Helpers for parse/refresh to extract newly parsed state without exposing internals
     std::vector<ctx_t> release_apps();
@@ -249,18 +235,14 @@ namespace proc {
     // If no command associated with _app_id, yet it's still running
     bool placebo {};
 
-#ifdef _WIN32
     bool _deferred_launch {false};
-#endif
 
     bp::child _process;
     bp::group _process_group;
 
-#ifdef _WIN32
     GUID _virtual_display_guid {};
     bool _virtual_display_active {false};
     std::optional<config::runtime_output_override_lease_t> _runtime_output_override_lease;
-#endif
 
     file_t _pipe;
     std::vector<cmd_t>::const_iterator _app_prep_it;
@@ -276,7 +258,6 @@ namespace proc {
    */
   std::tuple<std::string, std::string> calculate_app_id(const std::string &app_name, const std::string &app_uuid, std::string app_image_path, int index);
 
-  bool check_valid_png(const std::filesystem::path &path);
   std::string validate_app_image_path(std::string app_image_path);
   std::optional<std::string> read_validated_app_image(const std::string &validated_path);
   std::string calculate_app_cover_fingerprint(std::string app_image_path);
@@ -298,7 +279,6 @@ namespace proc {
    */
   void terminate_process_group(bp::child &proc, bp::group &group, std::chrono::seconds exit_timeout);
 
-#ifdef _WIN32
   /** Mark an app-triggered display revert to run after the final stream ends. */
   void defer_display_revert();
 
@@ -307,7 +287,6 @@ namespace proc {
 
   /** Discard a deferred revert when a replacement app takes ownership of the display. */
   void clear_deferred_display_revert();
-#endif
 
   extern proc_t proc;
 

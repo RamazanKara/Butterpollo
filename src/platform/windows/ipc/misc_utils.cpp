@@ -218,23 +218,6 @@ namespace platf::dxgi {
     return found;
   }
 
-  std::vector<DWORD> find_process_ids_by_name(const std::wstring &process_name) {
-    std::vector<DWORD> pids;
-    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snapshot == INVALID_HANDLE_VALUE) {
-      return pids;
-    }
-    PROCESSENTRY32W pe {sizeof(pe)};
-    if (Process32FirstW(snapshot, &pe)) {
-      do {
-        if (_wcsicmp(pe.szExeFile, process_name.c_str()) == 0) {
-          pids.push_back(pe.th32ProcessID);
-        }
-      } while (Process32NextW(snapshot, &pe));
-    }
-    CloseHandle(snapshot);
-    return pids;
-  }
 
   bool is_secure_desktop_active() {
     // Open the input desktop for the current session

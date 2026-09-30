@@ -95,7 +95,6 @@ namespace display_helper_integration {
     DisplayApplyBuilder &set_configuration(const display_device::SingleDisplayConfiguration &config);
     DisplayApplyBuilder &clear_configuration();
     DisplayApplyBuilder &set_virtual_display_watchdog(bool enable);
-    DisplayApplyBuilder &set_hdr_toggle_flag(bool enable);
     DisplayApplyBuilder &set_topology(const DisplayTopologyDefinition &topology);
     DisplayTopologyDefinition &mutable_topology();
     ActiveSessionState &mutable_session_overrides();

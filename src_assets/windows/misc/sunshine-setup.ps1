@@ -15,7 +15,7 @@ param(
 )
 
 # Constants
-$DocsUrl = "https://github.com/Nonary/Vibepollo"
+$DocsUrl = "https://github.com/RamazanKara/Butterpollo"
 
 # Set preference variables for output streams
 $InformationPreference = 'Continue'

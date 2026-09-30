@@ -1,4 +1,3 @@
-#ifdef _WIN32
 
 #include "src/platform/windows/game_activity_policy.h"
 
@@ -266,5 +265,3 @@ namespace {
   }
 
 }
-
-#endif

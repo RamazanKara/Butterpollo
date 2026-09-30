@@ -477,24 +477,6 @@
       "notices": {
         "vulkanRefreshed": "The Vulkan HDR layer registration was refreshed."
       },
-      "mangohud": {
-        "alwaysShowGraph": "Always show frame-time graph",
-        "alwaysShowGraphDescription": "Keep the MangoHud overlay visible and include its live frame-time graph for every managed launch.",
-        "limiterMethod": "MangoHUD limiter timing",
-        "limiterMethodDescription": "Only applies when MangoHUD owns the limit. Early waits before presentation for smoother pacing with more latency. Late waits after presentation for lower latency, but cannot limit frame-generated output. The Proton limiter supports frame generation.",
-        "limiterMethodEarly": "Early — smoother pacing, more latency",
-        "limiterMethodLate": "Late — lower latency, no frame-generation limiting",
-        "name": "MangoHUD",
-        "overlayPreset": "Metrics and layout",
-        "overlayPresetDescription": "Choose one of MangoHud's standard metric layouts, or keep the metrics from your MangoHud configuration.",
-        "presetCustom": "Use MangoHud configuration",
-        "presetDetailed": "Detailed",
-        "presetExtended": "Extended",
-        "presetFpsOnly": "FPS only",
-        "presetHorizontal": "Horizontal",
-        "provider": "Limiter provider",
-        "providerAuto": "Automatic — Proton limiter + MangoHUD overlay"
-      },
       "refreshing": "Refreshing",
       "rtss": {
         "description": "Provides the preferred frame limiter for consistent stream pacing.",
@@ -833,12 +815,6 @@
         "title": "Installed version",
         "unknown": "Unknown version",
         "version": "Version"
-      },
-      "linux": {
-        "title": "Linux streaming setup",
-        "description": "Check the managed virtual screen, active desktop session, and encoder before troubleshooting a stream.",
-        "logs": "Open and download logs",
-        "display": "Display settings"
       },
       "releases": {
         "title": "Updates and release notes",
@@ -1780,38 +1756,6 @@
         "vsync_forced": "Required by the active physical dummy-plug HDR workaround. The Disable VSYNC override is shown as enabled and cannot be changed until the workaround is disabled.",
         "next_step": "Start a stream or restart Vibepollo to produce a fresh runtime check."
       },
-      "linux": {
-        "title": "Display readiness",
-        "recommendation": "Virtual screens match your client's resolution and refresh rate automatically.",
-        "explanation": "A virtual screen provides smooth frame delivery and low capture latency. Automatic resolution and refresh matching keeps it in sync with your client.",
-        "per_client": "Virtual screen per device",
-        "shared": "One shared virtual screen",
-        "states": {
-          "active": "Verified capture active",
-          "configured": "Configured for direct capture",
-          "unavailable": "Setup needs attention",
-          "physical": "Physical screen selected",
-          "unknown": "Not yet verified"
-        },
-        "reasons": {
-          "driver_or_outputs_unavailable": "The virtual-screen driver or its managed outputs are unavailable. Check the Linux installation before selecting a virtual screen.",
-          "session_or_output_unavailable": "The desktop session or virtual output is not ready. Check the session and display setup.",
-          "unknown": "The host could not verify its virtual screens. Check the Linux setup and try again."
-        },
-        "greeter": "Pre-login streaming uses one shared virtual screen. Logging in ends this stream; reconnect to stream your desktop. Desktop preferences apply after login.",
-        "repair": "Open Linux setup and troubleshooting",
-        "audio": "Linux uses the managed virtual audio sink automatically. Change audio routing only when you need a specific device.",
-        "unverified": "The host is reachable, but streaming readiness has not been verified yet.",
-        "check_setup": "Check display and encoder readiness in Settings, or open Logs for the reported failure.",
-        "fields": {
-          "virtual_display_mode": "Virtual screens are recommended for the lowest capture latency and smoothest frame delivery. Use a screen per device, share one screen, or select a physical monitor.",
-          "virtual_display_layout": "Choose what happens to your local monitors during streaming. Using only the virtual screen turns off the other displays until the desktop is restored.",
-          "capture": "The supported Linux machine host uses KMS for direct virtual-screen capture. Other backends are compatibility overrides and may not support unattended streaming.",
-          "adapter_name": "Leave empty for automatic GPU selection. To select a render device explicitly, enter its Linux path, such as /dev/dri/renderD128.",
-          "dd_virtual_display_scale": "@:config.virtual_display_scale_desc",
-          "virtual_display_outputs": "Leave empty to use the managed virtual-screen pool. Explicit DRM connector names are an advanced override."
-        }
-      },
       "leave_warning": "You have unsaved changes. Leave this page and discard them?",
       "reset_warning": "This restores the desktop and clears saved display state. It can interrupt the current stream.",
       "more_options": "More settings",
@@ -1942,7 +1886,10 @@
     "status": {
       "needs_attention": "Needs attention",
       "ready": "Ready",
-      "streaming": "Streaming"
+      "streaming": "Streaming",
+      "unknown": "Not yet verified",
+      "unverified": "The host is reachable, but streaming readiness has not been verified yet.",
+      "check_setup": "Check display and encoder readiness in Settings, or open Logs for the reported failure."
     },
     "system": {
       "host_status_unavailable": "Host status is temporarily unavailable.",

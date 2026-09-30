@@ -12,18 +12,15 @@ export type SettingsFieldKind =
   | 'display-recovery'
   | 'command-preparations'
   | 'server-commands';
-
 export interface SettingsOption {
   labelKey: string;
   value: string;
 }
-
 export interface SettingsVisibility {
   key: string;
   equals?: string | boolean;
   notEquals?: string | boolean;
 }
-
 export interface SettingsField {
   key: string;
   kind: SettingsFieldKind;
@@ -40,12 +37,11 @@ export interface SettingsField {
   stacked?: boolean;
   recommended?: boolean;
   simple?: boolean;
-  platform?: 'windows' | 'linux' | 'macos' | Array<'windows' | 'linux' | 'macos'>;
+  platform?: 'windows' | Array<'windows'>;
   visibleWhen?: SettingsVisibility;
   source?: 'gpu';
-  encoderFamily?: 'nvidia' | 'intel' | 'amd' | 'vaapi' | 'vulkan' | 'videotoolbox' | 'software';
+  encoderFamily?: 'nvidia' | 'intel' | 'amd' | 'software';
 }
-
 // Keep this list aligned with config::is_allowed_override_key(). The global
 // settings schema also contains network, filesystem, identity, and updater
 // fields that must never be offered as per-client runtime overrides.
@@ -64,7 +60,6 @@ export const clientOverrideableKeys = new Set([
   'high_resolution_scrolling',
   'native_pen_touch',
   'keybindings',
-  'ds5_inputtino_randomize_mac',
   'audio_sink',
   'audio_sink_capture_only',
   'virtual_sink',
@@ -88,14 +83,12 @@ export const clientOverrideableKeys = new Set([
   'dd_activate_virtual_display',
   'dd_virtual_display_scale',
   'dd_virtual_display_permanent_count',
-  'virtual_display_outputs',
   'dd_mode_remapping',
   'dd_wa_dummy_plug_hdr10',
   'max_bitrate',
   'minimum_fps_target',
   'fec_percentage',
   'video_max_batch_size_kb',
-  'qp',
   'min_threads',
   'hevc_mode',
   'av1_mode',
@@ -134,12 +127,6 @@ export const clientOverrideableKeys = new Set([
   'amd_high_motion_quality_boost',
   'amd_av1_screen_content',
   'amd_av1_latency_mode',
-  'vt_coder',
-  'vt_software',
-  'vt_realtime',
-  'vaapi_strict_rc_buffer',
-  'vk_tune',
-  'vk_rc_mode',
   'rtx_hdr',
   'rtx_hdr_force_sdr',
   'rtx_hdr_sdr_brightness',
@@ -150,7 +137,6 @@ export const clientOverrideableKeys = new Set([
   'sw_preset',
   'sw_tune',
 ]);
-
 export interface SettingsGroup {
   id: string;
   fields: SettingsField[];
@@ -159,12 +145,10 @@ export interface SettingsGroup {
   link?: string;
   visibleWhen?: SettingsVisibility;
 }
-
 export interface SettingsCategory {
   id: string;
   groups: SettingsGroup[];
 }
-
 const option = (value: string, labelKey: string): SettingsOption => ({ value, labelKey });
 const boolean = (key: string, extra: Partial<SettingsField> = {}): SettingsField => ({
   key,
@@ -203,13 +187,11 @@ const displayRecovery = (): SettingsField => ({
   platform: 'windows',
   stacked: true,
 });
-
 const virtualDisplayOptions = [
   option('disabled', 'ui.settings.options.virtual_display_mode.physical'),
   option('per_client', 'ui.settings.options.virtual_display_mode.per_client'),
   option('shared', 'ui.settings.options.virtual_display_mode.shared'),
 ];
-
 const virtualLayoutOptions = [
   option('exclusive', 'ui.settings.options.virtual_display_layout.exclusive'),
   option('extended', 'ui.settings.options.virtual_display_layout.extended'),
@@ -220,7 +202,6 @@ const virtualLayoutOptions = [
     'ui.settings.options.virtual_display_layout.extended_primary_isolated',
   ),
 ];
-
 const virtualScaleOptions = [
   option('-1', 'ui.settings.options.virtual_scale.recommended'),
   option('0', 'ui.settings.options.virtual_scale.preserve'),
@@ -228,76 +209,48 @@ const virtualScaleOptions = [
     option(String(scale), 'ui.settings.options.virtual_scale.percent'),
   ),
 ];
-
 const captureOptions = [
   option('', '_common.auto'),
   option('wgc', 'ui.settings.options.capture.wgc'),
   option('wgcc', 'ui.settings.options.capture.wgcc'),
   option('ddx', 'ui.settings.options.capture.ddx'),
-  option('kms', 'ui.settings.options.capture.kms'),
-  option('kwin', 'ui.settings.options.capture.kwin'),
-  option('gamescope', 'ui.settings.options.capture.gamescope'),
-  option('portal', 'ui.settings.options.capture.portal'),
-  option('wlr', 'ui.settings.options.capture.wlr'),
-  option('x11', 'ui.settings.options.capture.x11'),
-  option('nvfbc', 'ui.settings.options.capture.nvfbc'),
 ];
-
 export function captureOptionsForPlatform(platform: string): SettingsOption[] {
   const normalized = platform.toLocaleLowerCase();
   const supportedValues = normalized.includes('windows')
     ? new Set(['', 'wgc', 'wgcc', 'ddx'])
-    : normalized.includes('linux')
-      ? new Set(['', 'kms', 'kwin', 'gamescope', 'portal', 'wlr', 'x11', 'nvfbc'])
-      : new Set(['']);
+    : new Set(['']);
   return captureOptions.filter((candidate) => supportedValues.has(candidate.value));
 }
-
 const gamepadOptions = [
   option('auto', '_common.auto'),
-  option('xone', 'config.gamepad_xone'),
-  option('ds4', 'config.gamepad_ds4'),
-  option('ds5', 'config.gamepad_ds5'),
-  option('switch', 'config.gamepad_switch'),
   option('vhf_xbox', 'config.gamepad_vhf_xbox'),
   option('vhf_xbox_one', 'config.gamepad_vhf_xbox_one'),
   option('vhf_ds4', 'config.gamepad_vhf_ds4'),
   option('vhf_ds5', 'config.gamepad_vhf_ds5'),
   option('vhf_switch', 'config.gamepad_vhf_switch'),
 ];
-
 export function gamepadOptionsForPlatform(platform: string): SettingsOption[] {
   const normalized = platform.toLocaleLowerCase();
   const supportedValues = normalized.includes('windows')
     ? new Set(['auto', 'vhf_xbox', 'vhf_xbox_one', 'vhf_ds4', 'vhf_ds5', 'vhf_switch'])
-    : normalized.includes('linux')
-      ? new Set(['auto', 'xone', 'ds4', 'ds5', 'switch'])
-      : new Set(['auto']);
+    : new Set(['auto']);
   return gamepadOptions.filter((candidate) => supportedValues.has(candidate.value));
 }
-
 const frameLimiterOptions = [
   option('auto', '_common.auto'),
   option('rtss', 'ui.settings.options.frame_limiter_provider.rtss'),
   option('nvidia-control-panel', 'ui.settings.options.frame_limiter_provider.nvidia'),
   option('none', 'ui.settings.options.frame_limiter_provider.none'),
 ];
-
 const frameGenerationOptions = [
   option('enabled', 'ui.settings.options.frame_generation.automatic'),
   option('legacy', 'ui.settings.options.frame_generation.compatibility'),
   option('disabled', 'ui.settings.options.frame_generation.off'),
 ];
-
-export function frameGenerationOptionsForPlatform(platform: string): SettingsOption[] {
-  if (!platform.toLocaleLowerCase().includes('linux')) return frameGenerationOptions;
-  return [
-    option('enabled', 'ui.settings.options.frame_generation.automatic_linux'),
-    option('legacy', 'ui.settings.options.frame_generation.compatibility_linux'),
-    option('disabled', 'ui.settings.options.frame_generation.off_linux'),
-  ];
+export function frameGenerationOptionsForPlatform(_platform: string): SettingsOption[] {
+  return frameGenerationOptions;
 }
-
 const integrationPath = (key: string, extra: Partial<SettingsField> = {}): SettingsField => ({
   key,
   kind: 'integration-path',
@@ -306,7 +259,6 @@ const integrationPath = (key: string, extra: Partial<SettingsField> = {}): Setti
   stacked: true,
   ...extra,
 });
-
 const everydayDisplayFields = (): SettingsField[] => [
   select('virtual_display_mode', virtualDisplayOptions, {
     labelKey: 'ui.settings.fields.virtual_display_mode.label',
@@ -359,7 +311,6 @@ const everydayDisplayFields = (): SettingsField[] => [
     option('force_off', 'ui.settings.options.hdr_request.force_off'),
   ]),
 ];
-
 const virtualDisplayCustomizationFields = (): SettingsField[] => [
   select('virtual_display_layout', virtualLayoutOptions, {
     labelKey: 'ui.settings.fields.virtual_display_layout.label',
@@ -369,11 +320,10 @@ const virtualDisplayCustomizationFields = (): SettingsField[] => [
   select('dd_virtual_display_scale', virtualScaleOptions, {
     labelKey: 'ui.settings.fields.dd_virtual_display_scale.label',
     descriptionKey: 'ui.settings.fields.dd_virtual_display_scale.description',
-    platform: ['windows', 'linux'],
+    platform: ['windows'],
     visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
   }),
 ];
-
 const remoteMonitorFields = (): SettingsField[] => [
   boolean('remote_monitor_confirm_app_replacement', {
     labelKey: 'ui.settings.fields.remote_monitor_confirm_app_replacement.label',
@@ -382,25 +332,24 @@ const remoteMonitorFields = (): SettingsField[] => [
   boolean('remote_monitor_mute_audio', {
     labelKey: 'ui.settings.fields.remote_monitor_mute_audio.label',
     descriptionKey: 'ui.settings.fields.remote_monitor_mute_audio.description',
-    platform: ['windows', 'linux'],
+    platform: ['windows'],
   }),
   boolean('remote_monitor_disconnect_on_stream_end', {
     labelKey: 'ui.settings.fields.remote_monitor_disconnect_on_stream_end.label',
     descriptionKey: 'ui.settings.fields.remote_monitor_disconnect_on_stream_end.description',
-    platform: ['windows', 'linux'],
+    platform: ['windows'],
   }),
   boolean('remote_monitor_disconnect_on_client_disconnect', {
     labelKey: 'ui.settings.fields.remote_monitor_disconnect_on_client_disconnect.label',
     descriptionKey: 'ui.settings.fields.remote_monitor_disconnect_on_client_disconnect.description',
-    platform: ['windows', 'linux'],
+    platform: ['windows'],
   }),
   boolean('remote_monitor_terminate_on_first_request', {
     labelKey: 'ui.settings.fields.remote_monitor_terminate_on_first_request.label',
     descriptionKey: 'ui.settings.fields.remote_monitor_terminate_on_first_request.description',
-    platform: ['windows', 'linux'],
+    platform: ['windows'],
   }),
 ];
-
 const everydayPacingFields = (): SettingsField[] => [
   boolean('frame_limiter_enable', {
     labelKey: 'ui.settings.fields.frame_limiter_enable.label',
@@ -416,45 +365,11 @@ const everydayPacingFields = (): SettingsField[] => [
     placeholderKey: 'ui.settings.placeholders.follow_client',
     descriptionKey: 'ui.settings.fields.frame_limiter_fps_limit.description',
   }),
-  select(
-    'mangohud_limiter_method',
-    [
-      option('early', 'ui.integrations.mangohud.limiterMethodEarly'),
-      option('late', 'ui.integrations.mangohud.limiterMethodLate'),
-    ],
-    {
-      labelKey: 'ui.integrations.mangohud.limiterMethod',
-      descriptionKey: 'ui.integrations.mangohud.limiterMethodDescription',
-      platform: 'linux',
-      visibleWhen: { key: 'frame_limiter_provider', equals: 'mangohud' },
-    },
-  ),
-  select(
-    'mangohud_preset',
-    [
-      option('custom', 'ui.integrations.mangohud.presetCustom'),
-      option('1', 'ui.integrations.mangohud.presetFpsOnly'),
-      option('2', 'ui.integrations.mangohud.presetHorizontal'),
-      option('3', 'ui.integrations.mangohud.presetExtended'),
-      option('4', 'ui.integrations.mangohud.presetDetailed'),
-    ],
-    {
-      labelKey: 'ui.integrations.mangohud.overlayPreset',
-      descriptionKey: 'ui.integrations.mangohud.overlayPresetDescription',
-      platform: 'linux',
-    },
-  ),
-  boolean('mangohud_always_show_graph', {
-    labelKey: 'ui.integrations.mangohud.alwaysShowGraph',
-    descriptionKey: 'ui.integrations.mangohud.alwaysShowGraphDescription',
-    platform: 'linux',
-  }),
   select('frame_limiter_auto_virtual_framegen', frameGenerationOptions, {
     visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
   }),
   boolean('frame_limiter_disable_vsync', { platform: 'windows' }),
 ];
-
 export const settingsCategories: SettingsCategory[] = [
   {
     id: 'everyday',
@@ -530,7 +445,7 @@ export const settingsCategories: SettingsCategory[] = [
           ]),
           boolean('controller'),
           select('gamepad', gamepadOptions, {
-            platform: ['windows', 'linux'],
+            platform: ['windows'],
             visibleWhen: { key: 'controller', equals: true },
           }),
           boolean('keyboard'),
@@ -602,13 +517,6 @@ export const settingsCategories: SettingsCategory[] = [
       {
         id: 'display_driver',
         fields: [
-          text('virtual_display_outputs', {
-            platform: 'linux',
-            monospace: true,
-            stacked: true,
-            labelKey: 'ui.settings.fields.virtual_display_outputs.label',
-            descriptionKey: 'ui.settings.fields.virtual_display_outputs.description',
-          }),
           boolean('dd_activate_virtual_display', { platform: 'windows' }),
           number('dd_virtual_display_permanent_count', {
             min: 0,
@@ -633,11 +541,11 @@ export const settingsCategories: SettingsCategory[] = [
             platform: 'windows',
             stacked: true,
           },
-          boolean('dd_config_revert_on_disconnect', { platform: ['windows', 'linux'] }),
+          boolean('dd_config_revert_on_disconnect', { platform: ['windows'] }),
           number('dd_config_revert_delay', {
             min: 0,
             step: 100,
-            platform: ['windows', 'linux'],
+            platform: ['windows'],
             labelKey: 'ui.settings.fields.dd_config_revert_delay.label',
             descriptionKey: 'ui.settings.fields.dd_config_revert_delay.description',
           }),
@@ -645,7 +553,7 @@ export const settingsCategories: SettingsCategory[] = [
           number('dd_paused_virtual_display_timeout_secs', {
             min: 0,
             step: 1,
-            platform: ['windows', 'linux'],
+            platform: ['windows'],
           }),
           text('dd_snapshot_restore_hotkey_modifiers', { platform: 'windows' }),
         ],
@@ -708,7 +616,7 @@ export const settingsCategories: SettingsCategory[] = [
           boolean('keyboard'),
           boolean('mouse'),
           boolean('controller'),
-          select('gamepad', gamepadOptions, { platform: ['windows', 'linux'] }),
+          select('gamepad', gamepadOptions, { platform: ['windows'] }),
           boolean('motion_as_ds4'),
           boolean('touchpad_as_ds4'),
           boolean('always_send_scancodes', { platform: 'windows' }),
@@ -721,7 +629,6 @@ export const settingsCategories: SettingsCategory[] = [
         fields: [
           extendedField('back_button_timeout'),
           extendedField('key_rightalt_to_key_win'),
-          extendedField('ds5_inputtino_randomize_mac', { platform: 'linux' }),
           { key: 'keybindings', kind: 'textarea', stacked: true },
           number('key_repeat_delay', { min: 0, step: 1 }),
           number('key_repeat_frequency', { min: 0.1, step: 0.1 }),
@@ -788,7 +695,6 @@ export const settingsCategories: SettingsCategory[] = [
           number('max_bitrate', { min: 0, step: 1 }),
           number('minimum_fps_target', { min: 0, max: 1000, step: 0.1 }),
           extendedField('min_threads', { min: 1, step: 1 }),
-          number('qp', { min: 0, max: 51, step: 1 }),
           number('fec_percentage', { min: 0, max: 255, step: 1 }),
           number('video_max_batch_size_kb', { min: 1, step: 1 }),
         ],
@@ -825,7 +731,6 @@ export const settingsCategories: SettingsCategory[] = [
             stacked: true,
           }),
           text('bind_address', { monospace: true, stacked: true }),
-          text('external_ip', { monospace: true, stacked: true }),
           number('ping_timeout', { min: 0, step: 1 }),
         ],
       },
@@ -873,10 +778,6 @@ export const settingsCategories: SettingsCategory[] = [
             option('disabled', '_common.disabled'),
           ]),
           select('legacy_ordering', [
-            option('enabled', '_common.enabled'),
-            option('disabled', '_common.disabled'),
-          ]),
-          select('ignore_encoder_probe_failure', [
             option('enabled', '_common.enabled'),
             option('disabled', '_common.disabled'),
           ]),
@@ -941,7 +842,6 @@ export const settingsCategories: SettingsCategory[] = [
     ],
   },
 ];
-
 export const settingsDefaults: Record<string, unknown> = {
   enable_pairing: 'enabled',
   enable_discovery: 'enabled',
@@ -953,9 +853,7 @@ export const settingsDefaults: Record<string, unknown> = {
   limit_framerate: 'enabled',
   envvar_compatibility_mode: 'disabled',
   legacy_ordering: 'disabled',
-  ignore_encoder_probe_failure: 'disabled',
   fallback_mode: '1920x1080x60',
-
   ...extendedDefaults,
   gamepad: 'auto',
   virtual_display_mode: 'per_client',
@@ -969,9 +867,6 @@ export const settingsDefaults: Record<string, unknown> = {
   frame_limiter_enable: false,
   frame_limiter_provider: 'auto',
   frame_limiter_fps_limit: 0,
-  mangohud_limiter_method: 'late',
-  mangohud_preset: 'custom',
-  mangohud_always_show_graph: false,
   frame_limiter_auto_virtual_framegen: 'legacy',
   frame_limiter_disable_vsync: false,
   rtss_allow_virtual_display_override: false,
@@ -997,7 +892,6 @@ export const settingsDefaults: Record<string, unknown> = {
   },
   dd_activate_virtual_display: false,
   dd_virtual_display_permanent_count: 0,
-  virtual_display_outputs: '',
   vulkan_hdr_layer: true,
   dd_wa_dummy_plug_hdr10: false,
   dd_config_revert_on_disconnect: false,
@@ -1031,7 +925,6 @@ export const settingsDefaults: Record<string, unknown> = {
   pyrowave: false,
   max_bitrate: 0,
   minimum_fps_target: 20,
-  qp: 28,
   fec_percentage: 20,
   video_max_batch_size_kb: 64,
   rtss_install_path: '',
@@ -1039,7 +932,6 @@ export const settingsDefaults: Record<string, unknown> = {
   address_family: 'ipv4',
   port: 47989,
   bind_address: '',
-  external_ip: '',
   ping_timeout: 10000,
   lan_encryption_mode: 0,
   wan_encryption_mode: 1,
@@ -1051,75 +943,47 @@ export const settingsDefaults: Record<string, unknown> = {
   global_state_cmd: [],
   server_cmd: [],
 };
-
 export const knownSettingsKeys = new Set(
   settingsCategories.flatMap((category) =>
     category.groups.flatMap((group) => group.fields.map((field) => field.key)),
   ),
 );
 knownSettingsKeys.add('adapter_pnp_id');
-
 export const restartRequiredKeys = new Set(['address_family', 'cert', 'pkey', 'port', 'upnp']);
-
 export function matchesPlatform(
-  field: { platform?: SettingsField['platform'] },
+  field: {
+    platform?: SettingsField['platform'];
+  },
   platform: string,
 ): boolean {
   if (!field.platform) return true;
-  const normalized = platform.toLowerCase().replace('darwin', 'macos');
+  const normalized = platform.toLowerCase();
   const supported = Array.isArray(field.platform) ? field.platform : [field.platform];
-  return supported.some((value) => normalized.includes(value === 'macos' ? 'mac' : value));
+  return supported.some((value) => normalized.includes(value));
 }
-
 export function encoderFamilyFor(encoder: string): SettingsField['encoderFamily'] | undefined {
   if (encoder.startsWith('nvenc')) return 'nvidia';
   if (encoder.startsWith('amdvce')) return 'amd';
   if (encoder === 'quicksync') return 'intel';
-  if (['vaapi', 'vulkan', 'videotoolbox', 'software'].includes(encoder))
-    return encoder as SettingsField['encoderFamily'];
+  if (encoder === 'software') return encoder as SettingsField['encoderFamily'];
   return undefined;
 }
-
 export function encoderOptionsForPlatform(platform: string): SettingsOption[] {
   const p = platform.toLowerCase();
-  const encoders = p.includes('windows')
-    ? ['nvenc', 'quicksync', 'amdvce', 'software']
-    : p.includes('linux')
-      ? ['nvenc', 'nvenc_legacy', 'vulkan', 'vaapi', 'software']
-      : p.includes('mac')
-        ? ['videotoolbox', 'software']
-        : [];
+  const encoders = p.includes('windows') ? ['nvenc', 'quicksync', 'amdvce', 'software'] : [];
   return [
     option('', 'ui.settings.options.encoder.auto'),
     ...encoders.map((value) => option(value, `ui.settings.options.encoder.${value}`)),
   ];
 }
-
 export function optionsForPlatform(field: SettingsField, platform: string): SettingsOption[] {
   if (field.key === 'encoder') return encoderOptionsForPlatform(platform);
   if (field.key === 'capture') return captureOptionsForPlatform(platform);
   if (field.key === 'gamepad') return gamepadOptionsForPlatform(platform);
   if (field.key === 'frame_limiter_auto_virtual_framegen')
     return frameGenerationOptionsForPlatform(platform);
-  if (field.key === 'virtual_display_mode' && platform.toLowerCase().includes('linux'))
-    return [
-      option('per_client', 'ui.settings.linux.per_client'),
-      option('shared', 'ui.settings.linux.shared'),
-      option('disabled', 'ui.settings.options.virtual_display_mode.physical'),
-    ];
-  if (field.key === 'frame_limiter_provider' && platform.toLowerCase().includes('linux'))
-    return [
-      option('auto', 'ui.settings.options.frame_limiter_provider.autoLinux'),
-      ...['mangohud', 'proton', 'mangohud-proton', 'none'].map((value) =>
-        option(
-          value,
-          `ui.settings.options.frame_limiter_provider.${value === 'mangohud-proton' ? 'mangohudProton' : value}`,
-        ),
-      ),
-    ];
   return field.options ?? [];
 }
-
 // Canonical definitions prefer the dedicated category over Everyday shortcuts.
 export const settingsFields = new Map(
   settingsCategories.flatMap((category) =>
@@ -1131,17 +995,3 @@ export function fieldForPlatform(field: SettingsField, platform: string): Settin
     ? { ...field, kind: 'text', source: undefined, monospace: true }
     : field;
 }
-
-export const settingsDestinations: Array<{
-  labelKey: string;
-  to: string;
-  keys: string[];
-  platform?: SettingsField['platform'];
-}> = [
-  {
-    labelKey: 'ui.integrations.mangohud.name',
-    to: '/integrations#integration-mangohud',
-    platform: 'linux',
-    keys: ['mangohud_preset', 'mangohud_always_show_graph', 'overlay'],
-  },
-];

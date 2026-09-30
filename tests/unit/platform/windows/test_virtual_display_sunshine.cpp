@@ -4,7 +4,6 @@
  */
 #include <gtest/gtest.h>
 
-#ifdef _WIN32
   #include <src/platform/windows/virtual_display.h>
   #include <src/platform/windows/wgc_capture_policy.h>
 
@@ -530,5 +529,3 @@ TEST(SunshineWgcCapture, FramePoolStartsLowLatencyAndCanAdapt) {
   EXPECT_FALSE(buffer_pool_is_quiet(true, false, true, 1, 2));
   EXPECT_FALSE(buffer_pool_is_quiet(true, true, false, 1, 2));
 }
-
-#endif

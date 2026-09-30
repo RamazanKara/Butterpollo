@@ -314,17 +314,7 @@ namespace remote_display_topology {
     clients_.erase(client_uuid);
   }
 
-  activation_result_t coordinator_t::activate_remote_monitor(const std::string &client_uuid, const std::string &label, mode_t mode) {
-    const auto result = activate_or_resume(client_uuid, label, mode, 0);
-    return {result.accepted, result.ready, result.error};
-  }
 
-  activation_result_t coordinator_t::resume_remote_monitor(const std::string &client_uuid) {
-    std::lock_guard lock(mutex_);
-    const auto it = clients_.find(client_uuid);
-    if (it == clients_.end() || !it->second.remote_monitor) return {false, false, "Remote Monitor is not owned by this paired client."};
-    return activate_locked(client_uuid, it->second);
-  }
 
   monitor_runtime_state_t coordinator_t::activate_or_resume(const std::string &client_uuid, const std::string &label, mode_t mode, uint64_t generation) {
     std::lock_guard lock(mutex_);

@@ -41,11 +41,7 @@ namespace log_export {
   static inline void current_dos_datetime(uint16_t &dos_time, uint16_t &dos_date) {
     std::time_t tt = std::time(nullptr);
     std::tm tm {};
-#ifdef _WIN32
     localtime_s(&tm, &tt);
-#else
-    localtime_r(&tt, &tm);
-#endif
     dos_time = static_cast<uint16_t>(((tm.tm_hour & 0x1F) << 11) | ((tm.tm_min & 0x3F) << 5) | ((tm.tm_sec / 2) & 0x1F));
     int year = tm.tm_year + 1900;
     if (year < 1980) {
@@ -336,11 +332,7 @@ namespace log_export {
   static void to_dos_datetime(std::chrono::system_clock::time_point tp, uint16_t &dos_time, uint16_t &dos_date) {
     std::time_t tt = std::chrono::system_clock::to_time_t(tp);
     std::tm tm {};
-#ifdef _WIN32
     localtime_s(&tm, &tt);
-#else
-    localtime_r(&tt, &tm);
-#endif
     dos_time = static_cast<uint16_t>(((tm.tm_hour & 0x1F) << 11) | ((tm.tm_min & 0x3F) << 5) | ((tm.tm_sec / 2) & 0x1F));
     int year = tm.tm_year + 1900;
     if (year < 1980) {

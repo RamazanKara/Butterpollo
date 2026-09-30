@@ -6,7 +6,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(Vibepollo VERSION 0.0.0
         DESCRIPTION "Self-hosted game stream host for Moonlight"
-        HOMEPAGE_URL "https://github.com/Nonary/Vibepollo")
+        HOMEPAGE_URL "https://github.com/RamazanKara/Butterpollo")
 
 if(NOT WIN32)
     message(FATAL_ERROR "Butterpollo builds for Windows only.")

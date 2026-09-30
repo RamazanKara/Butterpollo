@@ -103,7 +103,6 @@ namespace platf {
    * @param ec A reference to an error code that will store any error that occurred.
    * @return `true` if the process was launched successfully, `false` otherwise.
    */
-  bool launch_process_without_impersonation(const std::string &cmd, const std::wstring &start_dir, DWORD creation_flags, STARTUPINFOEXW &startup_info, PROCESS_INFORMATION &process_info, std::error_code &ec);
 
   /**
    * @brief Create a `STARTUPINFOEXW` structure for launching a process.

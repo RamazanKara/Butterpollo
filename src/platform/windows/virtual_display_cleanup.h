@@ -1,6 +1,5 @@
 #pragma once
 
-#ifdef _WIN32
 
   #include <array>
   #include <cstdint>
@@ -87,5 +86,3 @@ namespace platf::virtual_display_cleanup {
   // while any cleanup path is removing a virtual display or restoring topology.
   bool in_progress();
 }  // namespace platf::virtual_display_cleanup
-
-#endif  // _WIN32

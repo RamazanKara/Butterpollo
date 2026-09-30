@@ -1,7 +1,6 @@
 /**
  * @file src/platform/windows/display_helper_integration.cpp
  */
-#ifdef _WIN32
 
   #include <winsock2.h>
 
@@ -2984,5 +2983,3 @@ namespace display_helper_integration {
     }
   }
 }  // namespace display_helper_integration
-
-#endif

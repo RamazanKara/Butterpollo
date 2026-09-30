@@ -121,13 +121,8 @@ namespace input::validation {
     // Linux client_to_touchport() returns desktop-relative coordinates for
     // inputtino. Windows keeps monitor-local coordinates here and applies the
     // monitor offset when injecting the pointer.
-#ifdef __linux__
-    coords.first = (coords.first - touch_port.offset_x) / monitor_logical_w;
-    coords.second = (coords.second - touch_port.offset_y) / monitor_logical_h;
-#else
     coords.first = coords.first / monitor_logical_w;
     coords.second = coords.second / monitor_logical_h;
-#endif
 
     return normalized_touch_port_t {
       touch_port.offset_x,

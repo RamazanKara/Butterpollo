@@ -60,19 +60,12 @@ extern "C" {
 #include "utility.h"
 #include "uuid.h"
 #include "video_latency_trace.h"
-#ifdef _WIN32
   #include "platform/windows/frame_limiter.h"
   #include "platform/windows/display.h"
   #include "platform/windows/ipc/misc_utils.h"
   #include "platform/windows/misc.h"
   #include "platform/windows/virtual_display.h"
   #include "platform/windows/virtual_display_cleanup.h"
-#elif defined(__linux__)
-  #include "platform/linux/frame_limiter.h"
-  #include "drm_timing_trace.h"
-  #include "platform/linux/private_display.h"
-  #include "src/platform/linux/display_backend.h"
-#endif
 
 #define IDX_START_A 0
 #define IDX_START_B 1
@@ -230,7 +223,6 @@ namespace stream {
   namespace session {
   }
 
-#ifdef _WIN32
   namespace {
     std::atomic_uint64_t g_paused_display_cleanup_generation {0};
 
@@ -274,14 +266,9 @@ namespace stream {
       }).detach();
     }
   }  // namespace
-#endif
 
   void cancel_paused_display_cleanup() {
-#ifdef _WIN32
     g_paused_display_cleanup_generation.fetch_add(1, std::memory_order_acq_rel);
-#elif defined(__linux__)
-    platf::linux_display::backend().cancel_scheduled_revert();
-#endif
   }
 
 #pragma pack(push, 1)
@@ -586,9 +573,7 @@ namespace stream {
 
     std::shared_ptr<input::input_t> input;
 
-#ifdef _WIN32
     std::shared_future<rtsp_stream::launch_session_t::display_helper_gate_status_e> display_helper_gate;
-#endif
 
     std::thread audioThread;
     std::thread videoThread;
@@ -685,12 +670,10 @@ namespace stream {
       std::chrono::steady_clock::time_point start_time {std::chrono::steady_clock::now()};
     } stats;
 
-#if defined(_WIN32) || defined(__linux__)
     struct {
       bool active = false;
       std::array<std::uint8_t, 16> guid_bytes {};
     } virtual_display;
-#endif
   };
 
   /**
@@ -839,7 +822,6 @@ namespace stream {
     return result;
   }
 
-#ifdef _WIN32
   struct deferred_stream_start_t {
     framegen::stream_start_policy_t policy;
   };
@@ -914,7 +896,6 @@ namespace stream {
     session::start_shared_platform_if_needed();
     return true;
   }
-#endif
 
   session_t *control_server_t::get_session(const net::peer_t peer, uint32_t connect_data) {
     {
@@ -1793,12 +1774,10 @@ namespace stream {
         })
       }
 
-#ifdef _WIN32
       if (session::running_sessions.load(std::memory_order_relaxed) > 0) {
         (void) display_helper_integration::apply_pending_if_ready();
         (void) apply_deferred_stream_start_actions_if_ready();
       }
-#endif
 
       // Remote Input and Remote Monitor deliberately have no configured app
       // process. Keep the shared control server alive across both the gap
@@ -2376,60 +2355,6 @@ namespace stream {
         session->video.lowseq = lowseq;
 
         const auto send_complete_timestamp = std::chrono::steady_clock::now();
-#ifdef __linux__
-        {
-          const auto timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                      packet->frame_timestamp->time_since_epoch()
-          ).count();
-          // Legacy sources may normalize frame_timestamp. Keep their original
-          // capture time separate so raw_ns still joins capture selections.
-          const auto source_timestamp = packet->capture_timestamp.value_or(*packet->frame_timestamp);
-          const auto source_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                   source_timestamp.time_since_epoch()
-          ).count();
-          const auto send_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                 send_complete_timestamp.time_since_epoch()
-          ).count();
-          const auto wall_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                 std::chrono::system_clock::now().time_since_epoch()
-          ).count();
-          if (frame_is_dupe) {
-            drm_timing_trace::write([&](auto &trace) {
-              trace << "kind=rtp frame=" << packet->frame_index()
-                    << " timestamp_source=synthetic"
-                    << " synthetic_ns=" << timestamp_ns
-                    << " wire_ns=" << timestamp_ns
-                    << " rtp=" << timestamp
-                    << " send_ns=" << send_ns
-                    << " wall_ns=" << wall_ns;
-            });
-          } else if (wire_timeline_state.previous_frame) {
-            drm_timing_trace::write([&](auto &trace) {
-              trace << "kind=rtp frame=" << packet->frame_index()
-                    << " timestamp_source=drm"
-                    << " raw_ns=" << source_ns
-                    << " wire_ns=" << timestamp_ns
-                    << " rtp=" << timestamp
-                    << " previous_rtp=" << wire_timeline_state.previous_frame->rtp_timestamp
-                    << " delta=" << static_cast<std::uint32_t>(timestamp - wire_timeline_state.previous_frame->rtp_timestamp)
-                    << " send_ns=" << send_ns
-                    << " wall_ns=" << wall_ns;
-            });
-          } else {
-            drm_timing_trace::write([&](auto &trace) {
-              trace << "kind=rtp frame=" << packet->frame_index()
-                    << " timestamp_source=drm"
-                    << " raw_ns=" << source_ns
-                    << " wire_ns=" << timestamp_ns
-                    << " rtp=" << timestamp
-                    << " previous_rtp=none"
-                    << " delta=none"
-                    << " send_ns=" << send_ns
-                    << " wall_ns=" << wall_ns;
-            });
-          }
-        }
-#endif
         if (!frame_is_dupe) {
           const wire_timeline_frame_t current_wire_frame {
             .frame_index = packet->frame_index(),
@@ -2862,7 +2787,6 @@ namespace stream {
     auto address = session->video.peer.address();
     session->video.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address, session->video.peer.port(), platf::qos_data_type_e::video, session->config.videoQosType != 0);
 
-#ifdef _WIN32
     if (session->display_helper_gate.valid()) {
       BOOST_LOG(debug) << "Display helper: waiting for apply/validation gate before starting capture.";
       rtsp_stream::launch_session_t::display_helper_gate_status_e gate_status {};
@@ -2889,7 +2813,6 @@ namespace stream {
         BOOST_LOG(warning) << "Display helper verification result unavailable; starting capture anyway.";
       }
     }
-#endif
 
     BOOST_LOG(debug) << "Start capturing Video"sv;
     session->config.monitor.max_frame_bytes = max_fec_protected_frame_bytes(session->config);
@@ -2997,18 +2920,12 @@ namespace stream {
       }
 
       config::set_runtime_output_name_override(std::nullopt);
-#ifdef _WIN32
       display_helper_integration::clear_pending_apply();
       clear_deferred_stream_start_actions();
-#endif
 
       const bool is_paused = proc::proc.current_app_id() > 0;
-#ifdef _WIN32
       const bool deferred_app_revert =
         !is_paused && proc::consume_deferred_display_revert();
-#else
-      constexpr bool deferred_app_revert = false;
-#endif
       // A restore is an asynchronous helper operation. It must keep the
       // virtual display alive while the helper restores the physical topology;
       // the teardown-only cleanup path removes it before any optional database
@@ -3023,7 +2940,6 @@ namespace stream {
       const bool keep_virtual_display_due_to_pause =
         is_paused && !display_restore_requested && paused_timeout_secs == 0;
 
-#ifdef _WIN32
       if (delay_virtual_display_cleanup_due_to_pause) {
         BOOST_LOG(info) << "Display cleanup: shared stream runtime paused with revert-on-disconnect disabled; "
                         << "scheduling virtual display removal without display restore in " << paused_timeout_secs << "s.";
@@ -3065,31 +2981,6 @@ namespace stream {
 
       VDISPLAY::restorePhysicalHdrProfiles();
       platf::rtss_set_sync_limiter_override(std::nullopt);
-#elif defined(__linux__)
-      if (delay_virtual_display_cleanup_due_to_pause) {
-        BOOST_LOG(info) << "Linux private display: stream paused; scheduling output restore in "
-                        << paused_timeout_secs << "s.";
-        platf::linux_display::backend().schedule_revert(
-          std::chrono::seconds(paused_timeout_secs),
-          "paused-session timeout"
-        );
-      } else if (keep_virtual_display_due_to_pause) {
-        BOOST_LOG(debug) << "Linux private display: keeping the private output active for resume.";
-      } else {
-        if (config::video.dd.config_revert_delay.count() > 0) {
-          platf::linux_display::backend().schedule_revert(
-            config::video.dd.config_revert_delay,
-            "stream-end delay"
-          );
-        } else {
-          (void) platf::linux_display::backend().revert();
-        }
-      }
-#else
-      if (display_restore_requested) {
-        (void) display_helper_integration::revert();
-      }
-#endif
 
       if (shared_platform_started) {
         platf::streaming_will_stop();
@@ -3322,7 +3213,6 @@ namespace stream {
 #endif
         }
 
-#ifdef _WIN32
         clear_deferred_stream_start_actions();
         const session::shared_runtime_finalize_context_t finalize_context {
           .ignore_current_rtsp_teardown = true,
@@ -3332,15 +3222,6 @@ namespace stream {
         const bool shared_runtime_still_owned =
           session::has_shared_runtime_owner(finalize_context);
         platf::frame_limiter_streaming_stop(is_paused || shared_runtime_still_owned);
-#else
-#ifdef __linux__
-        platf::frame_limiter_streaming_stop();
-#endif
-        const session::shared_runtime_finalize_context_t finalize_context {
-          .ignore_current_rtsp_teardown = true,
-          .apply_deferred_config = false,
-        };
-#endif
         finalized_shared_runtime =
           session::finalize_shared_runtime_if_idle("rtsp_session_end", finalize_context);
       }
@@ -3376,13 +3257,11 @@ namespace stream {
       session.control.enet_recv_baseline = session.broadcast_ref->control_server._host->totalReceivedPackets;
       BOOST_LOG(debug) << "Expecting incoming session connections from "sv << addr_string;
 
-#ifdef _WIN32
       const auto stream_gpu_model = platf::dxgi::current_display_adapter_name();
       {
         std::lock_guard lg {session.metadata_mutex};
         session.stream_gpu_model = stream_gpu_model;
       }
-#endif
 
       // Insert this session into the session list
       {
@@ -3416,22 +3295,8 @@ namespace stream {
 
       // If this is the first session, invoke the platform callbacks
       if (++running_sessions == 1) {
-#if defined(_WIN32) || defined(__linux__)
         if (!session.config.monitor.input_only) {
           // Apply the stream-owned limiter independently of application launch.
-          std::optional<int> lossless_rtss_limit;
-          const bool using_lossless_provider = session.config.lossless_scaling_framegen &&
-                                               boost::iequals(session.config.frame_generation_provider, "lossless-scaling");
-          if (using_lossless_provider) {
-            if (session.config.lossless_scaling_rtss_limit && *session.config.lossless_scaling_rtss_limit > 0) {
-              lossless_rtss_limit = session.config.lossless_scaling_rtss_limit;
-            } else if (session.config.lossless_scaling_target_fps && *session.config.lossless_scaling_target_fps > 0) {
-              int computed = (int) std::lround(*session.config.lossless_scaling_target_fps * 0.5);
-              if (computed > 0) {
-                lossless_rtss_limit = computed;
-              }
-            }
-          }
           // Keep the client stream cadence separate from its exact display-mode
           // override so limiter providers preserve each without conflating them.
           const auto policy = framegen::make_stream_start_policy({
@@ -3441,20 +3306,13 @@ namespace stream {
             .frame_generation_enabled = session.config.frame_generation_enabled,
             .gen1_framegen_fix = session.config.gen1_framegen_fix,
             .gen2_framegen_fix = session.config.gen2_framegen_fix,
-            .lossless_scaling_framegen = session.config.lossless_scaling_framegen,
-            .lossless_rtss_limit = lossless_rtss_limit,
             .frame_generation_provider = session.config.frame_generation_provider,
             .uses_virtual_display = session.virtual_display.active,
             .capture_mode = config::video.capture,
-#ifdef _WIN32
             .auto_capture_uses_wgc = platf::dxgi::should_use_wgc_default(),
-#else
-            .auto_capture_uses_wgc = false,
-#endif
             .auto_virtual_framegen_limiter = config::frame_limiter.virtual_display_limiter_enabled(),
             .virtual_display_refresh_multiplier = config::frame_limiter.fixed_virtual_display_refresh_multiplier(),
           });
-#ifdef _WIN32
           const bool defer_stream_start = platf::is_running_as_system() && !user_session_ready();
           if (defer_stream_start) {
             deferred_stream_start_t deferred {.policy = policy};
@@ -3464,16 +3322,9 @@ namespace stream {
             platf::frame_limiter_streaming_start(policy);
             session::start_shared_platform_if_needed();
           }
-#else
-          platf::frame_limiter_streaming_start(policy);
-          session::start_shared_platform_if_needed();
-#endif
         } else {
           session::start_shared_platform_if_needed();
         }
-#else
-        session::start_shared_platform_if_needed();
-#endif
         proc::proc.resume();
       }
 
@@ -3499,7 +3350,6 @@ namespace stream {
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
       system_tray::update_tray_playing(proc::proc.get_last_run_app_name());
       update::on_stream_started();
-  #if defined(_WIN32)
       // Notify when the virtual gamepad driver is not installed and usable.
       try {
         if (!platf::is_virtual_gamepad_driver_available()) {
@@ -3508,7 +3358,6 @@ namespace stream {
       } catch (...) {
         // best-effort: ignore any unexpected errors while checking
       }
-  #endif
 #endif
 
       return 0;
@@ -3545,25 +3394,6 @@ namespace stream {
       session->client_display_refresh_millihz = launch_session.client_display_refresh_millihz;
       session->remote_role = launch_session.role;
       session->remote_role_generation = launch_session.role_generation;
-#ifdef __linux__
-      if (launch_session.role == remote_session::role_e::game) {
-        const auto app = proc::proc.active_session_guard();
-        const auto token = launch_session.normal_vdd_identity_token != 0 ?
-                             launch_session.normal_vdd_identity_token :
-                             app.normal_vdd_identity_token;
-        const auto owner = launch_session.normal_vdd_identity_token != 0 ?
-                             (launch_session.normal_vdd_owner_uuid.empty() ? session->device_uuid : launch_session.normal_vdd_owner_uuid) :
-                             app.client_uuid;
-        if (token != 0) {
-          session->normal_display_capture = remote_display_topology::instance().retain_normal_game_capture(owner, token);
-          if (!session->normal_display_capture) {
-            throw std::runtime_error("The app's display ownership ended before capture could start");
-          }
-        } else if (remote_display_topology::instance().normal_game_release_pending()) {
-          throw std::runtime_error("The previous app's display is still being released");
-        }
-      }
-#endif
       session->input_only = launch_session.role == remote_session::role_e::input;
       session->audio_disabled = !remote_session::uses_audio(
         launch_session.role,
@@ -3591,16 +3421,12 @@ namespace stream {
                       << " source=" << static_cast<int>(session->config.monitor.capture_source)
                       << " output='" << session->config.monitor.capture_output.value_or(std::string {}) << "'.";
 
-#if defined(_WIN32) || defined(__linux__)
       session->virtual_display.active = launch_session.virtual_display;
-#endif
-#ifdef _WIN32
       session->virtual_display.guid_bytes = launch_session.virtual_display_guid_bytes;
       if (session->virtual_display.active) {
         VDISPLAY::setWatchdogFeedingEnabled(true);
       }
       session->display_helper_gate = launch_session.display_helper_gate;
-#endif
 
       session->control.connect_data = launch_session.control_connect_data;
       session->control.feedback_queue = mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback);

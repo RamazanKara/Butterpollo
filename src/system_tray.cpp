@@ -5,7 +5,6 @@
 // macros
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
 
-  #if defined(_WIN32)
     #define WIN32_LEAN_AND_MEAN
     #include "platform/windows/utils.h"
 
@@ -16,18 +15,6 @@
     #define TRAY_ICON_PLAYING WEB_DIR "images/apollo-playing.ico"
     #define TRAY_ICON_PAUSING WEB_DIR "images/apollo-pausing.ico"
     #define TRAY_ICON_LOCKED WEB_DIR "images/apollo-locked.ico"
-  #elif defined(__linux__) || defined(linux) || defined(__linux)
-    #define TRAY_ICON SUNSHINE_TRAY_PREFIX "-tray"
-    #define TRAY_ICON_PLAYING SUNSHINE_TRAY_PREFIX "-playing"
-    #define TRAY_ICON_PAUSING SUNSHINE_TRAY_PREFIX "-pausing"
-    #define TRAY_ICON_LOCKED SUNSHINE_TRAY_PREFIX "-locked"
-  #elif defined(__APPLE__) || defined(__MACH__)
-    #define TRAY_ICON WEB_DIR "images/logo-apollo-16.png"
-    #define TRAY_ICON_PLAYING WEB_DIR "images/apollo-playing-16.png"
-    #define TRAY_ICON_PAUSING WEB_DIR "images/apollo-pausing-16.png"
-    #define TRAY_ICON_LOCKED WEB_DIR "images/apollo-locked-16.png"
-    #include <dispatch/dispatch.h>
-  #endif
 
   #define TRAY_MSG_NO_APP_RUNNING "Reload Apps"
 
@@ -68,12 +55,10 @@ namespace system_tray {
   static std::atomic<bool> tray_thread_running = false;
   static std::atomic<bool> tray_thread_should_exit = false;
   static std::thread tray_thread;
-#ifdef _WIN32
   static std::mutex tray_action_mutex;
   static std::condition_variable tray_action_cv;
   static std::queue<std::function<void()>> tray_actions;
   static std::atomic<bool> tray_shutdown_requested = false;
-#endif
 
   static int init_tray();
 
@@ -120,14 +105,12 @@ namespace system_tray {
 
     proc::proc.terminate();
 
-  #ifdef _WIN32
     // If we're running in a service, return a special status to
     // tell it to terminate too, otherwise it will just respawn us.
     if (GetEnvironmentVariableW(platf::service_launch::launched_by_service_env_var, nullptr, 0) != 0) {
       lifetime::exit_sunshine(ERROR_SHUTDOWN_IN_PROGRESS, true);
       return;
     }
-  #endif
 
     lifetime::exit_sunshine(0, true);
   }
@@ -165,7 +148,6 @@ namespace system_tray {
     .allIconPaths = {TRAY_ICON, TRAY_ICON_LOCKED, TRAY_ICON_PLAYING, TRAY_ICON_PAUSING},
   };
 
-#ifdef _WIN32
   static void clear_pending_quit_messages() {
     MSG msg {};
     while (PeekMessageA(&msg, nullptr, WM_QUIT, WM_QUIT, PM_REMOVE)) {}
@@ -184,7 +166,6 @@ namespace system_tray {
       action();
     }
   }
-#endif
 
   template<typename Fn>
   static void run_on_tray_thread(Fn &&fn) {
@@ -192,19 +173,14 @@ namespace system_tray {
       return;
     }
 
-#ifdef _WIN32
     {
       std::lock_guard lock(tray_action_mutex);
       tray_actions.emplace(std::forward<Fn>(fn));
     }
     tray_action_cv.notify_one();
-#else
-    fn();
-#endif
   }
 
   static int init_tray() {
-  #ifdef _WIN32
     // If we're running as SYSTEM, Explorer.exe will not have permission to open our thread handle
     // to monitor for thread termination. If Explorer fails to open our thread, our tray icon
     // will persist forever if we terminate unexpectedly. To avoid this, we will modify our thread
@@ -294,23 +270,18 @@ namespace system_tray {
     } else {
       BOOST_LOG(debug) << "Interactive desktop ready for tray initialization"sv;
     }
-  #endif
 
     int attempt = 0;
     int tray_init_result = -1;
     while (tray_init_result < 0 && attempt < 30) {
-#ifdef _WIN32
       if (tray_shutdown_requested.load()) {
         return 0;
       }
-#endif
       tray_init_result = tray_init(&tray);
       if (tray_init_result >= 0) {
         break;
       }
-#ifdef _WIN32
       clear_pending_quit_messages();
-#endif
       BOOST_LOG(warning) << "Failed to create system tray (attempt "sv << attempt + 1 << ')';
       std::this_thread::sleep_for(2s);
       ++attempt;
@@ -331,7 +302,6 @@ namespace system_tray {
       return 1;
     }
 
-#ifdef _WIN32
     while (!tray_shutdown_requested.load()) {
       run_pending_tray_actions();
       if (tray_loop(0) < 0) {
@@ -346,13 +316,6 @@ namespace system_tray {
 
     tray_exit();
     clear_pending_quit_messages();
-#else
-    while (tray_loop(1) == 0) {
-      BOOST_LOG(debug) << "System tray loop"sv;
-    }
-
-    tray_exit();
-#endif
 
     tray_initialized = false;
     return 0;
@@ -361,36 +324,17 @@ namespace system_tray {
   void run_tray() {
     // create the system tray
     tray_set_log_callback(&tray_log_bridge);
-  #if defined(__APPLE__) || defined(__MACH__)
-    // macOS requires that UI elements be created on the main thread
-    // creating tray using dispatch queue does not work, although the code doesn't actually throw any (visible) errors
-
-    // dispatch_async(dispatch_get_main_queue(), ^{
-    //   system_tray();
-    // });
-
-    BOOST_LOG(info) << "system_tray() is not yet implemented for this platform."sv;
-  #else  // Windows, Linux
     if (tray_thread.joinable()) {
       return;
     }
-#ifdef _WIN32
     tray_shutdown_requested = false;
-#endif
     tray_thread = std::thread(system_tray);
-  #endif
   }
 
   int end_tray() {
     tray_initialized = false;
-#ifdef _WIN32
     tray_shutdown_requested = true;
     tray_action_cv.notify_one();
-#else
-    if (tray_thread.joinable()) {
-      tray_exit();
-    }
-#endif
     if (tray_thread.joinable()) {
       // end_tray() can run on the tray thread itself: a tray menu action
       // Keep self-join protection for any tray-thread caller. Joining our own
@@ -403,11 +347,9 @@ namespace system_tray {
         tray_thread.join();
       }
     }
-#ifdef _WIN32
     std::lock_guard lock(tray_action_mutex);
     std::queue<std::function<void()>> empty;
     tray_actions.swap(empty);
-#endif
     return 0;
   }
 
@@ -432,14 +374,12 @@ namespace system_tray {
       static char force_close_msg[256];
       snprintf(msg, std::size(msg), "%s launched.", app_name.c_str());
       snprintf(force_close_msg, std::size(force_close_msg), "Force close [%s]", app_name.c_str());
-  #ifdef _WIN32
       auto msg_acp = utf8ToAcp(msg);
       auto force_msg_acp = utf8ToAcp(force_close_msg);
       strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
       msg[std::size(msg) - 1] = '\0';
       strncpy(force_close_msg, force_msg_acp.c_str(), std::size(force_close_msg) - 1);
       force_close_msg[std::size(force_close_msg) - 1] = '\0';
-  #endif
       s_notification_text = msg;
       s_tooltip = "Streaming started for " + app_name;
       tray.notification_title = "App launched";
@@ -462,11 +402,9 @@ namespace system_tray {
 
       char msg[256];
       snprintf(msg, std::size(msg), "Streaming paused for %s", app_name.c_str());
-  #ifdef _WIN32
       auto msg_acp = utf8ToAcp(msg);
       strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
       msg[std::size(msg) - 1] = '\0';
-  #endif
       s_notification_text = msg;
       tray.notification_title = "Stream Paused";
       tray.notification_text = s_notification_text.c_str();
@@ -486,11 +424,9 @@ namespace system_tray {
 
       char msg[256];
       snprintf(msg, std::size(msg), "Streaming stopped for %s", app_name.c_str());
-  #ifdef _WIN32
       auto msg_acp = utf8ToAcp(msg);
       strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
       msg[std::size(msg) - 1] = '\0';
-  #endif
       s_notification_text = msg;
       tray.notification_icon = TRAY_ICON;
       tray.notification_title = "Application Stopped";
@@ -513,11 +449,9 @@ namespace system_tray {
 
       char msg[256];
       snprintf(msg, std::size(msg), "Application %s exited too fast with code %d. Click here to terminate the stream.", app_name.c_str(), exit_code);
-  #ifdef _WIN32
       auto msg_acp = utf8ToAcp(msg);
       strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
       msg[std::size(msg) - 1] = '\0';
-  #endif
       s_notification_text = msg;
       tray.notification_icon = TRAY_ICON;
       tray.notification_title = "Launch Error";
@@ -561,11 +495,9 @@ namespace system_tray {
 
       char msg[256];
       snprintf(msg, std::size(msg), "Device %s paired Succesfully. Please make sure you have access to the device.", device_name.c_str());
-  #ifdef _WIN32
       auto msg_acp = utf8ToAcp(msg);
       strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
       msg[std::size(msg) - 1] = '\0';
-  #endif
       tray.notification_title = "Device Paired Succesfully";
       static std::string s_paired_text;
       s_paired_text = msg;
@@ -587,11 +519,9 @@ namespace system_tray {
 
       char msg[256];
       snprintf(msg, std::size(msg), "%s has connected to the session.", client_name.c_str());
-  #ifdef _WIN32
       auto msg_acp = utf8ToAcp(msg);
       strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
       msg[std::size(msg) - 1] = '\0';
-  #endif
       tray.notification_title = "Client Connected";
       static std::string s_client_text;
       s_client_text = msg;
@@ -652,12 +582,8 @@ namespace system_tray {
       return 1;
     }
 
-  #ifdef _WIN32
     std::string tmp_str = "Open Apollo (" + config::nvhttp.sunshine_name + ":" + std::to_string(net::map_port(confighttp::PORT_HTTPS)) + ")";
     static const std::string title_str = utf8ToAcp(tmp_str);
-  #else
-    static const std::string title_str = "Open Apollo (" + config::nvhttp.sunshine_name + ":" + std::to_string(net::map_port(confighttp::PORT_HTTPS)) + ")";
-  #endif
     tray.menu[0].text = title_str.c_str();
 
     if (config::sunshine.hide_tray_controls) {

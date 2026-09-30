@@ -2,7 +2,6 @@
  * @file src/platform/windows/hotkey_manager.cpp
  * @brief Global hotkey registration for Windows.
  */
-#ifdef _WIN32
   #include "hotkey_manager.h"
 
   #include "src/logging.h"
@@ -165,4 +164,3 @@ namespace platf::hotkey {
     }
   }
 }  // namespace platf::hotkey
-#endif

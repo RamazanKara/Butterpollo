@@ -1,7 +1,6 @@
 #include "src/platform/windows/display_helper_v2/snapshot_codec.h"
 #include "src/platform/windows/display_helper_v2/topology_policy.h"
 
-#ifdef _WIN32
 
   #include <algorithm>
   #include <cctype>
@@ -891,5 +890,3 @@ namespace display_helper::v2::codec {
   }
 
 }  // namespace display_helper::v2::codec
-
-#endif  // _WIN32

@@ -2,7 +2,6 @@
  * @file tests/unit/test_display_helper_v2_state_machine.cpp
  * @brief Unit tests for display helper v2 state machine and operations.
  */
-#ifdef _WIN32
 
 #include "../tests_common.h"
 
@@ -3355,5 +3354,3 @@ TEST(DisplayHelperV2StateMachine, SnapshotCurrentRefreshFailureKeepsBaseline) {
   ASSERT_TRUE(harness.snapshot_result.has_value());
   EXPECT_FALSE(*harness.snapshot_result);
 }
-
-#endif  // _WIN32

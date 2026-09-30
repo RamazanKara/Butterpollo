@@ -638,13 +638,8 @@ namespace input {
     // Linux input backends expect desktop-relative coordinates here.
     // Windows/macOS apply monitor offsets in platform code, so adding offsets here
     // would double-apply them and clamp input to edges.
-#ifdef __linux__
-    float final_x = (x + touch_port.offset_x * touch_port.scalar_tpcoords) / touch_port.scalar_tpcoords;
-    float final_y = (y + touch_port.offset_y * touch_port.scalar_tpcoords) / touch_port.scalar_tpcoords;
-#else
     float final_x = x / touch_port.scalar_tpcoords;
     float final_y = y / touch_port.scalar_tpcoords;
-#endif
     return std::pair {final_x, final_y};
   }
 
@@ -1105,13 +1100,8 @@ namespace input {
     // Linux client_to_touchport() returns desktop-relative coordinates for
     // inputtino. Windows keeps monitor-local coordinates here and applies the
     // monitor offset when injecting the pointer.
-#ifdef __linux__
-    coords.first = (coords.first - touch_port.offset_x) / monitor_logical_w;
-    coords.second = (coords.second - touch_port.offset_y) / monitor_logical_h;
-#else
     coords.first = coords.first / monitor_logical_w;
     coords.second = coords.second / monitor_logical_h;
-#endif
 
     return platf::touch_port_t {
       touch_port.offset_x,

@@ -1296,30 +1296,6 @@ namespace platf {
   /**
    * @brief Launch a process without impersonation (for use when running as regular user).
    */
-  bool launch_process_without_impersonation(const std::string &cmd, const std::wstring &start_dir, DWORD creation_flags, STARTUPINFOEXW &startup_info, PROCESS_INFORMATION &process_info, std::error_code &ec) {
-    // Open our current token to resolve environment variables
-    HANDLE process_token;
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE, &process_token)) {
-      ec = std::make_error_code(std::errc::permission_denied);
-      return false;
-    }
-    auto token_close = util::fail_guard([process_token]() {
-      CloseHandle(process_token);
-    });
-
-    std::wstring wcmd = resolve_command_string(cmd, start_dir, nullptr, creation_flags);
-    // Allocate a writable buffer for the command string
-    std::vector<wchar_t> wcmd_buf(wcmd.begin(), wcmd.end());
-    wcmd_buf.push_back(L'\0');
-    BOOL ret = CreateProcessW(nullptr, wcmd_buf.data(), nullptr, nullptr, !!(startup_info.StartupInfo.dwFlags & STARTF_USESTDHANDLES), creation_flags, nullptr, start_dir.empty() ? nullptr : start_dir.c_str(), reinterpret_cast<LPSTARTUPINFOW>(&startup_info), &process_info);
-
-    if (!ret) {
-      BOOST_LOG(error) << "Failed to launch process: " << GetLastError();
-      ec = std::make_error_code(std::errc::invalid_argument);
-    }
-
-    return ret != FALSE;
-  }
 
   /**
    * @brief Run a command on the users profile.

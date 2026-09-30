@@ -4,7 +4,6 @@
  */
 #pragma once
 
-#ifdef _WIN32
 
   #include <optional>
   #include <string>
@@ -62,10 +61,7 @@ namespace platf {
   rtss_status_t rtss_get_status();
 
   void rtss_set_sync_limiter_override(std::optional<std::string> value);
-  std::optional<std::string> rtss_get_sync_limiter_override();
 
   // Ensure RTSS is running ahead of game launch so its hooks attach before the process starts.
   bool rtss_warmup_process();
 }  // namespace platf
-
-#endif  // _WIN32

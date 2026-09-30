@@ -65,9 +65,7 @@ namespace confighttp {
   void browseDirectory(resp_https_t response, req_https_t request);
   bool is_browsable_executable(const std::filesystem::directory_entry &entry, const std::filesystem::file_status &status);
   nlohmann::json build_browse_entries(const std::filesystem::path &dir_path, const std::string &type_str);
-#ifdef _WIN32
   nlohmann::json get_windows_drives();
-#endif
 
   // Writes the apps file and refreshes the client-visible app cache/list.
   // Hold this recursive mutex throughout apps-file read-modify-write transactions.

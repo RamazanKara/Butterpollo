@@ -20,8 +20,7 @@ namespace framegen {
     int fps_scaled = 0;
     // Exact per-client display-mode rate. Zero means use the streamed FPS.
     std::uint32_t frame_limit_millihz = 0;
-    std::string frame_generation_provider {"lossless-scaling"};
-    std::optional<int> lossless_rtss_limit;
+    std::string frame_generation_provider {"none"};
     bool smooth_motion = false;
     bool capture_fix_enabled = false;
     bool uses_virtual_display = false;
@@ -42,9 +41,7 @@ namespace framegen {
     bool frame_generation_enabled = false;
     bool gen1_framegen_fix = false;
     bool gen2_framegen_fix = false;
-    bool lossless_scaling_framegen = false;
-    std::optional<int> lossless_rtss_limit;
-    std::string frame_generation_provider {"lossless-scaling"};
+    std::string frame_generation_provider {"none"};
     bool uses_virtual_display = false;
     std::string capture_mode;
     bool auto_capture_uses_wgc = false;
@@ -66,10 +63,7 @@ namespace framegen {
     if (normalized == "game" || normalized == "gameprovided" || normalized == "gameprovider") {
       return "game-provided";
     }
-    if (normalized == "lossless" || normalized == "losslessscaling") {
-      return "lossless-scaling";
-    }
-    return "lossless-scaling";
+    return "none";
   }
 
   inline bool virtual_display_reflex_required(
@@ -106,11 +100,8 @@ namespace framegen {
     return normalized;
   }
 
-  inline bool provider_implies_frame_generation(std::string_view provider, bool lossless_scaling_framegen) {
+  inline bool provider_implies_frame_generation(std::string_view provider) {
     const auto normalized = normalize_provider(provider);
-    if (normalized == "lossless-scaling") {
-      return lossless_scaling_framegen;
-    }
     return normalized == "game-provided" || normalized == "nvidia-smooth-motion";
   }
 
@@ -156,7 +147,6 @@ namespace framegen {
     policy.fps_scaled = input.fps_scaled;
     policy.frame_limit_millihz = input.display_refresh_millihz;
     policy.frame_generation_provider = normalize_provider(input.frame_generation_provider);
-    policy.lossless_rtss_limit = input.lossless_rtss_limit;
     policy.smooth_motion = policy.frame_generation_provider == "nvidia-smooth-motion";
     // Legacy capture-fix flags are kept in config for compatibility, but no longer drive
     // frame generation policy.
@@ -165,8 +155,7 @@ namespace framegen {
     const bool game_provided_framegen = policy.frame_generation_provider == "game-provided";
 
     const bool provider_enabled = provider_implies_frame_generation(
-      policy.frame_generation_provider,
-      input.lossless_scaling_framegen
+      policy.frame_generation_provider
     );
     policy.frame_generation_enabled = input.frame_generation_enabled || provider_enabled;
     policy.requires_virtual_display = false;

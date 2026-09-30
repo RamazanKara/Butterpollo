@@ -1,16 +1,17 @@
-export type ConfigSelectOption = { label: string; value: string | number; disabled?: boolean };
-
+export type ConfigSelectOption = {
+  label: string;
+  value: string | number;
+  disabled?: boolean;
+};
 export type ConfigSelectOptionsContext = {
   t: (key: string) => string;
   platform: string;
   metadata?: any;
   currentValue?: unknown;
 };
-
 function isSelectValue(value: unknown): value is string | number {
   return typeof value === 'string' || (typeof value === 'number' && Number.isFinite(value));
 }
-
 function ensureIncludesCurrentValue(
   options: ConfigSelectOption[],
   currentValue: unknown,
@@ -19,16 +20,13 @@ function ensureIncludesCurrentValue(
   if (options.some((option) => option.value === currentValue)) return options;
   return options.concat([{ label: String(currentValue), value: currentValue }]);
 }
-
 function gpuFlags(metadata: any) {
   const gpus = Array.isArray(metadata?.gpus) ? metadata.gpus : [];
   const hasVendor = (vendorId: number) =>
     gpus.some((gpu: any) => Number(gpu?.vendor_id ?? gpu?.vendorId ?? 0) === vendorId);
-
   const metaNvidia = metadata?.has_nvidia_gpu;
   const metaIntel = metadata?.has_intel_gpu;
   const metaAmd = metadata?.has_amd_gpu;
-
   const hasNvidia =
     typeof metaNvidia === 'boolean' ? metaNvidia : gpus.length ? hasVendor(0x10de) : true;
   const hasIntel =
@@ -42,10 +40,8 @@ function gpuFlags(metadata: any) {
             return vendor === 0x1002 || vendor === 0x1022;
           })
         : true;
-
   return { hasNvidia, hasIntel, hasAmd };
 }
-
 const localeOptions: ConfigSelectOption[] = [
   { label: 'Български', value: 'bg' },
   { label: 'Čeština', value: 'cs' },
@@ -70,14 +66,12 @@ const localeOptions: ConfigSelectOption[] = [
   { label: '简体中文', value: 'zh' },
   { label: '繁體中文', value: 'zh_TW' },
 ];
-
 export function getConfigSelectOptions(
   key: string,
   ctx: ConfigSelectOptionsContext,
 ): ConfigSelectOption[] {
   const platform = String(ctx.platform || '').toLowerCase();
   const { t } = ctx;
-
   switch (key) {
     case 'locale':
       return ensureIncludesCurrentValue(localeOptions, ctx.currentValue);
@@ -163,8 +157,6 @@ export function getConfigSelectOptions(
         vhf_switch: 'config.gamepad_vhf_switch',
       };
       const prioritizedByPlatform: Record<string, string[]> = {
-        freebsd: ['switch', 'xone'],
-        linux: ['xone', 'ds4', 'ds5', 'switch'],
         windows: [
           'x360',
           'ds4',
@@ -177,10 +169,8 @@ export function getConfigSelectOptions(
         ],
       };
       const fallbackOrder = ['x360', 'ds5', 'ds4'];
-
       const options: ConfigSelectOption[] = [{ label: t('_common.auto'), value: 'auto' }];
       const seen = new Set<string>(options.map((option) => String(option.value)));
-
       const addOption = (value: string | undefined) => {
         if (!value || seen.has(value)) return;
         const labelKey = labelMap[value] || `config.gamepad_${value}`;
@@ -188,7 +178,6 @@ export function getConfigSelectOptions(
         options.push({ label: translated && translated !== labelKey ? translated : value, value });
         seen.add(value);
       };
-
       const platformOrder = prioritizedByPlatform[platform] ?? fallbackOrder;
       platformOrder.forEach(addOption);
       if (typeof ctx.currentValue === 'string' && ctx.currentValue !== 'auto') {
@@ -204,15 +193,6 @@ export function getConfigSelectOptions(
           { label: t('config.capture_wgc_constant'), value: 'wgcc' },
           { label: t('config.capture_ddx_legacy'), value: 'ddx' },
         );
-      } else if (platform === 'linux') {
-        options.push(
-          { label: 'NvFBC', value: 'nvfbc' },
-          { label: 'KWin', value: 'kwin' },
-          { label: 'SteamOS / Gamescope', value: 'gamescope' },
-          { label: 'wlroots', value: 'wlr' },
-          { label: 'KMS', value: 'kms' },
-          { label: 'X11', value: 'x11' },
-        );
       }
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
@@ -223,15 +203,6 @@ export function getConfigSelectOptions(
         if (hasNvidia) options.push({ label: 'NVIDIA NVENC', value: 'nvenc' });
         if (hasIntel) options.push({ label: 'Intel QuickSync', value: 'quicksync' });
         if (hasAmd) options.push({ label: 'AMD AMF', value: 'amdvce' });
-      } else if (platform === 'linux') {
-        options.push(
-          { label: 'NVIDIA NVENC (Native)', value: 'nvenc' },
-          { label: 'NVIDIA NVENC (Legacy FFmpeg)', value: 'nvenc_legacy' },
-          { label: 'Vulkan', value: 'vulkan' },
-          { label: 'VA-API', value: 'vaapi' },
-        );
-      } else if (platform === 'macos') {
-        options.push({ label: 'VideoToolbox', value: 'videotoolbox' });
       }
       options.push({
         label: t('config.encoder_software'),
@@ -241,7 +212,6 @@ export function getConfigSelectOptions(
     }
     case 'nvenc_preset': {
       const presetExtra = (id: 1 | 4 | 7) => t(`config.nvenc_preset_${id}`);
-
       const options: ConfigSelectOption[] = [
         { label: `P1 ${presetExtra(1)}`.trim(), value: 1 },
         { label: 'P2', value: 2 },
@@ -279,25 +249,6 @@ export function getConfigSelectOptions(
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
-    case 'vk_tune': {
-      const options = [
-        { label: t('_common.auto'), value: 0 },
-        { label: t('config.vk_tune_hq'), value: 1 },
-        { label: t('config.vk_tune_ll'), value: 2 },
-        { label: t('config.vk_tune_ull'), value: 3 },
-        { label: t('config.vk_tune_lossless'), value: 4 },
-      ];
-      return ensureIncludesCurrentValue(options, ctx.currentValue);
-    }
-    case 'vk_rc_mode': {
-      const options = [
-        { label: t('_common.auto'), value: 0 },
-        { label: t('config.vk_rc_cqp'), value: 1 },
-        { label: t('config.vk_rc_cbr'), value: 2 },
-        { label: t('config.vk_rc_vbr'), value: 4 },
-      ];
-      return ensureIncludesCurrentValue(options, ctx.currentValue);
-    }
     case 'qsv_preset': {
       const options = [
         { label: t('config.qsv_preset_veryfast'), value: 'veryfast' },
@@ -312,14 +263,6 @@ export function getConfigSelectOptions(
     }
     case 'qsv_coder':
     case 'amd_coder':
-    case 'vt_coder': {
-      const options = [
-        { label: t('config.ffmpeg_auto'), value: 'auto' },
-        { label: t('config.coder_cabac'), value: 'cabac' },
-        { label: t('config.coder_cavlc'), value: 'cavlc' },
-      ];
-      return ensureIncludesCurrentValue(options, ctx.currentValue);
-    }
     case 'amd_usage': {
       const options = [
         {
@@ -401,15 +344,6 @@ export function getConfigSelectOptions(
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
-    case 'vt_software': {
-      const options = [
-        { label: t('_common.auto'), value: 'auto' },
-        { label: t('_common.disabled'), value: 'disabled' },
-        { label: t('config.vt_software_allowed'), value: 'allowed' },
-        { label: t('config.vt_software_forced'), value: 'forced' },
-      ];
-      return ensureIncludesCurrentValue(options, ctx.currentValue);
-    }
     case 'sw_preset': {
       const options = [
         { label: t('config.sw_preset_ultrafast'), value: 'ultrafast' },
@@ -439,29 +373,14 @@ export function getConfigSelectOptions(
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'frame_limiter_provider': {
-      const options = platform.includes('linux')
-        ? [
-            { label: t('frameLimiter.provider.autoLinux'), value: 'auto' },
-            { label: t('frameLimiter.provider.mangohudProton'), value: 'mangohud-proton' },
-            { label: t('frameLimiter.provider.proton'), value: 'proton' },
-            { label: t('frameLimiter.provider.mangohud'), value: 'mangohud' },
-            { label: t('frameLimiter.provider.none'), value: 'none' },
-          ]
-        : [
-            { label: t('frameLimiter.provider.auto'), value: 'auto' },
-            { label: t('frameLimiter.provider.rtss'), value: 'rtss' },
-            {
-              label: t('frameLimiter.provider.nvcp'),
-              value: 'nvidia-control-panel',
-            },
-            { label: t('frameLimiter.provider.none'), value: 'none' },
-          ];
-      return ensureIncludesCurrentValue(options, ctx.currentValue);
-    }
-    case 'mangohud_limiter_method': {
       const options = [
-        { label: t('frameLimiter.mangohudMethod.early'), value: 'early' },
-        { label: t('frameLimiter.mangohudMethod.late'), value: 'late' },
+        { label: t('frameLimiter.provider.auto'), value: 'auto' },
+        { label: t('frameLimiter.provider.rtss'), value: 'rtss' },
+        {
+          label: t('frameLimiter.provider.nvcp'),
+          value: 'nvidia-control-panel',
+        },
+        { label: t('frameLimiter.provider.none'), value: 'none' },
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
@@ -609,7 +528,6 @@ export function getConfigSelectOptions(
       return [];
   }
 }
-
 export function buildConfigOptionsText(options: ConfigSelectOption[]): string {
   if (options.length === 0) return '';
   return options

@@ -3,7 +3,6 @@
  * @brief NVIDIA Control Panel frame limiter provider implementation.
  */
 
-#ifdef _WIN32
 
   #include "frame_limiter_nvcp.h"
 
@@ -1438,5 +1437,3 @@ namespace platf::frame_limiter_nvcp {
   }
 
 }  // namespace platf::frame_limiter_nvcp
-
-#endif  // _WIN32

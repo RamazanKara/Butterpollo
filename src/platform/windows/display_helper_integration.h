@@ -116,7 +116,6 @@ namespace display_helper_integration {
   // stream APPLY/REVERT and deliberately never creates or restores snapshots.
   bool apply_remote_composed_topology(const DisplayTopologyDefinition &topology);
 
-#ifdef _WIN32
   enum class ApplyVerificationStatus {
     Verified,
     Failed,
@@ -153,9 +152,7 @@ namespace display_helper_integration {
   // start. Capture start uses it to keep its own settling waits inside the
   // client's first-video deadline; unbounded applies keep their full waits.
   std::optional<std::chrono::milliseconds> remaining_stream_start_budget();
-#endif
 
-#ifdef _WIN32
   struct FramegenEdidTargetSupport {
     int hz {0};
     std::optional<bool> supported;
@@ -176,7 +173,6 @@ namespace display_helper_integration {
     const std::string &device_hint,
     const std::vector<int> &targets_hz
   );
-#endif
 
   // Returns milliseconds since the last successful display-helper APPLY completed.
   // Returns a very large value if no apply has ever been performed.

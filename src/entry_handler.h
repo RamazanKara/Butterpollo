@@ -54,7 +54,6 @@ namespace args {
    */
   int version();
 
-#ifdef _WIN32
   /**
    * @brief Restore global NVIDIA control panel settings.
    * If Sunshine was improperly terminated, this function restores
@@ -65,7 +64,6 @@ namespace args {
    * @examples_end
    */
   int restore_nvprefs_undo();
-#endif
 }  // namespace args
 
 /**
@@ -90,7 +88,6 @@ namespace lifetime {
   /**
    * @brief Get the argv array passed to main().
    */
-  char **get_argv();
 }  // namespace lifetime
 
 /**
@@ -98,7 +95,6 @@ namespace lifetime {
  */
 void log_publisher_data();
 
-#ifdef _WIN32
 /**
  * @brief Check if NVIDIA's GameStream software is running.
  * @return `true` if GameStream is enabled, `false` otherwise.
@@ -133,4 +129,3 @@ namespace service_ctrl {
    */
   bool wait_for_ui_ready();
 }  // namespace service_ctrl
-#endif

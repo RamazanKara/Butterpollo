@@ -69,10 +69,7 @@ namespace stream {
     bool gen1_framegen_fix;
     bool gen2_framegen_fix;
     bool frame_generation_enabled;
-    bool lossless_scaling_framegen;
     std::string frame_generation_provider;
-    std::optional<double> lossless_scaling_target_fps;
-    std::optional<int> lossless_scaling_rtss_limit;
   };
 
   namespace session {

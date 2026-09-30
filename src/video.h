@@ -324,31 +324,18 @@ namespace video {
   // encoders
   extern encoder_t software;
 
-#if !defined(__APPLE__)
-  extern encoder_t nvenc;  // available for windows and linux
-#endif
+  extern encoder_t nvenc;
 
-#if defined(__linux__)
-  extern encoder_t nvenc_legacy;
-#endif
 
-#ifdef _WIN32
   extern encoder_t amdvce;
   extern encoder_t quicksync;
-#endif
 
 #ifdef SUNSHINE_ENABLE_PYROWAVE
   // Serves videoFormat 3 next to the probed encoder; never auto-selected.
   extern encoder_t pyrowave;
 #endif
 
-#if defined(__linux__) || defined(linux) || defined(__linux) || defined(__FreeBSD__)
-  extern encoder_t vaapi;
-#endif
 
-#ifdef __APPLE__
-  extern encoder_t videotoolbox;
-#endif
 
   struct packet_raw_t {
     virtual ~packet_raw_t() = default;
@@ -495,7 +482,6 @@ namespace video {
     bool *probe_complete = nullptr
   );
 
-#ifdef _WIN32
   // Bridge the interval between selecting a virtual-display render adapter and
   // Windows publishing its replacement output. The lease prevents an older
   // request from clearing a newer session's identity.
@@ -505,7 +491,6 @@ namespace video {
   // with its WGC/DXGI adapter before a successful probe can remain cached.
   bool mark_pending_virtual_display_adapter_hint_ready_for_verification(encoder_probe_adapter_hint_lease_t lease);
   bool clear_pending_virtual_display_adapter_hint(encoder_probe_adapter_hint_lease_t lease);
-#endif
 
   void capture(
     safe::mail_t mail,

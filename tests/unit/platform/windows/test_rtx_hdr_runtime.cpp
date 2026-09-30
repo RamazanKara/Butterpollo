@@ -1,4 +1,3 @@
-#ifdef _WIN32
 
 #include "src/platform/windows/rtx_hdr_policy.h"
 
@@ -73,5 +72,3 @@ TEST(RtxHdrRuntimeScheduler, LiveTuningGenerationRefreshesCachedFrameWithoutLook
 TEST(RtxHdrRuntimeScheduler, LiveSettingsCanEnableDisabledFrame) { policy::scheduler_t s; s.observe_foreground(app(), {}, config_values(), {}); ASSERT_TRUE(s.complete_profile_lookup(application_profile(), {}, std::chrono::milliseconds(1), config_values(), {})); EXPECT_FALSE(s.frame().enabled); s.refresh_live_settings(config_values(), {true}); EXPECT_TRUE(s.frame().enabled); }
 TEST(RtxHdrRuntimeScheduler, LiveSettingsCanDisableActiveFrame) { policy::scheduler_t s; s.observe_foreground(app(), {}, config_values(), {true}); lookup(s); auto c=config_values(); c.enabled=false; s.refresh_live_settings(c, {true}); EXPECT_FALSE(s.frame().enabled); }
 TEST(RtxHdrRuntimeScheduler, LiveTuningRemovalFallsBackToCachedProfile) { policy::scheduler_t s; s.observe_foreground(app(), {}, config_values(), {true, true}); ASSERT_TRUE(s.complete_profile_lookup(application_profile(), {}, std::chrono::milliseconds(1), config_values(), {true, true})); EXPECT_EQ(s.frame().contrast, 125); s.refresh_live_settings(config_values(), {true}); EXPECT_EQ(s.frame().contrast, 150); }
-
-#endif

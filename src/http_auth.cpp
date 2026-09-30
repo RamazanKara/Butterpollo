@@ -175,11 +175,7 @@ namespace confighttp {
     std::string format_cookie_expires(std::chrono::system_clock::time_point tp) {
       auto tt = std::chrono::system_clock::to_time_t(tp);
       std::tm tm {};
-#if defined(_WIN32)
       gmtime_s(&tm, &tt);
-#else
-      gmtime_r(&tt, &tm);
-#endif
       char buffer[64] {};
       if (std::strftime(buffer, sizeof(buffer), "%a, %d %b %Y %H:%M:%S GMT", &tm) == 0) {
         return {};
@@ -821,41 +817,6 @@ namespace confighttp {
     return removed;
   }
 
-  std::optional<std::string> SessionTokenManager::get_username_for_token(const std::string &token) {
-    std::optional<std::string> username;
-    bool should_persist = false;
-    {
-      std::scoped_lock lock(_mutex);
-      std::string token_hash = _dependencies.hash(token);
-      auto it = _session_tokens.find(token_hash);
-      if (it == _session_tokens.end()) {
-        return std::nullopt;
-      }
-      auto now = _dependencies.now();
-      if (now > it->second.refresh_expires_at) {
-        if (!it->second.refresh_token_hash.empty()) {
-          _refresh_index.erase(it->second.refresh_token_hash);
-        }
-        _session_tokens.erase(it);
-        _dirty = true;
-        should_persist = true;
-        return std::nullopt;
-      }
-      if (now > it->second.expires_at) {
-        return std::nullopt;
-      }
-      username = it->second.username;
-      if (now - it->second.last_seen >= std::chrono::minutes(5)) {
-        it->second.last_seen = now;
-        _dirty = true;
-        should_persist = true;
-      }
-    }
-    if (should_persist) {
-      save_session_tokens();
-    }
-    return username;
-  }
 
   size_t SessionTokenManager::session_count() const {
     std::scoped_lock lock(_mutex);

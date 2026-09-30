@@ -4,7 +4,6 @@
  */
 #include <gtest/gtest.h>
 
-#ifdef _WIN32
   #include <src/platform/windows/virtual_display.h>
   #include <src/platform/windows/virtual_display_cleanup.h>
   #include <src/platform/windows/virtual_display_policy.h>
@@ -136,4 +135,3 @@ TEST(VirtualDisplayCleanupPolicy, DatabaseFallbackRemainsAfterVirtualCleanup) {
   // retained-display removal must not replace it.
   EXPECT_EQ(steps.back(), platf::virtual_display_cleanup::cleanup_step_t::database_restore);
 }
-#endif  // _WIN32

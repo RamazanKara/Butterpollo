@@ -36,7 +36,6 @@
 #include "uuid.h"
 #include "video.h"
 #include "state_storage.h"
-#ifdef _WIN32
   #include <shobjidl.h>
 
   #include "src/display_helper_integration.h"
@@ -46,20 +45,10 @@
   #include "src/platform/windows/startup_encoder_probe_policy.h"
   #include "src/platform/windows/virtual_display.h"
   #include "src/platform/windows/virtual_display_cleanup.h"
-#elif defined(__linux__)
-  #include "src/platform/linux/capability_sanitizer.h"
-  #include "src/platform/linux/maintenance_cli.h"
-  #include "src/platform/linux/private_display.h"
-  #include "src/platform/linux/display_backend.h"
 
-  #include <pthread.h>
-#endif
-
-#ifdef _WIN32
   #include "platform/windows/misc.h"
   #include "platform/windows/display_helper_integration.h"
   #include "platform/windows/virtual_display.h"
-#endif
 
 #define PROBE_DISPLAY_UUID "38F72B96-B00C-4F21-8B6C-E1BFF1602B0E"
 
@@ -69,13 +58,10 @@ extern "C" {
 
 using namespace std::literals;
 
-#ifndef __linux__
 std::map<int, std::function<void()>> signal_handlers;
 
-  #ifdef _WIN32
     #define WIDEN_STRING_LITERAL_IMPL(value) L##value
     #define WIDEN_STRING_LITERAL(value) WIDEN_STRING_LITERAL_IMPL(value)
-  #endif
 
 void on_signal_forwarder(int sig) {
   signal_handlers.at(sig)();
@@ -87,7 +73,6 @@ void on_signal(int sig, FN &&fn) {
 
   std::signal(sig, on_signal_forwarder);
 }
-#endif
 
 namespace {
   static_assert(std::atomic_bool::is_always_lock_free, "shutdown signal flag must be lock-free in a signal handler");
@@ -212,14 +197,11 @@ std::map<std::string_view, std::function<int(const char *name, int argc, char **
   {"version"sv, [](const char *name, int argc, char **argv) {
      return args::version();
    }},
-#ifdef _WIN32
   {"restore-nvprefs-undo"sv, [](const char *name, int argc, char **argv) {
      return args::restore_nvprefs_undo();
    }},
-#endif
 };
 
-#ifdef _WIN32
 LRESULT CALLBACK SessionMonitorWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
   switch (uMsg) {
     case WM_CLOSE:
@@ -262,47 +244,9 @@ WINAPI BOOL ConsoleCtrlHandler(DWORD type) {
   }
   return FALSE;
 }
-#endif
 
 int main(int argc, char *argv[]) {
-#ifdef __linux__
-  #ifdef SUNSHINE_BUILD_STEAMOS
-  if (platf::linux_cli::command(argc, argv)) {
-    std::fputs("Vibepollo: native Linux maintenance commands are unavailable in the SteamOS user bundle.\n", stderr);
-    return 2;
-  }
-  #else
-  // Maintenance never enters host initialization. In particular, sudo must
-  // reach the root-owned administrative helper before the host-only capability
-  // policy rejects a root process. No configuration or logging is parsed here.
-  if (const auto result = platf::linux_cli::dispatch(argc, argv)) {
-    return *result;
-  }
-  #endif
-  if (!platf::linux_security::sanitize_startup_capabilities()) {
-    const int error_number = errno ? errno : EPERM;
-    std::fprintf(stderr, "Vibepollo: failed to sanitize Linux startup capabilities: %s\n",
-                 std::strerror(error_number));
-    return 1;
-  }
-  // Block termination before any worker or GPU resource can exist. Every
-  // subsequently created thread inherits this mask; one dedicated sigwait()
-  // thread consumes the signal synchronously in ordinary thread context.
-  sigset_t termination_signal_set;
-  sigemptyset(&termination_signal_set);
-  sigaddset(&termination_signal_set, SIGINT);
-  sigaddset(&termination_signal_set, SIGTERM);
-  if (const int error_number = pthread_sigmask(SIG_BLOCK, &termination_signal_set, nullptr); error_number != 0) {
-    std::fprintf(stderr, "Vibepollo: failed to block termination signals: %s\n", std::strerror(error_number));
-    return 1;
-  }
-  const char *machine_host_environment = std::getenv("VIBEPOLLO_MACHINE_HOST");
-  const bool supervised_machine_host =
-    machine_host_environment && machine_host_environment[0] == '1' &&
-    machine_host_environment[1] == '\0';
-#else
   constexpr bool supervised_machine_host = false;
-#endif
 
   lifetime::argv = argv;
 
@@ -313,26 +257,11 @@ int main(int argc, char *argv[]) {
     return 0;
   }
 
-#ifdef SUNSHINE_BUILD_STEAMOS
-  // Resolve assets from the executable's release, including launches outside
-  // the wrapper and upgrades which switch the "current" symlink underneath us.
-  std::error_code bundle_error;
-  const auto bundle_executable = std::filesystem::read_symlink("/proc/self/exe", bundle_error);
-  if (!bundle_error) {
-    std::filesystem::current_path(bundle_executable.parent_path().parent_path(), bundle_error);
-  }
-  if (bundle_error) {
-    std::fprintf(stderr, "Vibepollo: cannot resolve SteamOS bundle: %s\n", bundle_error.message().c_str());
-    return 1;
-  }
-#endif
 
-#ifdef _WIN32
   // Avoid searching the PATH in case a user has configured their system insecurely
   // by placing a user-writable directory in the system-wide PATH variable.
   SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
   setlocale(LC_ALL, "C");
-#endif
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
@@ -354,13 +283,11 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(error) << "Logging failed to initialize"sv;
   }
 
-#ifdef _WIN32
   const auto app_user_model_id_status =
     SetCurrentProcessExplicitAppUserModelID(WIDEN_STRING_LITERAL(PROJECT_APP_USER_MODEL_ID));
   if (FAILED(app_user_model_id_status)) {
     BOOST_LOG(warning) << "Failed to set explicit AppUserModelID; Windows may reuse legacy notification branding"sv;
   }
-#endif
 
 #ifndef SUNSHINE_EXTERNAL_PROCESS
   // Setup third-party library logging
@@ -368,16 +295,11 @@ int main(int argc, char *argv[]) {
   logging::setup_libdisplaydevice_logging(config::sunshine.min_log_level);
 #endif
 
-#ifdef __ANDROID__
-  // Setup Android-specific logging
-  logging::setup_android_logging();
-#endif
 
   // logging can begin at this point
   // if anything is logged prior to this point, it will appear in stdout, but not in the log viewer in the UI
   // the version should be printed to the log before anything else
   BOOST_LOG(info) << PROJECT_NAME << " version: " << PROJECT_VERSION << " commit: " << PROJECT_VERSION_COMMIT;
-#ifdef _WIN32
   const auto windows_version = platf::query_windows_version();
   BOOST_LOG(info) << "Windows version: product=" << windows_version.product_name
                   << ", display_version=" << windows_version.display_version
@@ -385,7 +307,6 @@ int main(int argc, char *argv[]) {
   if (windows_version.build_number.has_value() && *windows_version.build_number < 22000) {
     BOOST_LOG(warning) << "Windows 10 detected; HDR will not work on the Vibepollo Virtual Display.";
   }
-#endif
   if (version_compare::is_prerelease_channel(PROJECT_VERSION)) {
     BOOST_LOG(info) << "Prerelease build detected; default min_log_level is debug unless overridden.";
   }
@@ -398,14 +319,10 @@ int main(int argc, char *argv[]) {
   config::log_config_settings(config::modified_config_settings, false);
   config::modified_config_settings.clear();
 
-#ifdef _WIN32
   statefile::repair_config_permissions();
-#endif
 
-#ifdef _WIN32
   platf::frame_limiter_nvcp::restore_pending_overrides();
   platf::rtss_restore_pending_overrides();
-#endif
 
   if (!config::sunshine.cmd.name.empty()) {
     auto fn = cmd_to_func.find(config::sunshine.cmd.name);
@@ -432,58 +349,7 @@ int main(int argc, char *argv[]) {
   std::atomic_bool shutdown_signal_requested {false};
   shutdown_deadline_t shutdown_deadline {&shutdown_signal_requested, supervised_machine_host};
 
-#ifdef __linux__
-  std::atomic_bool termination_signal_monitor_stopping {false};
-  std::atomic_bool termination_signal_monitor_finished {false};
-  std::thread termination_signal_monitor;
-  try {
-    termination_signal_monitor = std::thread([&]() {
-      int signal_number = 0;
-      const int wait_error = sigwait(&termination_signal_set, &signal_number);
-      if (wait_error != 0) {
-        BOOST_LOG(error) << "Termination signal wait failed: " << std::strerror(wait_error);
-        shutdown_event->raise(true);
-        termination_signal_monitor_finished.store(true, std::memory_order_release);
-        return;
-      }
-      if (termination_signal_monitor_stopping.load(std::memory_order_acquire)) {
-        termination_signal_monitor_finished.store(true, std::memory_order_release);
-        return;
-      }
-      shutdown_signal_requested.store(true, std::memory_order_relaxed);
-      if (supervised_machine_host) {
-        platf::linux_private_display::request_process_shutdown_preserve();
-      }
-      BOOST_LOG(info) << (signal_number == SIGINT ? "Interrupt handler called"sv : "Terminate handler called"sv);
-      shutdown_event->raise(true);
-  #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
-      if (config::sunshine.system_tray) {
-        system_tray::end_tray();
-      }
-  #endif
-      termination_signal_monitor_finished.store(true, std::memory_order_release);
-    });
-  } catch (const std::system_error &exception) {
-    BOOST_LOG(error) << "Unable to create the termination signal monitor: " << exception.what();
-    return 1;
-  }
-  auto stop_termination_signal_monitor = [&]() {
-    if (!termination_signal_monitor.joinable()) {
-      return;
-    }
-    termination_signal_monitor_stopping.store(true, std::memory_order_release);
-    if (!termination_signal_monitor_finished.load(std::memory_order_acquire)) {
-      const int wake_error = pthread_kill(termination_signal_monitor.native_handle(), SIGTERM);
-      if (wake_error != 0 && wake_error != ESRCH) {
-        BOOST_LOG(error) << "Unable to wake the termination signal monitor: " << std::strerror(wake_error);
-      }
-    }
-    termination_signal_monitor.join();
-  };
-  auto termination_signal_monitor_guard = util::fail_guard(stop_termination_signal_monitor);
-#endif
 
-#ifdef WIN32
   // Modify relevant NVIDIA control panel settings if the system has corresponding gpu
   if (nvprefs_instance.load()) {
     // Restore global settings to the undo file left by improper termination of sunshine.exe
@@ -629,7 +495,6 @@ int main(int argc, char *argv[]) {
     shutdown_session_monitor();
   });
 
-#endif
 
   task_pool.start(1);
 
@@ -655,7 +520,6 @@ int main(int argc, char *argv[]) {
   }
 #endif
 
-#ifndef __linux__
   // Other platforms retain their native signal/control handlers. Linux has
   // blocked these signals process-wide and consumes them synchronously above.
   on_signal(SIGINT, [&shutdown_signal_requested, shutdown_event]() {
@@ -686,12 +550,9 @@ int main(int argc, char *argv[]) {
     }
   #endif
   });
-#endif
 
-#ifdef _WIN32
   // Terminate gracefully on Windows when console window is closed
   SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
-#endif
 
   proc::refresh(config::stream.file_apps);
 
@@ -703,18 +564,7 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(error) << "Platform failed to initialize"sv;
   }
 
-#ifdef __linux__
-  (void) platf::linux_display::backend().initialize();
-  auto linux_private_display_guard = util::fail_guard([supervised_machine_host]() {
-    if (supervised_machine_host) {
-      platf::linux_private_display::request_process_shutdown_preserve();
-      return;
-    }
-    (void) platf::linux_display::backend().revert();
-  });
-#endif
 
-#ifdef _WIN32
   // Reconcile the Vulkan HDR implicit-layer registration with the configured preference. This makes
   // the Web UI toggle authoritative over the installer's unconditional registration and self-heals
   // when the installer's (now best-effort) registration was skipped or failed. Only attempt when
@@ -722,7 +572,6 @@ int main(int argc, char *argv[]) {
   if (platf::is_running_as_system()) {
     platf::set_vulkan_hdr_layer_enabled(config::video.dd.vulkan_hdr_layer);
   }
-#endif
 
   if (shutdown_event->peek()) {
     return lifetime::desired_exit_code;
@@ -744,23 +593,16 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(warning) << "No gamepad input is available"sv;
   }
 
-#ifdef _WIN32
   const auto has_startup_stream_activity = [] {
     return rtsp_stream::has_pending_launch_or_startup() ||
            rtsp_stream::session_count() != 0;
   };
-#endif
 
-#ifdef _WIN32
   bool startup_probe_succeeded = false;
-#endif
   auto startup_probe = [&shutdown_event
-#ifdef _WIN32
                         , &startup_probe_succeeded
                         , &has_startup_stream_activity
-#endif
   ]() {
-#ifdef _WIN32
     constexpr unsigned int max_startup_probe_attempts = 2;
     unsigned int attempts = 0;
     std::optional<LUID> required_adapter_luid;
@@ -839,17 +681,8 @@ int main(int argc, char *argv[]) {
         std::this_thread::sleep_for(250ms);
       }
     }
-#else
-    if (video::has_successful_encoder_probe()) {
-      return;
-    }
-    if (video::probe_encoders()) {
-      BOOST_LOG(error) << "Failed to probe encoders during startup.";
-    }
-#endif
   };
 
-#ifdef _WIN32
   auto startup_display_recovery = [&shutdown_event, &has_startup_stream_activity]() {
     if (shutdown_event->peek() || has_startup_stream_activity() || VDISPLAY::has_retained_ensure_display()) {
       return;
@@ -869,15 +702,12 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(warning) << "Startup detected active virtual display(s) with no active stream session; running cleanup.";
     (void) platf::virtual_display_cleanup::run("startup_recovery", config::video.dd.config_revert_on_disconnect);
   };
-#endif
 
   if (http::init()) {
     BOOST_LOG(fatal) << "HTTP interface failed to initialize"sv;
 
-#ifdef _WIN32
     BOOST_LOG(fatal) << "To relaunch Apollo successfully, use the shortcut in the Start Menu. Do not run sunshine.exe manually."sv;
     std::this_thread::sleep_for(10s);
-#endif
 
     return -1;
   }
@@ -914,7 +744,6 @@ int main(int argc, char *argv[]) {
   std::thread httpThread {nvhttp::start};
   std::thread rtspThread {rtsp_stream::start};
 
-#ifdef _WIN32
   // Stale-display cleanup is separate from encoder validation and therefore
   // runs only after the network listeners are available.
   if (startup_probe_succeeded) {
@@ -922,37 +751,24 @@ int main(int argc, char *argv[]) {
   } else {
     BOOST_LOG(warning) << "Startup stale-display cleanup skipped because encoder validation did not produce a successful cache.";
   }
-#endif
 
-#ifdef _WIN32
   // If we're using the default port and GameStream is enabled, warn the user
   if (config::sunshine.port == 47989 && is_gamestream_enabled()) {
     BOOST_LOG(fatal) << "GameStream is still enabled in GeForce Experience! This *will* cause streaming problems with Apollo!"sv;
     BOOST_LOG(fatal) << "Disable GameStream on the SHIELD tab in GeForce Experience or change the Port setting on the Advanced tab in the Apollo Web UI."sv;
   }
-#endif
 
   // Wait for shutdown
   shutdown_event->view();
-#ifdef __linux__
-  if (supervised_machine_host) {
-    platf::linux_private_display::request_process_shutdown_preserve();
-  }
-  stop_termination_signal_monitor();
-  termination_signal_monitor_guard.disable();
-#endif
   // The signal handler only wakes main; start the owned watchdog here so it
   // never constructs threads or queues work from signal context.
   shutdown_deadline.arm();
 
-#ifdef WIN32
   // Join the hidden shutdown-notification window while the deadline watchdog
   // is still armed. The guard remains for early-return paths only.
   shutdown_session_monitor();
   session_monitor_join_thread_guard.disable();
-#endif
 
-#ifdef _WIN32
   // Stop the owned lock-screen virtual-output worker before recovery workers
   // can publish more overrides. Both use configuration, the display helper,
   // and mail, all of which remain live until these joins complete.
@@ -960,13 +776,11 @@ int main(int argc, char *argv[]) {
   VDISPLAY::request_virtual_display_recovery_shutdown();
   config::join_deferred_virtual_output_reapply_worker();
   VDISPLAY::join_virtual_display_recovery_monitors();
-#endif
 
   httpThread.join();
   configThread.join();
   rtspThread.join();
 
-#ifdef _WIN32
   // Full process shutdown cannot leave the paused-session watchdog running.
   // If it survives past main(), CRT teardown can fast-fail while the helper
   // watchdog thread is still unwinding.
@@ -976,7 +790,6 @@ int main(int argc, char *argv[]) {
   // Ensure it is joined before CRT on-exit handlers destroy the thread object.
   VDISPLAY::cleanup_retained_ensure_display();
   VDISPLAY::closeVDisplayDevice();
-#endif
 
   task_pool.stop();
   task_pool.join();
@@ -986,13 +799,11 @@ int main(int argc, char *argv[]) {
   system_tray::end_tray();
 #endif
 
-#ifdef WIN32
   // Restore global NVIDIA control panel settings
   if (nvprefs_instance.owning_undo_file() && nvprefs_instance.load()) {
     nvprefs_instance.restore_global_profile();
     nvprefs_instance.unload();
   }
-#endif
 
   return lifetime::desired_exit_code;
 }

@@ -16,11 +16,9 @@
 #include "rtsp.h"
 
 // No direct helper calls here; this unit now focuses on parsing and small conveniences.
-#ifdef _WIN32
   #include <display_device/windows/win_api_layer.h>
   #include <display_device/windows/win_display_device.h>
   #include "platform/windows/virtual_display.h"
-#endif
 
 namespace display_device {
   namespace {
@@ -584,7 +582,6 @@ namespace display_device {
 
   // Old in-process API removed: no init/apply/revert/enumeration here.
 
-#ifdef _WIN32
   static bool iequals(const std::string &a, const std::string &b) {
     if (a.size() != b.size()) {
       return false;
@@ -623,14 +620,8 @@ namespace display_device {
 
     return output_name;
   }
-#else
-  [[maybe_unused]] static std::string resolve_device_id(const std::string &output_name) {
-    return output_name;
-  }
-#endif
 
   std::string map_output_name(const std::string &output_name) {
-#ifdef _WIN32
     try {
       if (output_name.empty()) {
         return output_name;
@@ -691,14 +682,9 @@ namespace display_device {
       // If enumeration fails for any reason, fall back to the provided value.
       return output_name;
     }
-#else
-    // Non-Windows: no mapping needed
-    return output_name;
-#endif
   }
 
   bool output_exists(const std::string &output_name) {
-#ifdef _WIN32
     if (output_name.empty()) {
       return true;
     }
@@ -733,14 +719,9 @@ namespace display_device {
       // Avoid false negatives if enumeration fails; assume the display may exist.
       return true;
     }
-#else
-    (void) output_name;
-    return true;
-#endif
   }
 
   bool output_is_active(const std::string &output_name) {
-#ifdef _WIN32
     if (output_name.empty()) {
       return true;
     }
@@ -775,10 +756,6 @@ namespace display_device {
       // Avoid false negatives if enumeration fails; assume the display may be active.
       return true;
     }
-#else
-    (void) output_name;
-    return true;
-#endif
   }
 
   namespace {

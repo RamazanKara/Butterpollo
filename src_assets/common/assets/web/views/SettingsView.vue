@@ -1,19 +1,13 @@
 <script setup lang="ts">
-import {
-  providerSupported,
-  supportsManagedLinuxDisplay,
-  settingsCapabilitySupported,
-} from '@/utils/providerCapabilities';
+import { providerSupported } from '@/utils/providerCapabilities';
 import { computed, nextTick, onMounted, onBeforeUnmount, reactive, ref, toRaw, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router';
 import { useSystemStore, type HostMetadata } from '@/stores/system';
-import LinuxCaptureStatus from '@/components/settings/LinuxCaptureStatus.vue';
 import NetworkPortDetails from '@/components/settings/NetworkPortDetails.vue';
 import { acknowledgeSettings, configBoolean, settingError } from '@/utils/settings';
 import WindowsDisplayStatus from '@/components/settings/WindowsDisplayStatus.vue';
 import { applyDummyPlugVsyncChange, dummyPlugVsyncState } from '@/utils/displayHealth';
-
 import { ApiError, apiGet, apiPatch, apiPost } from '@/services/api';
 import DisplayModeOverrides from '@/components/settings/DisplayModeOverrides.vue';
 import DisplayRecoverySettings from '@/components/settings/DisplayRecoverySettings.vue';
@@ -35,7 +29,6 @@ import {
   encoderFamilyFor,
   optionsForPlatform,
   settingsFields,
-  settingsDestinations,
   captureOptionsForPlatform,
   frameGenerationOptionsForPlatform,
   restartRequiredKeys,
@@ -47,7 +40,6 @@ import {
   type SettingsVisibility,
 } from '@/configs/settingsSchema';
 import { serializeCommandRows, serializeServerCommandRows } from '@/utils/v2Parity';
-
 const { locale, t, te } = useI18n();
 const system = useSystemStore();
 const route = useRoute();
@@ -55,40 +47,32 @@ const router = useRouter();
 const confirmation = ref<'restart' | 'reset' | null>(null);
 const resetting = ref(false);
 const form = ref<HTMLFormElement | null>(null);
-
 function messageExists(key: string): boolean {
   return te(key) || te(key, 'en');
 }
-
 interface ConfigResponse extends Record<string, unknown> {
   status?: boolean;
 }
-
 interface SaveResult {
   appliedNow?: boolean;
   deferred?: boolean;
   restartRequired?: boolean;
   status?: boolean;
 }
-
 interface GpuMetadata {
   description?: string;
   pnp_id?: string;
   vendor_id?: number | string;
   dedicated_video_memory?: number | string;
 }
-
 type MetadataResponse = HostMetadata;
-
 interface DisplaySettingsGroup extends SettingsGroup {
   categoryId: string;
 }
-
 interface GpuOption extends SettingsOption {
   adapterName: string;
   pnpId: string;
 }
-
 interface DisplayDevice {
   device_id?: unknown;
   display_name?: unknown;
@@ -97,7 +81,6 @@ interface DisplayDevice {
     active?: unknown;
   };
 }
-
 const loading = ref(true);
 const configLoaded = ref(false);
 const saving = ref(false);
@@ -129,16 +112,13 @@ const displayStatusRefreshing = ref(false);
 const displayStatusError = ref('');
 const dummyPlugUnderlyingVsync = ref(false);
 const dummyPlugForcedVsync = ref(false);
-
 function cloneSettings(value: Record<string, unknown>): Record<string, unknown> {
   return structuredClone(toRaw(value));
 }
-
 function numericMetadataValue(value: unknown): number {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
 }
-
 const preferredGpu = computed<GpuMetadata | null>(() => {
   const gpus = hostMetadata.value.gpus ?? [];
   const configuredName = String(values.adapter_name ?? '').trim();
@@ -152,7 +132,6 @@ const preferredGpu = computed<GpuMetadata | null>(() => {
   });
   if (configured) return configured;
   if (configuredName || configuredPnpId) return null;
-
   return (
     gpus.reduce<GpuMetadata | null>((best, gpu) => {
       if (!best) return gpu;
@@ -163,7 +142,6 @@ const preferredGpu = computed<GpuMetadata | null>(() => {
     }, null) ?? null
   );
 });
-
 const preferredAutomaticEncoderFamily = computed<SettingsField['encoderFamily'] | undefined>(() => {
   switch (numericMetadataValue(preferredGpu.value?.vendor_id)) {
     case 0x10de:
@@ -177,14 +155,12 @@ const preferredAutomaticEncoderFamily = computed<SettingsField['encoderFamily'] 
       return undefined;
   }
 });
-
 const effectiveEncoderFamily = computed<SettingsField['encoderFamily'] | undefined>(() => {
   const configuredEncoder = String(values.encoder ?? '');
   return configuredEncoder
     ? encoderFamilyFor(configuredEncoder)
     : preferredAutomaticEncoderFamily.value;
 });
-
 const automaticCaptureLabel = computed(() => {
   const platform = String(hostMetadata.value.platform ?? '').toLocaleLowerCase();
   if (!platform.includes('windows')) return t('_common.auto');
@@ -194,7 +170,6 @@ const automaticCaptureLabel = computed(() => {
       : 'ui.settings.options.capture.auto_ddx',
   );
 });
-
 const automaticEncoderLabel = computed(() => {
   if (!isWindowsHost.value) return t('ui.settings.options.encoder.auto');
   const family = preferredAutomaticEncoderFamily.value;
@@ -213,46 +188,22 @@ const automaticEncoderLabel = computed(() => {
     name: gpuName,
   });
 });
-
 const isWindowsHost = computed(() =>
   String(hostMetadata.value.platform ?? '')
     .toLocaleLowerCase()
     .includes('windows'),
 );
-const isLinuxHost = computed(() =>
-  String(hostMetadata.value.platform ?? '')
-    .toLocaleLowerCase()
-    .includes('linux'),
-);
-const virtualDisplayUnavailable = computed(
-  () =>
-    isLinuxHost.value &&
-    (hostMetadata.value.virtual_display?.capable === false ||
-      hostMetadata.value.virtual_display?.ready === false),
-);
-const supportsDisplayDeviceEnumeration = computed(
-  () => isWindowsHost.value || supportsManagedLinuxDisplay(hostMetadata.value),
-);
-
+const supportsDisplayDeviceEnumeration = computed(() => isWindowsHost.value);
 const dummyPlugVsync = computed(() =>
   dummyPlugVsyncState(values.dd_wa_dummy_plug_hdr10, values.frame_limiter_disable_vsync),
 );
 const physicalDisplaySelected = computed(
   () => String(values.virtual_display_mode ?? '') === 'disabled',
 );
-
 const hostPlatform = computed(() => String(hostMetadata.value.platform ?? ''));
-
 const physicalDisplayDescription = computed(() =>
-  t(
-    isWindowsHost.value
-      ? 'config.output_name_desc_windows'
-      : isLinuxHost.value
-        ? 'config.output_name_desc_linux'
-        : 'config.output_name_desc_unix',
-  ),
+  t(isWindowsHost.value ? 'config.output_name_desc_windows' : 'config.output_name_desc_unix'),
 );
-
 const displayDeviceOptions = computed(() => {
   const seen = new Set<string>();
   const options = displayDevices.value.flatMap((device) => {
@@ -281,19 +232,16 @@ const displayDeviceOptions = computed(() => {
   }
   return options;
 });
-
 function comparableValue(value: unknown): string {
   if (value && typeof value === 'object') return JSON.stringify(value);
   return String(value ?? '');
 }
-
 const dirtyKeys = computed(() => {
   const keys = new Set([...Object.keys(original.value), ...Object.keys(values)]);
   return [...keys].filter(
     (key) => comparableValue(values[key]) !== comparableValue(original.value[key]),
   );
 });
-
 const isDirty = computed(() => dirtyKeys.value.length > 0);
 const saveAllowed = computed(
   () =>
@@ -301,26 +249,21 @@ const saveAllowed = computed(
     (displayOverridesValid.value || !dirtyKeys.value.includes('dd_mode_remapping')),
 );
 const restartPending = computed(() => dirtyKeys.value.some((key) => restartRequiredKeys.has(key)));
-
 const category = computed(
   () =>
     settingsCategories.find((candidate) => candidate.id === activeCategory.value) ??
     settingsCategories[0],
 );
-
 const isSearching = computed(() => search.value.trim().length > 0);
-
 const categoryDescription = computed(() =>
   isSearching.value
     ? t('ui.settings.search_description')
     : t(`ui.settings.categories.${category.value.id}.description`),
 );
-
 const filteredGroups = computed(() => {
   const query = search.value.trim().toLocaleLowerCase(locale.value);
   const categories = query ? settingsCategories : [category.value];
   const seenKeys = new Set<string>();
-
   return categories.flatMap((settingsCategory) =>
     settingsCategory.groups
       .filter(
@@ -359,19 +302,6 @@ const filteredGroups = computed(() => {
       .filter((group) => group.fields.length),
   );
 });
-
-const destinationResults = computed(() => {
-  const q = search.value.trim().toLocaleLowerCase(locale.value);
-  if (!q) return [];
-  return settingsDestinations.filter(
-    (item) =>
-      matchesPlatform(item, hostPlatform.value) &&
-      (!item.to.includes('#integration-') ||
-        providerSupported(hostMetadata.value, item.to.split('#integration-')[1])) &&
-      `${t(item.labelKey)} ${item.keys.join(' ')}`.toLocaleLowerCase(locale.value).includes(q),
-  );
-});
-
 const gpuOptions = computed<GpuOption[]>(() => {
   const options: GpuOption[] = [
     {
@@ -392,7 +322,6 @@ const gpuOptions = computed<GpuOption[]>(() => {
       pnpId,
     });
   }
-
   const currentName = String(values.adapter_name ?? '');
   const currentPnpId = String(values.adapter_pnp_id ?? '');
   if (
@@ -411,25 +340,18 @@ const gpuOptions = computed<GpuOption[]>(() => {
   }
   return options;
 });
-
 function isTrue(value: unknown): boolean {
   if (typeof value === 'boolean') return value;
   return ['1', 'true', 'yes', 'on', 'enabled'].includes(String(value).toLocaleLowerCase());
 }
-
 function valuesMatch(current: unknown, expected: string | boolean): boolean {
   return typeof expected === 'boolean'
     ? isTrue(current) === expected
     : String(current ?? '') === expected;
 }
-
 function fieldMatchesPlatform(field: SettingsField): boolean {
-  return (
-    matchesPlatform(field, hostPlatform.value) &&
-    settingsCapabilitySupported(field.key, hostMetadata.value)
-  );
+  return matchesPlatform(field, hostPlatform.value) && true;
 }
-
 function visibilityMatches(condition?: SettingsVisibility): boolean {
   if (!condition) return true;
   if (condition.equals !== undefined) {
@@ -440,11 +362,9 @@ function visibilityMatches(condition?: SettingsVisibility): boolean {
   }
   return true;
 }
-
 function groupIsVisible(group: SettingsGroup): boolean {
   return visibilityMatches(group.visibleWhen);
 }
-
 function fieldIsVisible(field: SettingsField): boolean {
   return (
     fieldMatchesPlatform(field) &&
@@ -454,35 +374,29 @@ function fieldIsVisible(field: SettingsField): boolean {
       field.encoderFamily === effectiveEncoderFamily.value)
   );
 }
-
 function fieldIsInactive(field: SettingsField): boolean {
   return Boolean(isSearching.value && field.visibleWhen && !visibilityMatches(field.visibleWhen));
 }
-
 function fieldByKey(key: string): SettingsField | undefined {
   return settingsFields.get(key);
 }
-
 function categoryLabel(id: string): string {
   return t(`ui.settings.categories.${id}.label`);
 }
-
 function groupTitle(id: string): string {
   return t(`ui.settings.groups.${id}.title`);
 }
-
 function groupDescription(id: string): string {
   const platform = String(hostMetadata.value.platform ?? '').toLocaleLowerCase();
   const candidates = [
     platform.includes('windows') ? `ui.settings.groups.${id}.description_windows` : '',
-    platform.includes('linux') ? `ui.settings.groups.${id}.description_linux` : '',
-    platform.includes('mac') ? `ui.settings.groups.${id}.description_macos` : '',
+    '',
+    '',
     `ui.settings.groups.${id}.description`,
   ].filter(Boolean);
   const key = candidates.find((candidate) => messageExists(candidate));
   return key ? t(key) : '';
 }
-
 function fieldLabel(field: SettingsField): string {
   const configKey = `config.${field.key}`;
   const key =
@@ -490,26 +404,22 @@ function fieldLabel(field: SettingsField): string {
     (messageExists(configKey) ? configKey : `ui.settings.fields.${field.key}.label`);
   return messageExists(key) ? t(key) : field.key.replaceAll('_', ' ');
 }
-
 function fieldDescription(field: SettingsField): string {
-  const linuxKey = `ui.settings.linux.fields.${field.key}`;
-  if (isLinuxHost.value && messageExists(linuxKey)) return t(linuxKey);
   if (field.descriptionKey) return t(field.descriptionKey);
   const platform = String(hostMetadata.value.platform ?? '').toLocaleLowerCase();
   const candidates = [
     platform.includes('windows') ? `config.${field.key}_desc_windows` : '',
-    platform.includes('linux') ? `config.${field.key}_desc_linux` : '',
-    platform.includes('mac') ? `config.${field.key}_desc_macos` : '',
+    '',
+    '',
     platform.includes('windows') ? `ui.settings.fields.${field.key}.description_windows` : '',
-    platform.includes('linux') ? `ui.settings.fields.${field.key}.description_linux` : '',
-    platform.includes('mac') ? `ui.settings.fields.${field.key}.description_macos` : '',
+    '',
+    '',
     `config.${field.key}_desc`,
     `ui.settings.fields.${field.key}.description`,
   ].filter(Boolean);
   const key = candidates.find((candidate) => messageExists(candidate));
   return key ? t(key) : '';
 }
-
 function optionText(option: SettingsOption, fieldKey = ''): string {
   if (!option.value && fieldKey === 'capture') return automaticCaptureLabel.value;
   if (!option.value && fieldKey === 'encoder') return automaticEncoderLabel.value;
@@ -521,31 +431,25 @@ function optionText(option: SettingsOption, fieldKey = ''): string {
     ? t(option.labelKey, { name: gpu?.adapterName ?? '', value: option.value })
     : option.labelKey;
 }
-
 function localizedOption(value: string, labelKey: string): SettingsOption {
   return { value, labelKey };
 }
-
 function optionLabel(key: string, fallback: string): string {
   const field = fieldByKey(key);
   const value = String(values[key] ?? '');
   const selected = field ? optionsFor(field).find((option) => option.value === value) : undefined;
   return selected ? optionText(selected, key) : fallback;
 }
-
 function optionsFor(field: SettingsField): SettingsOption[] {
   if (field.source === 'gpu') return gpuOptions.value;
-
   const platform = String(hostMetadata.value.platform ?? '').toLocaleLowerCase();
   const current = String(values[field.key] ?? '');
   let options = optionsForPlatform(field, platform);
-
   if (current && !options.some((option) => option.value === current)) {
     return [...options, localizedOption(current, 'ui.settings.options.current')];
   }
   return options;
 }
-
 function controlValue(field: SettingsField): string {
   if (field.source !== 'gpu') return String(values[field.key] ?? '');
   const currentName = String(values.adapter_name ?? '');
@@ -557,7 +461,6 @@ function controlValue(field: SettingsField): string {
     )?.value ?? ''
   );
 }
-
 function dependencyHint(field: SettingsField): string {
   if (!isSearching.value || !field.visibleWhen || fieldIsVisible(field)) return '';
   const dependency = fieldByKey(field.visibleWhen.key);
@@ -565,12 +468,10 @@ function dependencyHint(field: SettingsField): string {
     ? t('ui.settings.dependency_inactive', { setting: fieldLabel(dependency) })
     : '';
 }
-
 function fieldWarningIsVisible(field: SettingsField): boolean {
   if (!field.warningKey) return false;
   return field.kind === 'boolean' ? isTrue(values[field.key]) : Number(values[field.key]) > 0;
 }
-
 function fieldDescriptionIds(field: SettingsField): string | undefined {
   const ids = [
     fieldDescription(field) ? `setting-${field.key}-description` : '',
@@ -582,24 +483,20 @@ function fieldDescriptionIds(field: SettingsField): string | undefined {
   ].filter(Boolean);
   return ids.length ? ids.join(' ') : undefined;
 }
-
 function syncDummyPlugTracking(source: Record<string, unknown>): void {
   const dummyPlugEnabled = configBoolean(source.dd_wa_dummy_plug_hdr10);
   const vsyncDisabled = configBoolean(source.frame_limiter_disable_vsync);
   dummyPlugUnderlyingVsync.value = vsyncDisabled;
   dummyPlugForcedVsync.value = dummyPlugEnabled && !vsyncDisabled;
 }
-
 function selectCategory(id: string): void {
   activeCategory.value = id;
   search.value = '';
   void router.push({ query: { category: id }, hash: '' });
 }
-
 function updateCategory(event: Event): void {
   selectCategory((event.target as HTMLSelectElement).value);
 }
-
 function updateBoolean(key: string, event: Event): void {
   const checked = (event.target as HTMLInputElement).checked;
   if (key === 'dd_wa_dummy_plug_hdr10') {
@@ -618,7 +515,6 @@ function updateBoolean(key: string, event: Event): void {
     dummyPlugForcedVsync.value = false;
   }
 }
-
 function updateValue(key: string, event: Event, field?: SettingsField): void {
   const raw = (event.target as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement).value;
   if (field?.source === 'gpu') {
@@ -630,7 +526,6 @@ function updateValue(key: string, event: Event, field?: SettingsField): void {
   values[key] =
     (field?.kind === 'number' || field?.kind === 'duration') && raw !== '' ? Number(raw) : raw;
 }
-
 function saveValue(key: string): unknown {
   const value = values[key];
   if (key === 'global_prep_cmd' || key === 'global_state_cmd') {
@@ -651,7 +546,6 @@ function saveValue(key: string): unknown {
     return JSON.parse(value);
   return value === '' ? null : value;
 }
-
 function normalizeConfiguredValues(configured: Record<string, unknown>): Record<string, unknown> {
   const normalized = { ...configured };
   const logLevels: Record<string, number> = {
@@ -688,7 +582,6 @@ function normalizeConfiguredValues(configured: Record<string, unknown>): Record<
   }
   return normalized;
 }
-
 async function load(): Promise<void> {
   loading.value = true;
   error.value = '';
@@ -716,15 +609,7 @@ async function load(): Promise<void> {
     ) {
       defaults.virtual_display_mode = 'disabled';
     }
-    if (
-      metadata.platform === 'linux' &&
-      (metadata.virtual_display?.capable === false || metadata.virtual_display?.ready === false) &&
-      configured.virtual_display_mode === undefined
-    ) {
-      defaults.virtual_display_mode = 'disabled';
-    }
     if (metadata.prerelease) defaults.min_log_level = 1;
-
     const normalized = { ...defaults, ...configured };
     for (const [key, field] of settingsFields)
       if (field.kind === 'boolean' && key in normalized)
@@ -741,7 +626,6 @@ async function load(): Promise<void> {
     void focusLinkedField();
   }
 }
-
 async function loadDisplayDevices(force = false): Promise<void> {
   if (displayDevicesLoading.value || (displayDevicesLoaded.value && !force)) return;
   displayDevicesLoading.value = true;
@@ -758,7 +642,6 @@ async function loadDisplayDevices(force = false): Promise<void> {
     displayDevicesLoading.value = false;
   }
 }
-
 async function refreshDisplayStatus(): Promise<void> {
   if (displayStatusRefreshing.value) return;
   displayStatusRefreshing.value = true;
@@ -773,11 +656,9 @@ async function refreshDisplayStatus(): Promise<void> {
     displayStatusRefreshing.value = false;
   }
 }
-
 function fieldDependencyLocked(field: SettingsField): boolean {
   return field.key === 'frame_limiter_disable_vsync' && dummyPlugVsync.value.locked;
 }
-
 async function save(): Promise<void> {
   if (!isDirty.value || saving.value || !saveAllowed.value) return;
   const invalid = dirtyKeys.value
@@ -812,7 +693,6 @@ async function save(): Promise<void> {
     saving.value = false;
   }
 }
-
 function discard(): void {
   const restored = cloneSettings(original.value);
   for (const key of Object.keys(values)) {
@@ -822,7 +702,6 @@ function discard(): void {
   syncDummyPlugTracking(restored);
   notice.value = '';
 }
-
 async function restart(): Promise<void> {
   if (restarting.value) return;
   restarting.value = true;
@@ -838,14 +717,15 @@ async function restart(): Promise<void> {
   }
   window.setTimeout(() => window.location.reload(), 3500);
 }
-
 async function resetDisplayPersistence(): Promise<void> {
   if (resetting.value) return;
   resetting.value = true;
   error.value = '';
   notice.value = '';
   try {
-    const result = await apiPost<{ status?: boolean }>('/api/reset-display-device-persistence');
+    const result = await apiPost<{
+      status?: boolean;
+    }>('/api/reset-display-device-persistence');
     if (result.status === false) throw new Error('reset-rejected');
     notice.value = t('ui.settings.notices.display_state_cleared');
   } catch {
@@ -854,11 +734,9 @@ async function resetDisplayPersistence(): Promise<void> {
     resetting.value = false;
   }
 }
-
 function cloneValueForSave(value: unknown): unknown {
   return value === undefined ? undefined : structuredClone(toRaw(value));
 }
-
 async function focusLinkedField(): Promise<void> {
   await nextTick();
   let id: string;
@@ -1036,25 +914,6 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
             <p>{{ categoryDescription }}</p>
           </header>
 
-          <nav
-            v-if="destinationResults.length"
-            class="settings-destinations"
-            :aria-label="t('ui.settings.more_options')"
-          >
-            <RouterLink v-for="item in destinationResults" :key="item.to" :to="item.to"
-              >{{ t(item.labelKey) }} →</RouterLink
-            >
-          </nav>
-          <LinuxCaptureStatus
-            v-if="
-              isLinuxHost &&
-              supportsManagedLinuxDisplay(hostMetadata) &&
-              !isSearching &&
-              ['everyday', 'display'].includes(activeCategory)
-            "
-            :metadata="hostMetadata"
-            :virtual-mode="String(values.virtual_display_mode ?? '')"
-          />
           <WindowsDisplayStatus
             v-if="isWindowsHost && !isSearching && ['everyday', 'display'].includes(activeCategory)"
             :metadata="hostMetadata"
@@ -1085,7 +944,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
               <InlineAlert
                 v-if="
                   !isSearching &&
-                  virtualDisplayUnavailable &&
+                  false &&
                   (group.id === 'everyday_display' || group.id === 'display_virtual')
                 "
                 class="settings-section__alert"
@@ -1355,17 +1214,10 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
                 t('ui.settings.more_options')
               }}</RouterLink>
               <p v-if="group.id === 'everyday_audio'" class="settings-more">
-                {{ t(isLinuxHost ? 'ui.settings.linux.audio' : 'ui.settings.audio_summary') }}
+                {{ t('ui.settings.audio_summary') }}
               </p>
             </component>
           </section>
-
-          <div
-            v-if="filteredGroups.length === 0 && destinationResults.length === 0"
-            class="settings-empty"
-          >
-            {{ t('ui.settings.no_results', { query: search }) }}
-          </div>
         </template>
 
         <section

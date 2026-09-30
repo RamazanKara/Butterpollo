@@ -25,10 +25,8 @@ extern "C" {
 // lib includes
 #include <boost/asio.hpp>
 #include <boost/bind.hpp>
-#ifdef _WIN32
   #include <sddl.h>
   #include <windows.h>
-#endif
 
 // local includes
 #include "config.h"
@@ -52,7 +50,6 @@ using asio::ip::udp;
 
 using namespace std::literals;
 
-#ifdef _WIN32
 namespace {
   constexpr wchar_t kVulkanHdrLayerGlobalActiveEventName[] = L"Global\\SunshineVirtualHdrActive";
   constexpr wchar_t kVulkanHdrLayerLocalActiveEventName[] = L"Local\\SunshineVirtualHdrActive";
@@ -115,7 +112,6 @@ namespace {
     }
   }
 }  // namespace
-#endif
 
 namespace rtsp_stream {
   void free_msg(PRTSP_MESSAGE msg) {
@@ -218,16 +214,11 @@ namespace rtsp_stream {
     snapshot->gen1_framegen_fix = source.gen1_framegen_fix;
     snapshot->gen2_framegen_fix = source.gen2_framegen_fix;
     snapshot->frame_generation_enabled = source.frame_generation_enabled;
-    snapshot->lossless_scaling_framegen = source.lossless_scaling_framegen;
     snapshot->framegen_refresh_rate = source.framegen_refresh_rate;
     snapshot->framegen_refresh_millihz = source.framegen_refresh_millihz;
     snapshot->framegen_refresh_multiplier = source.framegen_refresh_multiplier;
     snapshot->frame_generation_provider = source.frame_generation_provider;
-    snapshot->lossless_scaling_target_fps = source.lossless_scaling_target_fps;
-    snapshot->lossless_scaling_rtss_limit = source.lossless_scaling_rtss_limit;
-#ifdef _WIN32
     snapshot->display_helper_gate = source.display_helper_gate;
-#endif
 
     return snapshot;
   }
@@ -1104,9 +1095,7 @@ namespace rtsp_stream {
         _session_state->vulkan_hdr_layer_pending_stream = active;
         vulkan_hdr_layer_active = vulkan_hdr_layer_active_locked();
       }
-#ifdef _WIN32
       set_vulkan_hdr_layer_streaming_active(vulkan_hdr_layer_active);
-#endif
     }
 
     /**
@@ -1150,9 +1139,7 @@ namespace rtsp_stream {
         }
         vulkan_hdr_layer_active = vulkan_hdr_layer_active_locked();
       }
-#ifdef _WIN32
       set_vulkan_hdr_layer_streaming_active(vulkan_hdr_layer_active);
-#endif
 
       // Stop and join outside the lock
       for (auto &slot : to_cleanup) {
@@ -1174,9 +1161,7 @@ namespace rtsp_stream {
         _session_state->vulkan_hdr_layer_sessions.erase(session.get());
         vulkan_hdr_layer_active = vulkan_hdr_layer_active_locked();
       }
-#ifdef _WIN32
       set_vulkan_hdr_layer_streaming_active(vulkan_hdr_layer_active);
-#endif
     }
 
     /**
@@ -1202,9 +1187,7 @@ namespace rtsp_stream {
         _session_state->vulkan_hdr_layer_pending_stream = false;
         vulkan_hdr_layer_active = vulkan_hdr_layer_active_locked();
       }
-#ifdef _WIN32
       set_vulkan_hdr_layer_streaming_active(vulkan_hdr_layer_active);
-#endif
       if (has_uuid) {
         nvhttp::mark_client_last_seen(client_uuid);
       }
@@ -1260,9 +1243,7 @@ namespace rtsp_stream {
         }
         vulkan_hdr_layer_active = vulkan_hdr_layer_active_locked();
       }
-#ifdef _WIN32
       set_vulkan_hdr_layer_streaming_active(vulkan_hdr_layer_active);
-#endif
 
       for (auto &slot : to_cleanup) {
         stream::session::mark_client_disconnected(*slot);
@@ -1317,9 +1298,7 @@ namespace rtsp_stream {
         }
         vulkan_hdr_layer_active = vulkan_hdr_layer_active_locked();
       }
-#ifdef _WIN32
       set_vulkan_hdr_layer_streaming_active(vulkan_hdr_layer_active);
-#endif
       for (auto &session : to_cleanup) {
         stream::session::stop(*session);
         stream::session::join(*session, lifecycle_lock_held);
@@ -2093,10 +2072,7 @@ namespace rtsp_stream {
         config.gen1_framegen_fix = launch_session->gen1_framegen_fix;
         config.gen2_framegen_fix = launch_session->gen2_framegen_fix;
         config.frame_generation_enabled = launch_session->frame_generation_enabled;
-        config.lossless_scaling_framegen = launch_session->lossless_scaling_framegen;
         config.frame_generation_provider = launch_session->frame_generation_provider;
-        config.lossless_scaling_target_fps = launch_session->lossless_scaling_target_fps;
-        config.lossless_scaling_rtss_limit = launch_session->lossless_scaling_rtss_limit;
 
         std::shared_ptr<stream::session_t> stream_session;
         bool startup_failed = true;

@@ -725,18 +725,6 @@ namespace VDISPLAY {
     return VDISPLAY_SUNSHINE::is_virtual_display_selection(output_identifier);
   }
 
-  std::vector<std::wstring> matchDisplay(std::wstring sMatch) {
-    const auto displays = enumerateVirtualDisplays();
-    std::vector<std::wstring> matches;
-    for (const auto &display : displays) {
-      if (display.device_name.find(sMatch) != std::wstring::npos) {
-        matches.push_back(display.device_name);
-      } else if (display.friendly_name.find(sMatch) != std::wstring::npos) {
-        matches.push_back(display.friendly_name);
-      }
-    }
-    return matches;
-  }
 
   bool isVirtualDisplayDriverInstalled() {
     return VDISPLAY_SUNSHINE::isVirtualDisplayDriverInstalled();

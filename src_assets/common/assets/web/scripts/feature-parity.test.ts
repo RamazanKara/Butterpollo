@@ -1,8 +1,4 @@
-import {
-  providerSupported,
-  supportsManagedLinuxDisplay,
-  settingsCapabilitySupported,
-} from '../utils/providerCapabilities.ts';
+import { providerSupported } from '../utils/providerCapabilities.ts';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
@@ -32,7 +28,7 @@ import {
 test('capture options follow the host platform', () => {
   assert.deepEqual(
     captureOptionsForPlatform('linux').map((option) => option.value),
-    ['', 'kms', 'kwin', 'gamescope', 'portal', 'wlr', 'x11', 'nvfbc'],
+    [''],
   );
   assert.deepEqual(
     captureOptionsForPlatform('windows').map((option) => option.value),
@@ -44,21 +40,21 @@ test('capture options follow the host platform', () => {
   );
 });
 
-test('Linux remote-monitor controls and frame-generation labels are available', () => {
+test('Windows remote-monitor controls and frame-generation labels are available', () => {
   for (const key of [
     'remote_monitor_mute_audio',
     'remote_monitor_disconnect_on_stream_end',
     'remote_monitor_disconnect_on_client_disconnect',
     'remote_monitor_terminate_on_first_request',
   ]) {
-    assert.equal(matchesPlatform(settingsFields.get(key)!, 'linux'), true);
+    assert.equal(matchesPlatform(settingsFields.get(key)!, 'linux'), false);
     assert.equal(matchesPlatform(settingsFields.get(key)!, 'windows'), true);
     assert.equal(matchesPlatform(settingsFields.get(key)!, 'macos'), false);
   }
   const messages = JSON.parse(
     readFileSync(new URL('../public/assets/locale/ui/en.json', import.meta.url), 'utf8'),
   );
-  for (const option of frameGenerationOptionsForPlatform('linux')) {
+  for (const option of frameGenerationOptionsForPlatform('windows')) {
     const label = option.labelKey.split('.').reduce((value, key) => value?.[key], messages);
     assert.equal(typeof label, 'string', option.labelKey);
     assert.ok(label.length);
@@ -68,7 +64,7 @@ test('Linux remote-monitor controls and frame-generation labels are available', 
 test('gamepad options follow the host platform', () => {
   assert.deepEqual(
     gamepadOptionsForPlatform('linux').map((option) => option.value),
-    ['auto', 'xone', 'ds4', 'ds5', 'switch'],
+    ['auto'],
   );
   assert.deepEqual(
     gamepadOptionsForPlatform('windows').map((option) => option.value),
@@ -76,39 +72,34 @@ test('gamepad options follow the host platform', () => {
   );
 });
 
-test('Linux hides Windows-only input and audio installation controls', () => {
+test('Windows input and audio installation controls remain available', () => {
   for (const key of ['always_send_scancodes', 'native_pen_touch', 'install_steam_audio_drivers']) {
     assert.equal(settingsFields.get(key)?.platform, 'windows', key);
   }
 });
 
-test('Linux Proton and MangoHUD limiter choices are available', () => {
+test('Windows pacing offers only installed host providers', () => {
   assert.equal(settingsDefaults.frame_limiter_provider, 'auto');
-  assert.equal(settingsDefaults.mangohud_limiter_method, 'late');
-
-  const fields = settingsCategories.flatMap((category) =>
-    category.groups.flatMap((group) => group.fields),
-  );
-  const method = fields.find((field) => field.key === 'mangohud_limiter_method');
-  assert.deepEqual(method?.platform, 'linux');
-  assert.deepEqual(method?.visibleWhen, {
-    key: 'frame_limiter_provider',
-    equals: 'mangohud',
-  });
   assert.deepEqual(
-    method?.options?.map((option) => option.value),
-    ['early', 'late'],
+    optionsForPlatform(settingsFields.get('frame_limiter_provider')!, 'windows').map(
+      (option) => option.value,
+    ),
+    ['auto', 'rtss', 'nvidia-control-panel', 'none'],
   );
-
-  const messages = JSON.parse(
-    readFileSync(new URL('../public/assets/locale/ui/en.json', import.meta.url), 'utf8'),
-  );
-  assert.match(messages.ui.integrations.mangohud.providerAuto, /Proton.*MangoHUD/i);
-  assert.match(messages.ui.integrations.mangohud.limiterMethodDescription, /latency/i);
-  assert.match(messages.ui.integrations.mangohud.limiterMethodDescription, /frame generation/i);
+  for (const key of [
+    'mangohud_preset',
+    'vt_software',
+    'vaapi_strict_rc_buffer',
+    'vk_tune',
+    'qp',
+    'nvenc_intra_refresh',
+    'external_ip',
+    'ignore_encoder_probe_failure',
+  ])
+    assert.equal(settingsFields.has(key), false, key);
 });
 
-test('Linux maintenance omits Windows-only support and recovery sections', () => {
+test('Windows maintenance retains support and recovery sections', () => {
   const maintenanceView = readFileSync(
     new URL('../views/MaintenanceView.vue', import.meta.url),
     'utf8',
@@ -131,7 +122,6 @@ test('Settings protects drafts and keeps restart actions available', () => {
 test('Settings explains unavailable host metadata and virtual-display readiness', () => {
   const settingsView = readFileSync(new URL('../views/SettingsView.vue', import.meta.url), 'utf8');
   assert.match(settingsView, /metadataUnavailable\.value = true/);
-  assert.match(settingsView, /virtualDisplayUnavailable/);
 
   const messages = JSON.parse(
     readFileSync(new URL('../public/assets/locale/ui/en.json', import.meta.url), 'utf8'),
@@ -189,22 +179,21 @@ test('advanced encoder settings have actual fields and platform-aware options', 
     'nvenc_spatial_aq',
     'qsv_coder',
     'amd_rc',
-    'vaapi_strict_rc_buffer',
-    'vk_tune',
     'sw_preset',
-    'vt_software',
     'keybindings',
     'session_token_ttl_seconds',
   ])
     assert.ok(settingsFields.has(key), key);
-  assert.equal(encoderFamilyFor('vaapi'), 'vaapi');
-  assert.equal(encoderFamilyFor('vulkan'), 'vulkan');
+  assert.equal(encoderFamilyFor('vaapi'), undefined);
+  assert.equal(encoderFamilyFor('vulkan'), undefined);
   assert.equal(encoderFamilyFor('nvenc_legacy'), 'nvidia');
   assert.equal(matchesPlatform(settingsFields.get('qsv_coder')!, 'linux'), false);
   assert.equal(fieldForPlatform(settingsFields.get('adapter_name')!, 'linux').kind, 'text');
   assert.equal(
-    optionsForPlatform(settingsFields.get('virtual_display_mode')!, 'linux')[0].value,
-    'per_client',
+    optionsForPlatform(settingsFields.get('virtual_display_mode')!, 'windows').some(
+      (option) => option.value === 'per_client',
+    ),
+    true,
   );
 });
 
@@ -226,22 +215,9 @@ test('server command rows round-trip for the Vibepollo editor', () => {
   ]);
 });
 
-test('provider actions and private Linux controls require backend capabilities', () => {
-  for (const metadata of [undefined, {}, { platform: 'linux' }, { platform: 'windows' }]) {
-    assert.equal(providerSupported(metadata, 'mangohud'), false);
-  }
-  assert.equal(providerSupported({ providers: { mangohud: 'true' } }, 'mangohud'), false);
-  assert.equal(providerSupported({ providers: { mangohud: true } }, 'mangohud'), true);
-  assert.equal(supportsManagedLinuxDisplay({ platform: 'linux' }), false);
-  for (const key of ['virtual_display_mode', 'dd_refresh_rate_option', 'frame_limiter_provider'])
-    assert.equal(settingsCapabilitySupported(key, { platform: 'linux' }), false);
-  assert.equal(settingsCapabilitySupported('virtual_display_mode', { platform: 'windows' }), true);
-  assert.equal(
-    settingsCapabilitySupported('virtual_display_mode', {
-      platform: 'linux',
-      virtual_display: { backend: 'kscreen-vkms' },
-    }),
-    true,
-  );
-  assert.equal(settingsCapabilitySupported('stream_audio', { platform: 'linux' }), true);
+test('provider actions require explicit backend capabilities', () => {
+  for (const metadata of [undefined, {}, { platform: 'windows' }])
+    assert.equal(providerSupported(metadata, 'rtss'), false);
+  assert.equal(providerSupported({ providers: { rtss: 'true' } }, 'rtss'), false);
+  assert.equal(providerSupported({ providers: { rtss: true } }, 'rtss'), true);
 });

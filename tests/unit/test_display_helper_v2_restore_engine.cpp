@@ -4,7 +4,6 @@
  *        (snapshot codec, filtering rules, golden health) ported from the
  *        battle-tested legacy helper.
  */
-#ifdef _WIN32
 
   #include "../tests_common.h"
 
@@ -879,5 +878,3 @@ TEST(DisplayHelperV2FileStorage, LegacyFormatRoundTripWithLayouts) {
   EXPECT_TRUE(storage.remove(display_helper::v2::SnapshotTier::Golden));
   EXPECT_FALSE(storage.exists(display_helper::v2::SnapshotTier::Golden));
 }
-
-#endif  // _WIN32

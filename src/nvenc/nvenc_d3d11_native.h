@@ -3,7 +3,6 @@
  * @brief Declarations for native Direct3D11 NVENC encoder.
  */
 #pragma once
-#ifdef _WIN32
   // platform includes
   #include <winsock2.h>
 
@@ -37,4 +36,3 @@ namespace nvenc {
   };
 
 }  // namespace nvenc
-#endif

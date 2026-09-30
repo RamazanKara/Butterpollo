@@ -1,6 +1,5 @@
 #include "virtual_display_cleanup.h"
 
-#ifdef _WIN32
 
   #include "display_helper_integration.h"
   #include "src/logging.h"
@@ -272,5 +271,3 @@ namespace platf::virtual_display_cleanup {
     return g_cleanup_reservations.load(std::memory_order_acquire) != 0;
   }
 }  // namespace platf::virtual_display_cleanup
-
-#endif  // _WIN32

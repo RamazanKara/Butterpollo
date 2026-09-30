@@ -10,7 +10,7 @@
 
 namespace {
 
-  TEST(FramegenPolicy, PreservesFractionalSessionRefreshForLinuxDisplayModes) {
+  TEST(FramegenPolicy, PreservesFractionalSessionRefresh) {
     EXPECT_EQ(framegen::normalize_refresh_millihz(60), 60000u);
     EXPECT_EQ(framegen::normalize_refresh_millihz(59940), 59940u);
     EXPECT_DOUBLE_EQ(framegen::normalize_refresh_millihz(59940) / 1000.0, 59.94);
@@ -20,17 +20,15 @@ namespace {
     std::string provider,
     bool uses_virtual_display,
     std::string capture_mode,
-    bool lossless_scaling_framegen = false,
+    bool generation_enabled = false,
     bool auto_virtual_framegen_limiter = true,
     int virtual_display_refresh_multiplier = 1
   ) {
     return framegen::make_stream_start_policy({
       .fps = 60,
-      .frame_generation_enabled = provider != "lossless-scaling" || lossless_scaling_framegen,
+      .frame_generation_enabled = provider != "none" || generation_enabled,
       .gen1_framegen_fix = false,
       .gen2_framegen_fix = false,
-      .lossless_scaling_framegen = lossless_scaling_framegen,
-      .lossless_rtss_limit = std::nullopt,
       .frame_generation_provider = std::move(provider),
       .uses_virtual_display = uses_virtual_display,
       .capture_mode = std::move(capture_mode),
@@ -49,9 +47,7 @@ namespace {
       .frame_generation_enabled = frame_generation_enabled,
       .gen1_framegen_fix = true,
       .gen2_framegen_fix = true,
-      .lossless_scaling_framegen = false,
-      .lossless_rtss_limit = std::nullopt,
-      .frame_generation_provider = "lossless-scaling",
+      .frame_generation_provider = "none",
       .uses_virtual_display = uses_virtual_display,
       .capture_mode = "",
       .auto_capture_uses_wgc = true,
@@ -61,9 +57,8 @@ namespace {
   }
 
   TEST(FramegenPolicy, VirtualAutoWgcFrameGenerationDefersRefreshToGameActivity) {
-    for (const auto &provider : {"game-provided", "lossless-scaling", "nvidia-smooth-motion"}) {
-      const bool lossless = std::string {provider} == "lossless-scaling";
-      const auto policy = make_policy(provider, true, "", lossless);
+    for (const auto &provider : {"game-provided", "nvidia-smooth-motion"}) {
+      const auto policy = make_policy(provider, true, "");
 
       EXPECT_TRUE(policy.frame_generation_enabled);
       EXPECT_TRUE(policy.uses_virtual_display);
@@ -84,9 +79,8 @@ namespace {
   }
 
   TEST(FramegenPolicy, PhysicalFrameGenerationDoesNotSetFramegenRefreshRate) {
-    for (const auto &provider : {"game-provided", "lossless-scaling", "nvidia-smooth-motion"}) {
-      const bool lossless = std::string {provider} == "lossless-scaling";
-      const auto policy = make_policy(provider, false, "", lossless);
+    for (const auto &provider : {"game-provided", "nvidia-smooth-motion"}) {
+      const auto policy = make_policy(provider, false, "");
 
       EXPECT_TRUE(policy.frame_generation_enabled);
       EXPECT_FALSE(policy.requires_virtual_display);
@@ -120,7 +114,7 @@ namespace {
   }
 
   TEST(FramegenPolicy, LegacyVirtualCaptureModeUsesFixedTwoTimesRefreshAndLimiter) {
-    const auto policy = make_policy("lossless-scaling", true, "", false, true, 2);
+    const auto policy = make_policy("none", true, "", false, true, 2);
 
     EXPECT_FALSE(policy.frame_generation_enabled);
     EXPECT_TRUE(policy.uses_virtual_display);
@@ -130,8 +124,8 @@ namespace {
     EXPECT_EQ(policy.refresh_multiplier, 2);
   }
 
-  TEST(FramegenPolicy, LosslessProviderAloneDoesNotEnableFrameGeneration) {
-    const auto policy = make_policy("lossless-scaling", true, "", false);
+  TEST(FramegenPolicy, NoProviderDoesNotEnableFrameGeneration) {
+    const auto policy = make_policy("none", true, "", false);
 
     EXPECT_FALSE(policy.frame_generation_enabled);
     EXPECT_FALSE(policy.framegen_refresh_rate.has_value());
@@ -142,7 +136,7 @@ namespace {
     // A virtual screen with no frame generation still auto-enables the limiter (Reflex on
     // NVIDIA). The runtime game-activity policy owns 4x refresh promotion, so the
     // policy-level multiplier and refresh stay neutral here.
-    const auto policy = make_policy("lossless-scaling", true, "", false);
+    const auto policy = make_policy("none", true, "", false);
 
     EXPECT_FALSE(policy.frame_generation_enabled);
     EXPECT_TRUE(policy.uses_virtual_display);
@@ -152,7 +146,7 @@ namespace {
   }
 
   TEST(FramegenPolicy, PlainVirtualDisplayLimiterRespectsOptOut) {
-    const auto policy = make_policy("lossless-scaling", true, "", false, false);
+    const auto policy = make_policy("none", true, "", false, false);
 
     EXPECT_FALSE(policy.frame_generation_enabled);
     EXPECT_TRUE(policy.uses_virtual_display);
@@ -161,7 +155,7 @@ namespace {
   }
 
   TEST(FramegenPolicy, VirtualDisplayReflexOverrideRequiresOptInAndPreservesGameProvidedReflex) {
-    const auto generic_policy = make_policy("lossless-scaling", true, "");
+    const auto generic_policy = make_policy("none", true, "");
     EXPECT_TRUE(framegen::virtual_display_reflex_required(generic_policy, false, false));
     EXPECT_FALSE(framegen::virtual_display_reflex_required(generic_policy, true, false));
     EXPECT_FALSE(framegen::virtual_display_reflex_required(generic_policy, true, true));
@@ -170,12 +164,12 @@ namespace {
     EXPECT_TRUE(framegen::virtual_display_reflex_required(game_provided_policy, true, false));
     EXPECT_FALSE(framegen::virtual_display_reflex_required(game_provided_policy, true, true));
 
-    const auto physical_policy = make_policy("lossless-scaling", false, "");
+    const auto physical_policy = make_policy("none", false, "");
     EXPECT_FALSE(framegen::virtual_display_reflex_required(physical_policy, false, false));
   }
 
   TEST(FramegenPolicy, PhysicalDisplayWithoutFrameGenerationDoesNotAutoEnableLimiter) {
-    const auto policy = make_policy("lossless-scaling", false, "", false);
+    const auto policy = make_policy("none", false, "", false);
 
     EXPECT_FALSE(policy.uses_virtual_display);
     EXPECT_FALSE(policy.auto_virtual_framegen_limiter);

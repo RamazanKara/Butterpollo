@@ -4,7 +4,6 @@
  */
 #pragma once
 
-#ifdef _WIN32
 
   #include <winsock2.h>
 
@@ -181,5 +180,3 @@ namespace display_device {
     std::shared_ptr<WinDisplayDeviceInterface> m_inner;
   };
 }  // namespace display_device
-
-#endif  // _WIN32

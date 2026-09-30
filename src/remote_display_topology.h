@@ -101,8 +101,6 @@ namespace remote_display_topology {
     bool is_ready(const std::string &client_uuid, uint64_t generation) const;
     void explicit_release(const std::string &client_uuid, uint64_t generation, const std::string &reason);
     void transport_lost(const std::string &client_uuid, uint64_t generation);
-    activation_result_t activate_remote_monitor(const std::string &client_uuid, const std::string &label, mode_t mode);
-    activation_result_t resume_remote_monitor(const std::string &client_uuid);
     normal_game_reservation_t reserve_normal_game_identity(const std::string &client_uuid, const std::string &label, mode_t mode);
     bool reapply_composed_topology();
     // True only when the caller may retire the platform output. Capture or

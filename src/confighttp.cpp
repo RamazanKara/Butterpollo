@@ -38,12 +38,10 @@
 #include <Simple-Web-Server/crypto.hpp>
 #include <Simple-Web-Server/server_https.hpp>
 
-#ifdef _WIN32
   #include "platform/windows/misc.h"
 
   #include <vector>
   #include <Windows.h>
-#endif
 
 // local includes
 #include "config.h"
@@ -54,10 +52,8 @@
 #include "http_auth.h"
 #include "httpcommon.h"
 #include "platform/common.h"
-#ifdef _WIN32
   #include "src/platform/windows/image_convert.h"
 
-#endif
 #include "logging.h"
 #include "log_export.h"
 #include "network.h"
@@ -70,40 +66,28 @@
 #include "update.h"
 #include "video.h"
 
-#ifdef _WIN32
   #include "platform/windows/virtual_display_cleanup.h"
   #include "platform/windows/virtual_display.h"
-#elif defined(__linux__)
-  #include "platform/linux/capture_status.h"
-  #include "platform/linux/private_display.h"
-  #include "src/platform/linux/display_backend.h"
-#endif
 
 #include <nlohmann/json.hpp>
-#if defined(_WIN32)
   #include "platform/windows/misc.h"
   #include "src/platform/windows/ipc/misc_utils.h"
 
   #include <windows.h>
-#endif
 #ifdef uuid_t
   #undef uuid_t
 #endif
-#if defined(_WIN32)
   #include "platform/windows/misc.h"
 
   #include <KnownFolders.h>
   #include <ShlObj.h>
   #include <windows.h>
-#endif
 #include "display_helper_integration.h"
 #include "process.h"
 #include "utility.h"
 #include "uuid.h"
 
-#ifdef _WIN32
   #include "platform/windows/utils.h"
-#endif
 
 using namespace std::literals;
 namespace pt = boost::property_tree;
@@ -312,11 +296,9 @@ namespace confighttp {
           }
           auto normalized = candidate.lexically_normal();
           std::string key = normalized.generic_string();
-#ifdef _WIN32
           std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
             return static_cast<char>(std::tolower(c));
           });
-#endif
           if (!seen.insert(key).second) {
             return;
           }
@@ -461,14 +443,12 @@ namespace confighttp {
              key == "rtx_hdr_peak_brightness";
     }
 
-#ifdef _WIN32
     std::string encode_config_override_value(const nlohmann::json &value) {
       if (value.is_string()) {
         return value.get<std::string>();
       }
       return value.dump();
     }
-#endif
 
     void normalize_adapter_config_pair(nlohmann::json &config_object) {
       if (!config_object.is_object()) {
@@ -569,12 +549,9 @@ namespace confighttp {
   void bad_request(resp_https_t response, req_https_t request, const std::string &error_message);
   void getAppCover(resp_https_t response, req_https_t request);
 
-#if defined(_WIN32) || defined(__linux__)
   // Platform-neutral frame limiter status (RTSS/NVCP on Windows, MangoHUD on Linux).
   void getFrameLimiterStatus(resp_https_t response, req_https_t request);
-#endif
 
-#ifdef _WIN32
   // RTSS status endpoint (Windows-only)
   void getRtssStatus(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   // Support log export and crash bundle endpoints (confighttp_support.cpp)
@@ -588,7 +565,6 @@ namespace confighttp {
   // Helper log readers (Windows-only)
   bool is_helper_log_source(const std::string &source);
   bool read_helper_log(const std::string &source, std::string &out);
-#endif
 
   enum class op_e {
     ADD,  ///< Add client
@@ -849,7 +825,6 @@ namespace confighttp {
     }
   }
 
-#ifdef _WIN32
   /**
    * @brief Validate refresh capabilities for a display via EDID for frame generation health checks.
    * @api_examples{/api/framegen/edid-refresh?device_id=\\.\DISPLAY1| GET| {"status":true,"targets":[{"hz":120,"supported":true,"method":"range"}]}}
@@ -984,7 +959,6 @@ namespace confighttp {
       bad_request(response, request, "Failed to register Vulkan HDR layer");
     }
   }
-#endif
 
   /**
    * @brief Send a 404 Not Found response.
@@ -1523,24 +1497,12 @@ namespace confighttp {
         normalize_adapter_config_pair(overrides);
       }
 
-#ifndef _WIN32
-      if ((input_tree.contains("gen1-framegen-fix") && input_tree["gen1-framegen-fix"].is_boolean() && input_tree["gen1-framegen-fix"].get<bool>()) ||
-          (input_tree.contains("dlss-framegen-capture-fix") && input_tree["dlss-framegen-capture-fix"].is_boolean() && input_tree["dlss-framegen-capture-fix"].get<bool>())) {
-        bad_request(response, request, "Frame generation capture fixes are only supported on Windows hosts.");
-        return;
-      }
-      if (input_tree.contains("gen2-framegen-fix") && input_tree["gen2-framegen-fix"].is_boolean() && input_tree["gen2-framegen-fix"].get<bool>()) {
-        bad_request(response, request, "Frame generation capture fixes are only supported on Windows hosts.");
-        return;
-      }
-#else
       // Migrate old field name to new for backward compatibility
       if (input_tree.contains("dlss-framegen-capture-fix") && !input_tree.contains("gen1-framegen-fix")) {
         input_tree["gen1-framegen-fix"] = input_tree["dlss-framegen-capture-fix"];
       }
       // Remove old field to avoid duplication
       input_tree.erase("dlss-framegen-capture-fix");
-#endif
 
       const auto remote_control = configurable_remote_session(input_tree.value("uuid", ""));
       input_tree.erase("remote-session");
@@ -1593,12 +1555,10 @@ namespace confighttp {
 
       // Update apps file and refresh client cache
       confighttp::refresh_client_apps_cache(file_tree);
-#ifdef _WIN32
       const auto edited_uuid = input_tree.value("uuid", ""s);
       if (!edited_uuid.empty()) {
         (void) proc::proc.update_active_app_live_rtx_hdr_overrides(edited_uuid);
       }
-#endif
 
       // Prepare and send the output response.
       nlohmann::json outputTree;
@@ -1610,7 +1570,6 @@ namespace confighttp {
     }
   }
 
-#ifdef _WIN32
   void updateAppRtxHdrLive(resp_https_t response, req_https_t request) {
     if (!check_content_type(response, request, "application/json")) {
       return;
@@ -1662,7 +1621,6 @@ namespace confighttp {
       bad_request(response, request, e.what());
     }
   }
-#endif
 
   /**
    * @brief Serve a specific application's cover image by UUID.
@@ -2018,9 +1976,7 @@ namespace confighttp {
     nlohmann::json named_certs = nvhttp::get_all_clients();
     nlohmann::json output_tree;
     output_tree["named_certs"] = named_certs;
-#ifdef _WIN32
     output_tree["platform"] = "windows";
-#endif
     output_tree["status"] = true;
     output_tree["platform"] = SUNSHINE_PLATFORM;
     // The list changes immediately after pair/unpair. Avoid serving an old empty
@@ -2037,11 +1993,7 @@ namespace confighttp {
         const auto id = device.value("device_id", "");
         const auto label = device.value("friendly_name", device.value("display_name", id));
         if (id.empty()) continue;
-#ifdef __linux__
-        if (platf::linux_private_display::is_private_output(id)) continue;
-#else
         if (boost::algorithm::icontains(label, "virtual display")) continue;
-#endif
         remote_display_topology::node_t node;
         node.id = id;
         node.label = label;
@@ -2094,7 +2046,6 @@ namespace confighttp {
     }
   }
 
-#ifdef _WIN32
   static std::optional<uint64_t> file_creation_time_ms(const std::filesystem::path &path) {
     WIN32_FILE_ATTRIBUTE_DATA data {};
     if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data)) {
@@ -2120,7 +2071,6 @@ namespace confighttp {
     std::filesystem::path root(system_root);
     return root / L"System32" / L"spool" / L"drivers" / L"color";
   }
-#endif
 
   /**
    * @brief Get a list of available HDR color profiles (Windows only).
@@ -2138,7 +2088,6 @@ namespace confighttp {
     output_tree["status"] = true;
     nlohmann::json profiles = nlohmann::json::array();
 
-#ifdef _WIN32
     try {
       const auto dir = windows_color_profile_dir();
 
@@ -2187,14 +2136,11 @@ namespace confighttp {
       output_tree["status"] = false;
       output_tree["error"] = "unknown error";
     }
-#endif
 
     output_tree["profiles"] = std::move(profiles);
     send_response(response, output_tree);
   }
 
-#ifdef _WIN32
-#endif
 
   /**
    * @brief Update stored settings for a paired client.
@@ -2438,9 +2384,7 @@ namespace confighttp {
     output_tree["status"] = true;
     output_tree["platform"] = SUNSHINE_PLATFORM;
     output_tree["version"] = PROJECT_VERSION;
-#ifdef _WIN32
     output_tree["vdisplayStatus"] = static_cast<int>(proc::vDisplayDriverStatus.load(std::memory_order_acquire));
-#endif
     auto vars = config::parse_config(file_handler::read_file(config::sunshine.config_file.c_str()));
     for (auto &[name, value] : vars) {
       output_tree[name] = value;
@@ -2489,36 +2433,6 @@ namespace confighttp {
       {"av1", probe_complete && encoder_caps.av1_mode >= 2},
       {"pyrowave", probe_complete && encoder_caps.pyrowave},
     };
-#if defined(__linux__)
-    output_tree["providers"]["mangohud"] = true;
-    const char *session_role = std::getenv("VIBEPOLLO_SESSION_ROLE");
-    const std::string role = session_role ? session_role : "unknown";
-    output_tree["linux"] = {{"session_role", role == "desktop" || role == "greeter" ? role : "unknown"}};
-    const bool managed_active = platf::linux_capture_status::managed_event_capture_active();
-    output_tree["capture_status"] = {
-      {"configured_backend", config::video.capture},
-      {"observed_backend", managed_active ? "kms" : "unknown"},
-      {"managed_event_driven", managed_active},
-      {"virtual_display_configured", config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled},
-    };
-    const auto display_capabilities = platf::linux_display::backend().capabilities();
-    const bool virtual_capable = display_capabilities.independent_outputs;
-    const bool virtual_ready = display_capabilities.independent_outputs_ready;
-    output_tree["virtual_display"] = {
-      {"capable", virtual_capable},
-      {"ready", virtual_ready},
-      {"reason", virtual_ready ? "" : virtual_capable ? "session_or_output_unavailable" : "driver_or_outputs_unavailable"},
-      {"backend", display_capabilities.backend_name},
-      {"modes", {"per_client", "shared"}},
-      {"layouts", {"exclusive", "extended", "extended_primary", "extended_isolated", "extended_primary_isolated"}},
-      {"display_enumeration", true},
-      {"dynamic_modes", true},
-      {"hdr", "per_output"},
-      {"scale", true},
-      {"reset_persistence", true},
-    };
-#endif
-#if defined(_WIN32)
     const auto driver_snapshot = proc::vDisplayDriverStatusSnapshot();
     const auto driver_status = driver_snapshot.status;
     const auto active_driver = driver_snapshot.selection;
@@ -2611,7 +2525,6 @@ namespace confighttp {
     } catch (...) {
       // Non-fatal; keep metadata response minimal if enumeration fails.
     }
-#endif
     send_response(response, output_tree);
   }
 
@@ -2707,7 +2620,6 @@ namespace confighttp {
    *
    * @api_examples{/api/config| POST| {"key":"value"}}
    */
-#ifdef _WIN32
   /**
    * @brief Apply a changed `vulkan_hdr_layer` preference to the system Vulkan implicit-layer
    *        registration immediately, so the Web UI toggle takes effect without a restart.
@@ -2737,7 +2649,6 @@ namespace confighttp {
     }
     platf::set_vulkan_hdr_layer_enabled(enabled);
   }
-#endif
 
   void saveConfig(resp_https_t response, req_https_t request) {
     if (!validateContentType(response, request, "application/json") || !authenticate(response, request)) {
@@ -2767,9 +2678,7 @@ namespace confighttp {
       }
       file_handler::write_file(config::sunshine.config_file.c_str(), config_stream.str());
 
-#ifdef _WIN32
       reconcile_vulkan_hdr_layer_from_body(input_tree);
-#endif
 
       // Detect restart-required keys
       static const std::set<std::string> restart_required_keys = {
@@ -2876,9 +2785,7 @@ namespace confighttp {
       }
       file_handler::write_file(config::sunshine.config_file.c_str(), config_stream.str());
 
-#ifdef _WIN32
       reconcile_vulkan_hdr_layer_from_body(patch_tree);
-#endif
 
       // Detect restart-required keys
       static const std::set<std::string> restart_required_keys = {
@@ -3102,7 +3009,6 @@ namespace confighttp {
       }
 
       bool converted = false;
-#ifdef _WIN32
       {
         // Convert using WIC helper; falls back to copying if already PNG
         std::wstring src_w(src_tmp.begin(), src_tmp.end());
@@ -3114,28 +3020,6 @@ namespace confighttp {
           converted = !ec.operator bool();
         }
       }
-#else
-      // Non-Windows: we canâ€™t transcode here; accept only already-PNG data
-      if (file_is_png(src_tmp)) {
-        std::error_code ec {};
-
-        std::filesystem::rename(src_tmp, dest_png, ec);
-        if (ec) {
-          // If rename fails (cross-device), try copy
-          std::filesystem::copy_file(src_tmp, dest_png, std::filesystem::copy_options::overwrite_existing, ec);
-          if (!ec) {
-            std::filesystem::remove(src_tmp);
-            converted = true;
-          }
-        } else {
-          converted = true;
-        }
-      } else {
-        // Leave a clear error on non-Windows when not PNG
-        bad_request(response, request, "Cover must be PNG on this platform");
-        return;
-      }
-#endif
 
       // Cleanup temp source file when possible
       if (!src_tmp.empty()) {
@@ -3158,70 +3042,6 @@ namespace confighttp {
     }
   }
 
-#ifndef _WIN32
-  void downloadLogs(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) {
-      return;
-    }
-    try {
-      logging::log_flush();
-      std::vector<std::pair<std::filesystem::path, std::filesystem::file_time_type>> candidates;
-      for (const auto &path : logging::recent_session_logs(30)) {
-        std::error_code ec;
-        const auto mtime = std::filesystem::last_write_time(path, ec);
-        if (!ec) {
-          candidates.emplace_back(path, mtime);
-        }
-      }
-      // Snapshot timestamps before sorting: the active log can change during collection.
-      // Match the Windows support bundle limits, selecting newest files first.
-      std::sort(candidates.begin(), candidates.end(), [](const auto &a, const auto &b) {
-        return a.second != b.second ? a.second > b.second : a.first < b.first;
-      });
-      constexpr std::size_t max_files = 32;
-      constexpr std::size_t max_bytes = 64 * 1024 * 1024;
-      std::size_t bytes = 0;
-      log_export::export_log_sanitizer_t sanitizer;
-      std::vector<log_export::ZipDataEntry> entries;
-      for (const auto &[path, mtime] : candidates) {
-        if (entries.size() >= max_files || bytes >= max_bytes) {
-          break;
-        }
-        std::error_code ec;
-        if (!std::filesystem::is_regular_file(std::filesystem::symlink_status(path, ec))) {
-          continue;
-        }
-        const auto size = std::filesystem::file_size(path, ec);
-        if (ec || size > max_bytes - bytes) {
-          continue;
-        }
-        std::ifstream file(path, std::ios::binary);
-        if (!file) {
-          continue;
-        }
-        // Bound reads even if the active file grows during collection.
-        std::string data(static_cast<std::size_t>(size), '\0');
-        file.read(data.data(), static_cast<std::streamsize>(data.size()));
-        data.resize(static_cast<std::size_t>(file.gcount()));
-        bytes += data.size();
-        entries.push_back(log_export::make_export_log_entry(sanitizer, path.filename().string(), std::move(data), mtime));
-      }
-      if (entries.empty()) {
-        bad_request(response, request, "No retained log files are available");
-        return;
-      }
-      SimpleWeb::CaseInsensitiveMultimap headers;
-      headers.emplace("Content-Type", "application/zip");
-      headers.emplace("Content-Disposition", std::string {"attachment; filename=\""} + std::string {log_export::support_bundle_filename} + "\"");
-      headers.emplace("Cache-Control", "no-store");
-      headers.emplace("X-Frame-Options", "DENY");
-      headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-      response->write(success_ok, log_export::build_zip_from_entries(entries), headers);
-    } catch (const std::exception &e) {
-      bad_request(response, request, e.what());
-    }
-  }
-#endif
 
   /**
    * @brief Get the logs from the log file.
@@ -3258,12 +3078,10 @@ namespace confighttp {
       read_sunshine_log(content);
       handled = true;
     }
-#ifdef _WIN32
     else if (is_helper_log_source(source)) {
       handled = true;
       read_helper_log(source, content);
     }
-#endif
     if (!handled) {
       read_sunshine_log(content);
     }
@@ -3303,18 +3121,14 @@ namespace confighttp {
 
     SimpleWeb::CaseInsensitiveMultimap headers;
     std::string contentType = "text/plain";
-#ifdef _WIN32
     contentType += "; charset=";
     contentType += currentCodePageToCharset();
-#endif
     headers.emplace("Content-Type", contentType);
     headers.emplace("X-Frame-Options", "DENY");
     headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
     response->write(success_ok, content, headers);
   }
 
-#ifdef _WIN32
-#endif
 
   /**
    * @brief Update existing credentials.
@@ -3491,7 +3305,6 @@ namespace confighttp {
     send_response(response, output_tree);
   }
 
-#ifdef _WIN32
   /**
    * @brief Execute the same terminal virtual-display cleanup as the restore hotkey.
    * @api_examples{/api/display/terminate_virtual| POST| {"status":true}}
@@ -3541,9 +3354,7 @@ namespace confighttp {
     }
     send_response(response, out);
   }
-#endif
 
-#ifdef _WIN32
   // --- Golden snapshot helpers (Windows-only) ---
   static bool file_exists_nofail(const std::filesystem::path &p) {
     try {
@@ -4159,7 +3970,6 @@ namespace confighttp {
     out["deleted"] = any_deleted;
     send_response(response, out);
   }
-#endif
 
   /**
    * @brief Restart Apollo.
@@ -4199,11 +4009,9 @@ namespace confighttp {
 
     proc::proc.terminate();
 
-#ifdef _WIN32
     if (GetConsoleWindow() == NULL) {
       lifetime::exit_sunshine(ERROR_SHUTDOWN_IN_PROGRESS, true);
     } else
-#endif
     {
       lifetime::exit_sunshine(0, true);
     }
@@ -4417,16 +4225,9 @@ namespace confighttp {
     if (!std::filesystem::is_regular_file(status)) {
       return false;
     }
-#ifdef _WIN32
     auto ext = entry.path().extension().string();
     boost::to_lower(ext);
     return ext == ".exe" || ext == ".bat" || ext == ".cmd" || ext == ".ps1";
-#else
-    const auto perms = status.permissions();
-    return (perms & std::filesystem::perms::owner_exec) != std::filesystem::perms::none ||
-           (perms & std::filesystem::perms::group_exec) != std::filesystem::perms::none ||
-           (perms & std::filesystem::perms::others_exec) != std::filesystem::perms::none;
-#endif
   }
 
   nlohmann::json build_browse_entries(const std::filesystem::path &dir_path, const std::string &type_str) {
@@ -4473,7 +4274,6 @@ namespace confighttp {
     return entries;
   }
 
-#ifdef _WIN32
   nlohmann::json get_windows_drives() {
     nlohmann::json drives = nlohmann::json::array();
     const DWORD mask = GetLogicalDrives();
@@ -4486,7 +4286,6 @@ namespace confighttp {
     }
     return drives;
   }
-#endif
 
   void browseDirectory(resp_https_t response, req_https_t request) {
     if (!authenticate(response, request)) {
@@ -4500,16 +4299,10 @@ namespace confighttp {
       const auto path_it = query_params.find("path");
       std::filesystem::path dir_path = path_it == query_params.end() ? std::filesystem::path {} : std::filesystem::path {path_it->second};
 
-#ifdef _WIN32
       if (dir_path.empty() || dir_path == "\\" || dir_path == "/") {
         send_response(response, {{"path", ""}, {"parent", ""}, {"entries", get_windows_drives()}});
         return;
       }
-#else
-      if (dir_path.empty()) {
-        dir_path = "/";
-      }
-#endif
 
       if (std::filesystem::is_regular_file(dir_path)) {
         dir_path = dir_path.parent_path();
@@ -4604,9 +4397,7 @@ namespace confighttp {
     register_api_route("^/api/apps/delete$", "POST", deleteApp);
     register_api_route("^/api/apps/launch$", "POST", launchApp);
     register_api_route("^/api/apps/close$", "POST", closeApp);
-#ifdef _WIN32
     register_api_route("^/api/apps/rtx_hdr/live$", "POST", updateAppRtxHdrLive);
-#endif
     register_api_route("^/api/logs$", "GET", getLogs);
     register_api_route("^/api/config$", "GET", getConfig);
     register_api_route("^/api/config$", "POST", saveConfig);
@@ -4620,21 +4411,17 @@ namespace confighttp {
     register_api_route("^/api/updates/check$", "POST", postUpdateCheck);
     register_api_route("^/api/quit$", "POST", quit);
     register_blocking_api_route("^/api/reset-display-device-persistence$", "POST", resetDisplayDevicePersistence);
-#if defined(_WIN32)
     register_blocking_api_route("^/api/display/terminate_virtual$", "POST", postTerminateVirtualDisplay);
     register_blocking_api_route("^/api/display/export_golden$", "POST", postExportGoldenDisplay);
     register_blocking_api_route("^/api/display/golden_status$", "GET", getGoldenStatus);
     register_api_route("^/api/display/golden$", "DELETE", deleteGolden);
-#endif
     register_api_route("^/api/password$", "POST", savePassword);
     register_blocking_api_route("^/api/display-devices$", "GET", getDisplayDevices);
-#ifdef _WIN32
     register_blocking_api_route("^/api/framegen/edid-refresh$", "GET", getFramegenEdidRefresh);
     register_api_route("^/api/health/vulkan-hdr-layer$", "GET", getVulkanHdrLayerHealth);
     register_api_route("^/api/health/vulkan-hdr-layer/register$", "POST", postVulkanHdrLayerRegister);
     register_api_route("^/api/health/crashdump$", "GET", getCrashDumpStatus);
     register_api_route("^/api/health/crashdump/dismiss$", "POST", postCrashDumpDismiss);
-#endif
     register_api_route("^/api/apps/([A-Fa-f0-9-]+)/cover$", "GET", getAppCover);
     register_api_route("^/api/apps/([A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12})$", "DELETE", deleteApp);
     register_api_route("^/api/apps/([0-9]+)$", "DELETE", deleteApp);
@@ -4652,10 +4439,7 @@ namespace confighttp {
     // Keep legacy cover upload endpoint present in upstream master
     register_api_route("^/api/covers/upload$", "POST", uploadCover);
     register_api_route("^/api/covers/([0-9]+)$", "GET", getCover);
-#if defined(_WIN32) || defined(__linux__)
     register_api_route("^/api/frame-limiter/status$", "GET", getFrameLimiterStatus);
-#endif
-#ifdef _WIN32
     register_api_route("^/api/rtss/status$", "GET", getRtssStatus);
     // Export logs bundle (Windows only). Collection and sanitizing can take
     // seconds on large log sets; keep it off the single io thread so the rest
@@ -4663,9 +4447,6 @@ namespace confighttp {
     register_blocking_api_route("^/api/logs/export$", "GET", downloadSupportLogs);
     register_blocking_api_route("^/api/logs/export_crash/manifest$", "GET", getCrashBundleManifest);
     register_blocking_api_route("^/api/logs/export_crash$", "GET", downloadCrashBundle);
-#else
-    register_blocking_api_route("^/api/logs/export$", "GET", downloadLogs);
-#endif
     register_api_route("^/api/token$", "POST", generateApiToken);
     register_api_route("^/api/tokens$", "GET", listApiTokens);
     register_api_route("^/api/token/routes$", "GET", listApiTokenRoutes);

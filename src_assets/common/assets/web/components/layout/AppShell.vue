@@ -2,11 +2,9 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useRoute } from 'vue-router';
-
 import { UiIcon } from '@/components/ui';
 import { useSystemStore } from '@/stores/system';
 import UpdateNotice from './UpdateNotice.vue';
-
 const system = useSystemStore();
 const route = useRoute();
 const { t } = useI18n();
@@ -18,7 +16,6 @@ const isCompact = ref(compactQuery.matches);
 const compactNavigation = computed(
   () => !isMobile.value && (isCompact.value || system.navCollapsed),
 );
-
 const navigationGroups = [
   {
     labelKey: 'ui.shell.workspace',
@@ -47,9 +44,8 @@ const themes = [
   { value: 'dark', icon: 'moon' },
   { value: 'auto', icon: 'devices' },
 ] as const;
-
 const statusText = computed(() => {
-  if (system.health === 'unknown') return t('ui.settings.linux.states.unknown');
+  if (system.health === 'unknown') return t('ui.status.unknown');
   if (system.health === 'warning') return t('ui.status.needs_attention');
   if (system.health === 'streaming') return t('ui.status.streaming');
   return t('ui.status.ready');
@@ -60,7 +56,6 @@ const statusIcon = computed(() => {
   if (system.health === 'streaming') return 'activity';
   return 'check-circle';
 });
-
 function isCurrent(path: string): boolean {
   if (path === '/') return route.path === '/';
   if (path === '/devices' && route.path === '/pair') return true;
@@ -92,7 +87,6 @@ function onKeydown(event: KeyboardEvent): void {
     }
   }
 }
-
 watch(() => route.fullPath, closeMobileNavigation);
 let hostTimer: number | undefined;
 const navigation = ref<HTMLElement | null>(null);

@@ -1,9 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
-
 import ReleaseNotes from '@/components/settings/ReleaseNotes.vue';
-import LinuxCaptureStatus from '@/components/settings/LinuxCaptureStatus.vue';
 import { ApiError, apiDelete, apiGet, apiPost } from '@/services/api';
 import {
   AppButton,
@@ -24,7 +22,6 @@ import {
   parseCrashBundleManifest,
   type CrashBundlePart,
 } from '@/utils/maintenanceCrashBundle';
-
 interface CrashDumpStatus {
   available?: boolean;
   filename?: string;
@@ -36,7 +33,6 @@ interface CrashDumpStatus {
   dismissed?: boolean;
   dismissed_at?: string;
 }
-
 interface GoldenStatus {
   exists?: boolean;
   snapshot_version?: number | null;
@@ -54,7 +50,6 @@ interface GoldenStatus {
   restore_latest_failure_unix_ms?: number | null;
   restore_status_updated_at_unix_ms?: number | null;
 }
-
 interface BrowserSession {
   id: string;
   username: string;
@@ -68,30 +63,36 @@ interface BrowserSession {
   remote_address?: string;
   device_label?: string;
 }
-
 interface SessionsResponse {
   sessions?: BrowserSession[];
 }
-
 interface MutationResponse {
   status?: boolean;
   deleted?: boolean;
   error?: string;
   message?: string;
 }
-
 type PendingAction =
-  | { kind: 'golden-export' }
-  | { kind: 'golden-delete' }
-  | { kind: 'terminate-virtual-display' }
-  | { kind: 'revoke-session'; session: BrowserSession }
-  | { kind: 'restart' };
-
+  | {
+      kind: 'golden-export';
+    }
+  | {
+      kind: 'golden-delete';
+    }
+  | {
+      kind: 'terminate-virtual-display';
+    }
+  | {
+      kind: 'revoke-session';
+      session: BrowserSession;
+    }
+  | {
+      kind: 'restart';
+    };
 type CrashBundlePartState = CrashBundlePart & {
   state: 'pending' | 'downloading' | 'ready' | 'failed';
   error?: string;
 };
-
 const { locale, t } = useI18n();
 const system = useSystemStore();
 const metadata = ref<HostMetadata | null>(system.metadata);
@@ -114,28 +115,23 @@ const notice = ref('');
 const actionError = ref('');
 const confirmOpen = ref(false);
 const pendingAction = ref<PendingAction | null>(null);
-
 const credentials = reactive({
   username: '',
   currentPassword: '',
   newPassword: '',
   confirmPassword: '',
 });
-
 const isWindows = computed(() =>
   String(metadata.value?.platform ?? system.metadata?.platform ?? '')
     .toLocaleLowerCase()
     .includes('windows'),
 );
-
 function message(cause: unknown, fallback: string): string {
   return cause instanceof ApiError ? fallback : cause instanceof Error ? cause.message : fallback;
 }
-
 function crashBundlePartName(part: CrashBundlePart): string {
   return part.filename || `vibepollo_crashbundle-part${part.index}.zip`;
 }
-
 function triggerBlobDownload(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   crashBundleObjectUrls.add(url);
@@ -152,7 +148,6 @@ function triggerBlobDownload(blob: Blob, filename: string): void {
     crashBundleObjectUrls.delete(url);
   }, 1000);
 }
-
 async function fetchCrashBundleManifest(): Promise<CrashBundlePart[]> {
   try {
     const response = await fetch('/api/logs/export_crash/manifest', {
@@ -185,7 +180,6 @@ async function fetchCrashBundleManifest(): Promise<CrashBundlePart[]> {
     throw new Error(t('ui.maintenance.errors.crashManifest'));
   }
 }
-
 async function prepareCrashBundle(): Promise<void> {
   if (crashBundleLoading.value || crashBundleDownloading.value) return;
   crashBundleLoading.value = true;
@@ -200,7 +194,6 @@ async function prepareCrashBundle(): Promise<void> {
     crashBundleLoading.value = false;
   }
 }
-
 async function downloadCrashBundlePart(part: CrashBundlePartState): Promise<boolean> {
   if (part.state === 'downloading') return false;
   part.state = 'downloading';
@@ -225,7 +218,6 @@ async function downloadCrashBundlePart(part: CrashBundlePartState): Promise<bool
     return false;
   }
 }
-
 async function downloadAllCrashBundleParts(): Promise<void> {
   if (crashBundleDownloading.value) return;
   if (!crashBundleParts.value.length) await prepareCrashBundle();
@@ -249,7 +241,6 @@ async function downloadAllCrashBundleParts(): Promise<void> {
     crashBundleDownloading.value = false;
   }
 }
-
 async function retryCrashBundlePart(part: CrashBundlePartState): Promise<void> {
   if (crashBundleDownloading.value) return;
   crashBundleError.value = '';
@@ -258,7 +249,6 @@ async function retryCrashBundlePart(part: CrashBundlePartState): Promise<void> {
     notice.value = t('ui.maintenance.notices.crashBundleStarted');
   }
 }
-
 function reconcileSessions(
   current: BrowserSession[],
   incoming: BrowserSession[],
@@ -272,26 +262,22 @@ function reconcileSessions(
   });
   return [...stable, ...byId.values()];
 }
-
 async function load(): Promise<void> {
   if (refreshing.value) return;
   refreshing.value = true;
   actionError.value = '';
   const errors: string[] = [];
-
   const primary = await Promise.allSettled([
     apiGet<HostMetadata>('/api/metadata'),
     apiGet<SessionsResponse>('/api/auth/sessions'),
   ]);
   const [metadataResult, sessionsResult] = primary;
-
   if (metadataResult.status === 'fulfilled') {
     metadata.value = metadataResult.value;
     system.metadata = metadataResult.value;
   } else {
     errors.push(message(metadataResult.reason, t('ui.maintenance.errors.metadata')));
   }
-
   if (sessionsResult.status === 'fulfilled') {
     const incoming = Array.isArray(sessionsResult.value.sessions)
       ? sessionsResult.value.sessions
@@ -302,7 +288,6 @@ async function load(): Promise<void> {
   } else {
     errors.push(message(sessionsResult.reason, t('ui.maintenance.errors.sessions')));
   }
-
   if (isWindows.value) {
     const windowsResults = await Promise.allSettled([
       apiGet<CrashDumpStatus>('/api/health/crashdump'),
@@ -317,13 +302,15 @@ async function load(): Promise<void> {
     crashDump.value = null;
     golden.value = null;
   }
-
   loadErrors.value = [...new Set(errors)];
   loading.value = false;
   refreshing.value = false;
 }
-
-const goldenState = computed<{ label: string; tone: StatusTone; detail: string }>(() => {
+const goldenState = computed<{
+  label: string;
+  tone: StatusTone;
+  detail: string;
+}>(() => {
   if (!isWindows.value) {
     return {
       label: t('ui.maintenance.status.windowsOnly'),
@@ -358,8 +345,10 @@ const goldenState = computed<{ label: string; tone: StatusTone; detail: string }
     detail: t('ui.maintenance.recovery.availableDetail'),
   };
 });
-
-const crashState = computed<{ label: string; tone: StatusTone }>(() => {
+const crashState = computed<{
+  label: string;
+  tone: StatusTone;
+}>(() => {
   if (!isWindows.value) return { label: t('ui.maintenance.status.windowsOnly'), tone: 'neutral' };
   if (!crashDump.value) return { label: t('ui.maintenance.status.unavailable'), tone: 'danger' };
   if (!crashDump.value.available)
@@ -368,20 +357,18 @@ const crashState = computed<{ label: string; tone: StatusTone }>(() => {
     return { label: t('ui.maintenance.crash.acknowledged'), tone: 'neutral' };
   return { label: t('ui.maintenance.crash.detected'), tone: 'warning' };
 });
-
 function versionLabel(): string {
   if (!metadata.value?.version) return t('ui.maintenance.version.unknown');
   const prerelease = typeof metadata.value.prerelease === 'string' ? metadata.value.prerelease : '';
   return `${metadata.value.version}${prerelease ? `-${prerelease}` : ''}`;
 }
-
 function formatTimestamp(value: number | string | null | undefined): string {
   if (value === null || value === undefined || value === '') {
     return t('ui.maintenance.status.unavailable');
   }
   const numeric = typeof value === 'number' ? value : Number(value);
   const date = Number.isFinite(numeric)
-    ? new Date(numeric < 10_000_000_000 ? numeric * 1000 : numeric)
+    ? new Date(numeric < 10000000000 ? numeric * 1000 : numeric)
     : new Date(value);
   return Number.isFinite(date.getTime())
     ? new Intl.DateTimeFormat(locale.value || undefined, {
@@ -390,7 +377,6 @@ function formatTimestamp(value: number | string | null | undefined): string {
       }).format(date)
     : t('ui.maintenance.status.unavailable');
 }
-
 function formatDate(value: string | null | undefined): string {
   if (!value) return t('_common.unknown');
   const date = new Date(value);
@@ -398,7 +384,6 @@ function formatDate(value: string | null | undefined): string {
     ? new Intl.DateTimeFormat(locale.value || undefined, { dateStyle: 'medium' }).format(date)
     : value;
 }
-
 function sessionName(session: BrowserSession): string {
   return (
     session.device_label ||
@@ -407,12 +392,10 @@ function sessionName(session: BrowserSession): string {
     t('ui.maintenance.sessions.trustedBrowser')
   );
 }
-
 function sessionLastSeen(session: BrowserSession): string {
   const date = new Date(session.last_seen * 1000);
   const delta = date.getTime() - Date.now();
   if (!Number.isFinite(delta)) return t('_common.unknown');
-
   const formatter = new Intl.RelativeTimeFormat(locale.value || undefined, { numeric: 'auto' });
   const ranges: Array<[Intl.RelativeTimeFormatUnit, number]> = [
     ['year', 365 * 24 * 60 * 60 * 1000],
@@ -429,13 +412,11 @@ function sessionLastSeen(session: BrowserSession): string {
   }
   return t('ui.maintenance.sessions.now');
 }
-
 function requestAction(action: PendingAction): void {
   pendingAction.value = action;
   confirmOpen.value = true;
   actionError.value = '';
 }
-
 const dialogCopy = computed(() => {
   const action = pendingAction.value;
   if (action?.kind === 'golden-export') {
@@ -491,19 +472,16 @@ const dialogCopy = computed(() => {
     tone: 'default' as const,
   };
 });
-
 function updateConfirmOpen(value: boolean): void {
   confirmOpen.value = value;
   if (!value && !actionBusy.value) pendingAction.value = null;
 }
-
 async function runConfirmedAction(): Promise<void> {
   const action = pendingAction.value;
   if (!action || actionBusy.value) return;
   actionBusy.value = true;
   notice.value = '';
   actionError.value = '';
-
   try {
     if (action.kind === 'golden-export') {
       const result = await apiPost<MutationResponse>('/api/display/export_golden', {});
@@ -551,7 +529,6 @@ async function runConfirmedAction(): Promise<void> {
     pendingAction.value = null;
   }
 }
-
 async function dismissCrash(): Promise<void> {
   if (!crashDump.value?.filename || dismissingCrash.value) return;
   dismissingCrash.value = true;
@@ -572,7 +549,6 @@ async function dismissCrash(): Promise<void> {
     dismissingCrash.value = false;
   }
 }
-
 async function changePassword(): Promise<void> {
   if (passwordBusy.value) return;
   actionError.value = '';
@@ -593,7 +569,6 @@ async function changePassword(): Promise<void> {
     actionError.value = t('ui.maintenance.validation.passwordMismatch');
     return;
   }
-
   passwordBusy.value = true;
   try {
     const result = await apiPost<MutationResponse>('/api/password', {
@@ -617,9 +592,7 @@ async function changePassword(): Promise<void> {
     passwordBusy.value = false;
   }
 }
-
 onMounted(() => void load());
-
 onBeforeUnmount(() => {
   for (const url of crashBundleObjectUrls) URL.revokeObjectURL(url);
   crashBundleObjectUrls.clear();
@@ -670,22 +643,6 @@ onBeforeUnmount(() => {
     </template>
 
     <template v-else>
-      <section v-if="metadata?.platform === 'linux'" class="maintenance-section">
-        <LinuxCaptureStatus
-          :metadata="metadata"
-          :virtual-mode="
-            metadata.capture_status?.virtual_display_configured === false ? 'disabled' : undefined
-          "
-        />
-        <div class="maintenance-actions">
-          <RouterLink class="button button--secondary" to="/settings?category=display">{{
-            t('ui.maintenance.linux.display')
-          }}</RouterLink>
-          <RouterLink class="button button--secondary" to="/logs">{{
-            t('ui.maintenance.linux.logs')
-          }}</RouterLink>
-        </div>
-      </section>
       <ReleaseNotes class="maintenance-section" :installed-version="metadata?.version" />
       <section class="maintenance-section" aria-labelledby="installed-version-title">
         <div class="maintenance-section__heading">

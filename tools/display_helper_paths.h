@@ -8,7 +8,6 @@
  *        persisted state is picked up after an upgrade.
  */
 
-#ifdef _WIN32
 
   #include <algorithm>
   #include <cwchar>
@@ -184,5 +183,3 @@ namespace display_helper_paths {
     return uniq;
   }
 }  // namespace display_helper_paths
-
-#endif  // _WIN32

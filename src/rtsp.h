@@ -26,10 +26,8 @@
 #include "crypto.h"
 #include "thread_safe.h"
 
-#ifdef _WIN32
   #include <winsock2.h>
   #include <windows.h>
-#endif
 
 // Resolve circular dependencies
 namespace stream {
@@ -145,13 +143,10 @@ namespace rtsp_stream {
     bool gen1_framegen_fix;
     bool gen2_framegen_fix;
     bool frame_generation_enabled = false;
-    bool lossless_scaling_framegen;
     std::optional<int> framegen_refresh_rate;
     std::optional<std::uint32_t> framegen_refresh_millihz;
     int framegen_refresh_multiplier = 1;
     std::string frame_generation_provider;
-    std::optional<double> lossless_scaling_target_fps;
-    std::optional<int> lossless_scaling_rtss_limit;
 
     std::optional<crypto::cipher::gcm_t> rtsp_cipher;
     std::string rtsp_url_scheme;
@@ -162,7 +157,6 @@ namespace rtsp_stream {
 
     std::string client_cert;
 
-#ifdef _WIN32
     enum class display_helper_gate_status_e : uint8_t {
       proceed,  ///< Verified/ready (or no-op)
       proceed_gaveup,  ///< Unknown/unavailable/timeout
@@ -172,7 +166,6 @@ namespace rtsp_stream {
     /// Soft gate: capture start waits (bounded) for the display helper's apply
     /// verification so the first frames aren't grabbed mid-modeset.
     std::shared_future<display_helper_gate_status_e> display_helper_gate;
-#endif
 
     /**
      * @brief Build an isolated copy for the background RTSP startup worker.
@@ -286,7 +279,6 @@ namespace rtsp_stream {
 
   inline framegen::stream_start_policy_t make_framegen_stream_start_policy(
     const launch_session_t &session,
-    std::optional<int> lossless_rtss_limit,
     std::string_view capture_mode,
     bool auto_capture_uses_wgc,
     bool auto_virtual_framegen_limiter,
@@ -299,8 +291,6 @@ namespace rtsp_stream {
       .frame_generation_enabled = session.frame_generation_enabled,
       .gen1_framegen_fix = session.gen1_framegen_fix,
       .gen2_framegen_fix = session.gen2_framegen_fix,
-      .lossless_scaling_framegen = session.lossless_scaling_framegen,
-      .lossless_rtss_limit = lossless_rtss_limit,
       .frame_generation_provider = session.frame_generation_provider,
       .uses_virtual_display = session.virtual_display,
       .capture_mode = std::string(capture_mode),
@@ -367,7 +357,6 @@ namespace rtsp_stream {
    * @brief Terminates all running streaming sessions.
    */
   void terminate_sessions(bool preserve_pending_launch = false);
-  void terminate_sessions_by_cert(std::string_view cert);
 
   /**
    * @brief Get the client UUIDs for all active sessions.

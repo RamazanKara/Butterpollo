@@ -2,7 +2,6 @@
  * @file tests/unit/test_display_helper_v2_core.cpp
  * @brief Unit tests for display helper v2 core components.
  */
-#ifdef _WIN32
 
 #include "../tests_common.h"
 
@@ -1152,5 +1151,3 @@ TEST(DisplayHelperV2FileSnapshotStorage, ReportsMissingDevices) {
   ASSERT_EQ(missing.size(), 1u);
   EXPECT_EQ(missing.front(), "B");
 }
-
-#endif  // _WIN32

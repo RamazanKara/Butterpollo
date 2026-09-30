@@ -1,6 +1,5 @@
 import { getConfigFieldDefinition } from './configFieldSchema.ts';
 import type { SettingsField, SettingsGroup } from './settingsSchema.ts';
-
 // Defaults and wire values match the existing host configuration and legacy editors.
 export const extendedDefaults: Record<string, unknown> = {
   amd_ltr_frames: 0,
@@ -8,8 +7,6 @@ export const extendedDefaults: Record<string, unknown> = {
   amd_smart_access_video: 'auto',
   amd_lowlatency_mode: 'auto',
   amd_high_motion_quality_boost: 'auto',
-
-  nvenc_intra_refresh: 'disabled',
   nvenc_preset: 1,
   nvenc_twopass: 'quarter_res',
   nvenc_spatial_aq: 'disabled',
@@ -32,12 +29,6 @@ export const extendedDefaults: Record<string, unknown> = {
   amd_coder: 'auto',
   amd_av1_screen_content: 'auto',
   amd_av1_latency_mode: 'auto',
-  vt_coder: 'auto',
-  vt_software: 'auto',
-  vt_realtime: 'enabled',
-  vaapi_strict_rc_buffer: 'disabled',
-  vk_tune: 2,
-  vk_rc_mode: 2,
   sw_preset: 'superfast',
   sw_tune: 'zerolatency',
   min_threads: 2,
@@ -47,7 +38,6 @@ export const extendedDefaults: Record<string, unknown> = {
   remember_me_refresh_token_ttl_seconds: 604800,
   back_button_timeout: -1,
   key_rightalt_to_key_win: 'disabled',
-  ds5_inputtino_randomize_mac: true,
   credentials_file: '',
   file_state: '',
   rtx_hdr: false,
@@ -58,7 +48,6 @@ export const extendedDefaults: Record<string, unknown> = {
   rtx_hdr_contrast: 0,
   rtx_hdr_saturation: 0,
 };
-
 export function extendedField(key: string, extra: Partial<SettingsField> = {}): SettingsField {
   const definition = getConfigFieldDefinition(key, {
     t: (key) => key,
@@ -107,14 +96,10 @@ export function extendedField(key: string, extra: Partial<SettingsField> = {}): 
       : {}),
   };
 }
-
 const encoderFamilies = {
   nvenc: 'nvidia',
   qsv: 'intel',
   amd: 'amd',
-  vt: 'videotoolbox',
-  vaapi: 'vaapi',
-  vk: 'vulkan',
   sw: 'software',
 } as const;
 export const advancedEncoderGroups: SettingsGroup[] = Object.entries(encoderFamilies).map(
@@ -126,15 +111,7 @@ export const advancedEncoderGroups: SettingsGroup[] = Object.entries(encoderFami
       .map((key) =>
         extendedField(key, {
           encoderFamily,
-          platform:
-            ['qsv', 'amd'].includes(prefix) ||
-            ['nvenc_realtime_hags', 'nvenc_opengl_vulkan_on_dxgi'].includes(key)
-              ? 'windows'
-              : prefix === 'vt'
-                ? 'macos'
-                : ['vaapi', 'vk'].includes(prefix)
-                  ? 'linux'
-                  : undefined,
+          platform: 'windows',
         }),
       ),
   }),

@@ -53,11 +53,7 @@ extern "C" {
 #include "video_policy.h"
 #include "video_timestamp_policy.h"
 
-#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-  #include "platform/linux/cuda.h"
-#endif
 
-#ifdef _WIN32
   #include "src/platform/windows/display.h"
   #include "src/platform/windows/display_helper_integration.h"
   #include "src/platform/windows/display_vram.h"
@@ -74,7 +70,6 @@ namespace proc {
   extern std::atomic<VDISPLAY::DRIVER_STATUS> vDisplayDriverStatus;
   void initVDisplayDriver();
 }  // namespace proc
-#endif
 
 using namespace std::literals;
 
@@ -109,15 +104,7 @@ namespace video {
     // process shutdown. Deliberately give the runtime fence process lifetime.
     auto &native_amf_lifecycle_gate = *new amf::lifecycle::native_runtime_gate_t();
 
-#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-    // A failed native NVENC teardown leaves a live driver session referencing
-    // the quarantined CUDA/GL device. Refuse to create more native sessions in
-    // this process so repeated failures cannot exhaust the GPU's finite NVENC
-    // session capacity. FFmpeg NVENC remains a separate explicit choice.
-    std::atomic_bool native_nvenc_runtime_quarantined {false};
-#endif
 
-#ifdef _WIN32
     void wait_for_recent_display_apply_stability() {
       constexpr auto kFallbackSettleWindow = std::chrono::milliseconds(1500);
       constexpr auto kVerificationPollInterval = std::chrono::milliseconds(25);
@@ -245,13 +232,10 @@ namespace video {
       return false;
     }
 
-#ifdef _WIN32
     bool is_d3d_capture_image(const std::shared_ptr<platf::img_t> &img) {
       return dynamic_cast<platf::dxgi::img_d3d_t *>(img.get()) != nullptr;
     }
-#endif
 
-#ifdef _WIN32
     void release_d3d_capture_images_async(std::vector<std::shared_ptr<platf::img_t>> images) {
       if (images.empty()) {
         return;
@@ -267,7 +251,6 @@ namespace video {
         BOOST_LOG(warning) << "Failed to start async D3D image release thread: " << err.what();
       }
     }
-#endif
 
     std::optional<std::string> active_virtual_display_dxgi_name() {
       auto virtual_displays = VDISPLAY::enumerateVirtualDisplays();
@@ -324,14 +307,12 @@ namespace video {
         all_virtual_outputs
       );
     }
-#endif
 
     bool ensure_virtual_display_ready(
       std::vector<std::string> &display_names,
       int &display_index,
       const bool allow_process_display_preference = true
     ) {
-#ifdef _WIN32
       static thread_local std::chrono::steady_clock::time_point wait_start {};
       static thread_local std::string pending_virtual_name;
 
@@ -401,23 +382,12 @@ namespace video {
       }
 
       return false;
-#else
-      if (display_names.empty()) {
-        display_index = 0;
-        return false;
-      }
-
-      display_index = std::clamp(display_index, 0, static_cast<int>(display_names.size()) - 1);
-      return true;
-#endif
     }
 
     bool is_placeholder_capture_image(const platf::img_t &img) {
-#ifdef _WIN32
       if (auto d3d_img = dynamic_cast<const platf::dxgi::img_d3d_t *>(&img)) {
         return d3d_img->dummy;
       }
-#endif
 
       return false;
     }
@@ -469,12 +439,10 @@ namespace video {
       bool av1_passed = false;
       bool av1_hdr_supported = false;
       advertised_encoder_capabilities_t advertised_capabilities;
-#ifdef _WIN32
       std::optional<LUID> pending_virtual_display_adapter_hint;
       std::uint64_t pending_virtual_display_adapter_hint_lease = 0;
       std::uint64_t next_pending_virtual_display_adapter_hint_lease = 0;
       bool pending_virtual_display_adapter_hint_ready_for_verification = false;
-#endif
 
       // Track failed probe attempts per cache key for diagnostics.
       std::optional<probe_cache_key_t> failure_cache_key;
@@ -486,7 +454,6 @@ namespace video {
       return state;
     }
 
-#ifdef _WIN32
     platf::adapter_id_t adapter_id_from_luid(const LUID &luid) {
       return platf::adapter_id_t {
         .high_part = luid.HighPart,
@@ -504,10 +471,8 @@ namespace video {
       return adapter_cache_identity(adapter_id_from_luid(luid));
     }
 
-#endif
 
     probe_target_t resolve_probe_target() {
-#ifdef _WIN32
       const auto active_output = config::get_active_output_name();
       const auto mapped_output = display_device::map_output_name(active_output);
       const bool mapped_output_is_active =
@@ -730,20 +695,6 @@ namespace video {
           .resolved = false,
         },
       };
-#else
-      const auto active_output = display_device::map_output_name(config::get_active_output_name());
-      return probe_target_t {
-        .display_name =
-          !active_output.empty() && display_device::output_is_active(active_output) ?
-            active_output :
-            std::string {},
-        .adapter_identity = probe_adapter_identity_t {
-          .identity = "platform-default",
-          .source = "platform-default",
-          .resolved = true,
-        },
-      };
-#endif
     }
 
     probe_cache_key_t build_probe_cache_key(const probe_target_t *probe_target = nullptr) {
@@ -978,12 +929,6 @@ namespace video {
   }  // namespace qsv
 
   util::Either<avcodec_buffer_t, int> dxgi_init_avcodec_hardware_input_buffer(platf::avcodec_encode_device_t *);
-  util::Either<avcodec_buffer_t, int> vaapi_init_avcodec_hardware_input_buffer(platf::avcodec_encode_device_t *);
-  util::Either<avcodec_buffer_t, int> cuda_init_avcodec_hardware_input_buffer(platf::avcodec_encode_device_t *);
-  util::Either<avcodec_buffer_t, int> vt_init_avcodec_hardware_input_buffer(platf::avcodec_encode_device_t *);
-#ifdef SUNSHINE_BUILD_VULKAN
-  util::Either<avcodec_buffer_t, int> vulkan_init_avcodec_hardware_input_buffer(platf::avcodec_encode_device_t *);
-#endif
 
   class avcodec_software_encode_device_t: public platf::avcodec_encode_device_t {
   public:
@@ -1282,9 +1227,6 @@ namespace video {
 
     ~nvenc_encode_session_t() override {
       if (device && !device->prepare_to_destroy()) {
-#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-        native_nvenc_runtime_quarantined.store(true, std::memory_order_release);
-#endif
         (void) device.release();
         BOOST_LOG(error) << "NvEnc: encoder teardown failed; quarantining native NVENC and the complete device until process exit"sv;
       }
@@ -1690,7 +1632,6 @@ namespace video {
     config_t config;
   };
 
-#ifdef _WIN32
   SS_HDR_METADATA synthetic_probe_hdr_metadata() {
     SS_HDR_METADATA metadata {};
     metadata.displayPrimaries[0] = {35400, 14600};  // Rec.2020 red
@@ -1923,15 +1864,6 @@ namespace video {
     display->client_frame_rate = std::max(1, config.framerate);
     return display;
   }
-#elif defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-  std::shared_ptr<platf::display_t> make_black_display(const config_t &config) {
-    return ::cuda::make_black_display(config);
-  }
-#else
-  std::shared_ptr<platf::display_t> make_black_display(const config_t &) {
-    return {};
-  }
-#endif
 
   struct capture_thread_async_ctx_t {
     std::shared_ptr<safe::queue_t<capture_ctx_t>> capture_ctx_queue;
@@ -1954,7 +1886,6 @@ namespace video {
   // Keep a reference counter to ensure the capture thread only runs when other threads have a reference to the capture thread
   auto capture_thread_sync = safe::make_shared<capture_thread_sync_ctx_t>(start_capture_sync, end_capture_sync);
 
-#ifdef _WIN32
   encoder_t nvenc {
     "nvenc"sv,
     std::make_unique<encoder_platform_formats_nvenc>(
@@ -1993,141 +1924,8 @@ namespace video {
     },
     PARALLEL_ENCODING | REF_FRAMES_INVALIDATION | YUV444_SUPPORT | ASYNC_TEARDOWN  // flags
   };
-#elif !defined(__APPLE__)
-#if defined(__linux__)
-  encoder_t nvenc_legacy {
-    "nvenc_legacy"sv,
-#else
-  encoder_t nvenc {
-    "nvenc"sv,
-#endif
-    std::make_unique<encoder_platform_formats_avcodec>(
-  #ifdef _WIN32
-      AV_HWDEVICE_TYPE_D3D11VA,
-      AV_HWDEVICE_TYPE_NONE,
-      AV_PIX_FMT_D3D11,
-  #else
-      AV_HWDEVICE_TYPE_CUDA,
-      AV_HWDEVICE_TYPE_NONE,
-      AV_PIX_FMT_CUDA,
-  #endif
-      AV_PIX_FMT_NV12,
-      AV_PIX_FMT_P010,
-      AV_PIX_FMT_NONE,
-      AV_PIX_FMT_NONE,
-  #ifdef _WIN32
-      dxgi_init_avcodec_hardware_input_buffer
-  #else
-      cuda_init_avcodec_hardware_input_buffer
-  #endif
-    ),
-    {
-      // Common options
-      {
-        {"delay"s, 0},
-        {"forced-idr"s, 1},
-        {"zerolatency"s, 1},
-        {"surfaces"s, 1},
-        {"cbr_padding"s, false},
-        {"preset"s, &config::video.nv_legacy.preset},
-        {"tune"s, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY},
-        {"rc"s, NV_ENC_PARAMS_RC_CBR},
-        {"multipass"s, &config::video.nv_legacy.multipass},
-        {"aq"s, &config::video.nv_legacy.aq},
-        {"split_encode_mode"s, &config::video.nv_legacy.split_encode_mode},
-      },
-      {},  // SDR-specific options
-      {},  // HDR-specific options
-      {},  // YUV444 SDR-specific options
-      {},  // YUV444 HDR-specific options
-      {},  // Fallback options
-      "av1_nvenc"s,
-    },
-    {
-      // Common options
-      {
-        {"delay"s, 0},
-        {"forced-idr"s, 1},
-        {"zerolatency"s, 1},
-        {"surfaces"s, 1},
-        {"cbr_padding"s, false},
-        {"preset"s, &config::video.nv_legacy.preset},
-        {"tune"s, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY},
-        {"rc"s, NV_ENC_PARAMS_RC_CBR},
-        {"multipass"s, &config::video.nv_legacy.multipass},
-        {"aq"s, &config::video.nv_legacy.aq},
-        {"split_encode_mode"s, &config::video.nv_legacy.split_encode_mode},
-      },
-      {
-        // SDR-specific options
-        {"profile"s, (int) nv::profile_hevc_e::main},
-      },
-      {
-        // HDR-specific options
-        {"profile"s, (int) nv::profile_hevc_e::main_10},
-      },
-      {},  // YUV444 SDR-specific options
-      {},  // YUV444 HDR-specific options
-      {},  // Fallback options
-      "hevc_nvenc"s,
-    },
-    {
-      {
-        {"delay"s, 0},
-        {"forced-idr"s, 1},
-        {"zerolatency"s, 1},
-        {"surfaces"s, 1},
-        {"cbr_padding"s, false},
-        {"preset"s, &config::video.nv_legacy.preset},
-        {"tune"s, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY},
-        {"rc"s, NV_ENC_PARAMS_RC_CBR},
-        {"coder"s, &config::video.nv_legacy.h264_coder},
-        {"multipass"s, &config::video.nv_legacy.multipass},
-        {"aq"s, &config::video.nv_legacy.aq},
-      },
-      {
-        // SDR-specific options
-        {"profile"s, (int) nv::profile_h264_e::high},
-      },
-      {},  // HDR-specific options
-      {},  // YUV444 SDR-specific options
-      {},  // YUV444 HDR-specific options
-      {},  // Fallback options
-      "h264_nvenc"s,
-    },
-    PARALLEL_ENCODING
-#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-      | OWNER_THREAD_TEARDOWN
-#endif
-  };
-#endif
 
-#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-  // Native Linux NVENC encoder. This is the preferred `nvenc` backend and
-  // consumes the same CUDA NV12/P010 conversion surface as the legacy path.
-  encoder_t nvenc {
-    "nvenc"sv,
-    std::make_unique<encoder_platform_formats_nvenc>(
-      platf::mem_type_e::cuda,
-      platf::pix_fmt_e::nv12,
-      platf::pix_fmt_e::p010,
-      platf::pix_fmt_e::unknown,
-      platf::pix_fmt_e::unknown
-    ),
-    {
-      {}, {}, {}, {}, {}, {}, "av1_nvenc"s,
-    },
-    {
-      {}, {}, {}, {}, {}, {}, "hevc_nvenc"s,
-    },
-    {
-      {}, {}, {}, {}, {}, {}, "h264_nvenc"s,
-    },
-    PARALLEL_ENCODING | REF_FRAMES_INVALIDATION | OWNER_THREAD_TEARDOWN
-  };
-#endif
 
-#ifdef _WIN32
   encoder_t quicksync {
     "quicksync"sv,
     std::make_unique<encoder_platform_formats_avcodec>(
@@ -2284,7 +2082,6 @@ namespace video {
     PARALLEL_ENCODING | REF_FRAMES_INVALIDATION | ASYNC_TEARDOWN  // flags
   };
 
-#endif
 
   encoder_t software {
     "software"sv,
@@ -2356,203 +2153,8 @@ namespace video {
     H264_ONLY | PARALLEL_ENCODING | ALWAYS_REPROBE | YUV444_SUPPORT
   };
 
-#if defined(__linux__) || defined(linux) || defined(__linux) || defined(__FreeBSD__)
-  encoder_t vaapi {
-    "vaapi"sv,
-    std::make_unique<encoder_platform_formats_avcodec>(
-      AV_HWDEVICE_TYPE_VAAPI,
-      AV_HWDEVICE_TYPE_NONE,
-      AV_PIX_FMT_VAAPI,
-      AV_PIX_FMT_NV12,
-      AV_PIX_FMT_P010,
-      AV_PIX_FMT_NONE,
-      AV_PIX_FMT_NONE,
-      vaapi_init_avcodec_hardware_input_buffer
-    ),
-    {
-      // Common options
-      {
-        {"async_depth"s, 1},
-        {"idr_interval"s, std::numeric_limits<int>::max()},
-      },
-      {},  // SDR-specific options
-      {},  // HDR-specific options
-      {},  // YUV444 SDR-specific options
-      {},  // YUV444 HDR-specific options
-      {},  // Fallback options
-      "av1_vaapi"s,
-    },
-    {
-      // Common options
-      {
-        {"async_depth"s, 1},
-        {"sei"s, 0},
-        {"idr_interval"s, std::numeric_limits<int>::max()},
-      },
-      {},  // SDR-specific options
-      {},  // HDR-specific options
-      {},  // YUV444 SDR-specific options
-      {},  // YUV444 HDR-specific options
-      {},  // Fallback options
-      "hevc_vaapi"s,
-    },
-    {
-      // Common options
-      {
-        {"async_depth"s, 1},
-        {"sei"s, 0},
-        {"idr_interval"s, std::numeric_limits<int>::max()},
-      },
-      {},  // SDR-specific options
-      {},  // HDR-specific options
-      {},  // YUV444 SDR-specific options
-      {},  // YUV444 HDR-specific options
-      {},  // Fallback options
-      "h264_vaapi"s,
-    },
-    // RC buffer size will be set in platform code if supported
-    LIMITED_GOP_SIZE | PARALLEL_ENCODING | NO_RC_BUF_LIMIT
-#if defined(__linux__) && defined(SUNSHINE_BUILD_VAAPI)
-      | OWNER_THREAD_TEARDOWN
-#endif
-  };
-#endif
 
-#ifdef __APPLE__
-  encoder_t videotoolbox {
-    "videotoolbox"sv,
-    std::make_unique<encoder_platform_formats_avcodec>(
-      AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
-      AV_HWDEVICE_TYPE_NONE,
-      AV_PIX_FMT_VIDEOTOOLBOX,
-      AV_PIX_FMT_NV12,
-      AV_PIX_FMT_P010,
-      AV_PIX_FMT_NONE,
-      AV_PIX_FMT_NONE,
-      vt_init_avcodec_hardware_input_buffer
-    ),
-    {
-      // Common options
-      {
-        {"allow_sw"s, &config::video.vt.vt_allow_sw},
-        {"require_sw"s, &config::video.vt.vt_require_sw},
-        {"realtime"s, &config::video.vt.vt_realtime},
-        {"prio_speed"s, 1},
-        {"max_ref_frames"s, 1},
-      },
-      {},  // SDR-specific options
-      {},  // HDR-specific options
-      {},  // YUV444 SDR-specific options
-      {},  // YUV444 HDR-specific options
-      {},  // Fallback options
-      "av1_videotoolbox"s,
-    },
-    {
-      // Common options
-      {
-        {"allow_sw"s, &config::video.vt.vt_allow_sw},
-        {"require_sw"s, &config::video.vt.vt_require_sw},
-        {"realtime"s, &config::video.vt.vt_realtime},
-        {"prio_speed"s, 1},
-        {"max_ref_frames"s, 1},
-      },
-      {},  // SDR-specific options
-      {},  // HDR-specific options
-      {},  // YUV444 SDR-specific options
-      {},  // YUV444 HDR-specific options
-      {},  // Fallback options
-      "hevc_videotoolbox"s,
-    },
-    {
-      // Common options
-      {
-        {"allow_sw"s, &config::video.vt.vt_allow_sw},
-        {"require_sw"s, &config::video.vt.vt_require_sw},
-        {"realtime"s, &config::video.vt.vt_realtime},
-        {"prio_speed"s, 1},
-        {"max_ref_frames"s, 1},
-      },
-      {},  // SDR-specific options
-      {},  // HDR-specific options
-      {},  // YUV444 SDR-specific options
-      {},  // YUV444 HDR-specific options
-      {
-        // Fallback options
-        {"flags"s, "-low_delay"},
-      },
-      "h264_videotoolbox"s,
-    },
-    DEFAULT
-  };
-#endif
 
-#ifdef SUNSHINE_BUILD_VULKAN
-  encoder_t vulkan {
-    "vulkan"sv,
-    std::make_unique<encoder_platform_formats_avcodec>(
-      AV_HWDEVICE_TYPE_VULKAN,
-      AV_HWDEVICE_TYPE_NONE,
-      AV_PIX_FMT_VULKAN,
-      AV_PIX_FMT_NV12,
-      AV_PIX_FMT_P010,
-      AV_PIX_FMT_NONE,
-      AV_PIX_FMT_NONE,
-      vulkan_init_avcodec_hardware_input_buffer
-    ),
-    {
-      // Common options
-      {
-        {"idr_interval"s, std::numeric_limits<int>::max()},
-        {"tune"s, &config::video.vk.tune},
-        {"rc_mode"s, &config::video.vk.rc_mode},
-        {"units"s, 0},
-        {"usage"s, "stream"s},
-        {"content"s, "rendered"s},
-      },
-      {},  // SDR-specific options
-      {},  // HDR-specific options
-      {},  // YUV444 SDR-specific options
-      {},  // YUV444 HDR-specific options
-      {},  // Fallback options
-      "av1_vulkan"s,
-    },
-    {
-      // Common options
-      {
-        {"idr_interval"s, std::numeric_limits<int>::max()},
-        {"tune"s, &config::video.vk.tune},
-        {"rc_mode"s, &config::video.vk.rc_mode},
-        {"units"s, 0},
-        {"usage"s, "stream"s},
-        {"content"s, "rendered"s},
-      },
-      {},  // SDR-specific options
-      {},  // HDR-specific options
-      {},  // YUV444 SDR-specific options
-      {},  // YUV444 HDR-specific options
-      {},  // Fallback options
-      "hevc_vulkan"s,
-    },
-    {
-      // Common options
-      {
-        {"idr_interval"s, std::numeric_limits<int>::max()},
-        {"tune"s, &config::video.vk.tune},
-        {"rc_mode"s, &config::video.vk.rc_mode},
-        {"units"s, 0},
-        {"usage"s, "stream"s},
-        {"content"s, "rendered"s},
-      },
-      {},  // SDR-specific options
-      {},  // HDR-specific options
-      {},  // YUV444 SDR-specific options
-      {},  // YUV444 HDR-specific options
-      {},  // Fallback options
-      "h264_vulkan"s,
-    },
-    LIMITED_GOP_SIZE | PARALLEL_ENCODING
-  };
-#endif
 
 #ifdef SUNSHINE_ENABLE_PYROWAVE
   // PyroWave: intra-only wavelet codec (videoFormat 3) for PyroWave-enabled
@@ -2587,30 +2189,9 @@ namespace video {
 #endif
 
   static const std::vector<encoder_t *> encoders {
-#ifdef _WIN32
     &nvenc,
-#endif
-#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-    &nvenc,
-    &nvenc_legacy,
-#elif defined(__linux__)
-    &nvenc_legacy,
-#elif !defined(_WIN32) && !defined(__APPLE__)
-    &nvenc,
-#endif
-#ifdef _WIN32
     &quicksync,
     &amdvce,
-#endif
-#if defined(__linux__) || defined(linux) || defined(__linux) || defined(__FreeBSD__)
-  #ifdef SUNSHINE_BUILD_VULKAN
-    &vulkan,
-  #endif
-    &vaapi,
-#endif
-#ifdef __APPLE__
-    &videotoolbox,
-#endif
     &software
   };
 
@@ -2679,7 +2260,6 @@ namespace video {
     return state.failure_cache_key.has_value() && state.failure_count > 0;
   }
 
-#ifdef _WIN32
   encoder_probe_adapter_hint_lease_t set_pending_virtual_display_adapter_hint(const LUID &adapter_luid) {
     auto &state = encoder_probe_cache_state();
     std::lock_guard<std::mutex> lock(state.mutex);
@@ -2723,7 +2303,6 @@ namespace video {
       << lease << ").";
     return true;
   }
-#endif
 
   advertised_encoder_capabilities_t advertised_encoder_capabilities(
     const bool probe_before_negative,
@@ -2781,7 +2360,6 @@ namespace video {
     // may need time to settle. Use more retries with progressive delays.
     int max_attempts = 2;
     std::chrono::milliseconds base_delay = 200ms;
-#ifdef _WIN32
     // The extended ladder only exists for the window right after an APPLY, and a
     // bounded stream start has to spend that window inside the same budget the
     // client's first-video deadline uses. Outside the window nothing changes.
@@ -2797,7 +2375,6 @@ namespace video {
         settle_deadline = std::chrono::steady_clock::now() + *stream_start_budget;
       }
     }
-#endif
 
     for (int x = 0; x < max_attempts; ++x) {
       disp.reset();
@@ -2809,12 +2386,10 @@ namespace video {
       // The capture code depends on us to sleep between failures.
       // Use progressive delays for topology changes to give the display time to settle.
       auto delay = base_delay + std::chrono::milliseconds(x * 100);
-#ifdef _WIN32
       if (settle_deadline) {
         const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(*settle_deadline - std::chrono::steady_clock::now());
         delay = std::max(0ms, std::min(delay, remaining));
       }
-#endif
       std::this_thread::sleep_for(delay);
     }
   }
@@ -2868,7 +2443,6 @@ namespace video {
 
     // If we now have no displays, let's put the old display array back and fail
     if (display_names.empty() && !old_display_names.empty()) {
-#ifdef _WIN32
       // During a topology change (e.g. display helper just applied ensure_only_display),
       // DXGI may temporarily report no displays. Don't fall back to stale names that
       // include now-disabled physical displays — this causes the reinit loop to waste
@@ -2889,13 +2463,6 @@ namespace video {
         display_names = std::move(old_display_names);
         return;
       }
-#else
-      if (log_failure) {
-        BOOST_LOG(error) << "No displays were found after reenumeration; retrying with backoff."sv;
-      }
-      display_names = std::move(old_display_names);
-      return;
-#endif
     } else if (display_names.empty()) {
       display_names.emplace_back(output_name);
     }
@@ -3058,28 +2625,22 @@ namespace video {
 
     std::vector<std::optional<std::chrono::steady_clock::time_point>> imgs_used_timestamps;
     auto release_image_pool = [&]() {
-#ifdef _WIN32
       std::vector<std::shared_ptr<platf::img_t>> d3d_images;
-#endif
 
       for (auto &img : imgs) {
         if (!img) {
           continue;
         }
 
-#ifdef _WIN32
         if (is_d3d_capture_image(img)) {
           d3d_images.emplace_back(std::move(img));
           continue;
         }
-#endif
 
         img.reset();
       }
 
-#ifdef _WIN32
       release_d3d_capture_images_async(std::move(d3d_images));
-#endif
       imgs_used_timestamps.clear();
     };
     auto release_image_pool_guard = util::fail_guard([&]() {
@@ -3088,13 +2649,11 @@ namespace video {
 
     const std::chrono::seconds trim_timeot = 3s;
     auto trim_imgs = [&]() {
-#ifdef _WIN32
       if (std::any_of(std::begin(imgs), std::end(imgs), [](const auto &img) {
             return img && is_d3d_capture_image(img);
           })) {
         return;
       }
-#endif
 
       // count allocated and used within current pool
       size_t allocated_count = 0;
@@ -3295,14 +2854,12 @@ namespace video {
             // connected. These surfaces hold no display reference, so deferring them does not
             // block the use_count() wait below; hold them until every encoder has dropped its
             // display reference, then free them once no device still has them open.
-#ifdef _WIN32
             std::vector<std::shared_ptr<platf::img_t>> deferred_d3d_images;
             for (auto &img : imgs) {
               if (img && is_d3d_capture_image(img)) {
                 deferred_d3d_images.emplace_back(std::move(img));
               }
             }
-#endif
             release_image_pool();
 
             // display_wp is modified in this thread only
@@ -3314,11 +2871,9 @@ namespace video {
               // slow or hung driver call. Spinning here until those threads are force-joined
               // is what lets a wedged reinit escalate into the 10s teardown watchdog crash.
               if (!capture_ctx_queue->running()) {
-#ifdef _WIN32
                 // Don't block this bail-out on a synchronous D3D teardown; hand the deferred
                 // surfaces to the async releaser as the old code path did.
                 release_d3d_capture_images_async(std::move(deferred_d3d_images));
-#endif
                 return;
               }
 
@@ -3340,7 +2895,6 @@ namespace video {
               std::this_thread::sleep_for(20ms);
             }
 
-#ifdef _WIN32
             // Every encoder device has now released the shared capture surfaces (their
             // display references reached zero above), so it is safe to free them. Done
             // synchronously on this thread rather than on a detached thread, so no surface
@@ -3351,7 +2905,6 @@ namespace video {
               std::lock_guard lg {encode_session_teardown_mutex};
               deferred_d3d_images.clear();
             }
-#endif
 
             while (auto pending_context = capture_ctx_queue->pop(0ms)) {
               if (pending_context->images->running()) {
@@ -3368,9 +2921,7 @@ namespace video {
               // only support a single display session per device/application.
               disp.reset();
 
-#ifdef _WIN32
               wait_for_recent_display_apply_stability();
-#endif
 
               // Refresh display names since a display removal might have caused the reinitialization
               const auto required_output = capture_ctxs.front().config.capture_source == capture_source_e::exact_output ? capture_ctxs.front().config.capture_output : std::nullopt;
@@ -4052,11 +3603,9 @@ namespace video {
         } else {
           ctx->rc_buffer_size = bitrate / config.framerate;
 
-#ifndef __APPLE__
           if (encoder.name == "nvenc" && config::video.nv_legacy.vbv_percentage_increase > 0) {
             ctx->rc_buffer_size += ctx->rc_buffer_size * config::video.nv_legacy.vbv_percentage_increase / 100;
           }
-#endif
         }
       }
 
@@ -4167,9 +3716,6 @@ namespace video {
   std::unique_ptr<nvenc_encode_session_t> make_nvenc_encode_session(const config_t &client_config, std::unique_ptr<platf::nvenc_encode_device_t> encode_device) {
     if (!encode_device->init_encoder(client_config, encode_device->colorspace)) {
       if (!encode_device->prepare_to_destroy()) {
-#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-        native_nvenc_runtime_quarantined.store(true, std::memory_order_release);
-#endif
         (void) encode_device.release();
         BOOST_LOG(error) << "NvEnc: failed initialization could not be torn down; quarantining native NVENC and the complete device until process exit"sv;
       }
@@ -4581,17 +4127,10 @@ namespace video {
                        disp.get(), encoder, config, disp->width, disp->height,
                        std::move(encode_device), initialization_deadline, initialization_cancelled,
                        &initialization_was_cancelled, &initialization_gate_contended);
-#ifdef _WIN32
     if (initialization_was_cancelled) return encode_run_result_e::completed;
     if (!session && &encoder == &amdvce) {
       BOOST_LOG(error) << "AMF: native session initialization failed"sv;
     }
-#endif
-#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-    if (!session && &encoder == &nvenc) {
-      BOOST_LOG(error) << "NvEnc: native session initialization failed; refusing silent FFmpeg NVENC fallback"sv;
-    }
-#endif
     if (!session) {
       if (initialization_gate_contended) return encode_run_result_e::temporarily_busy;
       return encode_run_result_e::initialization_failed;
@@ -5149,12 +4688,6 @@ namespace video {
     hdr_latch_t *hdr_latch = nullptr) {
     std::unique_ptr<platf::encode_device_t> result;
 
-#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-    if (&encoder == &nvenc && native_nvenc_runtime_quarantined.load(std::memory_order_acquire)) {
-      BOOST_LOG(error) << "NvEnc: native runtime is quarantined after an unsafe teardown; refusing to create another native session until host restart"sv;
-      return nullptr;
-    }
-#endif
 
     const bool display_is_hdr = disp.is_hdr();
     bool hdr_display = display_is_hdr;
@@ -5387,9 +4920,7 @@ namespace video {
       if (synced_session_ctxs.empty()) {
         return encode_e::ok;
       }
-#ifdef _WIN32
       wait_for_recent_display_apply_stability();
-#endif
       // Refresh display names since a display removal might have caused the reinitialization
       const auto required_output = synced_session_ctxs.front()->config.capture_source == capture_source_e::exact_output ? synced_session_ctxs.front()->config.capture_output : std::nullopt;
       refresh_displays(
@@ -5723,12 +5254,8 @@ namespace video {
 
     auto touch_port_event = mail->event<input::touch_port_t>(mail::touch_port);
     auto hdr_event = mail->event<hdr_info_t>(mail::hdr);
-#if defined(_WIN32) || (defined(__linux__) && defined(SUNSHINE_BUILD_CUDA))
     int consecutive_encoder_initialization_failures = 0;
-#endif
-#ifdef _WIN32
     int consecutive_native_amf_runtime_failures = 0;
-#endif
 
     // Encoding takes place on this thread (async-capture mode; capture lives in
     // capture_thread_async at critical already). Match it so neither half of the
@@ -5775,26 +5302,10 @@ namespace video {
         session_hdr_metadata_valid = encode_device->hdr_metadata_valid;
         session_hdr_metadata = encode_device->hdr_metadata;
       }
-#ifdef _WIN32
       if (initialization_was_cancelled) continue;
       if (!encode_device && !prepared_session && &encoder == &amdvce) {
         BOOST_LOG(error) << "AMF: native device creation failed"sv;
       }
-#endif
-#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-      if (!encode_device && !prepared_session && &encoder == &nvenc) {
-        ++consecutive_encoder_initialization_failures;
-        if (consecutive_encoder_initialization_failures >= 3) {
-          BOOST_LOG(error) << "NvEnc: native device creation failed 3 times; ending the stream without changing encoder implementations"sv;
-          return;
-        }
-        const auto retry_delay = std::chrono::milliseconds(100 * (1 << (consecutive_encoder_initialization_failures - 1)));
-        BOOST_LOG(warning) << "NvEnc: native device creation failed; retrying in " << retry_delay.count()
-                           << "ms without falling back to FFmpeg NVENC"sv;
-        std::this_thread::sleep_for(retry_delay);
-        continue;
-      }
-#endif
       if (initialization_was_cancelled) continue;
       if (initialization_gate_contended && !encode_device && !prepared_session) {
         std::this_thread::sleep_for(100ms);
@@ -5832,7 +5343,6 @@ namespace video {
         last_hdr_info,
         rtx_hdr_metadata_refresh
       );
-#ifdef _WIN32
       if (encode_result == encode_run_result_e::native_amf_failed && &session_encoder == &amdvce) {
         // Runtime fatals (TDR, sustained backpressure, output stalls) are
         // classified by the encoder layer as reinit requests. Rebuild the same
@@ -5851,9 +5361,7 @@ namespace video {
                            << consecutive_native_amf_runtime_failures << " of 3)"sv;
         continue;
       }
-#endif
       if (encode_result == encode_run_result_e::initialization_failed) {
-#ifdef _WIN32
   #ifdef SUNSHINE_ENABLE_PYROWAVE
         // A PyroWave session has no other encoder to fall back to, so a
         // persistent Vulkan failure must end the stream, not spin.
@@ -5877,33 +5385,13 @@ namespace video {
         BOOST_LOG(warning) << "Encoder initialization failed; retrying in " << retry_delay.count() << "ms";
         std::this_thread::sleep_for(retry_delay);
         continue;
-#else
-  #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-        if (&session_encoder == &nvenc) {
-          ++consecutive_encoder_initialization_failures;
-          if (consecutive_encoder_initialization_failures >= 3) {
-            BOOST_LOG(error) << "NvEnc: native session initialization failed 3 times; ending the stream without changing encoder implementations"sv;
-            return;
-          }
-          const auto retry_delay = std::chrono::milliseconds(100 * (1 << (consecutive_encoder_initialization_failures - 1)));
-          BOOST_LOG(warning) << "NvEnc: native session initialization failed; retrying in " << retry_delay.count()
-                             << "ms without falling back to FFmpeg NVENC"sv;
-          std::this_thread::sleep_for(retry_delay);
-        }
-  #endif
-        continue;
-#endif
       }
       if (encode_result == encode_run_result_e::temporarily_busy) {
         std::this_thread::sleep_for(100ms);
         continue;
       }
-#if defined(_WIN32) || (defined(__linux__) && defined(SUNSHINE_BUILD_CUDA))
       consecutive_encoder_initialization_failures = 0;
-#endif
-#ifdef _WIN32
       consecutive_native_amf_runtime_failures = 0;
-#endif
     }
   }
 
@@ -5964,11 +5452,7 @@ namespace video {
     // The tight submission/wall-clock bounds exist for AMF drivers that stall in
     // INPUT_FULL; probing for every other encoder keeps the pre-existing limits
     // so this AMD-only change cannot alter NVENC/QSV/software negotiation.
-#ifdef _WIN32
     const bool amf_probe = &encoder == &amdvce;
-#else
-    const bool amf_probe = false;
-#endif
     const auto probe_timeout = amf_probe ? std::chrono::seconds {5} : std::chrono::seconds {60};
     const int max_probe_submissions = amf_probe ? 64 : 256;
     const auto probe_start = std::chrono::steady_clock::now();
@@ -6088,12 +5572,6 @@ namespace video {
       };
 
       auto result = validate_once();
-#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-      if (&encoder == &nvenc && native_nvenc_runtime_quarantined.load(std::memory_order_acquire)) {
-        BOOST_LOG(error) << "NvEnc: native probe teardown was unsafe; rejecting the probe result and quarantining native NVENC until process restart"sv;
-        return -1;
-      }
-#endif
       if (result) {
         return *result;
       }
@@ -6112,9 +5590,6 @@ namespace video {
 
   static thread_local std::shared_ptr<platf::display_t> cached_probe_display;
   static thread_local platf::mem_type_e cached_display_type = platf::mem_type_e::system;
-#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-  static thread_local bool cached_display_is_native_nvenc_probe = false;
-#endif
 
   bool validate_encoder(
     encoder_t &encoder,
@@ -6123,9 +5598,7 @@ namespace video {
     std::optional<platf::adapter_id_t> *actual_adapter,
     const std::string &probe_display_name
   ) {
-#ifdef _WIN32
     (void) probe_display_name;
-#endif
     if (actual_adapter) {
       actual_adapter->reset();
     }
@@ -6150,7 +5623,6 @@ namespace video {
     };
 
     const auto reset_probe_display = [&](const config_t &probe_config) {
-#ifdef _WIN32
       // Encoder capability validation is intentionally independent of WGC,
       // Desktop Duplication, GDI publication, and the interactive desktop.
       // A short retry covers transient D3D device creation without waiting for
@@ -6166,26 +5638,6 @@ namespace video {
           std::this_thread::sleep_for(100ms);
         }
       }
-#else
-  #if defined(SUNSHINE_BUILD_CUDA)
-      if (&encoder == &nvenc && !required_adapter) {
-        // Encoder capability probing does not need access to a scanout
-        // framebuffer. A blank GL/CUDA source isolates the native API probe
-        // from KMS privileges while the real stream still uses KMS capture.
-        BOOST_LOG(info) << "NvEnc: using a synthetic GL/CUDA source for encoder-only probing; KMS capture readiness is validated separately"sv;
-        disp = ::cuda::make_nvenc_probe_display(probe_config);
-      } else
-  #endif
-      {
-        reset_display(
-          disp,
-          encoder.platform_formats->dev_type,
-          probe_display_name,
-          probe_config,
-          required_adapter
-        );
-      }
-#endif
     };
 
     // First, test encoder viability
@@ -6197,13 +5649,7 @@ namespace video {
     const auto cached_adapter = cached_probe_display ? cached_probe_display->capture_adapter_id() : std::nullopt;
     const bool cached_display_matches_required =
       !required_adapter || (cached_adapter && *cached_adapter == *required_adapter);
-#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-    const bool wants_native_nvenc_probe = &encoder == &nvenc && !required_adapter;
-    const bool cached_probe_kind_matches =
-      cached_display_is_native_nvenc_probe == wants_native_nvenc_probe;
-#else
     const bool cached_probe_kind_matches = true;
-#endif
     if (cached_probe_display &&
         cached_display_type == encoder.platform_formats->dev_type &&
         cached_probe_kind_matches &&
@@ -6213,9 +5659,6 @@ namespace video {
       reset_probe_display(config_autoselect);
       cached_probe_display = disp;
       cached_display_type = encoder.platform_formats->dev_type;
-#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-      cached_display_is_native_nvenc_probe = wants_native_nvenc_probe;
-#endif
     }
 
     if (!disp) {
@@ -6487,7 +5930,6 @@ namespace video {
         BOOST_LOG(warning) << "Unable to record the final encoder probe adapter key.";
       }
     });
-#ifdef _WIN32
     {
       const auto adapter_resolution = platf::resolve_adapter(
         config::video.adapter_name,
@@ -6510,7 +5952,6 @@ namespace video {
         << "', effective_cache_source=" << cache_key.adapter_identity_source
         << '.';
     }
-#endif
     const bool hevc_mode_auto = config::video.hevc_mode == 0;
     const bool av1_mode_auto = config::video.av1_mode == 0;
     const bool wants_hdr = (config::video.hevc_mode == 3) || (config::video.av1_mode == 3);
@@ -6549,12 +5990,6 @@ namespace video {
     });
 
     auto encoder_list = encoders;
-#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-    const auto nvenc_selection_policy = nvenc::encoder_selection_policy(config::video.encoder);
-    if (!nvenc_selection_policy.include_native) {
-      encoder_list.erase(std::remove(encoder_list.begin(), encoder_list.end(), &nvenc), encoder_list.end());
-    }
-#endif
 
     // Use a local variable for encoder selection during probing so that
     // chosen_encoder is never null while concurrent capture threads may read it.
@@ -6623,12 +6058,6 @@ namespace video {
 
       if (new_encoder == nullptr) {
         BOOST_LOG(error) << "Couldn't find any working encoder matching ["sv << config::video.encoder << ']';
-#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-        if (nvenc_selection_policy.fail_closed) {
-          BOOST_LOG(error) << "Native NVENC was explicitly selected; refusing automatic fallback to legacy FFmpeg NVENC or another encoder"sv;
-          return -1;
-        }
-#endif
       }
     }
 
@@ -6709,7 +6138,6 @@ namespace video {
 
     auto &encoder = *new_encoder;
 
-#ifdef _WIN32
     if (encoder.name == "software"sv) {
       // Software is probed last, so reaching it means every hardware encoder —
       // including native AMF — failed validation. Make the degradation loud:
@@ -6717,7 +6145,6 @@ namespace video {
       BOOST_LOG(error) << "No hardware encoder passed validation; the SOFTWARE encoder was selected."sv;
       BOOST_LOG(error) << "If this system has an AMD GPU, hardware encoding is NOT active. Check the AMD driver and the log above for why the AMF encoder failed."sv;
     }
-#endif
 
     last_encoder_probe_supported_ref_frames_invalidation = (encoder.flags & REF_FRAMES_INVALIDATION);
     last_encoder_probe_supported_yuv444_for_codec[0] = encoder.h264[encoder_t::PASSED] &&
@@ -6771,7 +6198,6 @@ namespace video {
     const bool av1_hdr_supported = encoder.av1[encoder_t::DYNAMIC_RANGE];
     const bool cache_hdr_supported = hevc_hdr_supported || av1_hdr_supported;
     auto successful_cache_key = cache_key;
-#ifdef _WIN32
     const auto required_adapter_identity = required_adapter ?
                                              std::optional<std::string> {
                                                adapter_cache_identity(*required_adapter)
@@ -6812,7 +6238,6 @@ namespace video {
       successful_cache_key.adapter_identity_source = "actual-probe-display";
       successful_cache_key.adapter_identity_resolved = owned_cache_key->adapter_identity_resolved;
     }
-#endif
 #ifdef SUNSHINE_ENABLE_PYROWAVE
     // PyroWave rides alongside the chosen encoder on the same adapter.
     const auto pyrowave_probe = probe_pyrowave(successful_probe_adapter ? successful_probe_adapter : required_adapter);
@@ -6850,84 +6275,11 @@ namespace video {
   }
 
   // Linux only declaration
-  typedef int (*vaapi_init_avcodec_hardware_input_buffer_fn)(platf::avcodec_encode_device_t *encode_device, AVBufferRef **hw_device_buf);
 
-  util::Either<avcodec_buffer_t, int> vaapi_init_avcodec_hardware_input_buffer(platf::avcodec_encode_device_t *encode_device) {
-    avcodec_buffer_t hw_device_buf;
 
-    // If an egl hwdevice
-    if (encode_device->data) {
-      if (((vaapi_init_avcodec_hardware_input_buffer_fn) encode_device->data)(encode_device, &hw_device_buf)) {
-        return -1;
-      }
 
-      return hw_device_buf;
-    }
 
-    auto render_device = config::video.adapter_name.empty() ? nullptr : config::video.adapter_name.c_str();
 
-    auto status = av_hwdevice_ctx_create(&hw_device_buf, AV_HWDEVICE_TYPE_VAAPI, render_device, nullptr, 0);
-    if (status < 0) {
-      char string[AV_ERROR_MAX_STRING_SIZE];
-      BOOST_LOG(error) << "Failed to create a VAAPI device: "sv << av_make_error_string(string, AV_ERROR_MAX_STRING_SIZE, status);
-      return -1;
-    }
-
-    return hw_device_buf;
-  }
-
-#ifdef SUNSHINE_BUILD_VULKAN
-  typedef int (*vulkan_init_avcodec_hardware_input_buffer_fn)(platf::avcodec_encode_device_t *encode_device, AVBufferRef **hw_device_buf);
-
-  util::Either<avcodec_buffer_t, int> vulkan_init_avcodec_hardware_input_buffer(platf::avcodec_encode_device_t *encode_device) {
-    avcodec_buffer_t hw_device_buf;
-
-    if (encode_device && encode_device->data) {
-      if (((vulkan_init_avcodec_hardware_input_buffer_fn) encode_device->data)(encode_device, &hw_device_buf)) {
-        return -1;
-      }
-      return hw_device_buf;
-    }
-
-    auto render_device = config::video.adapter_name.empty() ? nullptr : config::video.adapter_name.c_str();
-    auto status = av_hwdevice_ctx_create(&hw_device_buf, AV_HWDEVICE_TYPE_VULKAN, render_device, nullptr, 0);
-    if (status < 0) {
-      char string[AV_ERROR_MAX_STRING_SIZE];
-      BOOST_LOG(error) << "Failed to create a Vulkan device: "sv << av_make_error_string(string, AV_ERROR_MAX_STRING_SIZE, status);
-      return -1;
-    }
-
-    return hw_device_buf;
-  }
-#endif
-
-  util::Either<avcodec_buffer_t, int> cuda_init_avcodec_hardware_input_buffer(platf::avcodec_encode_device_t *encode_device) {
-    avcodec_buffer_t hw_device_buf;
-
-    auto status = av_hwdevice_ctx_create(&hw_device_buf, AV_HWDEVICE_TYPE_CUDA, nullptr, nullptr, 1 /* AV_CUDA_USE_PRIMARY_CONTEXT */);
-    if (status < 0) {
-      char string[AV_ERROR_MAX_STRING_SIZE];
-      BOOST_LOG(error) << "Failed to create a CUDA device: "sv << av_make_error_string(string, AV_ERROR_MAX_STRING_SIZE, status);
-      return -1;
-    }
-
-    return hw_device_buf;
-  }
-
-  util::Either<avcodec_buffer_t, int> vt_init_avcodec_hardware_input_buffer(platf::avcodec_encode_device_t *encode_device) {
-    avcodec_buffer_t hw_device_buf;
-
-    auto status = av_hwdevice_ctx_create(&hw_device_buf, AV_HWDEVICE_TYPE_VIDEOTOOLBOX, nullptr, nullptr, 0);
-    if (status < 0) {
-      char string[AV_ERROR_MAX_STRING_SIZE];
-      BOOST_LOG(error) << "Failed to create a VideoToolbox device: "sv << av_make_error_string(string, AV_ERROR_MAX_STRING_SIZE, status);
-      return -1;
-    }
-
-    return hw_device_buf;
-  }
-
-#ifdef _WIN32
 }
 
 void do_nothing(void *) {
@@ -6959,7 +6311,6 @@ namespace video {
 
     return ctx_buf;
   }
-#endif
 
   // The capture worker opens its display for the session's encoder: a PyroWave
   // session needs a D3D11 capture display even when the probe chose software.
@@ -6998,14 +6349,8 @@ namespace video {
     switch (type) {
       case AV_HWDEVICE_TYPE_D3D11VA:
         return platf::mem_type_e::dxgi;
-      case AV_HWDEVICE_TYPE_VAAPI:
-        return platf::mem_type_e::vaapi;
-      case AV_HWDEVICE_TYPE_CUDA:
-        return platf::mem_type_e::cuda;
       case AV_HWDEVICE_TYPE_NONE:
         return platf::mem_type_e::system;
-      case AV_HWDEVICE_TYPE_VIDEOTOOLBOX:
-        return platf::mem_type_e::videotoolbox;
       case AV_HWDEVICE_TYPE_VULKAN:
         return platf::mem_type_e::vulkan;
       default:

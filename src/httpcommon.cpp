@@ -38,10 +38,8 @@
 #include "state_storage.h"
 #include "utility.h"
 
-#ifdef _WIN32
   #include <wincrypt.h>
   #include <Windows.h>
-#endif
 
 namespace {
   std::once_flag curl_global_once;
@@ -53,7 +51,6 @@ namespace {
     });
   }
 
-#ifdef _WIN32
   std::once_flag windows_ca_once;
   std::string windows_ca_bundle;
   bool windows_ca_loaded = false;
@@ -147,13 +144,11 @@ namespace {
     });
     return path;
   }
-#endif
 
   bool apply_default_ca_store(CURL *curl) {
     if (!curl) {
       return false;
     }
-#if defined(_WIN32)
     std::call_once(windows_ca_once, load_windows_root_store);
 
   #if defined(CURLOPT_SSL_OPTIONS) && defined(CURLSSLOPT_NATIVE_CA)
@@ -189,10 +184,6 @@ namespace {
     }
     BOOST_LOG(error) << "Failed to supply CA bundle to libcurl for HTTPS";
     return false;
-#else
-    (void) curl;
-    return true;
-#endif
   }
 }  // namespace
 
@@ -208,9 +199,7 @@ namespace http {
   bool credentials_created_this_run = false;
   net::net_e origin_web_ui_allowed;
 
-#ifdef _WIN32
   std::string shared_virtual_display_guid;
-#endif
 
   int init() {
     ensure_curl_global_init();
@@ -448,9 +437,7 @@ namespace http {
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, fwrite);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
     curl_easy_setopt(curl, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
-#ifdef _WIN32
     curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS, CURLSSLOPT_NATIVE_CA);
-#endif
     CURLcode result = curl_easy_perform(curl);
     if (result != CURLE_OK) {
       BOOST_LOG(error) << "Couldn't download ["sv << url << ", code:" << result << ']';

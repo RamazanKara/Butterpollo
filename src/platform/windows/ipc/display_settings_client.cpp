@@ -1,7 +1,6 @@
 /**
  * @file src/platform/windows/ipc/display_settings_client.cpp
  */
-#ifdef _WIN32
 
   // standard
   #include <algorithm>
@@ -1907,5 +1906,3 @@ namespace platf::display_helper_client {
     return send_serialized_within(session, MsgType::Ping, payload, deadline);
   }
 }  // namespace platf::display_helper_client
-
-#endif

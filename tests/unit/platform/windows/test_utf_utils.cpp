@@ -7,12 +7,9 @@
 #include <iostream>
 #include <string>
 
-#ifdef _WIN32
   #include <src/platform/windows/utf_utils.h>
   #include <Windows.h>
-#endif
 
-#ifdef _WIN32
 /**
  * @brief Test fixture for utf_utils namespace functions
  */
@@ -253,10 +250,3 @@ TEST_F(UtfUtilsTest, LongStringsWithSpecialCharacters) {
   EXPECT_FALSE(wide_result.empty()) << "Long string conversion should not be empty";
   EXPECT_EQ(long_special, back_result) << "Long string round trip should preserve content";
 }
-
-#else
-// For non-Windows platforms, the utf_utils namespace doesn't exist
-TEST(UtfUtilsTest, UtfUtilsNotAvailableOnNonWindows) {
-  GTEST_SKIP() << "utf_utils namespace is Windows-specific";
-}
-#endif

@@ -90,10 +90,6 @@ TEST(InputTouchMapping, NormalizesUsingPlatformOffsetContract) {
   EXPECT_EQ(monitor_port->offset_y, 0);
   EXPECT_EQ(monitor_port->width, 1920);
   EXPECT_EQ(monitor_port->height, 1080);
-#ifdef __linux__
-  EXPECT_FLOAT_EQ(coords.first, -0.5f);
-#else
   EXPECT_FLOAT_EQ(coords.first, 0.5f);
-#endif
   EXPECT_FLOAT_EQ(coords.second, 0.5f);
 }

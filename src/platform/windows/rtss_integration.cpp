@@ -3,7 +3,6 @@
  * @brief Apply/restore RTSS frame limit and related properties on stream start/stop.
  */
 
-#ifdef _WIN32
 
   // standard includes
   #include <array>
@@ -1531,10 +1530,6 @@ namespace platf {
     }
   }
 
-  std::optional<std::string> rtss_get_sync_limiter_override() {
-    std::scoped_lock lock {g_rtss_lifecycle_mutex};
-    return g_sync_limiter_override;
-  }
 
   bool rtss_warmup_process() {
     std::scoped_lock lock {g_rtss_lifecycle_mutex};
@@ -2009,5 +2004,3 @@ namespace platf {
     return st;
   }
 }  // namespace platf
-
-#endif  // _WIN32

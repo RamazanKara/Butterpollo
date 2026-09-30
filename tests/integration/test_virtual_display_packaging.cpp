@@ -4,7 +4,6 @@
  */
 #include <gtest/gtest.h>
 
-#ifdef _WIN32
   #include <virtual_display_package_contract.generated.h>
 
   #include <algorithm>
@@ -153,5 +152,3 @@ TEST(SunshineVirtualDisplayPackaging, CiSigningPolicyAllowsEphemeralDriverCertif
   EXPECT_TRUE(contract::ci_requires_valid_release_signatures);
   EXPECT_TRUE(contract::ci_self_sign_without_persistent_secret);
 }
-
-#endif

@@ -120,7 +120,6 @@ namespace statefile {
    * @brief Load the snapshot exclusion device list from vibeshine_state.json.
    * @return The list of device IDs to exclude, or an empty vector if not found.
    */
-  std::vector<std::string> load_snapshot_exclude_devices();
 
   /**
    * @brief Remember a Sunshine-managed virtual display device id in vibeshine_state.json.
@@ -139,12 +138,9 @@ namespace statefile {
   std::vector<std::string> load_virtual_display_devices();
 
   /** Persist a compositor scale selected for a stable virtual-display owner. */
-  void save_virtual_display_scale(const std::string &identity, double scale);
 
   /** Load the last compositor scale selected for a stable virtual-display owner. */
-  std::optional<double> load_virtual_display_scale(const std::string &identity);
 
   /** Clear retained virtual-display scales when display state is reset. */
-  void clear_virtual_display_scales();
 
 }  // namespace statefile

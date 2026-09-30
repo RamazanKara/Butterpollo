@@ -24,11 +24,9 @@
 #include <string>
 #include <string_view>
 
-#ifdef _WIN32
   #include <winsock2.h>
   #include <Windows.h>
   #include <AclAPI.h>
-#endif
 
 using namespace std::literals;
 
@@ -223,7 +221,6 @@ namespace statefile {
         read_state_file);
     }
 
-#ifdef _WIN32
     bool path_exists_or_may_be_access_denied(const fs::path &path) {
       if (path.empty()) {
         return false;
@@ -490,7 +487,6 @@ namespace statefile {
         files.insert(candidate);
       }
     }
-#endif
 
     policy_load_result_e load_tree_for_read(const fs::path &path, pt::ptree &out) {
       if (is_auxiliary_state(path.string())) {
@@ -683,7 +679,6 @@ namespace statefile {
   }
 
   bool secure_private_directory(const std::string &path) {
-#ifdef _WIN32
     if (path.empty()) {
       return false;
     }
@@ -868,14 +863,9 @@ namespace statefile {
 
     BOOST_LOG(debug) << "statefile: hardened private directory "sv << dir.string();
     return true;
-#else
-    (void) path;
-    return true;
-#endif
   }
 
   void repair_config_permissions() {
-#ifdef _WIN32
     std::set<fs::path> config_roots;
     std::set<fs::path> config_files;
 
@@ -917,7 +907,6 @@ namespace statefile {
     for (const auto &dir : config_roots) {
       (void) secure_private_directory((dir / "credentials").string());
     }
-#endif
   }
 
   void migrate_recent_state_keys() {
@@ -1023,7 +1012,6 @@ namespace statefile {
         return true;
       }
 
-#ifdef _WIN32
       auto normalize_case = [](std::wstring value) {
         std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) {
           return static_cast<wchar_t>(std::towlower(ch));
@@ -1037,11 +1025,6 @@ namespace statefile {
       if (normalized_sunshine == normalized_vibeshine) {
         return true;
       }
-#else
-      if (sunshine_path.lexically_normal() == vibeshine_path.lexically_normal()) {
-        return true;
-      }
-#endif
     } catch (const std::exception &) {
     }
 
@@ -1085,42 +1068,6 @@ namespace statefile {
     BOOST_LOG(info) << "statefile: persisted " << devices.size() << " snapshot exclusion device(s) to vibeshine state";
   }
 
-  std::vector<std::string> load_snapshot_exclude_devices() {
-    migrate_recent_state_keys();
-    const auto &path_str = vibeshine_state_path();
-    if (path_str.empty()) {
-      return {};
-    }
-
-    std::lock_guard<std::mutex> guard(state_mutex());
-    const fs::path path(path_str);
-
-    pt::ptree root;
-    if (!load_tree_if_exists(path, root)) {
-      return {};
-    }
-
-    std::vector<std::string> devices;
-    try {
-      auto root_node_opt = root.get_child_optional("root");
-      if (!root_node_opt) {
-        return {};
-      }
-      auto exclusions_opt = root_node_opt->get_child_optional("snapshot_exclude_devices");
-      if (!exclusions_opt) {
-        return {};
-      }
-      for (const auto &item : *exclusions_opt) {
-        const auto device_id = item.second.get_value<std::string>("");
-        if (!device_id.empty()) {
-          devices.push_back(device_id);
-        }
-      }
-    } catch (const std::exception &e) {
-      BOOST_LOG(warning) << "statefile: failed to parse snapshot exclusions: " << e.what();
-    }
-    return devices;
-  }
 
   void remember_virtual_display_device(const std::string &device_id) {
     if (device_id.empty()) {
@@ -1227,119 +1174,8 @@ namespace statefile {
     return devices;
   }
 
-  namespace {
-    constexpr std::size_t kMaxVirtualDisplayScales = 32;
 
-    bool valid_virtual_display_scale(const double scale) {
-      return std::isfinite(scale) && scale >= 0.25 && scale <= 5.0;
-    }
-  }  // namespace
 
-  void save_virtual_display_scale(const std::string &identity, const double scale) {
-    if (identity.empty() || !valid_virtual_display_scale(scale)) {
-      return;
-    }
-    migrate_recent_state_keys();
-    const auto &path_str = vibeshine_state_path();
-    if (path_str.empty()) {
-      return;
-    }
 
-    std::lock_guard<std::mutex> guard(state_mutex());
-    const fs::path path(path_str);
-    pt::ptree root;
-    if (load_tree_for_update(path, root) == policy::load_result_e::failed) {
-      return;
-    }
-
-    auto &root_node = ensure_root(root);
-    std::vector<std::pair<std::string, double>> scales;
-    if (auto scales_node = root_node.get_child_optional("virtual_display_scales")) {
-      for (const auto &item : *scales_node) {
-        const auto saved_identity = item.second.get_optional<std::string>("identity");
-        const auto saved_scale = item.second.get_optional<double>("scale");
-        if (saved_identity && saved_scale && !saved_identity->empty() &&
-            valid_virtual_display_scale(*saved_scale) && *saved_identity != identity) {
-          scales.emplace_back(*saved_identity, *saved_scale);
-        }
-      }
-    }
-    scales.emplace_back(identity, scale);
-    if (scales.size() > kMaxVirtualDisplayScales) {
-      scales.erase(scales.begin(), scales.end() - kMaxVirtualDisplayScales);
-    }
-
-    pt::ptree scales_node;
-    for (const auto &[saved_identity, saved_scale] : scales) {
-      pt::ptree item;
-      item.put("identity", saved_identity);
-      item.put("scale", saved_scale);
-      scales_node.push_back({"", item});
-    }
-    root_node.put_child("virtual_display_scales", scales_node);
-    try {
-      write_tree(path, root);
-    } catch (const std::exception &e) {
-      BOOST_LOG(error) << "statefile: failed to persist virtual display scale: " << e.what();
-    }
-  }
-
-  std::optional<double> load_virtual_display_scale(const std::string &identity) {
-    if (identity.empty()) {
-      return std::nullopt;
-    }
-    migrate_recent_state_keys();
-    const auto &path_str = vibeshine_state_path();
-    if (path_str.empty()) {
-      return std::nullopt;
-    }
-
-    std::lock_guard<std::mutex> guard(state_mutex());
-    pt::ptree root;
-    if (!load_tree_if_exists(fs::path(path_str), root)) {
-      return std::nullopt;
-    }
-    try {
-      const auto scales_node = root.get_child_optional("root.virtual_display_scales");
-      if (!scales_node) {
-        return std::nullopt;
-      }
-      for (auto item = scales_node->rbegin(); item != scales_node->rend(); ++item) {
-        const auto saved_identity = item->second.get_optional<std::string>("identity");
-        if (!saved_identity || *saved_identity != identity) {
-          continue;
-        }
-        const auto scale = item->second.get_optional<double>("scale");
-        return scale && valid_virtual_display_scale(*scale) ?
-                 std::make_optional(*scale) :
-                 std::nullopt;
-      }
-    } catch (const std::exception &e) {
-      BOOST_LOG(warning) << "statefile: failed to read virtual display scale: " << e.what();
-    }
-    return std::nullopt;
-  }
-
-  void clear_virtual_display_scales() {
-    migrate_recent_state_keys();
-    const auto &path_str = vibeshine_state_path();
-    if (path_str.empty()) {
-      return;
-    }
-
-    std::lock_guard<std::mutex> guard(state_mutex());
-    const fs::path path(path_str);
-    pt::ptree root;
-    if (load_tree_for_update(path, root) == policy::load_result_e::failed) {
-      return;
-    }
-    auto &root_node = ensure_root(root);
-    root_node.erase("virtual_display_scales");
-    try {
-      write_tree(path, root);
-    } catch (const std::exception &e) {
-      BOOST_LOG(error) << "statefile: failed to clear virtual display scales: " << e.what();
-    }
-  }
 
 }  // namespace statefile

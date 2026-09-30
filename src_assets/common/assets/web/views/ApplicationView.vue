@@ -3,7 +3,6 @@ import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges';
 import { useI18n } from 'vue-i18n';
 import { useRoute, useRouter } from 'vue-router';
-
 import { ApiError, apiGet, apiPost } from '@/services/api';
 import AppCompatibilitySettings from '@/components/app-edit/AppCompatibilitySettings.vue';
 import { parseAppExtras } from '@/utils/appCompatibility';
@@ -41,14 +40,12 @@ import {
   type SettingsField,
   type SettingsOption,
 } from '@/configs/settingsSchema';
-
 interface PrepEntry {
   do: string;
   undo: string;
   elevated: boolean;
   extras: Record<string, unknown>;
 }
-
 interface EditorForm {
   uuid: string;
   name: string;
@@ -84,7 +81,6 @@ interface EditorForm {
   configOverridesJson: string;
   advancedJson: string;
 }
-
 type RtxHdrMode = 'inherit' | 'enabled' | 'disabled';
 type RtxHdrLiveStatus = 'idle' | 'queued' | 'applying' | 'applied' | 'error';
 type RtxHdrCalibrationKey =
@@ -93,7 +89,6 @@ type RtxHdrCalibrationKey =
   | 'rtxHdrMiddleGray'
   | 'rtxHdrContrast'
   | 'rtxHdrSaturation';
-
 interface RtxHdrCalibrationField {
   key: RtxHdrCalibrationKey;
   labelKey: string;
@@ -103,18 +98,15 @@ interface RtxHdrCalibrationField {
   step: number;
   unit?: string;
 }
-
 interface SelectOption {
   value: string;
   label: string;
 }
-
 interface FrameGenConfig extends Record<string, unknown> {
   output_name?: unknown;
   virtual_display_mode?: unknown;
   capture?: unknown;
 }
-
 interface FrameGenMetadata {
   gpus?: Array<{
     description?: string;
@@ -125,7 +117,6 @@ interface FrameGenMetadata {
   platform?: unknown;
   windows_build_number?: unknown;
 }
-
 interface DisplayDevice {
   device_id?: unknown;
   display_name?: unknown;
@@ -138,25 +129,21 @@ interface DisplayDevice {
   supported_refresh_rates?: unknown;
   supportedRefreshRates?: unknown;
 }
-
 interface EdidTarget {
   hz?: unknown;
   supported?: unknown;
 }
-
 interface EdidRefresh {
   max_timing_hz?: unknown;
   max_vertical_hz?: unknown;
   status?: unknown;
   targets?: unknown;
 }
-
 interface VirtualDisplayResolution {
   usingVirtual: boolean | null;
   output: string;
   hasAppOutput: boolean;
 }
-
 interface RtxHdrOverrideState {
   rest: Record<string, unknown>;
   mode: RtxHdrMode;
@@ -167,11 +154,8 @@ interface RtxHdrOverrideState {
   contrast: number;
   saturation: number;
 }
-
 type AppDisplaySelection = 'physical' | 'virtual';
-
 type FrameGenRequirementStatus = 'pass' | 'configured' | 'warn' | 'fail' | 'unknown';
-
 const RTX_HDR_OVERRIDE_KEYS = [
   'rtx_hdr',
   'rtx_hdr_sdr_brightness',
@@ -181,7 +165,6 @@ const RTX_HDR_OVERRIDE_KEYS = [
   'rtx_hdr_saturation',
 ] as const;
 const RTX_HDR_LIVE_DEBOUNCE_MS = 200;
-
 interface FrameGenHealth {
   checkedAt: number;
   os: {
@@ -207,7 +190,6 @@ interface FrameGenHealth {
     }>;
   };
 }
-
 const route = useRoute();
 const router = useRouter();
 const { t, te } = useI18n();
@@ -234,7 +216,10 @@ const frameGenHealth = ref<FrameGenHealth | null>(null);
 const frameGenHealthError = ref('');
 const frameGenHealthLoading = ref(false);
 let frameGenHealthEpoch = 0;
-let frameGenHealthRequest: { epoch: number; promise: Promise<void> } | null = null;
+let frameGenHealthRequest: {
+  epoch: number;
+  promise: Promise<void>;
+} | null = null;
 let formHydrating = false;
 let formHydrationEpoch = 0;
 const form = reactive<EditorForm>(emptyForm());
@@ -250,7 +235,6 @@ const displayDevices = ref<DisplayDevice[]>([]);
 const displayDevicesLoading = ref(false);
 const displayDevicesLoaded = ref(false);
 const displayDevicesError = ref('');
-
 const frameGenerationModes = computed<SelectOption[]>(() => [
   { value: '', label: t('ui.application.options.hostDefault') },
   { value: 'off', label: t('ui.application.options.frameMode.off') },
@@ -282,7 +266,6 @@ const displayConfigurationOptions = computed<SelectOption[]>(() => [
   { value: 'ensure_primary', label: t('ui.application.options.displayAction.ensurePrimary') },
   { value: 'ensure_only_display', label: t('ui.application.options.displayAction.ensureOnly') },
 ]);
-
 const displaySelection = computed<AppDisplaySelection>({
   get: () => {
     const output = effectiveAppOutput();
@@ -294,7 +277,6 @@ const displaySelection = computed<AppDisplaySelection>({
   },
   set: (selection) => applyDisplaySelection(selection),
 });
-
 const physicalDisplayOutput = computed<string>({
   get: () => form.displayOutput.trim() || form.output.trim(),
   set: (value) => {
@@ -306,7 +288,6 @@ const physicalDisplayOutput = computed<string>({
     form.virtualDisplayLayout = '';
   },
 });
-
 const displayDeviceOptions = computed(() => {
   const seen = new Set<string>();
   const options = displayDevices.value.flatMap((device) => {
@@ -336,7 +317,12 @@ const displayDeviceOptions = computed(() => {
   return options;
 });
 const rtxHdrModeOptions = computed<
-  Array<{ value: RtxHdrMode; label: string; description: string; icon: UiIconName }>
+  Array<{
+    value: RtxHdrMode;
+    label: string;
+    description: string;
+    icon: UiIconName;
+  }>
 >(() => [
   {
     value: 'inherit',
@@ -406,9 +392,6 @@ const frameGenerationEnabled = computed(() => {
 });
 const isWindowsHost = computed(() =>
   asString(overrideMetadata.value.platform).toLocaleLowerCase().includes('windows'),
-);
-const isLinuxHost = computed(() =>
-  asString(overrideMetadata.value.platform).toLocaleLowerCase().includes('linux'),
 );
 const hasNvidiaGpu = computed(() => {
   if (typeof overrideMetadata.value.has_nvidia_gpu === 'boolean') {
@@ -483,7 +466,6 @@ const frameGenHealthRows = computed(() => {
     },
   ];
 });
-
 const overrideFieldsByKey = computed(() => {
   const fields = new Map<string, SettingsField>();
   for (const category of settingsCategories) {
@@ -578,7 +560,6 @@ const activeOverrideGroups = computed(() => {
   }
   return groups;
 });
-
 function readConfigOverrides(): Record<string, unknown> {
   try {
     const value = JSON.parse(form.configOverridesJson || '{}') as unknown;
@@ -589,15 +570,12 @@ function readConfigOverrides(): Record<string, unknown> {
     return {};
   }
 }
-
 function writeConfigOverrides(value: Record<string, unknown>): void {
   form.configOverridesJson = JSON.stringify(value, null, 2);
 }
-
 function buildRtxHdrConfigOverrides(overrides: Record<string, unknown>): Record<string, unknown> {
   const next = { ...overrides };
   for (const key of RTX_HDR_OVERRIDE_KEYS) delete next[key];
-
   if (form.rtxHdrMode === 'enabled') {
     next.rtx_hdr = true;
     if (form.rtxHdrValuesOverride) {
@@ -610,18 +588,15 @@ function buildRtxHdrConfigOverrides(overrides: Record<string, unknown>): Record<
   } else if (form.rtxHdrMode === 'disabled') {
     next.rtx_hdr = false;
   }
-
   return Object.fromEntries(
     Object.entries(next).filter(
       ([key, value]) => key.length > 0 && value !== undefined && value !== null,
     ),
   );
 }
-
 function buildRtxHdrLiveOverridesPayload(): Record<string, unknown> {
   if (form.rtxHdrMode === 'inherit') return {};
   if (form.rtxHdrMode === 'disabled') return { rtx_hdr: false };
-
   const overrides: Record<string, unknown> = { rtx_hdr: true };
   if (form.rtxHdrValuesOverride) {
     overrides.rtx_hdr_sdr_brightness = form.rtxHdrSdrBrightness;
@@ -632,7 +607,6 @@ function buildRtxHdrLiveOverridesPayload(): Record<string, unknown> {
   }
   return overrides;
 }
-
 function stableStringify(value: unknown): string {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return JSON.stringify(value) ?? String(value);
@@ -642,7 +616,6 @@ function stableStringify(value: unknown): string {
   );
   return JSON.stringify(Object.fromEntries(entries));
 }
-
 function extractRtxHdrLiveOverrides(app: AppRecord | null): Record<string, unknown> {
   const source = clonePlainRecord(app?.['config-overrides']);
   return Object.fromEntries(
@@ -651,13 +624,11 @@ function extractRtxHdrLiveOverrides(app: AppRecord | null): Record<string, unkno
     ),
   );
 }
-
 function clearLiveRtxHdrTimer(): void {
   if (liveRtxHdrTimer === null) return;
   clearTimeout(liveRtxHdrTimer);
   liveRtxHdrTimer = null;
 }
-
 function primeLiveRtxHdrState(app: AppRecord | null): void {
   originalRtxHdrLiveOverrides.value = extractRtxHdrLiveOverrides(app);
   liveRtxHdrLastSentKey = stableStringify(buildRtxHdrLiveOverridesPayload());
@@ -665,40 +636,40 @@ function primeLiveRtxHdrState(app: AppRecord | null): void {
   liveRtxHdrError.value = '';
   clearLiveRtxHdrTimer();
 }
-
 function apiErrorMessage(cause: unknown, fallbackKey: string): string {
   if (cause instanceof ApiError) {
     const payload = cause.payload;
     if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
-      const message = (payload as { error?: unknown }).error;
+      const message = (
+        payload as {
+          error?: unknown;
+        }
+      ).error;
       if (typeof message === 'string' && message.trim()) return message;
     }
   }
   return cause instanceof Error && cause.message ? cause.message : t(fallbackKey);
 }
-
 async function postRtxHdrLiveOverrides(
   overrides: Record<string, unknown>,
   key: string,
 ): Promise<void> {
   if (isNew.value || isRemoteSession.value || !form.uuid) return;
-
   liveRtxHdrStatus.value = 'applying';
   liveRtxHdrError.value = '';
-  const response = await apiPost<{ status?: boolean; applied?: boolean }>(
-    '/api/apps/rtx_hdr/live',
-    {
-      uuid: form.uuid,
-      'config-overrides': overrides,
-    },
-  );
+  const response = await apiPost<{
+    status?: boolean;
+    applied?: boolean;
+  }>('/api/apps/rtx_hdr/live', {
+    uuid: form.uuid,
+    'config-overrides': overrides,
+  });
   if (response?.status === false) {
     throw new Error(t('rtx_hdr_live_update_failed'));
   }
   liveRtxHdrLastSentKey = key;
   liveRtxHdrStatus.value = 'applied';
 }
-
 function enqueueRtxHdrLivePost(overrides: Record<string, unknown>, key: string): Promise<void> {
   liveRtxHdrQueue = liveRtxHdrQueue
     .catch(() => {})
@@ -709,7 +680,6 @@ function enqueueRtxHdrLivePost(overrides: Record<string, unknown>, key: string):
     });
   return liveRtxHdrQueue;
 }
-
 function scheduleRtxHdrLiveUpdate(): void {
   if (
     liveRtxHdrSuppress ||
@@ -721,14 +691,12 @@ function scheduleRtxHdrLiveUpdate(): void {
   ) {
     return;
   }
-
   const key = stableStringify(buildRtxHdrLiveOverridesPayload());
   if (key === liveRtxHdrLastSentKey) {
     clearLiveRtxHdrTimer();
     if (liveRtxHdrStatus.value === 'queued') liveRtxHdrStatus.value = 'idle';
     return;
   }
-
   clearLiveRtxHdrTimer();
   liveRtxHdrStatus.value = 'queued';
   liveRtxHdrError.value = '';
@@ -738,18 +706,15 @@ function scheduleRtxHdrLiveUpdate(): void {
     void enqueueRtxHdrLivePost(overrides, stableStringify(overrides));
   }, RTX_HDR_LIVE_DEBOUNCE_MS);
 }
-
 async function restoreOriginalRtxHdrLiveOverrides(): Promise<void> {
   clearLiveRtxHdrTimer();
   if (isNew.value || !form.uuid || !sourceApp.value) return;
-
   await liveRtxHdrQueue.catch(() => {});
   const original = clonePlainRecord(originalRtxHdrLiveOverrides.value);
   const originalKey = stableStringify(original);
   if (originalKey === liveRtxHdrLastSentKey) return;
   await enqueueRtxHdrLivePost(original, originalKey);
 }
-
 function commitRtxHdrLiveState(): void {
   clearLiveRtxHdrTimer();
   const current = buildRtxHdrLiveOverridesPayload();
@@ -758,15 +723,12 @@ function commitRtxHdrLiveState(): void {
   liveRtxHdrStatus.value = 'idle';
   liveRtxHdrError.value = '';
 }
-
 function rtxHdrCalibrationValue(key: RtxHdrCalibrationKey): number {
   return form[key];
 }
-
 function rtxHdrBoundary(value: number, field: RtxHdrCalibrationField): string {
   return field.unit ? `${value} ${field.unit}` : String(value);
 }
-
 function updateRtxHdrCalibrationValue(
   key: RtxHdrCalibrationKey,
   field: RtxHdrCalibrationField,
@@ -776,7 +738,6 @@ function updateRtxHdrCalibrationValue(
   if (!Number.isFinite(raw)) return;
   form[key] = Math.min(field.max, Math.max(field.min, Math.round(raw)));
 }
-
 function resetRtxHdrCalibration(): void {
   form.rtxHdrSdrBrightness = 0;
   form.rtxHdrPeakBrightness = 1000;
@@ -784,16 +745,13 @@ function resetRtxHdrCalibration(): void {
   form.rtxHdrContrast = 0;
   form.rtxHdrSaturation = 0;
 }
-
 function overrideField(key: string): SettingsField | undefined {
   const field = settingsFields.get(key);
   return field ? fieldForPlatform(field, String(overrideMetadata.value.platform ?? '')) : undefined;
 }
-
 function overrideMessageExists(key: string): boolean {
   return te(key) || te(key, 'en');
 }
-
 function humanizeOverrideText(value: string): string {
   const acronyms = new Map<string, string>([
     ['amd', 'AMD'],
@@ -818,13 +776,11 @@ function humanizeOverrideText(value: string): string {
     )
     .join(' ');
 }
-
 function overrideLabel(key: string): string {
   const field = overrideField(key);
   const translationKey = field?.labelKey || `config.${key}`;
   return overrideMessageExists(translationKey) ? t(translationKey) : humanizeOverrideText(key);
 }
-
 function overrideDescription(key: string): string {
   const field = overrideField(key);
   const candidates = [
@@ -835,13 +791,11 @@ function overrideDescription(key: string): string {
   const translationKey = candidates.find((candidate) => overrideMessageExists(candidate));
   return translationKey ? t(translationKey) : '';
 }
-
 function overrideOptionLabel(option: SettingsOption): string {
   return option.labelKey && overrideMessageExists(option.labelKey)
     ? t(option.labelKey)
     : humanizeOverrideText(option.value);
 }
-
 function overrideGpuOptions(): Array<{
   adapterName: string;
   label: string;
@@ -882,17 +836,17 @@ function overrideGpuOptions(): Array<{
   }
   return options;
 }
-
-function overrideSelectOptions(key: string): Array<{ label: string; value: string }> {
+function overrideSelectOptions(key: string): Array<{
+  label: string;
+  value: string;
+}> {
   const field = overrideField(key);
   if (field?.source === 'gpu') {
     return overrideGpuOptions().map(({ label, value }) => ({ label, value }));
   }
-
   const declaredOptions = field
     ? optionsForPlatform(field, String(overrideMetadata.value.platform ?? ''))
     : [];
-
   const options = declaredOptions.map((option) => ({
     label: overrideOptionLabel(option),
     value: String(option.value),
@@ -906,29 +860,24 @@ function overrideSelectOptions(key: string): Array<{ label: string; value: strin
   }
   return options;
 }
-
 function overrideControlValue(key: string): string {
   if (overrideField(key)?.source === 'gpu') {
     return String(overrideValue('adapter_pnp_id') || overrideValue('adapter_name') || '');
   }
   return String(overrideValue(key) ?? '');
 }
-
 function overridePlaceholder(key: string): string | undefined {
   const placeholderKey = overrideField(key)?.placeholderKey;
   return placeholderKey && overrideMessageExists(placeholderKey) ? t(placeholderKey) : undefined;
 }
-
 function overrideValue(key: string): unknown {
   return readConfigOverrides()[key];
 }
-
 function setOverrideValue(key: string, value: unknown): void {
   const overrides = readConfigOverrides();
   overrides[key] = value;
   writeConfigOverrides(overrides);
 }
-
 function overrideBooleanValue(key: string): boolean {
   const value = overrideValue(key);
   return (
@@ -936,7 +885,6 @@ function overrideBooleanValue(key: string): boolean {
     ['1', 'true', 'yes', 'on', 'enabled'].includes(String(value).toLocaleLowerCase())
   );
 }
-
 function updateOverrideFromEvent(
   key: string,
   field: SettingsField | undefined,
@@ -957,21 +905,17 @@ function updateOverrideFromEvent(
     setOverrideValue(key, target.value);
   }
 }
-
 function overrideIsConfigured(key: string): boolean {
   return overrideKeys.value.includes(key);
 }
-
 async function focusOverride(key: string): Promise<void> {
   await nextTick();
   document.getElementById(`app-override-${key}`)?.focus();
 }
-
 async function chooseOverride(key: string): Promise<void> {
   if (!overrideIsConfigured(key)) await addOverride(key);
   else await focusOverride(key);
 }
-
 async function addOverride(key: string): Promise<void> {
   if (!key || overrideIsConfigured(key)) return;
   const field = overrideField(key);
@@ -983,7 +927,6 @@ async function addOverride(key: string): Promise<void> {
   overrideAnnouncement.value = `${t('apps.overrides.add_setting')}: ${overrideLabel(key)}`;
   await focusOverride(key);
 }
-
 async function removeOverride(key: string): Promise<void> {
   const overrides = readConfigOverrides();
   delete overrides[key];
@@ -993,7 +936,6 @@ async function removeOverride(key: string): Promise<void> {
   await nextTick();
   document.getElementById(`app-override-catalog-${key}`)?.focus();
 }
-
 const editableKeys = new Set([
   'uuid',
   'name',
@@ -1022,11 +964,9 @@ const editableKeys = new Set([
   'config-overrides',
 ]);
 const transientKeys = new Set(['id', 'index', 'image-version', 'remote-session']);
-
 function newUuid(): string {
   return crypto.randomUUID();
 }
-
 function emptyForm(): EditorForm {
   return {
     uuid: newUuid(),
@@ -1064,14 +1004,12 @@ function emptyForm(): EditorForm {
     advancedJson: '{}',
   };
 }
-
 const appCompatibility = computed({
   get: () => parseAppExtras(form.advancedJson),
   set: (value) => {
     if (value) form.advancedJson = jsonText(value);
   },
 });
-
 const routeId = computed(() => (typeof route.params.id === 'string' ? route.params.id : ''));
 const isNew = computed(() => route.name === 'application-new' || !routeId.value);
 const isRemoteSession = computed(() => {
@@ -1100,20 +1038,16 @@ useUnsavedChanges(
 const errorMessages = computed(() => Object.values(errors));
 const sourceCoverUrl = computed(() => (sourceApp.value ? appCoverUrl(sourceApp.value) : ''));
 const editorCoverUrl = computed(() => selectedCoverPreview.value || sourceCoverUrl.value);
-
 function asString(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
-
 function asBoolean(value: unknown): boolean {
   if (typeof value === 'boolean') return value;
   return ['1', 'true', 'yes', 'on', 'enabled'].includes(String(value).toLocaleLowerCase());
 }
-
 function asNumberText(value: unknown): string {
   return typeof value === 'number' || typeof value === 'string' ? String(value) : '';
 }
-
 function localizedError(cause: unknown, fallbackKey: string): string {
   if (cause instanceof AppServiceError && cause.code === 'missing-app-uuid') {
     return t('ui.application.errors.missingUuid');
@@ -1121,11 +1055,9 @@ function localizedError(cause: unknown, fallbackKey: string): string {
   if (cause instanceof ApiError) return t(fallbackKey);
   return cause instanceof Error ? cause.message : t(fallbackKey);
 }
-
 function jsonText(value: unknown): string {
   return JSON.stringify(value && typeof value === 'object' ? value : {}, null, 2);
 }
-
 function clonePlainRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   try {
@@ -1134,7 +1066,6 @@ function clonePlainRecord(value: unknown): Record<string, unknown> {
     return { ...(value as Record<string, unknown>) };
   }
 }
-
 function parseBooleanOverride(value: unknown, fallback: boolean): boolean {
   if (typeof value === 'boolean') return value;
   if (typeof value === 'number') return value !== 0;
@@ -1145,13 +1076,11 @@ function parseBooleanOverride(value: unknown, fallback: boolean): boolean {
   if (['false', '0', 'disabled', 'disable', 'no', 'off'].includes(normalized)) return false;
   return fallback;
 }
-
 function parseNumberOverride(value: unknown, fallback: number, min: number, max: number): number {
   const parsed = typeof value === 'number' ? value : Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(max, Math.max(min, Math.round(parsed)));
 }
-
 function extractRtxHdrOverrides(overrides: Record<string, unknown>): RtxHdrOverrideState {
   const rest = { ...overrides };
   const hasRtxHdrOverride = RTX_HDR_OVERRIDE_KEYS.some((key) =>
@@ -1170,9 +1099,7 @@ function extractRtxHdrOverrides(overrides: Record<string, unknown>): RtxHdrOverr
   const middleGray = parseNumberOverride(rest.rtx_hdr_middle_gray, 50, 10, 100);
   const contrast = parseNumberOverride(rest.rtx_hdr_contrast, 0, -100, 100);
   const saturation = parseNumberOverride(rest.rtx_hdr_saturation, 0, -100, 100);
-
   for (const key of RTX_HDR_OVERRIDE_KEYS) delete rest[key];
-
   return {
     rest,
     mode,
@@ -1184,11 +1111,9 @@ function extractRtxHdrOverrides(overrides: Record<string, unknown>): RtxHdrOverr
     saturation,
   };
 }
-
 function optionIsCustom(options: SelectOption[], value: string): boolean {
   return Boolean(value) && !options.some((option) => option.value === value);
 }
-
 // The host treats the retired Lossless Scaling provider and unknown values as off.
 function normalizeFrameGenerationMode(value: string): string {
   const normalized = value.toLocaleLowerCase().replace(/[^a-z0-9]/g, '');
@@ -1199,34 +1124,28 @@ function normalizeFrameGenerationMode(value: string): string {
   if (['game', 'gameprovided', 'gameprovider'].includes(normalized)) return 'game-provided';
   return 'off';
 }
-
 function frameGenerationModeFor(app: AppRecord): string {
   const configured = normalizeFrameGenerationMode(asString(app['frame-generation-mode']));
   if (configured) return configured;
-
   const provider = normalizeFrameGenerationMode(asString(app['frame-generation-provider']));
   return provider === 'off' ? '' : provider;
 }
-
 function clearFrameGenHealth(): void {
   frameGenHealthEpoch += 1;
   frameGenHealth.value = null;
   frameGenHealthError.value = '';
   frameGenHealthLoading.value = false;
 }
-
 function beginFormSynchronizationDeferral(): number {
   formHydrating = true;
   formHydrationEpoch += 1;
   return formHydrationEpoch;
 }
-
 function endFormSynchronizationDeferral(epoch: number): void {
   void nextTick(() => {
     if (epoch === formHydrationEpoch) formHydrating = false;
   });
 }
-
 function prepEntry(value: unknown): PrepEntry {
   const source =
     value && typeof value === 'object' && !Array.isArray(value)
@@ -1242,7 +1161,6 @@ function prepEntry(value: unknown): PrepEntry {
     extras,
   };
 }
-
 function hydrate(app: AppRecord): void {
   const synchronizationEpoch = beginFormSynchronizationDeferral();
   sourceApp.value = structuredClone(app);
@@ -1258,7 +1176,6 @@ function hydrate(app: AppRecord): void {
   const hasExplicitAutoDetach = Object.prototype.hasOwnProperty.call(app, 'auto-detach');
   const hasExplicitWaitAll = Object.prototype.hasOwnProperty.call(app, 'wait-all');
   const hasExplicitExitTimeout = Object.prototype.hasOwnProperty.call(app, 'exit-timeout');
-
   Object.assign(form, {
     uuid: appUuid(app),
     name: asString(app.name),
@@ -1309,7 +1226,6 @@ function hydrate(app: AppRecord): void {
     liveRtxHdrSuppress = false;
   });
 }
-
 function hydrateNew(): void {
   const synchronizationEpoch = beginFormSynchronizationDeferral();
   const next = emptyForm();
@@ -1329,7 +1245,6 @@ function hydrateNew(): void {
     liveRtxHdrSuppress = false;
   });
 }
-
 async function load(): Promise<void> {
   loading.value = true;
   loadError.value = '';
@@ -1343,7 +1258,6 @@ async function load(): Promise<void> {
     loading.value = false;
     return;
   }
-
   try {
     const [appList, metadata] = await Promise.all([fetchApps(), metadataPromise]);
     overrideMetadata.value = metadata;
@@ -1358,11 +1272,9 @@ async function load(): Promise<void> {
     loading.value = false;
   }
 }
-
 function clearErrors(): void {
   for (const key of Object.keys(errors)) delete errors[key];
 }
-
 async function validate(): Promise<boolean> {
   clearErrors();
   const invalidCompatibilityInput = document.querySelector<HTMLInputElement>(
@@ -1376,20 +1288,17 @@ async function validate(): Promise<boolean> {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(form.uuid)) {
     errors.uuid = t('ui.application.validation.uuidInvalid');
   }
-
   const firstKey = Object.keys(errors)[0];
   if (!firstKey) return true;
   await nextTick();
   document.querySelector<HTMLElement>(`[data-field-key="${firstKey}"]`)?.focus();
   return false;
 }
-
 function setOptionalString(payload: AppRecord, key: string, value: unknown): void {
   const normalized = value == null ? '' : String(value).trim();
   if (normalized) payload[key] = normalized;
   else delete payload[key];
 }
-
 function setOptionalInteger(payload: AppRecord, key: string, value: unknown): void {
   const normalized = value == null ? '' : String(value).trim();
   if (normalized === '') {
@@ -1400,12 +1309,10 @@ function setOptionalInteger(payload: AppRecord, key: string, value: unknown): vo
   if (Number.isFinite(parsed)) payload[key] = parsed;
   else delete payload[key];
 }
-
 function setOptionalBoolean(payload: AppRecord, key: string, value: boolean | null): void {
   if (value === null) delete payload[key];
   else payload[key] = value;
 }
-
 function buildPayload(): AppRecord {
   const advanced = JSON.parse(form.advancedJson || '{}') as Record<string, unknown>;
   const configOverrides = buildRtxHdrConfigOverrides(
@@ -1453,7 +1360,6 @@ function buildPayload(): AppRecord {
   setOptionalInteger(payload, 'exit-timeout', form.exitTimeout);
   return payload;
 }
-
 async function openCoverPicker(): Promise<void> {
   if (!form.name.trim() || coverSearching.value) return;
   coverSearchQuery.value = form.name;
@@ -1462,7 +1368,6 @@ async function openCoverPicker(): Promise<void> {
   coverPickerOpen.value = true;
   await runCoverSearch();
 }
-
 async function runCoverSearch(): Promise<void> {
   if (!coverSearchQuery.value.trim() || coverSearching.value) return;
   coverSearching.value = true;
@@ -1476,7 +1381,6 @@ async function runCoverSearch(): Promise<void> {
     coverSearching.value = false;
   }
 }
-
 async function chooseCover(cover: CoverCandidate): Promise<void> {
   if (coverBusy.value) return;
   coverError.value = '';
@@ -1493,7 +1397,6 @@ async function chooseCover(cover: CoverCandidate): Promise<void> {
     coverBusy.value = false;
   }
 }
-
 function healthTone(
   status: FrameGenRequirementStatus,
 ): 'success' | 'warning' | 'danger' | 'neutral' {
@@ -1503,7 +1406,6 @@ function healthTone(
   if (status === 'fail') return 'danger';
   return 'neutral';
 }
-
 function healthStatusLabel(status: FrameGenRequirementStatus): string {
   if (status === 'pass') return t('apps.framegen.status_ready');
   if (status === 'configured') return t('ui.application.framegenHealth.configured');
@@ -1511,7 +1413,6 @@ function healthStatusLabel(status: FrameGenRequirementStatus): string {
   if (status === 'fail') return t('apps.framegen.status_fail');
   return t('apps.framegen.status_unknown');
 }
-
 function parseRefreshHz(raw: unknown): number | null {
   if (typeof raw === 'number') return Number.isFinite(raw) && raw > 0 ? raw : null;
   if (typeof raw === 'string') {
@@ -1530,7 +1431,6 @@ function parseRefreshHz(raw: unknown): number | null {
       : null;
   }
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-
   const value = raw as Record<string, unknown>;
   for (const key of ['hz', 'value']) {
     const parsed = parseRefreshHz(value[key]);
@@ -1545,33 +1445,27 @@ function parseRefreshHz(raw: unknown): number | null {
     ? numerator / denominator
     : null;
 }
-
 function parseRefreshRates(raw: unknown): number[] {
   const source = Array.isArray(raw) ? raw : raw === undefined || raw === null ? [] : [raw];
   return [
     ...new Set(source.map(parseRefreshHz).filter((value): value is number => value !== null)),
   ].sort((left, right) => left - right);
 }
-
 function normalizedDeviceId(value: unknown): string {
   return asString(value).trim().toLocaleLowerCase();
 }
-
 function isVirtualDisplaySelection(value: string): boolean {
   const normalized = value.trim().toLocaleLowerCase();
   return normalized === 'sunshine:virtual_display';
 }
-
 function effectiveAppOutput(): string {
   return form.displayOutput.trim() || form.output.trim();
 }
-
 function virtualDisplayModeUsesVirtual(mode: string): boolean | null {
   if (mode === 'disabled') return false;
   if (mode === 'per_client' || mode === 'shared') return true;
   return null;
 }
-
 function resolveVirtualDisplay(
   config: FrameGenConfig,
   windowsBuild: number | null,
@@ -1585,12 +1479,9 @@ function resolveVirtualDisplay(
       hasAppOutput: true,
     };
   }
-
   if (form.virtualScreen) return { usingVirtual: true, output: '', hasAppOutput: false };
-
   const appMode = virtualDisplayModeUsesVirtual(form.virtualDisplayMode);
   if (appMode !== null) return { usingVirtual: appMode, output: '', hasAppOutput: false };
-
   const configuredMode = virtualDisplayModeUsesVirtual(asString(config.virtual_display_mode));
   if (configuredMode !== null) {
     return {
@@ -1599,12 +1490,10 @@ function resolveVirtualDisplay(
       hasAppOutput: false,
     };
   }
-
   const globalOutput = asString(config.output_name);
   if (isVirtualDisplaySelection(globalOutput)) {
     return { usingVirtual: true, output: globalOutput, hasAppOutput: false };
   }
-
   // The server defaults to per-client virtual displays on Windows 11 and to physical
   // capture on Windows 10 when no mode is saved. Keep an unknown build honest.
   return {
@@ -1613,7 +1502,6 @@ function resolveVirtualDisplay(
     hasAppOutput: false,
   };
 }
-
 function configWithFrameGenOverrides(config: FrameGenConfig): FrameGenConfig {
   try {
     const overrides = JSON.parse(form.configOverridesJson || '{}') as unknown;
@@ -1624,7 +1512,6 @@ function configWithFrameGenOverrides(config: FrameGenConfig): FrameGenConfig {
     return config;
   }
 }
-
 async function inspectFrameGenDisplay(
   resolution: VirtualDisplayResolution,
   config: FrameGenConfig,
@@ -1639,7 +1526,6 @@ async function inspectFrameGenDisplay(
       capabilities: [],
     };
   }
-
   if (resolution.usingVirtual === null) {
     return {
       status: 'unknown',
@@ -1649,7 +1535,6 @@ async function inspectFrameGenDisplay(
       capabilities: [],
     };
   }
-
   if (displayResult.status !== 'fulfilled' || !Array.isArray(displayResult.value)) {
     return {
       status: 'unknown',
@@ -1659,7 +1544,6 @@ async function inspectFrameGenDisplay(
       capabilities: [],
     };
   }
-
   const devices = displayResult.value as DisplayDevice[];
   const candidates = (
     resolution.hasAppOutput
@@ -1683,7 +1567,6 @@ async function inspectFrameGenDisplay(
     (resolution.hasAppOutput
       ? undefined
       : (devices.find((device) => Boolean(device.info)) ?? devices[0]));
-
   if (!target) {
     return {
       status: 'unknown',
@@ -1695,7 +1578,6 @@ async function inspectFrameGenDisplay(
       capabilities: [],
     };
   }
-
   const label =
     asString(target.friendly_name) ||
     asString(target.display_name) ||
@@ -1707,7 +1589,6 @@ async function inspectFrameGenDisplay(
   const deviceId = asString(target.device_id) || asString(target.display_name);
   const capabilityMap = new Map<number, boolean | null>();
   let edidMaximum: number | null = null;
-
   if (deviceId) {
     try {
       const query = new URLSearchParams({
@@ -1736,13 +1617,11 @@ async function inspectFrameGenDisplay(
       // The standard display enumeration remains useful when EDID is unavailable.
     }
   }
-
   const capabilities = [...capabilityMap.entries()]
     .map(([hz, supported]) => ({ hz, supported }))
     .sort((left, right) => left.hz - right.hz);
   const maximum =
     edidMaximum ?? (supportedRates.length ? supportedRates[supportedRates.length - 1] : currentHz);
-
   if (maximum === null) {
     return {
       status: capabilities.length ? 'configured' : 'unknown',
@@ -1764,11 +1643,9 @@ async function inspectFrameGenDisplay(
     capabilities,
   };
 }
-
 async function refreshFrameGenHealth(): Promise<void> {
   const epoch = frameGenHealthEpoch;
   if (frameGenHealthRequest?.epoch === epoch) return frameGenHealthRequest.promise;
-
   const run = async () => {
     frameGenHealthLoading.value = true;
     frameGenHealthError.value = '';
@@ -1793,7 +1670,6 @@ async function refreshFrameGenHealth(): Promise<void> {
         windowsBuild >= 22631;
       const gameProvidedVirtual =
         displayResolution.usingVirtual === true && form.frameGenerationMode === 'game-provided';
-
       let captureStatus: FrameGenRequirementStatus;
       let captureMessage: string;
       if (gameProvidedVirtual) {
@@ -1821,11 +1697,9 @@ async function refreshFrameGenHealth(): Promise<void> {
         captureStatus = 'warn';
         captureMessage = t('ui.application.framegenHealth.captureConfigured', { capture });
       }
-
       // RTSS is optional for the supported frame generation providers.
       const rtssStatus: FrameGenRequirementStatus = 'configured';
       const rtssMessage = t('ui.application.framegenHealth.rtssOptional');
-
       const display = await inspectFrameGenDisplay(displayResolution, config, displayResult);
       const os: FrameGenHealth['os'] =
         platform && platform !== 'windows'
@@ -1835,7 +1709,6 @@ async function refreshFrameGenHealth(): Promise<void> {
             : windowsBuild >= 22000
               ? { status: 'pass', message: t('apps.framegen.health_os_win11') }
               : { status: 'warn', message: t('apps.framegen.health_os_win10') };
-
       if (epoch !== frameGenHealthEpoch) return;
       frameGenHealth.value = {
         checkedAt: Date.now(),
@@ -1856,12 +1729,10 @@ async function refreshFrameGenHealth(): Promise<void> {
       }
     }
   };
-
   const promise = run();
   frameGenHealthRequest = { epoch, promise };
   return promise;
 }
-
 async function loadDisplayDevices(force = false): Promise<void> {
   if (displayDevicesLoading.value || (displayDevicesLoaded.value && !force)) return;
   displayDevicesLoading.value = true;
@@ -1878,7 +1749,6 @@ async function loadDisplayDevices(force = false): Promise<void> {
     displayDevicesLoading.value = false;
   }
 }
-
 function applyDisplaySelection(selection: AppDisplaySelection): void {
   if (selection === 'physical') {
     const output = effectiveAppOutput();
@@ -1891,7 +1761,6 @@ function applyDisplaySelection(selection: AppDisplaySelection): void {
     }
     return;
   }
-
   form.output = '';
   form.displayOutput = '';
   form.virtualScreen = true;
@@ -1900,7 +1769,6 @@ function applyDisplaySelection(selection: AppDisplaySelection): void {
   }
   form.ddConfigurationOption = '';
 }
-
 function enableVirtualDisplayForFrameGen(): void {
   if (effectiveAppOutput() && !isVirtualDisplaySelection(effectiveAppOutput())) {
     form.output = '';
@@ -1909,7 +1777,6 @@ function enableVirtualDisplayForFrameGen(): void {
   form.virtualScreen = true;
   form.virtualDisplayMode = 'per_client';
 }
-
 async function submit(): Promise<void> {
   if (saving.value) return;
   saveError.value = '';
@@ -1928,25 +1795,21 @@ async function submit(): Promise<void> {
     saving.value = false;
   }
 }
-
 async function cancel(): Promise<void> {
   if (isDirty.value && !window.confirm(t('ui.settings.leave_warning'))) return;
   leavingAfterSave.value = true;
   await restoreOriginalRtxHdrLiveOverrides();
   void router.push({ name: 'library' });
 }
-
 function addPrepCommand(): void {
   form.prepCmd.push({ do: '', undo: '', elevated: false, extras: {} });
   nextTick(() => {
     document.querySelector<HTMLInputElement>(`#prep-do-${form.prepCmd.length - 1}`)?.focus();
   });
 }
-
 function removePrepCommand(index: number): void {
   form.prepCmd.splice(index, 1);
 }
-
 async function confirmDelete(): Promise<void> {
   if (isNew.value || deleting.value) return;
   deleting.value = true;
@@ -1965,7 +1828,6 @@ async function confirmDelete(): Promise<void> {
     deleting.value = false;
   }
 }
-
 watch(
   () => form.frameGenerationMode,
   (mode) => {
@@ -1981,7 +1843,6 @@ watch(
     void refreshFrameGenHealth();
   },
 );
-
 watch(
   () => [
     form.virtualScreen,
@@ -1996,7 +1857,6 @@ watch(
     void refreshFrameGenHealth();
   },
 );
-
 watch(
   () => [
     form.rtxHdrMode,
@@ -2009,9 +1869,7 @@ watch(
   ],
   () => scheduleRtxHdrLiveUpdate(),
 );
-
 watch([routeId, () => route.name], () => void load(), { immediate: true });
-
 onBeforeUnmount(() => {
   liveRtxHdrSuppress = true;
   void restoreOriginalRtxHdrLiveOverrides();
