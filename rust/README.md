@@ -43,7 +43,7 @@ The service uses `ApolloService` for compatibility and `%PROGRAMDATA%\Butterpoll
 | Crate | Responsibility |
 | --- | --- |
 | `core` | NV pairing, AES/RSA, RTSP/SDP, media encryption, Cauchy FEC, input parsing, audio mixing/resampling, app identities, permissions and durable state |
-| `windows` | DXGI/WGC, HDR color conversion, AMF, NVENC/QSV/software encoding, PyroWave, NGX bridge, WASAPI/Opus, SendInput/touch/pen/VHF, clipboard, display leases/recovery, process jobs, tray and SCM |
+| `windows` | DXGI/WGC, HDR color conversion/ICC leases, AMF, NVENC/QSV/software encoding, PyroWave, NGX bridge, WASAPI/Opus, SendInput/touch/pen/VHF, clipboard, temporary/permanent displays and recovery, process jobs, tray and SCM |
 | `host` | TLS/HTTP, Moonlight endpoints, administration/auth, encrypted RTSP, ENet control, UDP media, scheduling and lifecycle |
 | `truehdr-runtime` | Rust MSVC DLL directly calling NVIDIA's NGX C ABI |
 
@@ -61,6 +61,8 @@ NVIDIA/Intel hardware encoding, NVIDIA TrueHDR conversion, VHF controllers, the 
 
 ## Remaining compatibility work
 
-Full production parity is not yet established. Retained remote-monitor leases/topology, independent input sessions, app output/exit/auto-detach policies, native crash reports, support bundles and release checks are implemented. Display topology and monitor lifetimes need validation with the compatible VDD driver. Permanent/exclusive virtual displays, per-client ICC profiles, frame limiter/RTSS/Steam overrides and the Vulkan interception layer remain unported. Integration status reports their availability without claiming they are active. Configuration keys are retained even where their behavior has not been ported. The legacy `src`, CMake and installer sources remain as a migration reference; this Rust build does not compile them.
+Full production parity is not yet established. Retained remote-monitor leases/topology, independent input sessions, permanent monitor counts, per-client HDR ICC leases, client connection/disconnection commands, app output/exit/auto-detach policies, native crash reports, support bundles and release checks are implemented. Application configuration overrides precede client overrides; resolution and refresh policies are independent. Permanent counts are applied only when `dd_virtual_display_permanent_count` is explicitly configured. ICC changes restore the prior association after the last lease or a crash, provided the association still matches the host's change. Manual refresh rates are rounded to integer hertz by the current GDI mode setter.
+
+Display topology and monitor lifetimes need validation with the compatible VDD driver. Exclusive virtual-display layouts, frame limiter/RTSS/Steam overrides and the Vulkan interception layer remain unported. Integration status reports their availability without claiming they are active. Configuration keys are retained even where their behavior has not been ported. The legacy `src`, CMake and installer sources remain as a migration reference; this Rust build does not compile them.
 
 Useful probes: `--diagnostics`, `--capture-smoke --hdr`, `--encoder-smoke amf --codec hevc --hdr` and `--encoder-smoke pyrowave --codec pyrowave --encoder-output frame.bin`. Display recovery journals only changes owned by the host and restores them after parent-process death, provided the user has not subsequently changed that setting.

@@ -151,6 +151,45 @@ impl Config {
             directory.join(p)
         }
     }
+    pub fn display_request(&self, width: u32, height: u32, fps: u32) -> Result<DisplayRequest> {
+        let resolution = match self.get("dd_resolution_option", "disabled") {
+            "disabled" => None,
+            "auto" => Some((width, height)),
+            "manual" => {
+                let (width, height) = self
+                    .get("dd_manual_resolution", "")
+                    .split_once('x')
+                    .context("manual resolution must be WIDTHxHEIGHT")?;
+                Some((width.trim().parse()?, height.trim().parse()?))
+            }
+            _ => bail!("invalid display resolution policy"),
+        };
+        let refresh = match self.get("dd_refresh_rate_option", "disabled") {
+            "disabled" => None,
+            "auto" => Some(fps),
+            "manual" => {
+                let rate: f64 = self.get("dd_manual_refresh_rate", "").parse()?;
+                if !rate.is_finite() || !(1.0..=1000.0).contains(&rate) {
+                    bail!("invalid manual refresh rate");
+                }
+                Some(rate.round() as u32)
+            }
+            _ => bail!("invalid display refresh policy"),
+        };
+        if resolution.is_some_and(|(w, h)| !(320..=7680).contains(&w) || !(200..=4320).contains(&h))
+            || refresh.is_some_and(|f| f == 0 || f > 1000)
+        {
+            bail!("display mode is outside its limits");
+        }
+        Ok(DisplayRequest {
+            resolution,
+            refresh,
+        })
+    }
+}
+pub struct DisplayRequest {
+    pub resolution: Option<(u32, u32)>,
+    pub refresh: Option<u32>,
 }
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct Ports {
@@ -178,6 +217,26 @@ impl Ports {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn display_policies_keep_resolution_and_refresh_independent() {
+        let config =
+            Config::parse("dd_resolution_option = disabled\ndd_refresh_rate_option = auto\n")
+                .unwrap();
+        let requested = config.display_request(1920, 1080, 120).unwrap();
+        assert_eq!(requested.resolution, None);
+        assert_eq!(requested.refresh, Some(120));
+        let config = Config::parse("dd_resolution_option = manual\ndd_manual_resolution = 2560x1440\ndd_refresh_rate_option = disabled\n").unwrap();
+        let requested = config.display_request(1920, 1080, 120).unwrap();
+        assert_eq!(requested.resolution, Some((2560, 1440)));
+        assert_eq!(requested.refresh, None);
+        for value in ["NaN", "inf", "0", "1001"] {
+            let config = Config::parse(&format!(
+                "dd_refresh_rate_option = manual\ndd_manual_refresh_rate = {value}\n"
+            ))
+            .unwrap();
+            assert!(config.display_request(1920, 1080, 60).is_err());
+        }
+    }
     #[test]
     fn existing_config_round_trips() {
         let c = Config::parse("# Apollo\nport=48123\nunknown_key = custom\nprep_cmd = [\n {\"do\":\"echo #kept\",\"undo\":\"\"}\n]\n").unwrap();

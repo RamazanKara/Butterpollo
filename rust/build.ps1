@@ -15,20 +15,20 @@ param(
     [string]$WebAssets
 )
 $ErrorActionPreference = 'Stop'
-$repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+$repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).ProviderPath
 $toolchain = '+1.98.1-x86_64-pc-windows-gnu'
 function Assert-NativeExit([string]$Operation) {
     if ($LASTEXITCODE -ne 0) { throw "$Operation failed with exit code $LASTEXITCODE" }
 }
 function Get-PinnedArchive([string]$Url, [string]$Destination, [string]$Hash) {
-    if (!(Test-Path -LiteralPath $Destination)) { Invoke-WebRequest -Uri $Url -OutFile $Destination }
+    if (!(Test-Path -LiteralPath $Destination)) { Invoke-WebRequest -Uri $Url -OutFile $Destination -TimeoutSec 180 }
     if ((Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Hash) {
         throw "Checksum mismatch: $Destination"
     }
 }
 New-Item -ItemType Directory -Path $Dependencies, $TargetDirectory -Force | Out-Null
-$Dependencies = (Resolve-Path -LiteralPath $Dependencies).Path
-$TargetDirectory = (Resolve-Path -LiteralPath $TargetDirectory).Path
+$Dependencies = (Resolve-Path -LiteralPath $Dependencies).ProviderPath
+$TargetDirectory = (Resolve-Path -LiteralPath $TargetDirectory).ProviderPath
 $env:PATH = "$MsysRoot\ucrt64\bin;$env:USERPROFILE\.cargo\bin;" + $env:PATH
 $env:LIBCLANG_PATH = "$MsysRoot\ucrt64\bin"
 $env:BUTTERPOLLO_SYSTEM_LIBS = "$MsysRoot\ucrt64\lib"
@@ -57,8 +57,8 @@ if ($FetchDependencies) {
     if (!$SkipTrueHdr -and !$NvidiaRoot) {
         $archive = Join-Path $Dependencies 'RTX_Video_SDK_v1.1.0.zip'
         if (!(Test-Path -LiteralPath $archive)) {
-            $redirect = Invoke-WebRequest 'https://api.ngc.nvidia.com/v2/models/nvidia/multimedia/dlpp/versions/1.5/files/RTX_Video_SDK_v1.1.0.zip'
-            Invoke-WebRequest -Uri ([string]$redirect.Headers.Location) -OutFile $archive
+            $redirect = Invoke-WebRequest 'https://api.ngc.nvidia.com/v2/models/nvidia/multimedia/dlpp/versions/1.5/files/RTX_Video_SDK_v1.1.0.zip' -TimeoutSec 180
+            Invoke-WebRequest -Uri ([string]$redirect.Headers.Location) -OutFile $archive -TimeoutSec 180
         }
         if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'abf4f34e2b5a618e355b0d5a0365d8ecc3db4396e756e4c850a867e1ae2ed69e') { throw 'NVIDIA SDK checksum mismatch' }
         $NvidiaRoot = Join-Path $Dependencies 'ngx-1.1.0'
@@ -113,7 +113,7 @@ try {
         if (!$WebAssets -or !(Test-Path -LiteralPath (Join-Path $WebAssets 'index.html'))) { throw '-WebAssets must point to the built Vue web directory' }
         $distribution = Join-Path $TargetDirectory "butterpollo-rust-$profile"
         if (Test-Path -LiteralPath $distribution) {
-            $resolvedDistribution = (Resolve-Path -LiteralPath $distribution).Path
+            $resolvedDistribution = (Resolve-Path -LiteralPath $distribution).ProviderPath
             if (!$resolvedDistribution.StartsWith($TargetDirectory.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Package cleanup escaped its output directory' }
             Remove-Item -LiteralPath $resolvedDistribution -Recurse -Force
         }

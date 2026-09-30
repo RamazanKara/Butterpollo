@@ -2,9 +2,9 @@ name: Butterpollo Rust Windows
 permissions: {}
 on:
   push:
-    branches: [codex/butterpollo-rust]
+    branches: [main]
   pull_request:
-    paths: ['rust/**', 'Cargo.*', 'rust-toolchain.toml', '.cargo/**', '.github/workflows/rust-windows.yml']
+    paths: ['rust/**', 'Cargo.*', 'rust-toolchain.toml', '.cargo/**', 'scripts/build_pyrowave.sh', 'src_assets/common/assets/web/**', '.github/workflows/rust-windows.yml']
   workflow_dispatch:
 concurrency:
   group: butterpollo-rust-${{ github.ref }}
@@ -12,6 +12,7 @@ concurrency:
 jobs:
   windows:
     runs-on: windows-2022
+    timeout-minutes: 30
     permissions:
       contents: read
     defaults:
@@ -54,6 +55,8 @@ jobs:
         run: |
           $env:SUNSHINE_WEB_OUTPUT_DIR = "$env:RUNNER_TEMP\butterpollo-web"
           npm ci
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run test:unit
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm run build
           if ($LASTEXITCODE) { exit $LASTEXITCODE }

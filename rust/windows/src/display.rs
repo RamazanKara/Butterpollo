@@ -44,6 +44,8 @@ pub struct Monitor {
     pub adapter: LUID,
     #[serde(skip)]
     pub target: u32,
+    #[serde(skip)]
+    pub source: u32,
 }
 pub struct Topology {
     paths: Vec<DISPLAYCONFIG_PATH_INFO>,
@@ -201,6 +203,7 @@ impl Topology {
                     hdr_enabled: flags & 2 != 0,
                     adapter: p.targetInfo.adapterId,
                     target: p.targetInfo.id,
+                    source: p.sourceInfo.id,
                 })
             })
             .collect()
@@ -457,6 +460,66 @@ impl Drop for Driver {
 pub fn virtual_display_available() -> bool {
     Driver::open().is_ok()
 }
+fn display_label() -> [u8; 32] {
+    let name = b"Butterpollo Rust";
+    let mut label = [0u8; 32];
+    label[..name.len()].copy_from_slice(name);
+    label
+}
+fn permanent_request(count: u32) -> Result<Vec<u8>> {
+    if count > 4 {
+        bail!("permanent virtual display count must be between 0 and 4");
+    }
+    let mut request = NAMESPACE.to_vec();
+    for value in [count, 0, 1920, 1080, 600, 340, 60000] {
+        request.extend_from_slice(&value.to_le_bytes());
+    }
+    request.extend_from_slice(&display_label());
+    Ok(request)
+}
+fn permanent_response(bytes: &[u8]) -> Result<u32> {
+    if bytes.len() != 80 || bytes[..16] != NAMESPACE {
+        bail!("invalid permanent display response");
+    }
+    let count = u32::from_le_bytes(bytes[16..20].try_into().unwrap());
+    let max = u32::from_le_bytes(bytes[20..24].try_into().unwrap());
+    if count > max || count > 4 {
+        bail!("invalid permanent display count");
+    }
+    Ok(count)
+}
+/// Persistent driver setting, applied only when the administrator explicitly
+/// configured this key. It is independent of temporary streaming leases.
+pub fn configure_permanent(config: &butterpollo_core::config::Config) -> Result<()> {
+    let Some(value) = config.values.get("dd_virtual_display_permanent_count") else {
+        return Ok(());
+    };
+    let count = value
+        .parse::<u32>()
+        .context("invalid permanent virtual display count")?;
+    let request = permanent_request(count)?;
+    let driver = Driver::open()?;
+    if permanent_response(&driver.ioctl(0x907, 1, &[], 80)?)? == count {
+        return Ok(());
+    }
+    let result = driver.ioctl(0x906, 3, &request, 80);
+    // The driver may persist the count and report a registry-write failure.
+    // Confirm runtime state before treating that failure as fatal.
+    let after = match result {
+        Ok(bytes) => permanent_response(&bytes)?,
+        Err(error) => match driver
+            .ioctl(0x907, 1, &[], 80)
+            .and_then(|bytes| permanent_response(&bytes))
+        {
+            Ok(actual) if actual == count => actual,
+            _ => return Err(error),
+        },
+    };
+    if after != count {
+        bail!("driver did not apply the permanent display count");
+    }
+    Ok(())
+}
 pub struct VirtualDisplay {
     driver: Driver,
     pub name: String,
@@ -513,9 +576,7 @@ impl VirtualDisplay {
         ] {
             request.extend_from_slice(&value.to_le_bytes());
         }
-        let mut label = [0u8; 32];
-        label[..15].copy_from_slice(b"Butterpollo Rust");
-        request.extend_from_slice(&label);
+        request.extend_from_slice(&display_label());
         request.extend_from_slice(&1u32.to_le_bytes());
         request.extend_from_slice(&1000u32.to_le_bytes());
         request.extend_from_slice(&butterpollo_core::crypto::random::<32>());
@@ -605,7 +666,8 @@ impl Guard {
         height: u32,
         fps: u32,
         hdr: bool,
-        change_mode: bool,
+        physical_resolution: Option<(u32, u32)>,
+        physical_refresh: Option<u32>,
     ) -> Result<Self> {
         let virtual_display = if virtual_mode {
             Some(display_lease(stable_id, width, height, fps)?)
@@ -638,14 +700,19 @@ impl Guard {
                 color: None,
             });
             settings.users += 1;
-            if change_mode && guard.virtual_display.is_none() {
+            if (physical_resolution.is_some() || physical_refresh.is_some())
+                && guard.virtual_display.is_none()
+            {
+                let previous = mode(&guard.output)?;
+                let (width, height) =
+                    physical_resolution.unwrap_or((previous.dmPelsWidth, previous.dmPelsHeight));
+                let fps = physical_refresh.unwrap_or(previous.dmDisplayFrequency);
                 let requested = (width, height, fps);
                 if let Some((_, applied)) = &settings.mode {
                     if *applied != requested {
                         bail!("another stream owns a different display mode");
                     }
                 } else {
-                    let previous = mode(&guard.output)?;
                     if (
                         previous.dmPelsWidth,
                         previous.dmPelsHeight,
@@ -739,7 +806,8 @@ impl Retained {
             height,
             fps,
             hdr,
-            false,
+            None,
+            None,
         )?;
         let output = guard.output.clone();
         let guard = std::sync::Arc::new(std::sync::Mutex::new(Some(guard)));
@@ -774,5 +842,27 @@ impl Drop for Retained {
             let _ = worker.join();
         }
         self.guard.lock().unwrap().take();
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn permanent_monitor_payload_matches_driver_v3_contract() {
+        let request = permanent_request(4).unwrap();
+        assert_eq!(request.len(), 76); // SDK PermanentDisplayCountRequest.
+        assert_eq!(&request[..16], &NAMESPACE);
+        assert_eq!(&request[16..20], &[4, 0, 0, 0]);
+        assert_eq!(&request[24..32], &[128, 7, 0, 0, 56, 4, 0, 0]); // 1920 x 1080.
+        assert_eq!(&request[40..44], &[96, 234, 0, 0]); // 60000 millihertz.
+        assert!(permanent_request(5).is_err());
+        let mut response = NAMESPACE.to_vec();
+        response.extend_from_slice(&[4, 0, 0, 0, 4, 0, 0, 0]);
+        response.resize(80, 0); // SDK PermanentDisplayCountResult.
+        assert_eq!(permanent_response(&response).unwrap(), 4);
+        response[16] = 5;
+        assert!(permanent_response(&response).is_err());
+        response[0] ^= 1;
+        assert!(permanent_response(&response).is_err());
     }
 }

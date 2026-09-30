@@ -122,6 +122,10 @@ async fn main() -> Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
     let ports = h.config.read().unwrap().ports()?;
+    if let Err(error) = butterpollo_windows::display::configure_permanent(&h.config.read().unwrap())
+    {
+        tracing::warn!(%error, "configured permanent virtual displays could not be applied");
+    }
     let stop_signal = butterpollo_windows::process::StopSignal::new()?;
     let (tray, actions) = if args.no_tray {
         (None, None)

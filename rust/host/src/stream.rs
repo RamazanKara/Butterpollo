@@ -9,6 +9,17 @@ use butterpollo_core::{
 
 fn client_config(h: &Shared, s: &Session) -> Result<Config> {
     let mut config = h.config.read().unwrap().clone();
+    if let Some(overrides) = h
+        .apps
+        .read()
+        .unwrap()
+        .iter()
+        .find(|a| a.id() == s.launch.app_id)
+        .and_then(|app| app.extra.get("config-overrides"))
+        .and_then(serde_json::Value::as_object)
+    {
+        apply_overrides(&mut config, overrides)?;
+    }
     if let Some(overrides) = s
         .launch
         .client
@@ -16,14 +27,20 @@ fn client_config(h: &Shared, s: &Session) -> Result<Config> {
         .get("config_overrides")
         .and_then(serde_json::Value::as_object)
     {
-        let overrides = overrides
-            .iter()
-            .filter(|(_, v)| v.as_str() != Some(""))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        config.update(&overrides)?;
+        apply_overrides(&mut config, overrides)?;
     }
     Ok(config)
+}
+fn apply_overrides(
+    config: &mut Config,
+    overrides: &serde_json::Map<String, serde_json::Value>,
+) -> Result<()> {
+    let overrides = overrides
+        .iter()
+        .filter(|(_, v)| v.as_str() != Some(""))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    config.update(&overrides)
 }
 use butterpollo_windows::{
     audio::{Loopback, Opus},
@@ -265,6 +282,7 @@ impl Media {
                             .or_else(|| monitors.iter().find(|m| m.primary))
                             .context("input display unavailable")?;
                         *s.output.write().unwrap() = monitor.display_name.clone();
+                        let _client_commands = crate::process::ClientCommands::start(&h, &s)?;
                         while !s.stopping() && !h.stop.load(Ordering::Acquire) {
                             thread::sleep(Duration::from_millis(10));
                         }
@@ -313,8 +331,7 @@ impl Media {
                     } else {
                         &client_stream_id
                     };
-                    let change_mode = c.get("dd_resolution_option", "disabled") == "auto"
-                        || c.get("dd_refresh_rate_option", "disabled") == "auto";
+                    let requested_display = c.display_request(s.config.width, s.config.height, s.config.fps)?;
                     let retained = if s.launch.role == Role::RemoteMonitor {
                         Some(crate::remote_display::activate(
                             &h,
@@ -333,7 +350,8 @@ impl Media {
                             s.config.height,
                             s.config.fps,
                             s.config.hdr,
-                            change_mode,
+                            requested_display.resolution,
+                            requested_display.refresh,
                         )?)
                     } else {
                         None
@@ -344,6 +362,14 @@ impl Media {
                         .or_else(|| display.as_ref().map(|d| d.output.clone()))
                         .context("display lease unavailable")?;
                     *s.output.write().unwrap() = output.clone();
+                    let _profile = if s.config.hdr {
+                        s.launch.client.extra.get("hdr_profile").and_then(serde_json::Value::as_str).filter(|p| !p.is_empty()).and_then(|selection| {
+                            match butterpollo_windows::hdr_profile::Lease::acquire(&output, selection) {
+                                Ok(profile) => Some(profile),
+                                Err(error) => { tracing::warn!(%error, "selected HDR profile could not be applied"); None }
+                            }
+                        })
+                    } else { None };
                     // Declaration order closes the encoder and joins capture before the display lease is removed.
                     let use_truehdr = s.config.hdr && c.boolean("rtx_hdr", false);
                     let latest = m.capture(
@@ -365,6 +391,7 @@ impl Media {
                         None
                     };
                     let mut encoder = Encoder::new(&s.config, c.get("encoder", "auto"), &output)?;
+                    let _client_commands = crate::process::ClientCommands::start(&h, &s)?;
                     let audio_m = m.clone();
                     let audio_h = h.clone();
                     let audio_s = s.clone();

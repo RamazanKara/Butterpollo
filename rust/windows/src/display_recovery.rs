@@ -19,6 +19,16 @@ struct Entry {
         butterpollo_core::topology::Position,
         butterpollo_core::topology::Position,
     )>,
+    #[serde(default)]
+    profile: Option<(Option<String>, String, bool)>,
+}
+impl Entry {
+    fn pending(&self) -> bool {
+        self.mode.is_some()
+            || self.hdr.is_some()
+            || self.position.is_some()
+            || self.profile.is_some()
+    }
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Journal {
@@ -154,9 +164,7 @@ pub fn release(id: &str) -> Result<()> {
         entry.mode = None;
         entry.hdr = None;
     }
-    journal
-        .entries
-        .retain(|_, e| e.mode.is_some() || e.hdr.is_some() || e.position.is_some());
+    journal.entries.retain(|_, e| e.pending());
     butterpollo_core::state::write_json(path, &journal)
 }
 pub fn position(
@@ -176,9 +184,30 @@ pub fn release_position(id: &str) -> Result<()> {
     if let Some(entry) = journal.entries.get_mut(id) {
         entry.position = None;
     }
-    journal
-        .entries
-        .retain(|_, e| e.mode.is_some() || e.hdr.is_some() || e.position.is_some());
+    journal.entries.retain(|_, e| e.pending());
+    butterpollo_core::state::write_json(path, &journal)
+}
+pub fn profile(
+    id: &str,
+    output: &str,
+    before: Option<String>,
+    applied: &str,
+    system: bool,
+) -> Result<()> {
+    change(id, output, |e| {
+        e.profile = Some((before, applied.into(), system))
+    })
+}
+pub fn release_profile(id: &str) -> Result<()> {
+    let Some(path) = PATH.get().filter(|p| p.exists()) else {
+        return Ok(());
+    };
+    let _guard = lock(path)?;
+    let mut journal: Journal = serde_json::from_slice(&std::fs::read(path)?)?;
+    if let Some(entry) = journal.entries.get_mut(id) {
+        entry.profile = None;
+    }
+    journal.entries.retain(|_, e| e.pending());
     butterpollo_core::state::write_json(path, &journal)
 }
 fn recover(path: &Path) -> Result<()> {
@@ -191,6 +220,9 @@ fn recover(path: &Path) -> Result<()> {
         let Some(m) = monitors.iter().find(|m| &m.device_id == id) else {
             continue;
         };
+        if let Some((previous, applied, system)) = &entry.profile {
+            crate::hdr_profile::restore(m, previous.as_deref(), applied, *system)?;
+        }
         if let Some((previous, applied)) = entry.hdr
             && m.hdr_enabled == applied
         {

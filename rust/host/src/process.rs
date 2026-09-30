@@ -6,6 +6,82 @@ use std::{
     path::Path,
     time::Duration,
 };
+#[derive(Clone, serde::Deserialize)]
+struct ClientCommand {
+    cmd: String,
+    #[serde(default)]
+    elevated: bool,
+}
+/// Administrator-configured hooks run once for each connected transport, with
+/// its environment saved for disconnect even if the application exits first.
+pub struct ClientCommands {
+    undo: Vec<ClientCommand>,
+    environment: BTreeMap<String, String>,
+}
+impl ClientCommands {
+    pub fn start(h: &crate::state::Shared, s: &butterpollo_core::session::Session) -> Result<Self> {
+        let environment = h
+            .current_app
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|app| app.environment.clone());
+        let mut environment = match environment {
+            Some(environment) => environment,
+            None => butterpollo_windows::process::user_environment()?,
+        };
+        environment.insert("SUNSHINE_CLIENT_NAME".into(), s.launch.client.name.clone());
+        environment.insert("SUNSHINE_CLIENT_UUID".into(), s.launch.client.uuid.clone());
+        environment.insert("SUNSHINE_CLIENT_WIDTH".into(), s.config.width.to_string());
+        environment.insert("SUNSHINE_CLIENT_HEIGHT".into(), s.config.height.to_string());
+        environment.insert("SUNSHINE_CLIENT_FPS".into(), s.config.fps.to_string());
+        environment.insert("SUNSHINE_CLIENT_HDR".into(), s.config.hdr.to_string());
+        Self::with_environment(&s.launch.client.extra, environment)
+    }
+    fn with_environment(
+        extra: &BTreeMap<String, serde_json::Value>,
+        environment: BTreeMap<String, String>,
+    ) -> Result<Self> {
+        let parse = |key: &str| -> Result<Vec<ClientCommand>> {
+            let commands: Vec<ClientCommand> = serde_json::from_value(
+                extra
+                    .get(key)
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!([])),
+            )?;
+            if commands.len() > 64
+                || commands
+                    .iter()
+                    .any(|c| c.cmd.len() > 32767 || c.cmd.contains('\0'))
+            {
+                bail!("client command list exceeds its limits");
+            }
+            Ok(commands)
+        };
+        // Validate both lists before any command is started.
+        let commands = parse("do")?;
+        let hooks = Self {
+            undo: parse("undo")?,
+            environment,
+        };
+        hooks.run(&commands);
+        Ok(hooks)
+    }
+    fn run(&self, commands: &[ClientCommand]) {
+        for command in commands.iter().filter(|c| !c.cmd.is_empty()) {
+            if let Err(error) = expand(&command.cmd, &self.environment).and_then(|cmd| {
+                Process::shell_detached(&cmd, None, command.elevated, &self.environment)
+            }) {
+                tracing::warn!(%error, "client connection command failed");
+            }
+        }
+    }
+}
+impl Drop for ClientCommands {
+    fn drop(&mut self) {
+        self.run(&self.undo);
+    }
+}
 pub struct RunningApp {
     pub id: u32,
     pub name: String,
@@ -287,5 +363,59 @@ mod tests {
             "C:\\tools;$;;$literal$"
         );
         assert!(expand("$(Path", &env).is_err());
+    }
+    #[test]
+    fn client_hooks_use_the_saved_environment_on_disconnect() {
+        let path = std::env::temp_dir().join(format!(
+            "butterpollo-client-hooks-{}.txt",
+            uuid::Uuid::new_v4()
+        ));
+        let environment = BTreeMap::from([("MARKER".into(), path.to_string_lossy().into_owned())]);
+        let extra = BTreeMap::from([
+            (
+                "do".into(),
+                serde_json::json!([{"cmd":"echo connected>\"$(MARKER)\""}]),
+            ),
+            (
+                "undo".into(),
+                serde_json::json!([{"cmd":"echo disconnected>>\"$(MARKER)\""}]),
+            ),
+        ]);
+        let wait = |needle: &str| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while !std::fs::read_to_string(&path)
+                .unwrap_or_default()
+                .contains(needle)
+            {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "client hook did not write {needle}"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        let hooks = ClientCommands::with_environment(&extra, environment.clone()).unwrap();
+        wait("connected");
+        assert!(
+            !std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("disconnected")
+        );
+        drop(hooks);
+        wait("disconnected");
+        assert_eq!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            ["connected", "disconnected"]
+        );
+        std::fs::remove_file(&path).unwrap();
+        let invalid = BTreeMap::from([
+            ("do".into(), extra["do"].clone()),
+            ("undo".into(), serde_json::json!([{"cmd":null}])),
+        ]);
+        assert!(ClientCommands::with_environment(&invalid, environment).is_err());
+        assert!(!path.exists());
     }
 }

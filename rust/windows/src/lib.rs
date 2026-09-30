@@ -18,6 +18,8 @@ pub mod display_recovery;
 #[cfg(windows)]
 pub mod encoder;
 #[cfg(windows)]
+pub mod hdr_profile;
+#[cfg(windows)]
 pub mod input;
 #[cfg(windows)]
 pub mod net;
