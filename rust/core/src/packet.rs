@@ -1,0 +1,573 @@
+use anyhow::{Context, Result, bail};
+
+use crate::crypto;
+
+/// Authenticate a message before recording its sequence. ENet's separate
+/// channels can reorder messages, so accept unseen entries within a window.
+#[derive(Default)]
+pub struct ReplayWindow {
+    newest: Option<u32>,
+    seen: u64,
+}
+impl ReplayWindow {
+    pub fn accept(&mut self, sequence: u32) -> bool {
+        let Some(newest) = self.newest else {
+            self.newest = Some(sequence);
+            self.seen = 1;
+            return true;
+        };
+        if sequence > newest {
+            let distance = sequence - newest;
+            self.seen = if distance >= 64 {
+                1
+            } else {
+                (self.seen << distance) | 1
+            };
+            self.newest = Some(sequence);
+            true
+        } else {
+            let distance = newest - sequence;
+            if distance >= 64 || self.seen & (1u64 << distance) != 0 {
+                return false;
+            }
+            self.seen |= 1u64 << distance;
+            true
+        }
+    }
+}
+
+pub fn canonical_codec(s: &str) -> &str {
+    if s.eq_ignore_ascii_case("h264") {
+        "H.264"
+    } else if s.eq_ignore_ascii_case("h265") || s.eq_ignore_ascii_case("hevc") {
+        "HEVC"
+    } else if s.eq_ignore_ascii_case("av1") {
+        "AV1"
+    } else if s.eq_ignore_ascii_case("pyrowave") {
+        "PyroWave"
+    } else {
+        s
+    }
+}
+pub fn concat_and_insert(header: usize, slice: usize, a: &[u8], b: &[u8]) -> Result<Vec<u8>> {
+    if slice == 0 {
+        return Ok(vec![]);
+    }
+    let total = a
+        .len()
+        .checked_add(b.len())
+        .context("packet payload overflow")?;
+    if total == 0 {
+        return Ok(vec![]);
+    }
+    let count = total.div_ceil(slice);
+    let len = header
+        .checked_mul(count)
+        .and_then(|h| h.checked_add(total))
+        .context("packet buffer overflow")?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(len)?;
+    out.resize(len, 0);
+    let mut source = 0;
+    for i in 0..count {
+        let n = slice.min(total - source);
+        let dst = i * (header + slice) + header;
+        let an = n.min(a.len().saturating_sub(source));
+        if an > 0 {
+            out[dst..dst + an].copy_from_slice(&a[source..source + an]);
+        }
+        if an < n {
+            let start = (source + an).saturating_sub(a.len());
+            out[dst + an..dst + n].copy_from_slice(&b[start..start + n - an]);
+        }
+        source += n;
+    }
+    Ok(out)
+}
+pub struct VideoPacketizer {
+    pub sequence: u16,
+    pub iv_counter: u64,
+    pub frame: u32,
+    pub packet_size: usize,
+    pub fec_percent: usize,
+    pub min_fec: usize,
+    pub key: Option<[u8; 16]>,
+}
+impl VideoPacketizer {
+    pub fn encode(
+        &mut self,
+        payload: &[u8],
+        idr: bool,
+        timestamp: u32,
+        latency_us: u64,
+    ) -> Result<Vec<Vec<u8>>> {
+        if !(256..=1400).contains(&self.packet_size) || self.fec_percent > 100 {
+            bail!("invalid packetizer parameters");
+        }
+        let block_size = self.packet_size + 16;
+        let slice = block_size - 32;
+        if payload.is_empty() || payload.len() > slice * 4092 - 8 {
+            bail!("encoded frame exceeds Moonlight packet limit");
+        }
+        let total = payload.len() + 8;
+        let mut header = [0u8; 8];
+        header[0] = 1;
+        header[1..3].copy_from_slice(
+            &((latency_us.saturating_add(50) / 100).min(65535) as u16).to_le_bytes(),
+        );
+        header[3] = if idr { 2 } else { 1 };
+        let last = total % slice;
+        header[4..6]
+            .copy_from_slice(&((if last == 0 { slice } else { last }) as u16).to_le_bytes());
+        let data = concat_and_insert(32, slice, &header, payload)?;
+        let max_data = 255 * 100 / (100 + self.fec_percent);
+        let mut blocks = data.len().div_ceil(max_data * block_size);
+        let mut percentage = self.fec_percent;
+        if blocks > 4 {
+            percentage = 0;
+            blocks = 4;
+        }
+        let aligned = data.len().div_ceil(blocks * block_size) * block_size;
+        let mut packets = Vec::new();
+        for block in 0..blocks {
+            let start = block * aligned;
+            if start >= data.len() {
+                bail!("invalid FEC block split");
+            }
+            let end = ((block + 1) * aligned).min(data.len());
+            let source = &data[start..end];
+            let count = source.len().div_ceil(block_size);
+            if count >= 1024 {
+                bail!("FEC shard index overflow");
+            }
+            let mut fec =
+                count * percentage / 100 + usize::from(!(count * percentage).is_multiple_of(100));
+            let mut effective = percentage;
+            if percentage > 0 && fec < self.min_fec {
+                fec = self.min_fec;
+                effective = 100 * fec / count;
+            }
+            if count + fec > 255 && percentage > 0 {
+                bail!("FEC parity count exceeds protocol limit");
+            }
+            let mut shards = vec![vec![0; block_size]; count + fec];
+            for (i, s) in shards.iter_mut().take(count).enumerate() {
+                let begin = i * block_size;
+                let n = block_size.min(source.len() - begin);
+                s[..n].copy_from_slice(&source[begin..begin + n]);
+                s[16..20].copy_from_slice(
+                    &(u32::from(self.sequence.wrapping_add(i as u16)) << 8).to_le_bytes(),
+                );
+                s[20..24].copy_from_slice(&self.frame.to_le_bytes());
+                s[24] = 1 | if i == 0 { 4 } else { 0 } | if i == count - 1 { 2 } else { 0 };
+                s[26] = 0x10;
+                s[27] = ((block as u8) << 4) | (((blocks - 1) as u8) << 6);
+            }
+            if fec > 0 {
+                cauchy_encode(&mut shards, count, fec)?;
+            }
+            for (i, mut shard) in shards.into_iter().enumerate() {
+                let seq = self.sequence.wrapping_add(i as u16);
+                shard[0] = 0x90;
+                shard[2..4].copy_from_slice(&seq.to_be_bytes());
+                shard[4..8].copy_from_slice(&timestamp.to_be_bytes());
+                shard[20..24].copy_from_slice(&self.frame.to_le_bytes());
+                shard[27] = ((block as u8) << 4) | (((blocks - 1) as u8) << 6);
+                let info = ((i as u32) << 12) | ((count as u32) << 22) | ((effective as u32) << 4);
+                shard[28..32].copy_from_slice(&info.to_le_bytes());
+                if let Some(k) = self.key {
+                    let mut iv = [0; 12];
+                    iv[..8].copy_from_slice(&self.iv_counter.to_le_bytes());
+                    iv[11] = b'V';
+                    self.iv_counter = self
+                        .iv_counter
+                        .checked_add(1)
+                        .context("video nonce exhausted")?;
+                    let (tag, encrypted) = crypto::gcm_seal(&k, &iv, &shard)?;
+                    let mut p = Vec::with_capacity(32 + encrypted.len());
+                    p.extend_from_slice(&iv);
+                    p.extend_from_slice(&self.frame.to_le_bytes());
+                    p.extend_from_slice(&tag);
+                    p.extend_from_slice(&encrypted);
+                    packets.push(p);
+                } else {
+                    packets.push(shard);
+                }
+            }
+            self.sequence = self.sequence.wrapping_add((count + fec) as u16);
+        }
+        self.frame = self.frame.wrapping_add(1);
+        Ok(packets)
+    }
+}
+pub fn control_header(b: &[u8]) -> Result<(u16, &[u8])> {
+    if b.len() < 2 {
+        bail!("short control packet");
+    }
+    Ok((u16::from_le_bytes(b[..2].try_into().unwrap()), &b[2..]))
+}
+pub fn encrypted_control(
+    key: &[u8; 16],
+    seq: u32,
+    kind: u16,
+    payload: &[u8],
+    v2: bool,
+) -> Result<Vec<u8>> {
+    if payload.len() > u16::MAX as usize - 24 {
+        bail!("control packet too large");
+    }
+    let mut plain = kind.to_le_bytes().to_vec();
+    plain.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+    plain.extend_from_slice(payload);
+    let mut iv = vec![0; if v2 { 12 } else { 16 }];
+    if v2 {
+        iv[..4].copy_from_slice(&seq.to_le_bytes());
+        iv[10] = b'H';
+        iv[11] = b'C';
+    } else {
+        iv[0] = seq as u8;
+    }
+    let (tag, b) = crypto::gcm_seal(key, &iv, &plain)?;
+    let mut p = 1u16.to_le_bytes().to_vec();
+    p.extend_from_slice(&((4 + 16 + b.len()) as u16).to_le_bytes());
+    p.extend_from_slice(&seq.to_le_bytes());
+    p.extend_from_slice(&tag);
+    p.extend_from_slice(&b);
+    Ok(p)
+}
+pub fn decrypt_control(key: &[u8; 16], packet: &[u8], v2: bool) -> Result<(u32, u16, Vec<u8>)> {
+    if packet.len() < 28 || u16::from_le_bytes(packet[..2].try_into().unwrap()) != 1 {
+        bail!("short encrypted control packet");
+    }
+    let len = u16::from_le_bytes(packet[2..4].try_into().unwrap()) as usize;
+    if len + 4 != packet.len() {
+        bail!("control length mismatch");
+    }
+    let seq = u32::from_le_bytes(packet[4..8].try_into().unwrap());
+    let mut iv = vec![0; if v2 { 12 } else { 16 }];
+    if v2 {
+        iv[..4].copy_from_slice(&seq.to_le_bytes());
+        iv[10] = b'C';
+        iv[11] = b'C';
+    } else {
+        iv[0] = seq as u8;
+    }
+    let b = crypto::gcm_open(key, &iv, &packet[8..24], &packet[24..])?;
+    if b.len() < 4 {
+        bail!("short decrypted control header");
+    }
+    let kind = u16::from_le_bytes(b[..2].try_into().unwrap());
+    if u16::from_le_bytes(b[2..4].try_into().unwrap()) as usize != b.len() - 4 {
+        bail!("decrypted control length mismatch");
+    }
+    Ok((seq, kind, b[4..].to_vec()))
+}
+const fn gf_mul(mut a: u8, mut b: u8) -> u8 {
+    let mut p = 0;
+    while b != 0 {
+        if b & 1 != 0 {
+            p ^= a;
+        }
+        let top = a & 0x80;
+        a <<= 1;
+        if top != 0 {
+            a ^= 0x1d;
+        }
+        b >>= 1;
+    }
+    p
+}
+const fn inverse(a: u8) -> u8 {
+    let mut p = 1;
+    let mut base = a;
+    let mut exponent = 254;
+    while exponent != 0 {
+        if exponent & 1 != 0 {
+            p = gf_mul(p, base);
+        }
+        base = gf_mul(base, base);
+        exponent >>= 1;
+    }
+    p
+}
+const fn nibble_tables() -> [[u8; 32]; 256] {
+    let mut tables = [[0; 32]; 256];
+    let mut coefficient = 0;
+    while coefficient < 256 {
+        let mut i = 0;
+        while i < 16 {
+            tables[coefficient][i] = gf_mul(coefficient as u8, i as u8);
+            tables[coefficient][16 + i] = gf_mul(coefficient as u8, (i << 4) as u8);
+            i += 1;
+        }
+        coefficient += 1;
+    }
+    tables
+}
+static NIBBLES: [[u8; 32]; 256] = nibble_tables();
+fn axpy(out: &mut [u8], input: &[u8], coefficient: u8) {
+    #[cfg(target_arch = "x86_64")]
+    if std::is_x86_feature_detected!("ssse3") {
+        // Both slices have the same length, checked by the caller.
+        unsafe {
+            axpy_ssse3(out, input, &NIBBLES[coefficient as usize]);
+        }
+        return;
+    }
+    let table = &NIBBLES[coefficient as usize];
+    for (a, b) in out.iter_mut().zip(input) {
+        *a ^= table[(b & 15) as usize] ^ table[16 + (b >> 4) as usize];
+    }
+}
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "ssse3")]
+unsafe fn axpy_ssse3(out: &mut [u8], input: &[u8], table: &[u8; 32]) {
+    use std::arch::x86_64::*;
+    unsafe {
+        let low = _mm_loadu_si128(table.as_ptr().cast());
+        let high = _mm_loadu_si128(table.as_ptr().add(16).cast());
+        let mask = _mm_set1_epi8(15);
+        let mut i = 0;
+        while i + 16 <= out.len() {
+            let b = _mm_loadu_si128(input.as_ptr().add(i).cast());
+            let p = _mm_xor_si128(
+                _mm_shuffle_epi8(low, _mm_and_si128(b, mask)),
+                _mm_shuffle_epi8(high, _mm_and_si128(_mm_srli_epi16::<4>(b), mask)),
+            );
+            let a = _mm_loadu_si128(out.as_ptr().add(i).cast());
+            _mm_storeu_si128(out.as_mut_ptr().add(i).cast(), _mm_xor_si128(a, p));
+            i += 16;
+        }
+        for (a, b) in out[i..].iter_mut().zip(&input[i..]) {
+            *a ^= table[(b & 15) as usize] ^ table[16 + (b >> 4) as usize];
+        }
+    }
+}
+
+/// NVIDIA's separate input cipher chains the next IV from the last 16 bytes
+/// of each authenticated message. Never advance it on a forged packet.
+pub struct LegacyInput {
+    iv: [u8; 16],
+}
+impl LegacyInput {
+    pub fn new(key_id: u32) -> Self {
+        let mut iv = [0; 16];
+        iv[..4].copy_from_slice(&key_id.to_be_bytes());
+        Self { iv }
+    }
+    pub fn open(&mut self, key: &[u8; 16], payload: &[u8]) -> Result<Vec<u8>> {
+        if payload.len() < 20 {
+            bail!("short legacy input message");
+        }
+        let len = u32::from_be_bytes(payload[..4].try_into().unwrap()) as usize;
+        if len < 16 || len + 4 != payload.len() {
+            bail!("legacy input length mismatch");
+        }
+        let tagged = &payload[4..];
+        let plain = crypto::gcm_open(key, &self.iv, &tagged[..16], &tagged[16..])?;
+        if len >= 32 {
+            self.iv.copy_from_slice(&tagged[len - 16..]);
+        }
+        Ok(plain)
+    }
+}
+pub struct AudioPacketizer {
+    pub sequence: u16,
+    pub timestamp: u32,
+    pub key: [u8; 16],
+    pub key_id: u32,
+    pub encrypted: bool,
+    pub packet_ms: u32,
+    pending: Vec<Vec<u8>>,
+}
+impl AudioPacketizer {
+    pub fn new(key: [u8; 16], key_id: u32, encrypted: bool, packet_ms: u32) -> Self {
+        Self {
+            sequence: 0,
+            timestamp: 0,
+            key,
+            key_id,
+            encrypted,
+            packet_ms,
+            pending: vec![],
+        }
+    }
+    pub fn encode(&mut self, opus: &[u8]) -> Result<Vec<Vec<u8>>> {
+        let seq = self.sequence;
+        let mut iv = [0; 16];
+        iv[..4].copy_from_slice(&self.key_id.wrapping_add(u32::from(seq)).to_be_bytes());
+        let data = if self.encrypted {
+            crypto::cbc_seal(&self.key, &iv, opus)
+        } else {
+            opus.to_vec()
+        };
+        let mut p = vec![0; 12];
+        p[0] = 0x80;
+        p[1] = 97;
+        p[2..4].copy_from_slice(&seq.to_be_bytes());
+        p[4..8].copy_from_slice(&self.timestamp.to_be_bytes());
+        p.extend_from_slice(&data);
+        let mut output = vec![p];
+        self.pending.push(data);
+        self.sequence = self.sequence.wrapping_add(1);
+        self.timestamp = self.timestamp.wrapping_add(self.packet_ms);
+        if self.pending.len() == 4 {
+            let len = self.pending.iter().map(Vec::len).max().unwrap();
+            let matrix = [[0x77, 0x40, 0x38, 0x0e], [0xc7, 0xa7, 0x0d, 0x6c]];
+            for (index, row) in matrix.iter().enumerate() {
+                let mut p = vec![0; 24 + len];
+                p[0] = 0x80;
+                p[1] = 127;
+                p[2..4].copy_from_slice(&self.sequence.wrapping_add(index as u16).to_be_bytes());
+                p[4..8].copy_from_slice(&self.timestamp.to_be_bytes());
+                p[12] = index as u8;
+                p[13] = 97;
+                p[14..16].copy_from_slice(&seq.wrapping_sub(3).to_be_bytes());
+                p[16..20].copy_from_slice(
+                    &self
+                        .timestamp
+                        .wrapping_sub(4 * self.packet_ms)
+                        .to_be_bytes(),
+                );
+                for (j, b) in self.pending.iter().enumerate() {
+                    for (k, v) in b.iter().enumerate() {
+                        p[24 + k] ^= gf_mul(row[j], *v);
+                    }
+                }
+                output.push(p);
+            }
+            self.pending.clear();
+        }
+        Ok(output)
+    }
+}
+
+/// nanors uses a Cauchy matrix; the Vandermonde matrix used by many RS crates is not wire compatible.
+pub fn cauchy_encode(shards: &mut [Vec<u8>], data: usize, parity: usize) -> Result<()> {
+    if data == 0 || data + parity != shards.len() || data + parity > 255 {
+        bail!("invalid Cauchy shard count");
+    }
+    let size = shards[0].len();
+    if shards.iter().any(|s| s.len() != size) {
+        bail!("unequal shard sizes");
+    }
+    let (source, dest) = shards.split_at_mut(data);
+    for (row, out) in dest.iter_mut().enumerate() {
+        out.fill(0);
+        for (i, input) in source.iter().enumerate() {
+            let base = (parity + i) as u8 ^ row as u8;
+            axpy(out, input, inverse(base));
+        }
+    }
+    Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn replay_window_accepts_reordering_but_rejects_duplicates_and_wraps() {
+        let mut window = ReplayWindow::default();
+        for n in [100, 102, 101, 103, 99] {
+            assert!(window.accept(n));
+        }
+        for n in [100, 99, 102, 1] {
+            assert!(!window.accept(n));
+        }
+        assert!(window.accept(u32::MAX));
+        assert!(!window.accept(0));
+    }
+    #[test]
+    fn forged_legacy_input_cannot_change_the_next_iv() {
+        let key = [3; 16];
+        let mut input = LegacyInput::new(0x12345678);
+        let original = input.iv;
+        let raw = vec![7; 40];
+        let (tag, encrypted) = crypto::gcm_seal(&key, &original, &raw).unwrap();
+        let mut packet = ((tag.len() + encrypted.len()) as u32)
+            .to_be_bytes()
+            .to_vec();
+        packet.extend_from_slice(&tag);
+        packet.extend_from_slice(&encrypted);
+        let mut bad = packet.clone();
+        bad[5] ^= 1;
+        assert!(input.open(&key, &bad).is_err());
+        assert_eq!(input.iv, original);
+        assert_eq!(input.open(&key, &packet).unwrap(), raw);
+        assert_eq!(input.iv, packet[packet.len() - 16..]);
+    }
+    #[test]
+    fn simd_cauchy_matches_scalar_for_every_coefficient_and_tail() {
+        for coefficient in 0..=255 {
+            for len in [1, 15, 16, 17, 31, 33, 1023] {
+                let source: Vec<u8> = (0..len).map(|i| (i * 71 + 13) as u8).collect();
+                let mut out = vec![0x55; len];
+                axpy(&mut out, &source, coefficient);
+                let expected: Vec<u8> = source
+                    .iter()
+                    .map(|v| 0x55 ^ gf_mul(*v, coefficient))
+                    .collect();
+                assert_eq!(out, expected);
+            }
+        }
+    }
+    #[test]
+    fn packet_insert_crosses_sources_at_every_boundary() {
+        for h in 0..10 {
+            for s in 0..16 {
+                for a in 0..25 {
+                    for b in 0..25 {
+                        let aa = vec![1; a];
+                        let bb = vec![2; b];
+                        let joined = [aa.clone(), bb.clone()].concat();
+                        let expected: Vec<u8> = if s == 0 {
+                            vec![]
+                        } else {
+                            joined
+                                .chunks(s)
+                                .flat_map(|p| [vec![0; h], p.to_vec()].concat())
+                                .collect()
+                        };
+                        assert_eq!(concat_and_insert(h, s, &aa, &bb).unwrap(), expected);
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn video_headers_follow_moonlight_layout() {
+        let mut p = VideoPacketizer {
+            sequence: 65535,
+            iv_counter: 0,
+            frame: 1,
+            packet_size: 1024,
+            fec_percent: 0,
+            min_fec: 0,
+            key: None,
+        };
+        let packets = p.encode(&vec![3; 1100], true, 900, 200).unwrap();
+        assert_eq!(packets.len(), 2);
+        assert_eq!(&packets[0][..4], &[0x90, 0, 0xff, 0xff]);
+        assert_eq!(packets[0][24], 5);
+        assert_eq!(packets[1][24], 3);
+        assert_eq!(&packets[0][32..40], &[1, 2, 0, 2, 100, 0, 0, 0]);
+        assert_eq!(&packets[1][2..4], &[0, 0]);
+    }
+    #[test]
+    fn encrypted_video_nonce_is_unique_and_authenticated() {
+        let k = [5; 16];
+        let mut p = VideoPacketizer {
+            sequence: 0,
+            iv_counter: 0,
+            frame: 1,
+            packet_size: 1024,
+            fec_percent: 20,
+            min_fec: 1,
+            key: Some(k),
+        };
+        let b = p.encode(&vec![1; 1100], false, 123, 0).unwrap();
+        assert_ne!(&b[0][..12], &b[1][..12]);
+        let plain = crypto::gcm_open(&k, &b[0][..12], &b[0][16..32], &b[0][32..]).unwrap();
+        assert_eq!(plain[0], 0x90);
+        assert_eq!(plain[24], 5);
+    }
+}

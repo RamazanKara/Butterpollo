@@ -1,5 +1,7 @@
 # Butterpollo
 
+The `codex/butterpollo-rust` branch contains the new Rust Windows host and native helpers. See [Rust build, migration and validation](rust/README.md). Its Moonlight video/audio path runs independently of the previous C++ host; full production parity and performance validation are still in progress. The measurements and architecture below describe the retained C++ reference.
+
 Butterpollo is a Windows game-streaming host built on [Vibepollo](https://github.com/Nonary/Vibepollo), which builds on [Apollo](https://github.com/ClassicOldSong/Apollo) and [Sunshine](https://github.com/LizardByte/Sunshine). It has one job: get each frame from your PC to your Moonlight client as fast and as evenly as possible. Anything that doesn't serve that job has been taken out. A change goes in only if it makes streaming faster or smoother, and I measure it before it ships.
 
 The name comes from the first tester's verdict on the WGC fix: "smooth as butter". Also, *pollo* is Spanish for chicken.

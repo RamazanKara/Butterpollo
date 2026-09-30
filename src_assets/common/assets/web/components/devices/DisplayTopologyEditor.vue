@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, toRaw } from 'vue';
 
 import { apiGet, apiRequest, type ApiPayload } from '@/services/api';
 import { AppButton, InlineAlert, StatusBadge } from '@/components/ui';
@@ -73,7 +73,7 @@ function pairedClientMode(displayMode?: string) {
 }
 const previewNodes = computed<Node[]>(() => {
   if (!data.value) return [];
-  const nodes = structuredClone(data.value.nodes ?? []);
+  const nodes = structuredClone(toRaw(data.value.nodes ?? []));
   let rightmost = nodes.reduce(
     (edge, node) => Math.max(edge, node.desired_position.x + node.mode.width),
     0,
@@ -214,7 +214,7 @@ async function save() {
   }
 }
 function revert() {
-  if (data.value) draft.value = structuredClone(data.value.layout.placements ?? {});
+  if (data.value) draft.value = structuredClone(toRaw(data.value.layout.placements ?? {}));
 }
 function scaled(node: Node) {
   const width = Math.max(80, Math.round(node.mode.width / 18));
