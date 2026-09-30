@@ -36,6 +36,13 @@ Capture (Windows Graphics Capture):
 - The capture device gets the same realtime GPU thread priority as the encoder device.
 
 System:
+- Packetization writes the frame header and payload directly into the final packet buffer. Each client keeps its own pacing clock.
+- Input batching combines safe mouse/scroll deltas and stops before signed 16-bit overflow; draining the queue no longer copies every candidate packet.
+- Rumble and HDR feedback are checked within a 10 ms idle control-server interval. Deferred display checks skip a busy operation gate.
+- Mouse-unplug recovery is checked once per second while streaming.
+- Audio capture converts the device's 100 ns period to milliseconds correctly, with a nonzero event wait.
+- WGC frame-arrival workers register their own MMCSS task; the helper runs at above-normal process priority.
+- Default logging is info for every release channel. Explicit debug/verbose configuration is preserved.
 - The host (while streaming) and the capture helper opt out of Windows 11 power throttling (EcoQoS and ignored timer resolution).
 - Encoder control events (bitrate, reference invalidation, IDR) no longer spin when their producer holds the lock.
 
@@ -48,6 +55,9 @@ Removed, because none of it is needed to stream:
 - WebRTC browser streaming. Moonlight is unaffected.
 - Playnite, Steam library and Lutris integration, and Lossless Scaling automation. Apps you added yourself keep working, including `steam://` commands. Apps synced from Playnite without a command are skipped at startup.
 - The stats and session history pages and the SQLite database behind them. The Devices page still shows who is connected, and the Overview page has a Stop stream button.
+- The legacy display helper, SudoVDA fallback, and ViGEm gamepad backend. The current display helper, virtual-display driver and VHF gamepad backend remain.
+- FFmpeg AMF and Media Foundation encoding. AMD always uses native AMF; saved experimental/legacy AMD encoder names migrate to it. NVIDIA NVENC, Intel QuickSync, software encoding, and PyroWave remain available.
+- The classic interface. The consolidated interface is served at `/`, with redirects from old `/v2` links.
 - Docker files, upstream issue bots, docs-site tooling and dead code.
 
 ## PyroWave (experimental)

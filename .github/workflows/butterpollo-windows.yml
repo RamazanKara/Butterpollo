@@ -19,7 +19,7 @@ jobs:
     uses: ./.github/workflows/ci-windows.yml
     with:
       release_commit: ${{ github.sha }}
-      release_version: 2.0.0-beta.3-butter.3
+      release_version: 2.0.0-beta.3-butter.4
       build_tests: true
       release_artifact_retention_days: 30
       symbol_product_name: Vibepollo
