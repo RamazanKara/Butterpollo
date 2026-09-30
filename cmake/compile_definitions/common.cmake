@@ -113,6 +113,7 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/video_colorspace.cpp"
         "${CMAKE_SOURCE_DIR}/src/video_colorspace.h"
         "${CMAKE_SOURCE_DIR}/src/input.cpp"
+        "${CMAKE_SOURCE_DIR}/src/input_batch.cpp"
         "${CMAKE_SOURCE_DIR}/src/input.h"
         "${CMAKE_SOURCE_DIR}/src/input_validation_policy.cpp"
         "${CMAKE_SOURCE_DIR}/src/input_validation_policy.h"

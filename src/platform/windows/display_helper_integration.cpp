@@ -2277,11 +2277,25 @@ namespace display_helper_integration {
       return false;
     }
 
+    // Control-stream polling normally has no deferred work. Do not wait for
+    // an unrelated display operation or hold its execution gate in that case.
+    {
+      std::lock_guard<std::mutex> lock(pending_apply_mutex());
+      if (!pending_apply_state()) {
+        return false;
+      }
+    }
+
     // A deferred APPLY must not outlive a normal APPLY, REVERT, or session
     // teardown. Keep ownership of the display operation until its IPC and
     // active-session update are complete.
     std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex(), std::defer_lock);
-    if (!lock_pending_apply_execution(execution_lock, cancellation_predicate)) {
+    // The control thread retries on its next iteration. Recovery callers with
+    // a stop predicate retain cancellable serialization.
+    const bool acquired = cancellation_predicate ?
+                            lock_pending_apply_execution(execution_lock, cancellation_predicate) :
+                            execution_lock.try_lock();
+    if (!acquired) {
       return false;
     }
     bool check_idle_stop_after_apply = false;

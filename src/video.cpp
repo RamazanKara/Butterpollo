@@ -2712,9 +2712,8 @@ namespace video {
           if (*it && it->use_count() == 1) {
             img_out = *it;
             if (it != imgs.begin()) {
-              // move image to the front of the list to prioritize its reusal
-              imgs.erase(it);
-              imgs.push_front(img_out);
+              // move image to the front of the list to prioritize its reuse
+              imgs.splice(imgs.begin(), imgs, it);
             }
             break;
           }
@@ -2727,9 +2726,8 @@ namespace video {
               *it = disp->alloc_img();
               img_out = *it;
               if (it != imgs.begin()) {
-                // move image to the front of the list to prioritize its reusal
-                imgs.erase(it);
-                imgs.push_front(img_out);
+                // move image to the front of the list to prioritize its reuse
+                imgs.splice(imgs.begin(), imgs, it);
               }
               break;
             }
@@ -4391,6 +4389,7 @@ namespace video {
       uint64_t dropped_submissions = 0;
       std::chrono::steady_clock::time_point last_log = std::chrono::steady_clock::now();
     } loop_stats;
+    auto next_mouse_presence_check = std::chrono::steady_clock::time_point {};
 
     while (true) {
       if (auto now = std::chrono::steady_clock::now(); now - loop_stats.last_log >= 10s) {
@@ -4623,9 +4622,13 @@ namespace video {
 
       session->request_normal_frame();
 
-      // While streaming check to see if the mouse is present and enable Mouse Keys to force the cursor to appear
-      // This is useful for KVM switch scenarios where mouse may disappear during streaming
-      platf::enable_mouse_keys();
+      // Keep KVM mouse-unplug recovery without a system call and shared lock
+      // on every encoded frame. Streaming startup performs the first check.
+      const auto mouse_check_now = std::chrono::steady_clock::now();
+      if (mouse_check_now >= next_mouse_presence_check) {
+        next_mouse_presence_check = mouse_check_now + 1s;
+        platf::enable_mouse_keys();
+      }
     }
     if (native_amf_runtime_failed) {
       force_sync_teardown = true;

@@ -588,6 +588,8 @@ namespace stream {
       std::string ping_payload;
 
       int lowseq;
+      // Only the video broadcast thread accesses this session's pacing clock.
+      std::chrono::steady_clock::time_point ratecontrol_next_frame_start {};
       udp::endpoint peer;
 
       std::optional<crypto::cipher::gcm_t> cipher;
@@ -1791,7 +1793,9 @@ namespace stream {
         break;
       }
 
-      server->iterate(150ms);
+      // Host feedback (rumble/HDR) may arrive while ENet is idle. Bound its
+      // queueing delay without busy-polling the shared control server.
+      server->iterate(10ms);
     }
 
     // Let all remaining connections know the server is shutting down
@@ -1940,7 +1944,6 @@ namespace stream {
       return;
     }
 
-    auto ratecontrol_next_frame_start = std::chrono::steady_clock::now();
     std::optional<std::chrono::steady_clock::time_point> last_frame_timestamp;
 
     struct wire_timeline_frame_t {
@@ -2002,6 +2005,7 @@ namespace stream {
       }
 
       auto lowseq = session->video.lowseq;
+      auto &ratecontrol_next_frame_start = session->video.ratecontrol_next_frame_start;
 
       std::string_view payload {(char *) packet->data(), packet->data_size()};
       std::vector<uint8_t> payload_with_replacements;
@@ -2176,7 +2180,6 @@ namespace stream {
         size_t send_batch_size = std::max<size_t>(1, max_batch_size_bytes / blocksize);
         // Also don't exceed 64 packets, which can happen when Moonlight requests
         // unusually small packet size.
-        // Generic Segmentation Offload on Linux can't do more than 64.
         send_batch_size = std::min<size_t>(64, send_batch_size);
 
         // Don't ignore the last ratecontrol group of the previous frame
@@ -2191,7 +2194,7 @@ namespace stream {
         // after capture.
         bool frame_is_dupe = false;
         if (!packet->frame_timestamp) {
-          packet->frame_timestamp = ratecontrol_next_frame_start;
+          packet->frame_timestamp = ratecontrol_frame_start;
           frame_is_dupe = true;
         }
         using rtp_tick = std::chrono::duration<uint32_t, std::ratio<1, 90000>>;

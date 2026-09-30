@@ -609,7 +609,6 @@ async function load(): Promise<void> {
     ) {
       defaults.virtual_display_mode = 'disabled';
     }
-    if (metadata.prerelease) defaults.min_log_level = 1;
     const normalized = { ...defaults, ...configured };
     for (const [key, field] of settingsFields)
       if (field.kind === 'boolean' && key in normalized)

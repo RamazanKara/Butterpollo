@@ -6,6 +6,9 @@
 #include "../tests_common.h"
 #include "src/stream_protocol.h"
 
+#include <limits>
+#include <stdexcept>
+
 TEST(VideoFormatNameTests, CanonicalCodecNameNormalizesKnownAliases) {
   EXPECT_EQ(stream::canonical_codec_name("h264"), "H.264");
   EXPECT_EQ(stream::canonical_codec_name("H.264"), "H.264");
@@ -43,6 +46,31 @@ TEST(ConcatAndInsertTests, ConcatSmallStrideTest) {
   auto res = stream::concat_and_insert(1, 1, std::string_view {b1, sizeof(b1)}, std::string_view {b2, sizeof(b2)});
   auto expected = std::vector<uint8_t> {0, 'a', 0, 'b', 0, 'c', 0, 'd', 0, 'e'};
   ASSERT_EQ(res, expected);
+}
+
+TEST(ConcatAndInsertTests, KeepsHeadersAlignedAcrossInputBoundaryAndPartialSlice) {
+  const auto res = stream::concat_and_insert(2, 3, "ab", "cdefg");
+  const std::vector<std::uint8_t> expected {0, 0, 'a', 'b', 'c', 0, 0, 'd', 'e', 'f', 0, 0, 'g'};
+  EXPECT_EQ(res, expected);
+}
+
+TEST(ConcatAndInsertTests, PreservesBinaryZerosAndEmptyInputs) {
+  const char payload[] {'a', '\0', 'b', '\0'};
+  const std::string_view bytes {payload, sizeof(payload)};
+  const std::vector<std::uint8_t> expected {0, 'a', 0, 0, 'b', 0};
+  EXPECT_EQ(stream::concat_and_insert(1, 2, {}, bytes), expected);
+  EXPECT_EQ(stream::concat_and_insert(1, 2, bytes, {}), expected);
+  EXPECT_TRUE(stream::concat_and_insert(4, 2, {}, {}).empty());
+  EXPECT_TRUE(stream::concat_and_insert(1, 0, bytes, bytes).empty());
+}
+
+TEST(ConcatAndInsertTests, HandlesLargestStrideWithoutWrappingSliceCount) {
+  const std::vector<std::uint8_t> expected {0, 'a', 'b'};
+  EXPECT_EQ(stream::concat_and_insert(1, std::numeric_limits<std::uint64_t>::max(), "a", "b"), expected);
+}
+
+TEST(ConcatAndInsertTests, RejectsHeaderSizeOverflowBeforeAllocating) {
+  EXPECT_THROW(stream::concat_and_insert(std::numeric_limits<std::uint64_t>::max(), 1, "a", "b"), std::length_error);
 }
 
 TEST(ControlPacketParsing, RejectsRuntPacketsBeforeReadingType) {

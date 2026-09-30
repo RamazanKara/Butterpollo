@@ -415,6 +415,9 @@ public:
     if (!platf::set_process_high_qos(true)) {
       BOOST_LOG(warning) << "Failed to opt out of process power throttling: " << GetLastError();
     }
+    if (!SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS)) {
+      BOOST_LOG(warning) << "Failed to raise capture helper process priority: " << GetLastError();
+    }
     success &= initialize_thread_priority();
     success &= initialize_gpu_scheduling_priority();
     success &= initialize_mmcss_characteristics();
@@ -2292,6 +2295,29 @@ public:
       if (_shutting_down.load(std::memory_order_acquire)) {
         return;
       }
+
+      // Free-threaded WGC invokes FrameArrived on a WinRT worker, not the
+      // initialized main thread. Register once per worker and revert MMCSS
+      // on that same thread when it exits.
+      thread_local const safe_mmcss_handle callback_mmcss = [] {
+        if (!SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST)) {
+          BOOST_LOG(warning) << "Failed to raise capture callback priority: " << GetLastError();
+        }
+        DWORD task_index = 0;
+        HANDLE handle = AvSetMmThreadCharacteristicsW(L"Pro Audio", &task_index);
+        if (!handle) {
+          handle = AvSetMmThreadCharacteristicsW(L"Games", &task_index);
+        }
+        if (handle) {
+          if (!AvSetMmThreadPriority(handle, AVRT_PRIORITY_HIGH)) {
+            BOOST_LOG(warning) << "Failed to set capture callback MMCSS priority: " << GetLastError();
+          }
+        } else {
+          BOOST_LOG(warning) << "Failed to register capture callback with MMCSS: " << GetLastError();
+        }
+        return safe_mmcss_handle {handle};
+      }();
+      (void) callback_mmcss;
 
       struct outstanding_guard_t {
         std::atomic<int> &counter;

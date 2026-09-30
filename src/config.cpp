@@ -52,7 +52,6 @@
 #include "state_storage.h"
 #include "stream.h"
 #include "utility.h"
-#include "version_compare.h"
 #include "video.h"
 
 
@@ -902,12 +901,6 @@ namespace config {
     constexpr std::string_view default_config_filename = "sunshine.conf";
     constexpr std::string_view default_log_filename = "sunshine.log";
 
-    int default_min_log_level() {
-      if (version_compare::is_prerelease_channel(PROJECT_VERSION)) {
-        return 1;
-      }
-      return 2;
-    }
   }  // namespace
 
   sunshine_t sunshine {
@@ -916,7 +909,7 @@ namespace config {
     true,  // enable_discovery
     false,  // envvar_compatibility_mode
     "en",  // locale
-    default_min_log_level(),  // min_log_level
+    2,  // min_log_level (info, including prereleases)
     0,  // flags
     {},  // User file
     {},  // Username

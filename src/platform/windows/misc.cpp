@@ -1573,7 +1573,7 @@ namespace platf {
   }
 
   void enable_mouse_keys() {
-    // Capture threads check every frame, including concurrent streams. Keep the
+    // Encode threads periodically check, including concurrent streams. Keep the
     // original snapshot until restoration succeeds instead of saving our own
     // temporary settings on the next check.
     const auto lock = std::lock_guard(mouse_keys_mutex);

@@ -723,9 +723,15 @@ namespace platf::audio {
         return -1;
       }
 
-      REFERENCE_TIME default_latency;
-      audio_client->GetDevicePeriod(&default_latency, nullptr);
-      default_latency_ms = default_latency / 1000;
+      REFERENCE_TIME default_latency {};
+      status = audio_client->GetDevicePeriod(&default_latency, nullptr);
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "Couldn't acquire the audio device period [0x"sv << util::hex(status).to_string_view() << ']';
+        return -1;
+      }
+      // REFERENCE_TIME counts 100 ns units. Round up to milliseconds and keep
+      // sub-millisecond periods from turning event-driven capture into polling.
+      default_latency_ms = static_cast<DWORD>(std::max<REFERENCE_TIME>(1, default_latency / 10000 + (default_latency % 10000 > 0)));
       continuous_audio = continuous;
 
       std::uint32_t frames;
@@ -892,7 +898,7 @@ namespace platf::audio {
     audio_notification_t endpt_notification;
     std::optional<std::function<void()>> default_endpt_changed_cb;
 
-    REFERENCE_TIME default_latency_ms;
+    DWORD default_latency_ms {1};
 
     util::buffer_t<float> sample_buf;
     float *sample_buf_pos;
