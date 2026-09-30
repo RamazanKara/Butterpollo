@@ -51,6 +51,7 @@ extern "C" {
 #include "video.h"
 #include "video_encoder_probe_policy.h"
 #include "video_policy.h"
+#include "video_capture_sessions.h"
 #include "video_timestamp_policy.h"
 
 
@@ -4906,21 +4907,7 @@ namespace video {
 
     std::size_t display_retry_failures = 0;
     while (encode_session_ctx_queue.running()) {
-      // Admit queued peers before checking shutdown. A peer can disconnect
-      // while the first session is still waiting for its capture display.
-      while (auto pending_ctx = encode_session_ctx_queue.pop(0ms)) {
-        synced_session_ctxs.emplace_back(std::make_unique<sync_session_ctx_t>(std::move(*pending_ctx)));
-      }
-      // Capture readiness may outlive the client. Release stopped sessions here
-      // rather than waiting for a display before acknowledging their shutdown.
-      std::erase_if(synced_session_ctxs, [](const auto &ctx) {
-        if (!ctx->shutdown_event->peek()) {
-          return false;
-        }
-        ctx->join_event->raise(true);
-        return true;
-      });
-      if (synced_session_ctxs.empty()) {
+      if (!capture_sessions::admit_and_prune_sessions(synced_session_ctxs, encode_session_ctx_queue)) {
         return encode_e::ok;
       }
       wait_for_recent_display_apply_stability();

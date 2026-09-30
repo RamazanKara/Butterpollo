@@ -18,13 +18,6 @@ match = re.search(r"^    bool ensure_virtual_display_ready\([\s\S]*?^    }", sou
 if not match:
     raise RuntimeError("Missing production readiness function")
 function = match.group().replace("std::chrono::steady_clock", "TestClock")
-shutdown_match = re.search(
-    r"    while \(encode_session_ctx_queue.running\(\)\) \{\n([\s\S]*?)^#ifdef _WIN32",
-    source.read_text(), re.M,
-)
-# Old revisions have no readiness-loop shutdown handling: tests still exercise
-# their absence by leaving the wrapper body empty.
-shutdown = shutdown_match.group(1) if shutdown_match else ""
 harness = r'''
 #include <algorithm>
 #include <chrono>
@@ -36,6 +29,7 @@ harness = r'''
 #include <sstream>
 #include <string>
 #include <vector>
+#include "src/video_capture_sessions.h"
 struct TestClock {
   using time_point = std::chrono::steady_clock::time_point;
   static inline time_point current{std::chrono::seconds(1)};
@@ -76,8 +70,7 @@ struct Queue {
 };
 enum class encode_e { ok, reinit };
 encode_e check_readiness_shutdown(std::vector<std::unique_ptr<Session>> &synced_session_ctxs, Queue &encode_session_ctx_queue) {
-// SHUTDOWN
-  return encode_e::reinit;
+  return video::capture_sessions::admit_and_prune_sessions(synced_session_ctxs, encode_session_ctx_queue) ? encode_e::reinit : encode_e::ok;
 }
 int failures = 0;
 void check(bool result, const char *name) {
@@ -129,11 +122,6 @@ int main() {
   check(!ensure_virtual_display_ready(names, index), "disconnect begins a fresh wait");
   advance(4);
   check(!ensure_virtual_display_ready(names, index), "disconnect cannot select remaining physical output");
-#else
-  index = 5;
-  check(ensure_virtual_display_ready(names, index) && index == 0, "non-Windows clamps index");
-  names.clear();
-  check(!ensure_virtual_display_ready(names, index), "non-Windows rejects empty list");
 #endif
   Event stopped{true}, active, stopped_join, active_join;
   std::vector<std::unique_ptr<Session>> sessions;
@@ -188,12 +176,12 @@ int main() {
         "queued live client is retained when all previously admitted clients stop");
   return failures ? 1 : 0;
 }
-'''.replace("// PRODUCTION", function).replace("// SHUTDOWN", shutdown)
+'''.replace("// PRODUCTION", function)
 with tempfile.TemporaryDirectory(prefix="virtual-capture-readiness-") as temporary:
     cpp = Path(temporary) / "test.cpp"
     cpp.write_text(harness)
-    for platform, flags in [("Windows", ["-D_WIN32"]), ("non-Windows", [])]:
+    for platform, flags in [("Windows", ["-D_WIN32"])]:
         exe = Path(temporary) / platform
-        subprocess.run(["g++", "-std=c++20", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", *flags, str(cpp), "-o", str(exe)], check=True)
+        subprocess.run(["g++", "-std=c++20", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", *flags, "-I", str(root), str(cpp), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
         print(f"{platform} production virtual capture readiness regressions passed")

@@ -59,6 +59,14 @@ TEST(InputBatch, RejectsNegativeRelativeOverflowWithoutPartialMutation) {
   EXPECT_EQ(boost::endian::big_to_native(dest.deltaY), -32768);
 }
 
+TEST(InputBatch, RejectsSimultaneousAxisOverflowWithoutMutation) {
+  auto dest = relative_packet(32767, -32768);
+  auto src = relative_packet(1, -1);
+  EXPECT_EQ(batch_packets(dest, src), input::batch_result_e::terminate_batch);
+  EXPECT_EQ(boost::endian::big_to_native(dest.deltaX), 32767);
+  EXPECT_EQ(boost::endian::big_to_native(dest.deltaY), -32768);
+}
+
 TEST(InputBatch, CombinesVerticalScrollAndKeepsRepeatedAmountsEqual) {
   auto dest = scroll_packet(-120);
   auto src = scroll_packet(240);
