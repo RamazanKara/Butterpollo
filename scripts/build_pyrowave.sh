@@ -36,6 +36,9 @@ if [[ "${MSYSTEM:-}" != "UCRT64" ]]; then
 	echo "error: run this from an MSYS2 UCRT64 shell (MSYSTEM=UCRT64), got '${MSYSTEM:-unset}'" >&2
 	exit 1
 fi
+# PowerShell and Visual Studio developer shells can put Windows find.exe and
+# link.exe ahead of MSYS utilities. Use this MSYS installation's tools first.
+export PATH="/ucrt64/bin:/usr/bin:$PATH"
 if [[ ! "$COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
 	echo "error: commit must be a full 40-character SHA, got '$COMMIT'" >&2
 	exit 1
