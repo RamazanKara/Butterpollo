@@ -5,7 +5,7 @@ This candidate brings the Windows streaming features of Vibepollo 2.0 into the R
 ## What players experience
 
 - A first-run import for existing Vibepollo/Apollo settings, paired devices, certificates, library and covers. The original profile is retained. Missing configured identity files stop the import with an error instead of silently requiring everyone to pair again.
-- A connection checklist explaining video, display and audio readiness, followed by the steps to pair Moonlight and start Desktop. GPU checks show progress. Device names, commands and JSON remain data when changing language.
+- A connection checklist explaining video, display and audio readiness, followed by the steps to pair Moonlight and start Desktop. Manual Add PC shows the physical LAN address and includes a custom Moonlight port. GPU checks show progress. Device names, commands and JSON remain data when changing language.
 - Live session rates, encode p95 and two minutes of bounded performance history. Optional five-second refresh works without JavaScript.
 - Vibepollo 2.0 PyroWave bitstream `186f0393`, GPU conversion, SDR/HDR, 8/10-bit and 4:2:0/4:4:4; old length framing and current record framing. Coarse data receives FEC, detail can recover after loss, and adaptive protection stays within each frame's bandwidth allowance.
 - A PyroWave sender per client that retains one pending frame. A slow connection replaces older pending frames instead of building latency in an encoder queue. The console explains how to reduce repeated replacements.

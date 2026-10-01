@@ -200,11 +200,13 @@ pub(super) async fn render(
                         addresses
                             .iter()
                             .filter_map(Value::as_str)
+                            .filter(|address| *address != text(&meta, "pc_address"))
                             .map(|address| format!("<code>{}</code>", i18n::data(address)))
                             .collect::<Vec<_>>()
                             .join(", ")
                     );
                 }
+                content += "<p class=\"muted\">If Moonlight cannot connect, allow Butterpollo.exe through Windows Firewall for your private network, then check for a pairing request in Devices.</p>";
             }
             content += &card(
                 "Get started",

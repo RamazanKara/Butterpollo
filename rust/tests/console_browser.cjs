@@ -39,6 +39,8 @@ assert(output && password, 'Set test artifact directory and test password');
       const firstStream = page.locator('section.card').filter({has:page.getByRole('heading',{name:'Your first stream',exact:true})});
       assert(await firstStream.isVisible());
       assert.equal(await firstStream.locator('code').innerText(),metadata.pc_address);
+      const hostPort=Number(new URL(base).port)-1;
+      if(hostPort!==47989) assert(metadata.pc_address.endsWith(':'+hostPort),'Manual Add PC must include the custom Moonlight port');
       assert((await firstStream.innerText()).includes('PIN shown by Moonlight'));
       await page.screenshot({path:path.join(output,'rust-ui-first-stream-desktop.png'),fullPage:true});
       await page.setViewportSize({width:390,height:844});
