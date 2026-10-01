@@ -330,6 +330,10 @@ impl Encoder {
     pub fn pending(&self) -> bool {
         !self.in_flight.is_empty()
     }
+    pub fn set_next_frame(&mut self, frame: u64) {
+        debug_assert!(self.in_flight.is_empty());
+        self.index = frame.saturating_sub(1).min(i64::MAX as u64) as i64;
+    }
     pub fn supports_invalidation(&self) -> bool {
         self.references.enabled()
     }

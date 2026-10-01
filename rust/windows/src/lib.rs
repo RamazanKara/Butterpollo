@@ -44,6 +44,10 @@ pub mod net;
 #[cfg(windows)]
 mod nvapi;
 #[cfg(windows)]
+pub mod nvenc;
+#[cfg(windows)]
+mod nvenc_cuda;
+#[cfg(windows)]
 pub mod process;
 #[cfg(windows)]
 pub mod pyrowave;
@@ -72,6 +76,31 @@ pub mod vulkan;
 )]
 pub(crate) mod ff {
     include!(concat!(env!("OUT_DIR"), "/ffmpeg.rs"));
+}
+#[cfg(windows)]
+#[allow(
+    non_camel_case_types,
+    non_snake_case,
+    non_upper_case_globals,
+    dead_code,
+    unused_imports,
+    clippy::all
+)]
+pub(crate) mod nvenc_abi {
+    include!(concat!(env!("OUT_DIR"), "/nvenc.rs"));
+    include!(concat!(env!("OUT_DIR"), "/nvenc_guids.rs"));
+}
+#[cfg(windows)]
+#[allow(
+    non_camel_case_types,
+    non_snake_case,
+    non_upper_case_globals,
+    dead_code,
+    unused_imports,
+    clippy::all
+)]
+pub(crate) mod cuda_abi {
+    include!(concat!(env!("OUT_DIR"), "/cuda.rs"));
 }
 #[cfg(windows)]
 #[allow(

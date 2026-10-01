@@ -86,6 +86,10 @@ try {
     if (!$DebugBuild) { $probeArgs += '--release' }
     & cargo $toolchain @probeArgs
     Assert-NativeExit 'Rust performance probe build'
+    $protocolArgs = @('build', '-p', 'butterpollo-core', '--example', 'protocol_performance', '--locked')
+    if (!$DebugBuild) { $protocolArgs += '--release' }
+    & cargo $toolchain @protocolArgs
+    Assert-NativeExit 'Rust protocol performance probe build'
     $output = Join-Path $TargetDirectory $profile
     $runtimeDlls = @('libopus-0.dll','libvpl-2.dll','libstdc++-6.dll','libgcc_s_seh-1.dll','libwinpthread-1.dll','libpyrowave-shared-0.dll')
     foreach ($dll in $runtimeDlls | Where-Object { $_ -ne 'libpyrowave-shared-0.dll' }) {
@@ -122,6 +126,7 @@ try {
         New-Item -ItemType Directory -Path "$distribution\assets\web", "$distribution\licenses" -Force | Out-Null
         foreach ($exe in @('butterpollo.exe', 'butterpollo-service.exe')) { Copy-Item -LiteralPath (Join-Path $output $exe) -Destination $distribution }
         Copy-Item -LiteralPath (Join-Path $output 'examples\performance.exe') -Destination (Join-Path $distribution 'butterpollo-performance.exe')
+        Copy-Item -LiteralPath (Join-Path $output 'examples\protocol_performance.exe') -Destination (Join-Path $distribution 'butterpollo-protocol-performance.exe')
         foreach ($dll in $runtimeDlls) { Copy-Item -LiteralPath (Join-Path $output $dll) -Destination $distribution }
         New-Item -ItemType Directory -Path "$distribution\vulkan-layer" -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $output 'butterpollo_vulkan_layer.dll') -Destination "$distribution\vulkan-layer"
@@ -133,6 +138,11 @@ try {
         Copy-Item -LiteralPath (Join-Path $repo 'rust\PERFORMANCE.md') -Destination $distribution
         Copy-Item -LiteralPath (Join-Path $repo 'rust\PARITY.md') -Destination $distribution
         Copy-Item -LiteralPath (Join-Path $repo 'rust\THIRD_PARTY.md') -Destination "$distribution\licenses"
+        foreach ($header in @('nvEncodeAPI.h', 'dynlink_cuda.h')) {
+            $text = [IO.File]::ReadAllText((Join-Path $repo "rust\windows\include\$header"))
+            $notice = $text.Substring(0, $text.IndexOf('*/') + 2)
+            $notice | Set-Content -LiteralPath "$distribution\licenses\$header.txt" -Encoding utf8
+        }
         Copy-Item -LiteralPath (Join-Path $repo 'rust\service.ps1') -Destination $distribution
         Copy-Item -LiteralPath (Join-Path $repo 'Cargo.lock') -Destination "$distribution\licenses"
         if (Test-Path -LiteralPath (Join-Path $PyrowaveRoot 'share\licenses')) { Copy-Item -LiteralPath (Join-Path $PyrowaveRoot 'share\licenses') -Destination "$distribution\licenses\pyrowave" -Recurse -Force }

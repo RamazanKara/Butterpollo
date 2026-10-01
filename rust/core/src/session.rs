@@ -123,6 +123,7 @@ pub struct Session {
     pub stats: Stats,
     pub started: Instant,
     pub output: std::sync::RwLock<String>,
+    pub hdr_metadata: std::sync::RwLock<crate::hdr::Metadata>,
 }
 impl Session {
     pub fn new(launch: Launch, config: Negotiated) -> Arc<Self> {
@@ -137,6 +138,7 @@ impl Session {
             stats: Stats::default(),
             started: Instant::now(),
             output: std::sync::RwLock::new(String::new()),
+            hdr_metadata: Default::default(),
         })
     }
     pub fn stopping(&self) -> bool {

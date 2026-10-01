@@ -529,14 +529,21 @@ impl Drop for Ffmpeg {
 pub enum Encoder {
     Ffmpeg(Box<Ffmpeg>),
     Amf(Box<crate::amf::Encoder>),
+    Nvenc(Box<crate::nvenc::Encoder>),
     Pyrowave(Box<crate::pyrowave::Encoder>),
 }
 impl Encoder {
+    pub fn set_hdr_metadata(&mut self, metadata: butterpollo_core::hdr::Metadata) {
+        if let Self::Nvenc(encoder) = self {
+            encoder.set_hdr_metadata(metadata);
+        }
+    }
     /// SDR white is absolute luminance; scRGB scaling expands NGX's 1000-nit ceiling.
     pub fn set_luminance(&mut self, white_nits: f32, linear_scale: f32) {
         let luminance = [white_nits.clamp(100., 200.), linear_scale.clamp(1., 2.)];
         match self {
             Self::Amf(e) => e.luminance = luminance,
+            Self::Nvenc(e) => e.set_luminance(luminance),
             Self::Ffmpeg(e) => {
                 e.luminance = luminance;
                 if let Some(native) = e.native.as_mut() {
@@ -560,6 +567,26 @@ impl Encoder {
         image: &GpuImage,
         tuning: &butterpollo_core::config::Config,
     ) -> Result<Self> {
+        if config.codec < 3
+            && (matches!(preference, "nvenc" | "nvenc_experimental")
+                || (matches!(preference, "" | "auto")
+                    && image
+                        .gpu
+                        .display
+                        .adapter
+                        .to_ascii_lowercase()
+                        .contains("nvidia")))
+        {
+            match crate::nvenc::Encoder::new_device_options(config, image.gpu.clone(), tuning) {
+                Ok(encoder) => return Ok(Self::Nvenc(Box::new(encoder))),
+                Err(error) if matches!(preference, "nvenc" | "nvenc_experimental") => {
+                    return Err(error);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "Native NVENC unavailable; trying compatible encoders")
+                }
+            }
+        }
         if config.codec != 3
             && (preference == "amf"
                 || ((preference.is_empty() || preference == "auto")
@@ -573,7 +600,10 @@ impl Encoder {
         }
         if !config.yuv444
             && config.codec < 3
-            && matches!(preference, "auto" | "" | "nvenc" | "quicksync" | "qsv")
+            && matches!(
+                preference,
+                "auto" | "" | "nvenc_legacy" | "quicksync" | "qsv"
+            )
         {
             let codec = match config.codec {
                 0 => "h264",
@@ -581,7 +611,7 @@ impl Encoder {
                 _ => "av1",
             };
             let candidates: &[&str] = match preference {
-                "nvenc" => &["nvenc"],
+                "nvenc_legacy" => &["nvenc"],
                 "quicksync" | "qsv" => &["qsv"],
                 _ => &["nvenc", "qsv"],
             };
@@ -611,6 +641,7 @@ impl Encoder {
         }
         match self {
             Self::Ffmpeg(e) => e.encode_gpu(image, idr, bitrate),
+            Self::Nvenc(e) => e.encode_gpu(image, idr, bitrate),
             Self::Pyrowave(e) => {
                 let cpu = image.readback(&mut e.staging)?;
                 e.encode(&cpu, idr, bitrate)
@@ -622,6 +653,7 @@ impl Encoder {
         use windows::core::Interface;
         match self {
             Self::Amf(e) => e.accepts_gpu_device(image),
+            Self::Nvenc(e) => e.accepts_gpu_device(image),
             Self::Ffmpeg(e) => e
                 .native
                 .as_ref()
@@ -630,22 +662,39 @@ impl Encoder {
         }
     }
     pub fn pending(&self) -> bool {
-        matches!(self, Self::Amf(e) if e.pending())
+        match self {
+            Self::Amf(e) => e.pending(),
+            Self::Nvenc(e) => e.pending(),
+            _ => false,
+        }
     }
     pub fn supports_invalidation(&self) -> bool {
-        matches!(self, Self::Amf(encoder) if encoder.supports_invalidation())
+        match self {
+            Self::Amf(e) => e.supports_invalidation(),
+            Self::Nvenc(e) => e.supports_invalidation(),
+            _ => false,
+        }
     }
     pub fn invalidate_ref_frames(&mut self, first: u64, last: u64) -> bool {
         match self {
             Self::Amf(encoder) => encoder.invalidate_ref_frames(first, last),
+            Self::Nvenc(encoder) => encoder.invalidate_ref_frames(first, last),
             _ => false,
         }
     }
     pub fn poll(&mut self) -> Result<Vec<Encoded>> {
-        if let Self::Amf(e) = self {
-            e.poll()
-        } else {
-            Ok(vec![])
+        match self {
+            Self::Amf(e) => e.poll(),
+            Self::Nvenc(e) => e.poll(),
+            _ => Ok(vec![]),
+        }
+    }
+    /// A recreated encoder must keep the wire frame numbers used by RFI.
+    pub fn set_next_frame(&mut self, frame: u64) {
+        match self {
+            Self::Amf(e) => e.set_next_frame(frame),
+            Self::Nvenc(e) => e.set_next_frame(frame),
+            _ => {}
         }
     }
     pub fn new(config: &Negotiated, preference: &str, display: &str) -> Result<Self> {
@@ -667,6 +716,30 @@ impl Encoder {
                 config, display,
             )?)));
         }
+        if matches!(preference, "nvenc" | "nvenc_experimental") {
+            return Ok(Self::Nvenc(Box::new(
+                crate::nvenc::Encoder::new_device_options(
+                    config,
+                    crate::capture::Device::new(display)?,
+                    tuning,
+                )?,
+            )));
+        }
+        if matches!(preference, "" | "auto")
+            && let Ok(device) = crate::capture::Device::new(display)
+            && device
+                .display
+                .adapter
+                .to_ascii_lowercase()
+                .contains("nvidia")
+        {
+            match crate::nvenc::Encoder::new_device_options(config, device, tuning) {
+                Ok(e) => return Ok(Self::Nvenc(Box::new(e))),
+                Err(error) => {
+                    tracing::warn!(%error, "Native NVENC unavailable; trying compatible encoders")
+                }
+            }
+        }
         let codec = match config.codec {
             0 => "h264",
             1 => "hevc",
@@ -683,7 +756,7 @@ impl Encoder {
             )));
         }
         let candidates: Vec<String> = match preference {
-            "nvenc" => vec![format!("{codec}_nvenc")],
+            "nvenc_legacy" => vec![format!("{codec}_nvenc")],
             "quicksync" | "qsv" => vec![format!("{codec}_qsv")],
             "software" => vec![
                 match config.codec {
@@ -726,6 +799,7 @@ impl Encoder {
         match self {
             Self::Ffmpeg(e) => e.encode(image, idr, bitrate),
             Self::Amf(e) => e.encode(image, idr, bitrate),
+            Self::Nvenc(e) => e.encode(image, idr, bitrate),
             Self::Pyrowave(e) => e.encode(image, idr, bitrate),
         }
     }

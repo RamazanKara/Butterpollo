@@ -584,6 +584,9 @@ impl Media {
                     };
                     let mut encoder =
                         Encoder::new_gpu_options(&s.config, c.get("encoder", "auto"), &first, &c)?;
+                    let metadata = first.gpu.hdr_metadata();
+                    *s.hdr_metadata.write().unwrap() = metadata;
+                    encoder.set_hdr_metadata(metadata);
                     let mut truehdr = if use_truehdr {
                         truehdr_filter(&first, &c)
                     } else {
@@ -613,6 +616,7 @@ impl Media {
                             None
                         },
                     };
+                    let next_wire_frame = std::cell::Cell::new(u64::from(packetizer.frame));
                     let start = Instant::now();
                     let period = butterpollo_core::framegen::Rate(s.config.fps_millihz()).period();
                     let mut due = Instant::now();
@@ -623,6 +627,7 @@ impl Media {
                     let mut profiles = None;
                     let mut foreground = None;
                     let mut profile_due = Instant::now();
+                    let mut metadata_due = Instant::now() + Duration::from_secs(1);
                     let minimum_fps = c
                         .get("minimum_fps_target", "20")
                         .parse::<f64>()
@@ -656,6 +661,7 @@ impl Media {
                                 timestamp,
                                 latency,
                             )?;
+                            next_wire_frame.set(u64::from(packetizer.frame));
                             let bps = c.integer("pacing_max_bitrate_kbps", 0);
                             let bps = if bps > 0 {
                                 (bps as u64 * 1000)
@@ -792,6 +798,8 @@ impl Media {
                                     &image,
                                     &c,
                                 )?;
+                                encoder.set_next_frame(next_wire_frame.get());
+                                metadata_due = Instant::now();
                                 truehdr = if use_truehdr {
                                     truehdr_filter(&image, &runtime_config)
                                 } else {
@@ -802,6 +810,12 @@ impl Media {
                                 rebuild_encoder = false;
                             }
                             let begin = Instant::now();
+                            if Instant::now() >= metadata_due {
+                                let metadata = image.gpu.hdr_metadata();
+                                *s.hdr_metadata.write().unwrap() = metadata;
+                                encoder.set_hdr_metadata(metadata);
+                                metadata_due = Instant::now() + Duration::from_secs(1);
+                            }
                             if let Some((first, last)) = s.invalidation.lock().unwrap().take()
                                 && !encoder.invalidate_ref_frames(first, last)
                             {
@@ -1055,7 +1069,7 @@ impl Media {
                                     injector: None,
                                     sequence: 0,
                                     received: Default::default(),
-                                    hdr_sent: false,
+                                    hdr_metadata: None,
                                     legacy: butterpollo_core::packet::LegacyInput::new(l.key_id),
                                     seen: Instant::now(),
                                     session: None,
@@ -1238,20 +1252,16 @@ impl Media {
                         remove.push(*peer_id);
                         continue;
                     }
-                    if !p.hdr_sent && !s.output.read().unwrap().is_empty() {
-                        let mut metadata = vec![u8::from(s.config.hdr)];
-                        for value in [
-                            35400u16, 14600, 8500, 39850, 6550, 2300, 15635, 16450, 1000, 1, 0, 0,
-                            0,
-                        ] {
-                            metadata.extend_from_slice(&value.to_le_bytes());
-                        }
-                        if let Ok(message) = p.encrypt(&s, 0x010e, &metadata) {
-                            let _ = host
-                                .peer_mut(*peer_id)
-                                .send(0, &Packet::new(message, PacketKind::Reliable));
-                            p.hdr_sent = true;
-                        }
+                    let metadata = s.hdr_metadata.read().unwrap().wire(s.config.hdr);
+                    if p.hdr_metadata != Some(metadata)
+                        && !s.output.read().unwrap().is_empty()
+                        && let Ok(message) = p.encrypt(&s, 0x010e, &metadata)
+                        && host
+                            .peer_mut(*peer_id)
+                            .send(0, &Packet::new(message, PacketKind::Reliable))
+                            .is_ok()
+                    {
+                        p.hdr_metadata = Some(metadata);
                     }
                     if !p.inputs.is_empty() && p.injector.is_none() {
                         let c = effective_config(&h, &s.launch)?;
@@ -1351,7 +1361,7 @@ struct ControlPeer {
     injector: Option<Injector>,
     sequence: u32,
     received: butterpollo_core::packet::ReplayWindow,
-    hdr_sent: bool,
+    hdr_metadata: Option<[u8; 27]>,
     legacy: butterpollo_core::packet::LegacyInput,
     seen: Instant,
     session: Option<Arc<Session>>,

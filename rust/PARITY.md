@@ -9,8 +9,10 @@ The host, service supervisor, console, protocol, display recovery process, Vulka
 | Existing configuration, certificates, credentials, app/client identity, permissions and unknown fields | Atomic migration and state writes; legacy client normalization; stable app aliases after artwork changes | Configuration/state vectors, actual pairing and administration fixtures pass |
 | PIN pairing and authenticated Moonlight endpoints | RSA/AES pairing, TLS identities, certificate authorization and permission checks | Independent Moonlight-common-c client passes real pairing and denied actions |
 | RTSP, SDP, encrypted control, video and audio | Fractional negotiation, legacy CBC/GCM, replay window, ENet control, RTP, Cauchy FEC and codec capability advertisement | Wire vectors and independent encrypted streaming/decode pass |
-| H.264, HEVC, AV1, HDR and 10-bit SDR | Direct AMF; native D3D11 NVENC/QSV imports with compatibility fallback; software encoders | AMD streams and GPU color tests pass; NVIDIA/Intel encoding awaits hardware |
+| H.264, HEVC, AV1, HDR, 10-bit SDR and NVIDIA 4:4:4 | Direct AMF and NVENC, reviewed NVIDIA API 11.0–13.0 compatibility, D3D11 4:2:0/8-bit 4:4:4, GPU-only CUDA ten-bit 4:4:4, native QSV imports and compatibility/software encoders | AMD streams and GPU 4:2:0/4:4:4 math tests pass; seven NVENC mock-driver tests pass; NVIDIA/Intel encoding awaits hardware |
 | AMD reference frame invalidation | Bounded LTR anchors, loss feedback, recovery frame signaling, IDR fallback and AVC wrap handling | Strict independent H.264/HEVC/AV1 decode after dropping two frame ranges passes |
+| NVIDIA reference frame invalidation, dynamic bitrate and reconnect | Capability-gated native reference invalidation, ordered drain through dependent frames, confirmation only after successful recovery, bounded asynchronous slots and wire frame indices preserved after encoder recreation | Seven NVENC mock-driver tests cover stale/partial feedback, pending outputs, async event reuse, timeout teardown and rejected bitrate updates; opt-in strict NVIDIA decode fixture is implemented and awaits hardware |
+| Display HDR metadata and changes | Read-only DXGI luminance metadata, bounded units, native encoder metadata snapshots and updated Moonlight control metadata after display changes | Wire/unit vectors and in-flight NVENC metadata ownership tests pass; native NVIDIA metadata decoding awaits hardware |
 | PyroWave SDR/HDR | Rust encoder adapter and client-compatible container | Independent vendor decoder passes SDR/HDR containers; full HDR client rendering is unverified |
 | DXGI/WGC capture, pacing and optional WGC publication alignment | Bounded capture pools, repeat-frame minimum, exact rate grid, latest uncopied WGC frame publication, fatal frame-pool error propagation and safe asynchronous runtime shutdown | Real capture/streaming and 16 repeated reconnect/COM teardown cycles pass, including closed-pool errors for GPU/CPU recovery; deadline/static-frame/waiting-slot policy vectors pass |
 | TrueHDR app/client/live tuning and driver profiles | Explicit override precedence, asynchronous NVDRS/visible-window lookup, passive overlay handling, neutral desktop tuning, native FP16/PQ bypass and shared-device NGX output | Precedence, visible-stack, calibration and ABI vectors pass; live NVIDIA NGX/profile behavior awaits hardware |
@@ -35,12 +37,23 @@ The host, service supervisor, console, protocol, display recovery process, Vulka
 ```powershell
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test -p butterpollo-windows --locked -- --ignored --test-threads=1 --nocapture
+cargo test -p butterpollo-windows --locked -- --ignored --skip native_nvenc_loss_recovery_and_444_hdr_decode --test-threads=1 --nocapture
 ```
 
-The ignored tests require the packaged codec DLLs on `PATH`, the same SDK environment as the build, an AMD D3D11/AMF adapter and a local network route. All eight native tests pass together in one process. They exercise GPU color/retention, native FFmpeg frame ownership, all AMD loss-recovery codecs, actual Opus surround, 16 WGC reconnect/COM teardown cycles, closed-pool error propagation for GPU/CPU capture and read-only adapter MAC lookup. They do not change display modes, audio defaults or the installed service.
+The ordinary workspace suite has 99 passing tests. The AMD command above requires the packaged codec DLLs on `PATH`, the same SDK environment as the build, an AMD D3D11/AMF adapter and a local network route. All nine available native tests pass together in one process. They exercise GPU 4:2:0/4:4:4 color math and retention, native FFmpeg frame ownership, all AMD loss-recovery codecs, actual Opus surround, 16 WGC reconnect/COM teardown cycles, closed-pool error propagation for GPU/CPU capture and read-only adapter MAC lookup. They do not change display modes, audio defaults or the installed service.
 
 Set `BUTTERPOLLO_TEST_OPUS_ROOT` to the packaged runtime directory, `BUTTERPOLLO_TEST_FFMPEG` to an independent FFmpeg decoder executable, and `BUTTERPOLLO_TEST_RFI_REPORT` to the desired JSON report filename. `BUTTERPOLLO_TEST_AUDIO_REPORT` optionally saves the Opus report. The loss fixture saves its elementary streams beside the report and verifies all retained frames using the independent decoder.
+
+On a NVIDIA host with a display attached to that adapter, run the separate native fixture:
+
+```powershell
+$env:BUTTERPOLLO_TEST_NVENC = '1'
+$env:BUTTERPOLLO_TEST_NVENC_REPORT = 'C:\path\to\artifacts\nvenc.json'
+$env:BUTTERPOLLO_TEST_FFMPEG = 'C:\path\to\ffmpeg.exe'
+cargo test -p butterpollo-windows --locked native_nvenc_loss_recovery_and_444_hdr_decode -- --ignored --test-threads=1 --nocapture
+```
+
+The default cases are H.264, HEVC HDR, HEVC 4:4:4 SDR and HEVC 4:4:4 HDR. Set `BUTTERPOLLO_TEST_NVENC_CASES` to `h264,hevc-hdr,hevc444-sdr,hevc444-hdr,av1-hdr,av1444-hdr` on hardware supporting those AV1 modes. `BUTTERPOLLO_TEST_NVENC_DISPLAY` selects an attached output, and `BUTTERPOLLO_TEST_FFPROBE` overrides the FFprobe executable beside FFmpeg. The fixture encodes 64 changing frames, checks exact dimensions, chroma/depth and BT.2020/PQ metadata, changes bitrate, and strictly decodes after two deliberate loss ranges when reference invalidation is supported. Unsupported requested modes fail explicitly; they are not silently counted as passes. This fixture has not run on the AMD test machine.
 
 Run `tests/web_api.py`, `tests/console_browser.cjs` and `tests/session_restart.py` against isolated test-owned configurations. The browser fixture requires Playwright/Chromium, an artifact directory and the fixture password through environment variables. The restart fixture launches and stops only its own subprocess. `tests/interop.py` pairs a temporary client, streams/decrypts/decodes, checks permissions/hooks, then cancels and unpairs that client. See [PERFORMANCE.md](PERFORMANCE.md) for the hardware, limitations and measurement commands.
 
@@ -48,4 +61,4 @@ Run `tests/web_api.py`, `tests/console_browser.cjs` and `tests/session_restart.p
 
 Production parity remains open until the native hardware paths are exercised: NVIDIA/Intel codecs; NVIDIA NGX, power/presentation/profile restoration and HAGS; VHF controller feedback and secure desktop; privileged VDD create/recreate/permanent/shared/retained monitors; real display/audio policy changes and crash restoration; physical UPnP routers; Vulkan/RTSS integrations; and a separately authorized Rust SCM installation. The existing production service and physical display/audio settings were preserved during this work.
 
-A controlled comparison with the same C++ baseline, content and hardware also remains outstanding. Current performance evidence establishes the Rust implementation's output and improvements over its earlier Rust paths; it does not establish a C++ speedup.
+A controlled FEC comparison against the exact C++ baseline passes with identical parity bytes and a 1.26–1.40× video-block speedup. A whole-host comparison with the same C++ baseline, content and hardware remains outstanding. See [PERFORMANCE.md](PERFORMANCE.md) for the component benchmark and its limits.

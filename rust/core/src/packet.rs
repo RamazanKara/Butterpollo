@@ -321,7 +321,24 @@ const fn nibble_tables() -> [[u8; 32]; 256] {
     tables
 }
 static NIBBLES: [[u8; 32]; 256] = nibble_tables();
+const fn inverses() -> [u8; 256] {
+    let mut values = [0; 256];
+    let mut i = 0;
+    while i < 256 {
+        values[i] = inverse(i as u8);
+        i += 1;
+    }
+    values
+}
+static INVERSES: [u8; 256] = inverses();
 fn axpy(out: &mut [u8], input: &[u8], coefficient: u8) {
+    #[cfg(target_arch = "x86_64")]
+    if std::is_x86_feature_detected!("avx2") {
+        unsafe {
+            axpy_avx2(out, input, &NIBBLES[coefficient as usize]);
+        }
+        return;
+    }
     #[cfg(target_arch = "x86_64")]
     if std::is_x86_feature_detected!("ssse3") {
         // Both slices have the same length, checked by the caller.
@@ -333,6 +350,88 @@ fn axpy(out: &mut [u8], input: &[u8], coefficient: u8) {
     let table = &NIBBLES[coefficient as usize];
     for (a, b) in out.iter_mut().zip(input) {
         *a ^= table[(b & 15) as usize] ^ table[16 + (b >> 4) as usize];
+    }
+}
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn axpy_avx2(out: &mut [u8], input: &[u8], table: &[u8; 32]) {
+    use std::arch::x86_64::*;
+    unsafe {
+        let low = _mm256_broadcastsi128_si256(_mm_loadu_si128(table.as_ptr().cast()));
+        let high = _mm256_broadcastsi128_si256(_mm_loadu_si128(table.as_ptr().add(16).cast()));
+        let mask = _mm256_set1_epi8(15);
+        let mut i = 0;
+        while i + 32 <= out.len() {
+            let b = _mm256_loadu_si256(input.as_ptr().add(i).cast());
+            let p = _mm256_xor_si256(
+                _mm256_shuffle_epi8(low, _mm256_and_si256(b, mask)),
+                _mm256_shuffle_epi8(high, _mm256_and_si256(_mm256_srli_epi16::<4>(b), mask)),
+            );
+            let a = _mm256_loadu_si256(out.as_ptr().add(i).cast());
+            _mm256_storeu_si256(out.as_mut_ptr().add(i).cast(), _mm256_xor_si256(a, p));
+            i += 32;
+        }
+        for (a, b) in out[i..].iter_mut().zip(&input[i..]) {
+            *a ^= table[(b & 15) as usize] ^ table[16 + (b >> 4) as usize];
+        }
+    }
+}
+
+// Reuse each input load and nibble split across four parity rows. A row is only
+// 1–2 KiB for Moonlight; the active parity set stays in L1 instead of rereading
+// the full input block independently for every row.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn parity_avx2<const ROWS: usize>(
+    source: &[Vec<u8>],
+    destination: &mut [Vec<u8>],
+    first: usize,
+    parity: usize,
+) {
+    use std::arch::x86_64::*;
+    unsafe {
+        let size = source[0].len();
+        let pointers: [*mut u8; ROWS] = std::array::from_fn(|i| destination[i].as_mut_ptr());
+        let mask = _mm256_set1_epi8(15);
+        for (column, input) in source.iter().enumerate() {
+            let coefficients: [u8; ROWS] =
+                std::array::from_fn(|row| INVERSES[(parity + column) ^ (first + row)]);
+            let low: [__m256i; ROWS] = std::array::from_fn(|row| {
+                _mm256_broadcastsi128_si256(_mm_loadu_si128(
+                    NIBBLES[coefficients[row] as usize].as_ptr().cast(),
+                ))
+            });
+            let high: [__m256i; ROWS] = std::array::from_fn(|row| {
+                _mm256_broadcastsi128_si256(_mm_loadu_si128(
+                    NIBBLES[coefficients[row] as usize].as_ptr().add(16).cast(),
+                ))
+            });
+            let mut position = 0;
+            while position + 32 <= size {
+                let value = _mm256_loadu_si256(input.as_ptr().add(position).cast());
+                let lo = _mm256_and_si256(value, mask);
+                let hi = _mm256_and_si256(_mm256_srli_epi16::<4>(value), mask);
+                for row in 0..ROWS {
+                    let product = _mm256_xor_si256(
+                        _mm256_shuffle_epi8(low[row], lo),
+                        _mm256_shuffle_epi8(high[row], hi),
+                    );
+                    let output = _mm256_loadu_si256(pointers[row].add(position).cast());
+                    _mm256_storeu_si256(
+                        pointers[row].add(position).cast(),
+                        _mm256_xor_si256(output, product),
+                    );
+                }
+                position += 32;
+            }
+            for (position, value) in input.iter().enumerate().skip(position) {
+                for row in 0..ROWS {
+                    let table = &NIBBLES[coefficients[row] as usize];
+                    *pointers[row].add(position) ^=
+                        table[(value & 15) as usize] ^ table[16 + (value >> 4) as usize];
+                }
+            }
+        }
     }
 }
 #[cfg(target_arch = "x86_64")]
@@ -446,9 +545,7 @@ impl AudioPacketizer {
                         .to_be_bytes(),
                 );
                 for (j, b) in self.pending.iter().enumerate() {
-                    for (k, v) in b.iter().enumerate() {
-                        p[24 + k] ^= gf_mul(row[j], *v);
-                    }
+                    axpy(&mut p[24..24 + b.len()], b, row[j]);
                 }
                 output.push(p);
             }
@@ -468,11 +565,34 @@ pub fn cauchy_encode(shards: &mut [Vec<u8>], data: usize, parity: usize) -> Resu
         bail!("unequal shard sizes");
     }
     let (source, dest) = shards.split_at_mut(data);
-    for (row, out) in dest.iter_mut().enumerate() {
+    for out in dest.iter_mut() {
         out.fill(0);
+    }
+    #[cfg(target_arch = "x86_64")]
+    if std::is_x86_feature_detected!("avx2") {
+        let (rows, remainder) = dest.as_chunks_mut::<4>();
+        for (batch, out) in rows.iter_mut().enumerate() {
+            // Validation above guarantees disjoint, equally sized buffers and
+            // at most 255 rows/columns. Each group writes only its own rows.
+            unsafe {
+                parity_avx2::<4>(source, out, batch * 4, parity);
+            }
+        }
+        let first = parity - remainder.len();
+        unsafe {
+            match remainder.len() {
+                1 => parity_avx2::<1>(source, remainder, first, parity),
+                2 => parity_avx2::<2>(source, remainder, first, parity),
+                3 => parity_avx2::<3>(source, remainder, first, parity),
+                _ => (),
+            }
+        }
+        return Ok(());
+    }
+    for (row, out) in dest.iter_mut().enumerate() {
         for (i, input) in source.iter().enumerate() {
             let base = (parity + i) as u8 ^ row as u8;
-            axpy(out, input, inverse(base));
+            axpy(out, input, INVERSES[base as usize]);
         }
     }
     Ok(())
@@ -523,6 +643,40 @@ mod tests {
                     .map(|v| 0x55 ^ gf_mul(*v, coefficient))
                     .collect();
                 assert_eq!(out, expected);
+            }
+        }
+    }
+    #[test]
+    fn batched_cauchy_matches_independent_scalar_for_row_groups_and_short_tails() {
+        for (data, parity) in [
+            (1, 254),
+            (254, 1),
+            (4, 2),
+            (4, 3),
+            (4, 4),
+            (4, 5),
+            (4, 6),
+            (4, 7),
+            (32, 7),
+            (96, 20),
+            (192, 39),
+        ] {
+            for length in [0, 1, 15, 31, 32, 33, 63, 65, 1416] {
+                let mut shards: Vec<Vec<u8>> = (0..data + parity)
+                    .map(|i| (0..length).map(|j| (i * 29 + j * 71 + 13) as u8).collect())
+                    .collect();
+                let mut expected = shards.clone();
+                for (row, out) in expected[data..].iter_mut().enumerate() {
+                    out.fill(0);
+                    for (column, input) in shards[..data].iter().enumerate() {
+                        let coefficient = inverse((parity + column) as u8 ^ row as u8);
+                        for (out, input) in out.iter_mut().zip(input) {
+                            *out ^= gf_mul(*input, coefficient);
+                        }
+                    }
+                }
+                cauchy_encode(&mut shards, data, parity).unwrap();
+                assert_eq!(shards, expected, "matrix {data}+{parity}, {length} bytes");
             }
         }
     }

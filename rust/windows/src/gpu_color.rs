@@ -68,6 +68,28 @@ float4 chroma(float4 p : SV_Position) : SV_Target {
                              : floor(clamp(128 + (fullRange != 0 ? 255 : 224) * uv, 0, 255) + 0.5) / 255.0;
     return float4(code, 0, 1);
 }
+float3 yuv444(float2 p) {
+    float3 rgb = nonlinear(p);
+    float3 k = weights();
+    float y = dot(rgb, k);
+    return float3(y, (rgb.b - y) / (2 * (1 - k.b)), (rgb.r - y) / (2 * (1 - k.r)));
+}
+// DXGI AYUV has V, U, Y, A byte order in the compatible RGBA render view.
+float4 packed444(float4 p : SV_Position) : SV_Target {
+    float3 yuv = yuv444(p.xy - 0.5);
+    float y = floor(clamp(fullRange != 0 ? 255 * yuv.x : 16 + 219 * yuv.x, 0, 255) + 0.5);
+    float2 uv = floor(clamp(128 + (fullRange != 0 ? 255 : 224) * yuv.yz, 0, 255) + 0.5);
+    return float4(uv.y, uv.x, y, 255) / 255;
+}
+// CUDA imports this single R16_UINT texture into pitched Y/U/V device memory.
+// NVENC's 16-bit 4:4:4 container stores 10-bit codes in the upper bits.
+uint planar444(float4 p : SV_Position) : SV_Target {
+    uint plane = uint(p.y) / targetSize.y;
+    float3 yuv = yuv444(float2(p.x - 0.5, p.y - 0.5 - plane * targetSize.y));
+    float code = plane == 0 ? (fullRange != 0 ? 1023 * yuv.x : 64 + 876 * yuv.x)
+                           : 512 + (fullRange != 0 ? 1023 : 896) * yuv[plane];
+    return uint(floor(clamp(code, 0, 1023) + 0.5)) << 6;
+}
 "#;
 
 unsafe fn compile(entry: &'static [u8], target: &'static [u8]) -> Result<Vec<u8>> {
@@ -110,7 +132,14 @@ unsafe fn compile(entry: &'static [u8], target: &'static [u8]) -> Result<Vec<u8>
 struct Target {
     texture: Arc<ID3D11Texture2D>,
     luma: ID3D11RenderTargetView,
-    chroma: ID3D11RenderTargetView,
+    chroma: Option<ID3D11RenderTargetView>,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Layout {
+    Nv12,
+    P010,
+    Ayuv,
+    Planar444,
 }
 pub(crate) struct Converter {
     gpu: Device,
@@ -122,7 +151,7 @@ pub(crate) struct Converter {
     dirty: bool,
     width: u32,
     height: u32,
-    hdr: bool,
+    layout: Layout,
     targets: Vec<Target>,
 }
 impl Converter {
@@ -133,10 +162,10 @@ impl Converter {
     ) -> Result<Self> {
         if config.width == 0
             || config.height == 0
-            || !config.width.is_multiple_of(2)
-            || !config.height.is_multiple_of(2)
+            || (!config.yuv444
+                && (!config.width.is_multiple_of(2) || !config.height.is_multiple_of(2)))
         {
-            bail!("GPU 4:2:0 conversion requires even, nonzero dimensions");
+            bail!("GPU conversion requires nonzero dimensions, and even dimensions for 4:2:0");
         }
         if !config.hdr && source.2 != Pixel::Bgra8 {
             bail!("HDR surface supplied to an SDR converter");
@@ -150,8 +179,21 @@ impl Converter {
                 None,
                 Some(&mut vertex),
             )?;
+            let layout = match (config.yuv444, config.ten_bit()) {
+                (false, false) => Layout::Nv12,
+                (false, true) => Layout::P010,
+                (true, false) => Layout::Ayuv,
+                (true, true) => Layout::Planar444,
+            };
             gpu.device.CreatePixelShader(
-                &compile(b"luma\0", b"ps_5_0\0")?,
+                &compile(
+                    match layout {
+                        Layout::Ayuv => b"packed444\0",
+                        Layout::Planar444 => b"planar444\0",
+                        _ => b"luma\0",
+                    },
+                    b"ps_5_0\0",
+                )?,
                 None,
                 Some(&mut luma),
             )?;
@@ -202,7 +244,7 @@ impl Converter {
                 dirty: false,
                 width: config.width,
                 height: config.height,
-                hdr: config.ten_bit(),
+                layout,
                 targets: vec![],
             })
         }
@@ -234,13 +276,18 @@ impl Converter {
                 .CreateTexture2D(
                     &D3D11_TEXTURE2D_DESC {
                         Width: self.width,
-                        Height: self.height,
+                        Height: if self.layout == Layout::Planar444 {
+                            self.height * 3
+                        } else {
+                            self.height
+                        },
                         MipLevels: 1,
                         ArraySize: 1,
-                        Format: if self.hdr {
-                            DXGI_FORMAT_P010
-                        } else {
-                            DXGI_FORMAT_NV12
+                        Format: match self.layout {
+                            Layout::Nv12 => DXGI_FORMAT_NV12,
+                            Layout::P010 => DXGI_FORMAT_P010,
+                            Layout::Ayuv => DXGI_FORMAT_AYUV,
+                            Layout::Planar444 => DXGI_FORMAT_R16_UINT,
                         },
                         SampleDesc: DXGI_SAMPLE_DESC {
                             Count: 1,
@@ -271,16 +318,17 @@ impl Converter {
                 )?;
                 Ok(view.unwrap())
             };
-            let luma = view(if self.hdr {
-                DXGI_FORMAT_R16_UNORM
-            } else {
-                DXGI_FORMAT_R8_UNORM
+            let luma = view(match self.layout {
+                Layout::Nv12 => DXGI_FORMAT_R8_UNORM,
+                Layout::P010 => DXGI_FORMAT_R16_UNORM,
+                Layout::Ayuv => DXGI_FORMAT_R8G8B8A8_UNORM,
+                Layout::Planar444 => DXGI_FORMAT_R16_UINT,
             })?;
-            let chroma = view(if self.hdr {
-                DXGI_FORMAT_R16G16_UNORM
-            } else {
-                DXGI_FORMAT_R8G8_UNORM
-            })?;
+            let chroma = match self.layout {
+                Layout::Nv12 => Some(view(DXGI_FORMAT_R8G8_UNORM)?),
+                Layout::P010 => Some(view(DXGI_FORMAT_R16G16_UNORM)?),
+                _ => None,
+            };
             self.targets.push(Target {
                 texture: Arc::new(texture),
                 luma,
@@ -321,13 +369,18 @@ impl Converter {
             context.PSSetConstantBuffers(0, Some(&[Some(self.constants.clone())]));
             context.RSSetState(None);
             context.OMSetBlendState(None, None, u32::MAX);
-            for (view, shader, divisor) in [
-                (&self.targets[index].luma, &self.luma, 1),
-                (&self.targets[index].chroma, &self.chroma, 2),
-            ] {
+            let target = &self.targets[index];
+            for (view, shader, divisor) in std::iter::once((&target.luma, &self.luma, 1))
+                .chain(target.chroma.as_ref().map(|view| (view, &self.chroma, 2)))
+            {
                 context.RSSetViewports(Some(&[D3D11_VIEWPORT {
                     Width: (self.width / divisor) as f32,
-                    Height: (self.height / divisor) as f32,
+                    Height: (self.height / divisor
+                        * if self.layout == Layout::Planar444 {
+                            3
+                        } else {
+                            1
+                        }) as f32,
                     MinDepth: 0.,
                     MaxDepth: 1.,
                     ..Default::default()
@@ -386,7 +439,12 @@ mod tests {
             gpu.context
                 .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
             let mut values = Vec::new();
-            for y in 0..desc.Height as usize * 3 / 2 {
+            let rows = if desc.Format == DXGI_FORMAT_P010 {
+                desc.Height as usize * 3 / 2
+            } else {
+                desc.Height as usize
+            };
+            for y in 0..rows {
                 let row = std::slice::from_raw_parts(
                     (mapped.pData as *const u8).add(y * mapped.RowPitch as usize),
                     desc.Width as usize * 2,
@@ -581,6 +639,118 @@ mod tests {
         held.pop();
         let next = convert.convert(&white)?;
         assert!(readback(&gpu, &next)?[..64 * 64].iter().all(|y| *y == 940));
+        Ok(())
+    }
+    #[test]
+    #[ignore = "requires D3D11 RGBA and R16 render targets"]
+    fn gpu_444_preserves_per_pixel_chroma_and_planar_ten_bit_codes() -> Result<()> {
+        let _com = ComGuard::new()?;
+        let gpu = Device::new("")?;
+        let image = Image {
+            width: 64,
+            height: 64,
+            stride: 256,
+            bytes: [0, 0, 255, 255, 255, 0, 0, 255].repeat(64 * 64 / 2),
+            pixel: Pixel::Bgra8,
+            captured: Instant::now(),
+        };
+        let source = GpuImage::upload(&gpu, &image)?;
+        let config = butterpollo_core::rtsp::Negotiated {
+            width: 64,
+            height: 64,
+            codec: 1,
+            yuv444: true,
+            csc_mode: 2,
+            ..Default::default()
+        };
+        let mut converter = Converter::new(&gpu, &config, (64, 64, Pixel::Bgra8))?;
+        // Test the packed shader through its documented RGBA-compatible view.
+        // Radeon cannot allocate AYUV; native AYUV registration is exercised
+        // separately by the opt-in NVIDIA hardware fixture.
+        unsafe {
+            let mut texture = None;
+            gpu.device.CreateTexture2D(
+                &D3D11_TEXTURE2D_DESC {
+                    Width: 64,
+                    Height: 64,
+                    MipLevels: 1,
+                    ArraySize: 1,
+                    Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: 1,
+                        Quality: 0,
+                    },
+                    Usage: D3D11_USAGE_DEFAULT,
+                    BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
+                    ..Default::default()
+                },
+                None,
+                Some(&mut texture),
+            )?;
+            let texture = texture.unwrap();
+            let mut view = None;
+            gpu.device
+                .CreateRenderTargetView(&texture, None, Some(&mut view))?;
+            converter.targets.push(Target {
+                texture: Arc::new(texture),
+                luma: view.unwrap(),
+                chroma: None,
+            });
+        }
+        let texture = converter.convert(&source)?;
+        unsafe {
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+            texture.GetDesc(&mut desc);
+            assert_eq!(desc.Format, DXGI_FORMAT_R8G8B8A8_UNORM);
+            desc.Usage = D3D11_USAGE_STAGING;
+            desc.BindFlags = 0;
+            desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+            let mut staging = None;
+            gpu.device
+                .CreateTexture2D(&desc, None, Some(&mut staging))?;
+            let staging = staging.unwrap();
+            gpu.context.CopyResource(&staging, texture.as_ref());
+            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+            gpu.context
+                .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
+            let actual = std::slice::from_raw_parts(mapped.pData.cast::<u8>(), 8).to_vec();
+            gpu.context.Unmap(&staging, 0);
+            // Adjacent red/blue pixels must retain separate chroma, V/U/Y/A.
+            for (actual, expected) in actual.iter().zip([240u8, 102, 63, 255, 118, 240, 32, 255]) {
+                assert!(actual.abs_diff(expected) <= 1, "AYUV {actual:?}");
+            }
+        }
+        let config = butterpollo_core::rtsp::Negotiated {
+            sdr_10bit: true,
+            ..config
+        };
+        let mut converter = Converter::new(&gpu, &config, (64, 64, Pixel::Bgra8))?;
+        let output = readback(&gpu, converter.convert(&source)?.as_ref())?;
+        assert_eq!(output.len(), 64 * 64 * 3);
+        let observed = [
+            output[0],
+            output[1],
+            output[4096],
+            output[4097],
+            output[8192],
+            output[8193],
+        ];
+        for (actual, expected) in observed.into_iter().zip([250u16, 127, 409, 960, 960, 471]) {
+            assert!(actual.abs_diff(expected) <= 1, "planar 4:4:4 {observed:?}");
+        }
+        let image = make_image(&[[0.; 3], [1.; 3], [12.5; 3], [125.; 3]], 16, 64);
+        let source = GpuImage::upload(&gpu, &image)?;
+        let config = butterpollo_core::rtsp::Negotiated {
+            hdr: true,
+            ..config
+        };
+        let mut converter = Converter::new(&gpu, &config, (64, 64, Pixel::RgbaF16))?;
+        let output = readback(&gpu, converter.convert(&source)?.as_ref())?;
+        for (x, expected) in [64u16, 490, 723, 940].into_iter().enumerate() {
+            assert!(output[x * 16 + 8].abs_diff(expected) <= 1);
+            assert_eq!(output[4096 + x * 16 + 8], 512);
+            assert_eq!(output[8192 + x * 16 + 8], 512);
+        }
         Ok(())
     }
 }

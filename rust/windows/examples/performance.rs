@@ -26,11 +26,14 @@ fn main() -> anyhow::Result<()> {
 Repeat-frame throughput excludes capture, network, decoding and display latency.\n\
 --width 1920 --height 1080 --fps 120 --seconds 8 --bitrate 20000\n\
 --codec hevc (h264/hevc/av1/pyrowave) --encoder auto --capture wgc --display NAME\n\
---hdr: HDR10 output; --cpu: CPU conversion/readback path; --paced: requested frame cadence"
+--hdr: HDR10 output; --sdr-10bit; --yuv444; --cpu: CPU conversion/readback path; --paced: requested frame cadence"
             );
             return Ok(());
         }
-        if matches!(key.as_str(), "--hdr" | "--cpu" | "--paced") {
+        if matches!(
+            key.as_str(),
+            "--hdr" | "--sdr-10bit" | "--yuv444" | "--cpu" | "--paced"
+        ) {
             fields.insert(key, "1".into());
         } else if matches!(
             key.as_str(),
@@ -68,6 +71,8 @@ Repeat-frame throughput excludes capture, network, decoding and display latency.
             other => bail!("unknown codec {other}"),
         },
         hdr: fields.contains_key("--hdr"),
+        sdr_10bit: fields.contains_key("--sdr-10bit"),
+        yuv444: fields.contains_key("--yuv444"),
         ..Default::default()
     };
     let seconds = number("--seconds", "8")?;

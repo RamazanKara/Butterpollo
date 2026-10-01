@@ -215,6 +215,22 @@ pub struct Device {
     pub display: Display,
 }
 impl Device {
+    /// Read the selected output's luminance; conversion produces Rec.2020/D65.
+    pub fn hdr_metadata(&self) -> butterpollo_core::hdr::Metadata {
+        unsafe {
+            self.output
+                .cast::<IDXGIOutput6>()
+                .and_then(|output| output.GetDesc1())
+        }
+        .map(|desc| {
+            butterpollo_core::hdr::Metadata::display(
+                desc.MaxLuminance,
+                desc.MinLuminance,
+                desc.MaxFullFrameLuminance,
+            )
+        })
+        .unwrap_or_default()
+    }
     pub fn new(name: &str) -> Result<Self> {
         Self::new_adapter(name, "", "")
     }
