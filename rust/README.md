@@ -25,7 +25,7 @@ The script checks formatting, tests, lints, builds the host, service and perform
 .\butterpollo.exe --config-dir C:\path\to\a\config-copy --bind 0.0.0.0
 ```
 
-Without arguments the host binds to loopback and uses `%LOCALAPPDATA%\ButterpolloRust\config`; the web interface is `https://localhost:47990`. Initial credential setup requires a local connection. Use `--port 48123 --bind 127.0.0.1` for an isolated instance: web 48124, HTTPS 48118 and RTSP 48144. Standard Moonlight UDP port offsets remain compatible.
+Without arguments the host uses `%LOCALAPPDATA%\ButterpolloRust\config` and listens on all IPv4 interfaces, preserving the previous host's LAN discovery behavior; the web interface is `https://localhost:47990`. `address_family=both` enables dual-stack listeners, and `bind_address` or `--bind` selects an interface. Initial credential setup requires a local connection. Use `--port 48123 --bind 127.0.0.1` for an isolated instance: web 48124, HTTPS 48118 and RTSP 48144. Standard Moonlight UDP port offsets remain compatible.
 
 Copy the complete original configuration directory, including certificates, `sunshine_state.json`, `vibeshine_state.json`, `apps.json` and `sunshine.conf`, before testing migration. Absolute paths in the copied configuration still refer to their original locations; change those paths to the copy when isolating it. Credentials, certificate identities, app UUIDs, artwork IDs, permissions and unknown configuration/state fields are preserved. Imported legacy clients and booleans are normalized. State writes replace files atomically.
 
