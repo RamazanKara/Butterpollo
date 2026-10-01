@@ -10,7 +10,8 @@ from cryptography.hazmat.primitives.ciphers import Cipher,algorithms,modes
 from cryptography.x509.oid import NameOID
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 artifact=pathlib.Path(sys.argv[1]);client_exe=artifact/'moonlight-client.exe';codec=sys.argv[2] if len(sys.argv)>2 else 'h264'
-web='https://127.0.0.1:48124';http='http://127.0.0.1:48123';https='https://127.0.0.1:48118'
+port=int(os.environ.get('BUTTERPOLLO_TEST_PORT','48123'))
+web=f'https://127.0.0.1:{port+1}';http=f'http://127.0.0.1:{port}';https=f'https://127.0.0.1:{port-5}'
 session=requests.Session();session.verify=False
 login=session.post(web+'/api/auth/login',json={'username':'test','password':'rust-smoke-only'},timeout=10);login.raise_for_status();csrf=login.json()['csrf_token'];session.headers['X-CSRF-Token']=csrf
 key=rsa.generate_private_key(public_exponent=65537,key_size=2048)
@@ -42,6 +43,17 @@ print('PAIRING independent RSA/AES proof verified',flush=True)
 # The administrator explicitly grants this fixture permission to launch.
 clients=session.get(web+'/api/clients/list',timeout=10).json()['clients']
 paired=next(c for c in clients if c['name']==uid)
+client=requests.Session();client.verify=False;client.cert=(str(artifact/'client.pem'),str(artifact/'client-key.pem'))
+# File upload permission must not grant global stream termination. Check both
+# cancellation and the legacy termination tile before granting launch rights.
+session.post(web+'/api/clients/update',json={'uuid':paired['uuid'],'perm':(1<<24)|(1<<18)},timeout=10).raise_for_status()
+denied=ET.fromstring(client.get(https+'/cancel',timeout=10).text)
+assert denied.attrib['status_code']=='401',ET.tostring(denied)
+denied=ET.fromstring(client.get(https+'/launch',params={'appid':'2147483504'},timeout=10).text)
+assert denied.attrib['status_code']=='401',ET.tostring(denied)
+visible=ET.fromstring(client.get(https+'/applist',timeout=10).text)
+assert all(app.findtext('AppTitle')!='Terminate' for app in visible.findall('App'))
+print('PERMISSIONS file upload cannot terminate streams',flush=True)
 settings={'uuid':paired['uuid'],'perm':0x071f1f00}
 hooks_path=artifact/'client-hooks.txt' if os.environ.get('BUTTERPOLLO_TEST_CLIENT_HOOKS')=='1' else None
 if hooks_path:
@@ -49,14 +61,39 @@ if hooks_path:
     settings.update({'do':[{'cmd':f'echo connected-$(SUNSHINE_CLIENT_NAME)>"{hooks_path}"'}],
                      'undo':[{'cmd':f'echo disconnected-$(SUNSHINE_CLIENT_NAME)>>"{hooks_path}"'}]})
 r=session.post(web+'/api/clients/update',json=settings,timeout=10);r.raise_for_status()
-client=requests.Session();client.verify=False;client.cert=(str(artifact/'client.pem'),str(artifact/'client-key.pem'))
 info=ET.fromstring(client.get(https+'/serverinfo',timeout=10).text);assert info.findtext('PairStatus')=='1'
 apps=ET.fromstring(client.get(https+'/applist',timeout=10).text);app=apps.find('App');assert app is not None
 launch=ET.fromstring(client.get(https+'/launch',params={'appid':app.findtext('ID'),'rikey':bytes(range(16)).hex(),'rikeyid':'123','corever':'1'},timeout=10).text);assert launch.attrib['status_code']=='200',ET.tostring(launch)
 url=launch.findtext('sessionUrl0');print('LAUNCH',url,flush=True)
 env=os.environ.copy();env['PATH']=str(artifact/'target/debug')+';C:\\msys64\\ucrt64\\bin;'+env['PATH']
 try:
-    result=subprocess.run([str(client_exe),url,codec],env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=30)
+    duration=int(sys.argv[6]) if len(sys.argv)>6 else 0
+    command=[str(client_exe),url,codec,*sys.argv[3:]]
+    samples=[];started=time.monotonic()
+    process=subprocess.Popen(command,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        output_future=executor.submit(process.communicate)
+        while not output_future.done():
+            if time.monotonic()-started>max(30,duration+30):
+                process.kill()
+                output=output_future.result()[0]
+                raise subprocess.TimeoutExpired(command,max(30,duration+30),output=output)
+            stats=session.get(web+'/api/rtsp/sessions',timeout=10);stats.raise_for_status()
+            samples.append({'elapsed_seconds':time.monotonic()-started,**stats.json()})
+            time.sleep(.5)
+        output=output_future.result()[0]
+    result=subprocess.CompletedProcess(command,process.returncode,output)
+    stream_samples=[s for sample in samples for s in sample.get('sessions',[]) if s['uuid']==paired['uuid'] and s['uptime_seconds']>=2]
+    steady_fps=None
+    if len(stream_samples)>1:
+        first,last=stream_samples[0],stream_samples[-1]
+        steady_fps=(last['frames_sent']-first['frames_sent'])/(last['uptime_seconds']-first['uptime_seconds'])
+    threads=sys.argv[8] if len(sys.argv)>8 else '1'
+    report={'codec':codec,'client_arguments':sys.argv[3:],'decoder_threads':int(threads),'host_steady_fps':steady_fps,'samples':samples}
+    import json
+    width=sys.argv[3] if len(sys.argv)>3 else '640';height=sys.argv[4] if len(sys.argv)>4 else '480';fps=sys.argv[5] if len(sys.argv)>5 else '30'
+    (artifact/f'stream-{codec}-{width}x{height}-{fps}-threads{threads}.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
+    print('HOST_STEADY_FPS',steady_fps,flush=True)
     print(result.stdout,flush=True);(artifact/'moonlight-interop.log').write_text(result.stdout,encoding='utf-8');assert result.returncode==0
 except subprocess.TimeoutExpired as error:
     output=error.stdout or b''

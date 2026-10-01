@@ -15,7 +15,6 @@ use butterpollo_core::{
 };
 use serde_json::{Value, json};
 use std::time::Instant;
-use tower_http::services::{ServeDir, ServeFile};
 
 fn response(status: StatusCode, value: Value) -> Response {
     (status, Json(value)).into_response()
@@ -23,7 +22,7 @@ fn response(status: StatusCode, value: Value) -> Response {
 fn error(status: StatusCode, message: &str) -> Response {
     response(status, json!({"status":false,"error":message}))
 }
-fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
+pub(crate) fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
         .get(header::COOKIE)?
         .to_str()
@@ -34,7 +33,7 @@ fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
             if k == name { Some(v.to_owned()) } else { None }
         })
 }
-fn access(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn access(headers: &HeaderMap) -> Option<String> {
     headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -42,7 +41,7 @@ fn access(headers: &HeaderMap) -> Option<String> {
         .map(str::to_owned)
         .or_else(|| cookie(headers, "__Host-apollo_session"))
 }
-fn authenticated(h: &Shared, headers: &HeaderMap) -> bool {
+pub(crate) fn authenticated(h: &Shared, headers: &HeaderMap) -> bool {
     if let Some(token) = access(headers) {
         return h
             .web_sessions
@@ -111,21 +110,60 @@ fn token_catalog() -> Vec<auth::Scope> {
     .collect()
 }
 pub fn router(h: Shared) -> Router {
-    let assets = h.assets.clone();
     Router::new()
         .route(
             "/api/{*path}",
             get(api).post(api).patch(api).put(api).delete(api),
         )
-        .fallback_service(
-            ServeDir::new(&assets).not_found_service(ServeFile::new(assets.join("index.html"))),
+        .route(
+            "/console/action",
+            axum::routing::post(crate::console::action),
         )
+        .route("/console.css", get(crate::console::stylesheet))
+        .route("/favicon.svg", get(crate::console::favicon))
+        .fallback(crate::console::page)
         .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
         .layer(middleware::from_fn_with_state(h.clone(), guard))
         .with_state(h)
 }
-async fn guard(State(h): State<Shared>, request: Request, next: Next) -> Response {
-    let path = request.uri().path();
+async fn guard(State(h): State<Shared>, mut request: Request, next: Next) -> Response {
+    let console_form = request.uri().path() == "/console/action";
+    let (method, path) = if console_form {
+        if request.method() != Method::POST {
+            return error(StatusCode::METHOD_NOT_ALLOWED, "POST required");
+        }
+        if !request
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.split(';').next() == Some("application/x-www-form-urlencoded"))
+        {
+            return error(StatusCode::BAD_REQUEST, "form content type required");
+        }
+        let (mut parts, body) = request.into_parts();
+        let bytes = match axum::body::to_bytes(body, 1024 * 1024).await {
+            Ok(bytes) => bytes,
+            Err(_) => return error(StatusCode::PAYLOAD_TOO_LARGE, "form exceeds the limit"),
+        };
+        let fields: crate::console::Fields =
+            url::form_urlencoded::parse(&bytes).into_owned().collect();
+        let route = match crate::console::route(&fields) {
+            Ok(route) => route,
+            Err(message) => return error(StatusCode::BAD_REQUEST, &message),
+        };
+        let Some(csrf) = fields
+            .get("_csrf")
+            .and_then(|v| v.parse::<axum::http::HeaderValue>().ok())
+        else {
+            return error(StatusCode::BAD_REQUEST, "CSRF token required");
+        };
+        parts.headers.insert("X-CSRF-Token", csrf);
+        request = Request::from_parts(parts, axum::body::Body::from(bytes));
+        route
+    } else {
+        (request.method().clone(), request.uri().path().to_owned())
+    };
+    let path = path.as_str();
     let public = matches!(
         path,
         "/api/auth/login"
@@ -135,7 +173,7 @@ async fn guard(State(h): State<Shared>, request: Request, next: Next) -> Respons
             | "/api/configLocale"
     );
     let fresh_password = path == "/api/password" && h.credentials.read().unwrap().is_none();
-    let api_token = token_authenticated(&h, request.headers(), path, request.method().as_str());
+    let api_token = token_authenticated(&h, request.headers(), path, method.as_str());
     if fresh_password
         && !request
             .extensions()
@@ -155,10 +193,7 @@ async fn guard(State(h): State<Shared>, request: Request, next: Next) -> Respons
     {
         return error(StatusCode::UNAUTHORIZED, "authentication required");
     }
-    if !matches!(
-        *request.method(),
-        Method::GET | Method::HEAD | Method::OPTIONS
-    ) {
+    if !matches!(method, Method::GET | Method::HEAD | Method::OPTIONS) {
         if let Some(origin) = request
             .headers()
             .get(header::ORIGIN)
@@ -173,15 +208,20 @@ async fn guard(State(h): State<Shared>, request: Request, next: Next) -> Respons
                 return error(StatusCode::FORBIDDEN, "request origin is not allowed");
             }
         }
-        if (path == "/api/auth/login" || fresh_password)
-            && let Some(expected) = cookie(request.headers(), "__Host-apollo_anon_csrf")
+        if path == "/api/auth/login"
+            || fresh_password
+            || (console_form && access(request.headers()).is_none())
         {
+            let expected = cookie(request.headers(), "__Host-apollo_anon_csrf");
             let got = request
                 .headers()
                 .get("X-CSRF-Token")
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("");
-            if !crypto::equal(expected.as_bytes(), got.as_bytes()) {
+            if (console_form && expected.is_none())
+                || expected
+                    .is_some_and(|expected| !crypto::equal(expected.as_bytes(), got.as_bytes()))
+            {
                 return error(StatusCode::BAD_REQUEST, "CSRF token required");
             }
         }
@@ -230,7 +270,7 @@ fn issued(h: &Shared, username: String) -> Response {
     }
     r
 }
-async fn api(
+pub(crate) async fn api(
     State(h): State<Shared>,
     Extension(connection): Extension<Connection>,
     method: Method,

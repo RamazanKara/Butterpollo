@@ -1,3 +1,4 @@
+mod console;
 mod maintenance;
 mod nvhttp;
 mod process;
@@ -130,7 +131,13 @@ async fn main() -> Result<()> {
     let (tray, actions) = if args.no_tray {
         (None, None)
     } else {
-        match butterpollo_windows::tray::Tray::new(h.assets.join("images/apollo.ico"), ports.web) {
+        let icon = h.assets.parent().unwrap_or(&h.assets).join("apollo.ico");
+        let icon = if icon.is_file() {
+            icon
+        } else {
+            h.assets.join("images/apollo.ico")
+        };
+        match butterpollo_windows::tray::Tray::new(icon, ports.web) {
             Ok((tray, events)) => (Some(tray), Some(events)),
             Err(e) => {
                 tracing::warn!(error=%e,"tray unavailable");

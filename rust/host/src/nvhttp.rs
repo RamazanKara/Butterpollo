@@ -295,7 +295,7 @@ async fn applist(
     }
     for (id, title) in butterpollo_core::remote::tiles() {
         let allowed = match butterpollo_core::remote::identify(id, "").unwrap() {
-            butterpollo_core::remote::Control::Terminate => client.perm & (1 << 18) != 0,
+            butterpollo_core::remote::Control::Terminate => client.perm & (1 << 26) != 0,
             butterpollo_core::remote::Control::Resume => client.perm & (1 << 25) != 0,
             _ => client.perm & (1 << 26) != 0,
         };
@@ -331,7 +331,7 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
         .unwrap_or(0);
     let control = remote::identify(requested, args.get("appuuid").map_or("", String::as_str));
     let permission = match control {
-        Some(Control::Terminate) => 1 << 18,
+        Some(Control::Terminate) => 1 << 26,
         Some(Control::Resume) => 1 << 25,
         _ if resume => 1 << 25,
         _ => 1 << 26,
@@ -483,7 +483,7 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
     }
 }
 async fn cancel(State(h): State<Shared>, Extension(connection): Extension<Connection>) -> Response {
-    if let Err(e) = authenticated(&h, &connection, 1 << 18) {
+    if let Err(e) = authenticated(&h, &connection, 1 << 26) {
         return xml(401, &[], Some(e.to_string()));
     }
     h.sessions.lock().unwrap().stop_role(Role::Stream, None);

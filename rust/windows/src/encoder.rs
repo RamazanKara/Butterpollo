@@ -1,4 +1,7 @@
-use crate::{capture::Image, ff};
+use crate::{
+    capture::{GpuImage, Image},
+    ff,
+};
 use anyhow::{Result, bail};
 use butterpollo_core::rtsp::Negotiated;
 use std::{
@@ -9,6 +12,8 @@ use std::{
 pub struct Encoded {
     pub bytes: Vec<u8>,
     pub idr: bool,
+    /// Submission through completed codec output, including asynchronous work.
+    pub latency: Option<std::time::Duration>,
 }
 pub(crate) fn check(code: i32) -> Result<()> {
     if code >= 0 {
@@ -190,6 +195,7 @@ pub struct Ffmpeg {
     convert: Convert,
     index: i64,
     pub name: String,
+    staging: Option<windows::Win32::Graphics::Direct3D11::ID3D11Texture2D>,
 }
 impl Ffmpeg {
     pub fn new(config: &Negotiated, name: &str) -> Result<Self> {
@@ -333,6 +339,7 @@ impl Ffmpeg {
                 convert,
                 index: 0,
                 name: name.into(),
+                staging: None,
             })
         }
     }
@@ -363,6 +370,7 @@ impl Ffmpeg {
                 output.push(Encoded {
                     bytes,
                     idr: (*self.packet).flags & ff::AV_PKT_FLAG_KEY as i32 != 0,
+                    latency: None,
                 });
                 ff::av_packet_unref(self.packet);
             }
@@ -384,6 +392,53 @@ pub enum Encoder {
     Pyrowave(crate::pyrowave::Encoder),
 }
 impl Encoder {
+    pub fn new_gpu(config: &Negotiated, preference: &str, image: &GpuImage) -> Result<Self> {
+        if config.codec != 3
+            && (preference == "amf"
+                || ((preference.is_empty() || preference == "auto")
+                    && image.gpu.display.adapter.contains("Radeon")))
+        {
+            match crate::amf::Encoder::new_device(config, image.gpu.clone()) {
+                Ok(encoder) => return Ok(Self::Amf(encoder)),
+                Err(error) if preference == "amf" => return Err(error),
+                Err(error) => tracing::warn!(%error, "AMF unavailable; trying other encoders"),
+            }
+        }
+        Self::new(config, preference, &image.gpu.display.display_name)
+    }
+    pub fn encode_gpu(
+        &mut self,
+        image: &GpuImage,
+        idr: bool,
+        bitrate: u32,
+    ) -> Result<Vec<Encoded>> {
+        if let Self::Amf(encoder) = self {
+            return encoder.encode_gpu(image, idr, bitrate);
+        }
+        // The software and SDK paths retain a compatibility readback until
+        // they can import native surfaces. AMD's path never enters this branch.
+        match self {
+            Self::Ffmpeg(e) => {
+                let cpu = image.readback(&mut e.staging)?;
+                e.encode(&cpu, idr, bitrate)
+            }
+            Self::Pyrowave(e) => {
+                let cpu = image.readback(&mut e.staging)?;
+                e.encode(&cpu, idr, bitrate)
+            }
+            Self::Amf(_) => unreachable!(),
+        }
+    }
+    pub fn pending(&self) -> bool {
+        matches!(self, Self::Amf(e) if e.pending())
+    }
+    pub fn poll(&mut self) -> Result<Vec<Encoded>> {
+        if let Self::Amf(e) = self {
+            e.poll()
+        } else {
+            Ok(vec![])
+        }
+    }
     pub fn new(config: &Negotiated, preference: &str, display: &str) -> Result<Self> {
         if config.codec == 3 {
             return Ok(Self::Pyrowave(crate::pyrowave::Encoder::new(

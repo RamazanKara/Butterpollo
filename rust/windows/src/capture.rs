@@ -156,6 +156,7 @@ pub struct Image {
     pub captured: Instant,
     pub pixel: Pixel,
 }
+#[derive(Clone)]
 pub struct Device {
     pub device: ID3D11Device,
     pub context: ID3D11DeviceContext,
@@ -189,9 +190,12 @@ impl Device {
                 None,
                 Some(&mut context),
             )?;
+            let context = context.unwrap();
+            let multithread: ID3D11Multithread = context.cast()?;
+            let _ = multithread.SetMultithreadProtected(true);
             Ok(Self {
                 device: device.unwrap(),
-                context: context.unwrap(),
+                context,
                 output,
                 display,
             })
@@ -202,6 +206,7 @@ pub struct Duplication {
     gpu: Device,
     duplicate: IDXGIOutputDuplication,
     staging: Option<ID3D11Texture2D>,
+    owned: GpuPool,
 }
 impl Duplication {
     pub fn new(name: &str) -> Result<Self> {
@@ -227,6 +232,7 @@ impl Duplication {
             gpu,
             duplicate,
             staging: None,
+            owned: GpuPool::default(),
         })
     }
     pub fn next(&mut self, timeout: Duration) -> Result<Option<Image>> {
@@ -249,6 +255,144 @@ impl Duplication {
             })();
             let _ = self.duplicate.ReleaseFrame();
             result.map(Some)
+        }
+    }
+    pub fn next_gpu(&mut self) -> Result<Option<GpuImage>> {
+        unsafe {
+            let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
+            let mut resource = None;
+            match self.duplicate.AcquireNextFrame(1, &mut info, &mut resource) {
+                Ok(()) => {}
+                Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(None),
+                Err(e) => return Err(e.into()),
+            }
+            let result = (|| {
+                let texture: ID3D11Texture2D =
+                    resource.context("empty captured texture")?.cast()?;
+                self.owned.copy(&self.gpu, &texture)
+            })();
+            let _ = self.duplicate.ReleaseFrame();
+            result
+        }
+    }
+}
+
+/// An immutable, owned GPU snapshot. The capture pool never overwrites a
+/// texture until the latest-frame slot and every encoder have released it.
+#[derive(Clone)]
+pub struct GpuImage {
+    pub width: u32,
+    pub height: u32,
+    pub pixel: Pixel,
+    pub captured: Instant,
+    pub gpu: Device,
+    pub texture: std::sync::Arc<ID3D11Texture2D>,
+}
+impl GpuImage {
+    pub fn readback(&self, staging: &mut Option<ID3D11Texture2D>) -> Result<Image> {
+        read_texture(&self.gpu, &self.texture, staging)
+    }
+    pub fn upload(gpu: &Device, image: &Image) -> Result<Self> {
+        let format = match image.pixel {
+            Pixel::Bgra8 => DXGI_FORMAT_B8G8R8A8_UNORM,
+            Pixel::RgbaF16 => DXGI_FORMAT_R16G16B16A16_FLOAT,
+            Pixel::Rgba10Pq => DXGI_FORMAT_R10G10B10A2_UNORM,
+        };
+        let bytes = if image.pixel == Pixel::RgbaF16 { 8 } else { 4 };
+        if image.width == 0
+            || image.height == 0
+            || image.stride < image.width as usize * bytes
+            || image.bytes.len() < image.stride * image.height as usize
+        {
+            bail!("invalid GPU upload image");
+        }
+        unsafe {
+            let desc = D3D11_TEXTURE2D_DESC {
+                Width: image.width,
+                Height: image.height,
+                MipLevels: 1,
+                ArraySize: 1,
+                Format: format,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                Usage: D3D11_USAGE_DEFAULT,
+                BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+                ..Default::default()
+            };
+            let data = D3D11_SUBRESOURCE_DATA {
+                pSysMem: image.bytes.as_ptr().cast(),
+                SysMemPitch: image.stride.try_into()?,
+                SysMemSlicePitch: 0,
+            };
+            let mut texture = None;
+            gpu.device
+                .CreateTexture2D(&desc, Some(&data), Some(&mut texture))?;
+            Ok(Self {
+                width: image.width,
+                height: image.height,
+                pixel: image.pixel,
+                captured: image.captured,
+                gpu: gpu.clone(),
+                texture: std::sync::Arc::new(texture.unwrap()),
+            })
+        }
+    }
+}
+
+#[derive(Default)]
+struct GpuPool {
+    textures: Vec<std::sync::Arc<ID3D11Texture2D>>,
+}
+impl GpuPool {
+    fn copy(&mut self, gpu: &Device, source: &ID3D11Texture2D) -> Result<Option<GpuImage>> {
+        unsafe {
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+            source.GetDesc(&mut desc);
+            let pixel = match desc.Format {
+                DXGI_FORMAT_B8G8R8A8_UNORM => Pixel::Bgra8,
+                DXGI_FORMAT_R16G16B16A16_FLOAT => Pixel::RgbaF16,
+                DXGI_FORMAT_R10G10B10A2_UNORM => Pixel::Rgba10Pq,
+                _ => bail!("unsupported GPU capture format {:?}", desc.Format),
+            };
+            self.textures.retain(|texture| {
+                let mut old = D3D11_TEXTURE2D_DESC::default();
+                texture.GetDesc(&mut old);
+                old.Width == desc.Width && old.Height == desc.Height && old.Format == desc.Format
+            });
+            let free = self
+                .textures
+                .iter()
+                .find(|texture| std::sync::Arc::strong_count(texture) == 1)
+                .cloned();
+            let texture = if let Some(texture) = free {
+                texture
+            } else {
+                // A slow consumer drops capture updates instead of growing a frame queue.
+                if self.textures.len() >= 8 {
+                    return Ok(None);
+                }
+                desc.Usage = D3D11_USAGE_DEFAULT;
+                desc.BindFlags = D3D11_BIND_SHADER_RESOURCE.0 as u32;
+                desc.CPUAccessFlags = 0;
+                desc.MiscFlags = 0;
+                let mut texture = None;
+                gpu.device
+                    .CreateTexture2D(&desc, None, Some(&mut texture))?;
+                let texture = std::sync::Arc::new(texture.unwrap());
+                self.textures.push(texture.clone());
+                texture
+            };
+            gpu.context.CopyResource(texture.as_ref(), source);
+            Ok(Some(GpuImage {
+                width: desc.Width,
+                height: desc.Height,
+                pixel,
+                captured: Instant::now(),
+                gpu: gpu.clone(),
+                texture,
+            }))
         }
     }
 }
@@ -312,6 +456,7 @@ pub struct Wgc {
     pool: Direct3D11CaptureFramePool,
     session: GraphicsCaptureSession,
     staging: Option<ID3D11Texture2D>,
+    owned: GpuPool,
 }
 impl Wgc {
     pub fn new(name: &str) -> Result<Self> {
@@ -345,6 +490,7 @@ impl Wgc {
                 pool,
                 session,
                 staging: None,
+                owned: GpuPool::default(),
             })
         }
     }
@@ -361,6 +507,20 @@ impl Wgc {
         })();
         frame.Close()?;
         result.map(Some)
+    }
+    pub fn next_gpu(&mut self) -> Result<Option<GpuImage>> {
+        let frame = match self.pool.TryGetNextFrame() {
+            Ok(frame) => frame,
+            Err(_) => return Ok(None),
+        };
+        let result = (|| {
+            let surface = frame.Surface()?;
+            let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
+            let texture: ID3D11Texture2D = unsafe { access.GetInterface()? };
+            self.owned.copy(&self.gpu, &texture)
+        })();
+        frame.Close()?;
+        result
     }
 }
 impl Drop for Wgc {
@@ -390,6 +550,12 @@ impl Capture {
         match self {
             Self::Wgc(w) => w.next_frame(),
             Self::Dxgi(d) => d.next(Duration::from_millis(1)),
+        }
+    }
+    pub fn next_gpu(&mut self) -> Result<Option<GpuImage>> {
+        match self {
+            Self::Wgc(w) => w.next_gpu(),
+            Self::Dxgi(d) => d.next_gpu(),
         }
     }
 }

@@ -210,6 +210,7 @@ impl Drop for Interop {
     }
 }
 pub struct Encoder {
+    pub(crate) staging: Option<ID3D11Texture2D>,
     api: Arc<Api>,
     device: p::pyrowave_device,
     encoder: p::pyrowave_encoder,
@@ -229,6 +230,7 @@ impl Encoder {
         luid.luid[..4].copy_from_slice(&desc.AdapterLuid.LowPart.to_le_bytes());
         luid.luid[4..].copy_from_slice(&desc.AdapterLuid.HighPart.to_le_bytes());
         let mut s = Self {
+            staging: None,
             api,
             device: ptr::null_mut(),
             encoder: ptr::null_mut(),
@@ -440,6 +442,7 @@ impl Encoder {
             Ok(vec![Encoded {
                 bytes: pyrowave::container(&self.bitstream, &slices, self.config.hdr)?,
                 idr: true,
+                latency: None,
             }])
         }
     }

@@ -1,5 +1,5 @@
 """Real administration/auth contract checks against an isolated Rust instance."""
-import argparse, hashlib, io, os, pathlib, time, uuid, zipfile
+import argparse, hashlib, io, json, os, pathlib, re, time, uuid, zipfile
 import requests, urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 args = argparse.ArgumentParser()
@@ -17,6 +17,9 @@ def request(client, method, path, code=200, **kw):
 assert request(browser, 'GET', '/api/auth/status').json()['authenticated'] is False
 assert request(browser, 'GET', '/api/configLocale').json()['locale']
 request(browser, 'GET', '/api/config', 401)
+request(browser, 'POST', '/console/action', 400, data={'op':'login','_csrf':'missing','username':options.username,'password':password})
+request(browser, 'POST', '/console/action', 401, data={'op':'theme','_csrf':'missing','theme':'dark'})
+request(browser, 'POST', '/console/action', 400, data={'op':'/api/restart','_csrf':'missing'})
 request(admin, 'PATCH', '/api/config', 403, json={}, headers={'Origin':'https://example.invalid'})
 anonymous = request(browser, 'GET', '/api/csrf-token').json()['csrf_token']
 request(browser, 'POST', '/api/auth/login', 400, json={'username':options.username,'password':password})
@@ -27,6 +30,15 @@ browser.headers.pop('X-CSRF-Token')
 request(browser, 'PATCH', '/api/config', 400, json={})
 browser.headers['X-CSRF-Token'] = csrf
 request(browser, 'PATCH', '/api/config', json={})
+request(browser, 'POST', '/console/action', 400, data={'op':'theme','theme':'dark'})
+request(browser, 'POST', '/console/action', 400, data={'op':'theme','_csrf':'wrong','theme':'dark'})
+request(browser, 'POST', '/console/action', 403, data={'op':'theme','_csrf':csrf,'theme':'dark'},headers={'Origin':'https://example.invalid'})
+theme=request(browser, 'POST', '/console/action', 303, data={'op':'theme','_csrf':csrf,'theme':'dark','_return':'https://example.invalid'},allow_redirects=False)
+assert theme.headers['Location']=='/' and browser.cookies.get('butterpollo_theme')=='dark'
+console=request(browser, 'GET', '/')
+assert '<script' not in console.text and 'data-theme="dark"' in console.text
+assert "default-src 'none'" in console.headers['Content-Security-Policy']
+assert console.headers['Cache-Control']=='no-store'
 request(browser, 'PATCH', '/api/config', 400, json={'capture':'wgc\nport = 9'})
 assert request(browser, 'GET', '/api/metadata').json()['features']['rust_host'] is True
 logs = request(browser, 'GET', '/api/logs')
@@ -48,10 +60,15 @@ with zipfile.ZipFile(io.BytesIO(bundle.content)) as archive:
     assert archive.testzip() is None and 'diagnostics.json' in archive.namelist() and 'logs/butterpollo.log' in archive.namelist()
 app_id = str(uuid.uuid4()); token_hash = None
 try:
-    app = {'name':'Rust web fixture','uuid':app_id,'cmd':'','image-path':''}
+    app = {'name':'Rust web fixture','uuid':app_id,'cmd':'','image-path':'','migration-field':{'preserve':True}}
     assert request(browser, 'POST', '/api/apps', json=app).json()['uuid'] == app_id
     apps = request(browser, 'GET', '/api/apps').json()['apps']
     assert any(a.get('uuid') == app_id for a in apps)
+    request(browser, 'POST', '/console/action', 303, data={'op':'app-save','_csrf':csrf,'uuid':app_id,'name':'Rust <script>alert(1)</script> fixture','cmd':'','working-dir':'','_return':'/library'},allow_redirects=False)
+    saved=next(a for a in request(browser, 'GET', '/api/apps').json()['apps'] if a.get('uuid')==app_id)
+    assert saved['migration-field']=={'preserve':True}
+    library=request(browser, 'GET', '/library').text
+    assert 'Rust &lt;script&gt;alert(1)&lt;/script&gt; fixture' in library and '<script' not in library
     cover = request(browser, 'GET', f'/api/apps/{app_id}/cover')
     assert cover.content.startswith(b'\x89PNG\r\n\x1a\n')
     if os.environ.get('BUTTERPOLLO_TEST_DIR'):
@@ -73,12 +90,21 @@ try:
     request(scoped, 'POST', '/api/apps', 401, json=app)
     request(scoped, 'GET', '/api/clients/list', 401)
     request(scoped, 'POST', '/api/token', 401, json={'scopes':[{'path':'/api/config','methods':['POST']}]})
+    for op in ['app-save','config','theme']:
+        request(scoped, 'POST', '/console/action', 401, data={'op':op,'_csrf':'token','name':'Forbidden','theme':'dark','path':'/api/apps','method':'GET'})
     tokens = request(browser, 'GET', '/api/tokens').json()['tokens']
     assert any(t['hash'] == token_hash for t in tokens)
     assert secret not in str(tokens)
     request(browser, 'DELETE', '/api/token/' + token_hash)
     request(scoped, 'GET', '/api/apps', 401)
     token_hash = None
+    issued=request(browser, 'POST', '/console/action', data={'op':'token-create','_csrf':csrf,'scopes':json.dumps([{'path':'/api/apps','methods':['GET']}])},allow_redirects=False)
+    secret=re.search(r'<pre class="secret">([a-f0-9]{64})</pre>',issued.text).group(1)
+    token_hash=hashlib.sha256(secret.encode()).hexdigest()
+    assert 'Location' not in issued.headers and issued.headers['Cache-Control']=='no-store'
+    assert secret not in request(browser, 'GET', '/api-tokens').text
+    request(browser, 'DELETE', '/api/token/'+token_hash)
+    token_hash=None
     refresh = request(browser, 'POST', '/api/auth/refresh', json={'refresh_token':login['refresh_token']}).json()
     browser.headers['X-CSRF-Token'] = refresh['csrf_token']
     old = requests.Session(); old.verify=False; old.headers['Authorization']='Bearer '+login['access_token']
@@ -90,4 +116,4 @@ try:
 finally:
     request(admin, 'DELETE', '/api/apps/' + app_id)
     if token_hash: request(admin, 'DELETE', '/api/token/' + token_hash)
-print('WEB API PASS: authentication/CSRF, scoped tokens/revocation, app CRUD/covers, display layouts/baselines, maintenance health, support ZIP, logs')
+print('WEB API PASS: authentication/CSRF, Rust forms/scopes/escaping/secret handling, scoped tokens/revocation, app CRUD/covers, display layouts/baselines, maintenance health, support ZIP, logs')

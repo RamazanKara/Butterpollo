@@ -1,6 +1,6 @@
 # Butterpollo Rust
 
-The Windows host, protocol implementation and native helpers are written in Rust. The executables do not link the previous Butterpollo C++ host. The existing Vue administration app is served by Rust; codec and GPU SDKs retain their vendor C ABIs.
+The Windows host, protocol implementation, native helpers and administration console are written in Rust. The executables do not link the previous Butterpollo C++ host. Rust renders the console and handles ordinary HTML forms; no JavaScript, Vue or Node build is needed. Codec libraries, device drivers and GPU SDKs remain external dependencies.
 
 This is the Rust replacement under development on `codex/butterpollo-rust`, based on `2.0.0-beta.3-butter.4`. Do not interpret the C++ performance measurements in the parent README as measurements of this implementation. The installed production service is independent of this checkout.
 
@@ -12,19 +12,12 @@ Requirements: Windows x64, MSYS2 UCRT64 with GCC, Clang, CMake, Ninja, Vulkan he
 rustup toolchain install 1.98.1-x86_64-pc-windows-gnu --profile minimal --component rustfmt --component clippy
 rustup target add x86_64-pc-windows-msvc --toolchain 1.98.1-x86_64-pc-windows-gnu
 
-# Build the retained web app with Node 24 and npm ci.
-$env:SUNSHINE_WEB_OUTPUT_DIR = "$env:LOCALAPPDATA\ButterpolloRust\web"
-Push-Location src_assets/common/assets/web
-npm ci
-npm run build
-Pop-Location
-
-.\rust\build.ps1 -FetchDependencies -Package -WebAssets $env:SUNSHINE_WEB_OUTPUT_DIR
+.\rust\build.ps1 -FetchDependencies -Package
 ```
 
 Run in a Visual Studio x64 developer PowerShell for TrueHDR. Alternatively pass `-MsvcSdk` pointing to an xwin layout with `crt/lib/x86_64`, `sdk/lib/um/x86_64` and `sdk/lib/ucrt/x86_64`. `-SkipTrueHdr` builds without the optional NVIDIA DLL. Existing SDKs can be supplied with `-FfmpegRoot`, `-PyrowaveRoot` and `-NvidiaRoot`; downloads are pinned and checked. CMake is used to build the external PyroWave SDK, not the host.
 
-The script checks formatting, tests, lints, builds the two executables and the optional TrueHDR DLL, then packages runtime libraries, web assets, notices and a SHA-256 manifest. A locked Cargo dependency tree and pinned SDK revisions are included. CI is `.github/workflows/rust-windows.yml`.
+The script checks formatting, tests, lints, builds the host, service and performance probe plus the optional TrueHDR DLL, then packages runtime libraries, artwork, notices and a SHA-256 manifest. A locked Cargo dependency tree and pinned SDK revisions are included. CI is `.github/workflows/rust-windows.yml`.
 
 ## Run and migration
 
@@ -47,15 +40,15 @@ The service uses `ApolloService` for compatibility and `%PROGRAMDATA%\Butterpoll
 | `host` | TLS/HTTP, Moonlight endpoints, administration/auth, encrypted RTSP, ENet control, UDP media, scheduling and lifecycle |
 | `truehdr-runtime` | Rust MSVC DLL directly calling NVIDIA's NGX C ABI |
 
-There is no WebRTC, SudoVDA, ViGEm, FFmpeg AMF encoder wrapper or legacy display helper in the Rust build. Capture is currently copied to CPU memory for the encoder path. Native GPU surface transfer and the old 120 fps latency target require further performance work.
+There is no WebRTC, SudoVDA, ViGEm, FFmpeg AMF encoder wrapper or legacy display helper in the Rust build. AMD capture surfaces remain in D3D11 memory through Rust GPU scaling, HDR conversion and AMF encoding. The capture and conversion texture pools and codec queue are bounded. Other encoders retain a CPU readback compatibility path. GPU shader math preserves the full ST.2084 range and resizes scRGB in linear light. Reported AMF latency covers submission through completed encoder output, including asynchronous work.
 
 ## Validation
 
 Native Windows unit tests cover malformed wire input, authenticated encryption, replay rejection, legacy CBC/GCM behavior, FEC packet boundaries, scalar/SIMD equivalence, audio rates/channel masks, configuration/state migration, scoped API tokens and Windows job teardown. Independent `tests/interop.py` and `tests/moonlight_client.c` perform real PIN pairing, encrypted RTSP, video transport/decryption/FEC, FFmpeg decode and Opus decode. `tests/pyrowave_client.c` decodes the Rust encoder's container through the external vendor decoder.
 
-The test machine is an AMD RX 7900 XT with an HDR display. Sustained release streams at 640×480, 30 fps passed H.264, HEVC, AV1, HEVC Main10 HDR and AV1 Main10 HDR decoding. HDR frames contain BT.2020/PQ metadata. PyroWave SDR and HDR container decoding also passed; the independent PyroWave decoder probe checks the HDR container flag and decoded output, not a complete ten-bit client rendering path. These checks establish interoperability, not 4K/120 fps performance. Unoptimized Rust builds are unsuitable for streaming performance checks.
+The test machine is an AMD RX 7900 XT with an HDR display. Sustained release streams at 640×480, 30 fps passed H.264, HEVC, AV1, HEVC Main10 HDR and AV1 Main10 HDR decoding. New 20-second HEVC HDR tests sustained 120 fps host output at 1080p and scaled 4K; independent software decoding reached about 119 fps with no decode errors. HDR frames contain ten-bit BT.2020/PQ metadata. See [performance evidence and reproducible probes](PERFORMANCE.md) for timings, decoder limits and test scope. The RX 7900 XT pads 1080p AV1 to 1082 lines; the strict dimension probe rejects that result, so exact 1080p uses HEVC. PyroWave SDR and HDR container decoding also passed; that vendor decoder probe checks the HDR container flag and decoded output, not a complete ten-bit client rendering path. Unoptimized Rust builds are unsuitable for streaming performance checks.
 
-The administration tests cover anonymous and authenticated CSRF, scoped tokens, refresh/session revocation, app CRUD, covers, output redirection and exit monitoring, display layout validation, baseline capture/comparison, maintenance status and support ZIP integrity. Browser checks cover real sign-in and all eight main pages at desktop and mobile sizes. Native Windows tests verify owned process-tree termination and a valid minidump; the separate recovery probe verifies abrupt parent death and preservation of a newer journal owner.
+The administration tests cover anonymous and authenticated CSRF, logical API scopes behind Rust forms, escaped HTML, one-time token secret handling, refresh/session revocation, app CRUD, covers, output redirection and exit monitoring, display layout validation, baseline capture/comparison, maintenance status and support ZIP integrity. Browser checks with JavaScript disabled cover real sign-in, all eight main pages, app editing/removal and appearance persistence at desktop and mobile sizes. Independent client checks verify that file-upload permission cannot terminate streams. Native Windows tests verify owned process-tree termination and a valid minidump; the separate recovery probe verifies abrupt parent death and preservation of a newer journal owner.
 
 NVIDIA/Intel hardware encoding, NVIDIA TrueHDR conversion, VHF controllers, the compatible VDD driver, secure-desktop input and an actual SCM-installed service require their respective hardware/privileges. Tests do not install or replace the existing service or change the user's physical display modes.
 

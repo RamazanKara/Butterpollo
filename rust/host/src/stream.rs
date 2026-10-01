@@ -44,7 +44,7 @@ fn apply_overrides(
 }
 use butterpollo_windows::{
     audio::{Loopback, Opus},
-    capture::{Capture, ComGuard, Image, Priority},
+    capture::{Capture, ComGuard, GpuImage, Priority},
     encoder::Encoder,
     input::Injector,
 };
@@ -61,7 +61,7 @@ use std::{
 };
 
 struct Latest {
-    image: Mutex<Option<Arc<Image>>>,
+    image: Mutex<Option<Arc<GpuImage>>>,
     changed: Condvar,
     error: Mutex<Option<String>>,
 }
@@ -201,7 +201,7 @@ impl Media {
                     };
                     let _ = started_tx.send(Ok(()));
                     while !worker_stop.load(Ordering::Acquire) {
-                        match capture.next_frame() {
+                        match capture.next_gpu() {
                             Ok(Some(image)) => {
                                 *worker.image.lock().unwrap() = Some(Arc::new(image));
                                 worker.changed.notify_all();
@@ -390,7 +390,20 @@ impl Media {
                     } else {
                         None
                     };
-                    let mut encoder = Encoder::new(&s.config, c.get("encoder", "auto"), &output)?;
+                    let first = {
+                        let deadline = Instant::now() + Duration::from_secs(10);
+                        let mut image = latest.image.lock().unwrap();
+                        while image.is_none() {
+                            if let Some(error) = &*latest.error.lock().unwrap() { anyhow::bail!("capture stopped: {error}"); }
+                            if s.stopping() || h.stop.load(Ordering::Acquire) { return Ok(()); }
+                            if Instant::now() >= deadline { anyhow::bail!("capture produced no GPU frame"); }
+                            image = latest.changed.wait_timeout(image, Duration::from_millis(50)).unwrap().0;
+                        }
+                        image.as_ref().unwrap().clone()
+                    };
+                    let mut encoder = Encoder::new_gpu(&s.config, c.get("encoder", "auto"), &first)?;
+                    drop(first);
+                    let mut truehdr_staging = None;
                     let _client_commands = crate::process::ClientCommands::start(&h, &s)?;
                     let audio_m = m.clone();
                     let audio_h = h.clone();
@@ -418,56 +431,10 @@ impl Media {
                     let period = Duration::from_secs_f64(1. / f64::from(s.config.fps));
                     let mut due = Instant::now();
                     let mut send_due = due;
-                    let result = (|| -> Result<()> {
-                        while !s.stopping() && !h.stop.load(Ordering::Acquire) {
-                            if let Some(display) = display.as_mut() {
-                                display.feed()?;
-                            }
-                            if let Some(error) = &*latest.error.lock().unwrap() {
-                                anyhow::bail!("capture stopped: {error}");
-                            }
-                            let now = Instant::now();
-                            if now < due {
-                                timer.until(due);
-                            }
-                            due = due.max(Instant::now()) + period;
-                            let image = {
-                                let mut current = latest.image.lock().unwrap();
-                                if current.is_none() {
-                                    current = latest
-                                        .changed
-                                        .wait_timeout(current, Duration::from_millis(50))
-                                        .unwrap()
-                                        .0;
-                                }
-                                current.clone()
-                            };
-                            let Some(image) = image else { continue };
-                            let peer = m
-                                .peers
-                                .lock()
-                                .unwrap()
-                                .get(&(s.launch.id.clone(), false))
-                                .copied();
-                            let Some(peer) = peer else {
-                                if start.elapsed() > Duration::from_secs(10) {
-                                    anyhow::bail!("client video ping timed out");
-                                }
-                                continue;
-                            };
-                            let begin = Instant::now();
-                            let converted = truehdr
-                                .as_mut()
-                                .map(|filter| filter.apply(&image))
-                                .transpose()?;
-                            let output = encoder.encode(
-                                converted.as_ref().unwrap_or(&image),
-                                s.idr.swap(false, Ordering::AcqRel),
-                                s.bitrate.load(Ordering::Acquire),
-                            )?;
-                            let latency = begin.elapsed().as_micros() as u64;
-                            s.stats.latency_us.store(latency, Ordering::Relaxed);
+                    let mut send_frames = |output: Vec<butterpollo_windows::encoder::Encoded>, peer: std::net::SocketAddr, call_latency: Duration| -> Result<()> {
                             for frame in output {
+                                let latency = frame.latency.unwrap_or(call_latency).as_micros() as u64;
+                                s.stats.latency_us.store(latency, Ordering::Relaxed);
                                 let timestamp = (start.elapsed().as_secs_f64() * 90000.) as u32;
                                 let packets = packetizer.encode(
                                     &frame.bytes,
@@ -496,6 +463,67 @@ impl Media {
                                 }
                                 s.stats.frames.fetch_add(1, Ordering::Relaxed);
                             }
+                        Ok(())
+                    };
+                    let result = (|| -> Result<()> {
+                        while !s.stopping() && !h.stop.load(Ordering::Acquire) {
+                            if let Some(display) = display.as_mut() {
+                                display.feed()?;
+                            }
+                            if let Some(error) = &*latest.error.lock().unwrap() {
+                                anyhow::bail!("capture stopped: {error}");
+                            }
+                            let peer = m
+                                .peers
+                                .lock()
+                                .unwrap()
+                                .get(&(s.launch.id.clone(), false))
+                                .copied();
+                            let Some(peer) = peer else {
+                                if start.elapsed() > Duration::from_secs(10) {
+                                    anyhow::bail!("client video ping timed out");
+                                }
+                                timer.until(Instant::now() + Duration::from_millis(1));
+                                continue;
+                            };
+                            let now = Instant::now();
+                            if now < due {
+                                while Instant::now() < due {
+                                    if encoder.pending() {
+                                        send_frames(encoder.poll()?, peer, Duration::ZERO)?;
+                                        if encoder.pending() {
+                                            timer.until((Instant::now() + Duration::from_micros(250)).min(due));
+                                        }
+                                    } else {
+                                        timer.until(due);
+                                    }
+                                }
+                            }
+                            // Keep the cadence anchored to the previous due time;
+                            // scheduler overshoot must not accumulate each frame.
+                            due += period;
+                            due = due.max(Instant::now());
+                            let image = {
+                                let mut current = latest.image.lock().unwrap();
+                                if current.is_none() {
+                                    current = latest
+                                        .changed
+                                        .wait_timeout(current, Duration::from_millis(50))
+                                        .unwrap()
+                                        .0;
+                                }
+                                current.clone()
+                            };
+                            let Some(image) = image else { continue };
+                            let begin = Instant::now();
+                            let idr = s.idr.swap(false, Ordering::AcqRel);
+                            let bitrate = s.bitrate.load(Ordering::Acquire);
+                            let output = if let Some(filter) = truehdr.as_mut() {
+                                let cpu = image.readback(&mut truehdr_staging)?;
+                                encoder.encode(&filter.apply(&cpu)?, idr, bitrate)?
+                            } else { encoder.encode_gpu(&image, idr, bitrate)? };
+                            let call_latency = begin.elapsed();
+                            send_frames(output, peer, call_latency)?;
                         }
                         Ok(())
                     })();

@@ -11,8 +11,7 @@ param(
     [switch]$DebugBuild,
     [switch]$SkipTrueHdr,
     [switch]$SkipTests,
-    [switch]$Package,
-    [string]$WebAssets
+    [switch]$Package
 )
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).ProviderPath
@@ -83,6 +82,10 @@ try {
     if (!$DebugBuild) { $buildArgs += '--release'; $profile = 'release' }
     & cargo $toolchain @buildArgs
     Assert-NativeExit 'Rust host build'
+    $probeArgs = @('build', '-p', 'butterpollo-windows', '--example', 'performance', '--locked')
+    if (!$DebugBuild) { $probeArgs += '--release' }
+    & cargo $toolchain @probeArgs
+    Assert-NativeExit 'Rust performance probe build'
     $output = Join-Path $TargetDirectory $profile
     $runtimeDlls = @('libopus-0.dll','libvpl-2.dll','libstdc++-6.dll','libgcc_s_seh-1.dll','libwinpthread-1.dll','libpyrowave-shared-0.dll')
     foreach ($dll in $runtimeDlls | Where-Object { $_ -ne 'libpyrowave-shared-0.dll' }) {
@@ -110,7 +113,6 @@ try {
         $runtimeDlls += @('butterpollo_truehdr.dll','nvngx_truehdr.dll')
     }
     if ($Package) {
-        if (!$WebAssets -or !(Test-Path -LiteralPath (Join-Path $WebAssets 'index.html'))) { throw '-WebAssets must point to the built Vue web directory' }
         $distribution = Join-Path $TargetDirectory "butterpollo-rust-$profile"
         if (Test-Path -LiteralPath $distribution) {
             $resolvedDistribution = (Resolve-Path -LiteralPath $distribution).ProviderPath
@@ -119,11 +121,12 @@ try {
         }
         New-Item -ItemType Directory -Path "$distribution\assets\web", "$distribution\licenses" -Force | Out-Null
         foreach ($exe in @('butterpollo.exe', 'butterpollo-service.exe')) { Copy-Item -LiteralPath (Join-Path $output $exe) -Destination $distribution }
+        Copy-Item -LiteralPath (Join-Path $output 'examples\performance.exe') -Destination (Join-Path $distribution 'butterpollo-performance.exe')
         foreach ($dll in $runtimeDlls) { Copy-Item -LiteralPath (Join-Path $output $dll) -Destination $distribution }
-        Get-ChildItem -LiteralPath $WebAssets -Force | Copy-Item -Destination "$distribution\assets\web" -Recurse -Force
         Get-ChildItem -LiteralPath (Join-Path $repo 'src_assets\common\assets') -File | Where-Object { $_.Extension -in '.png','.ico' } | Copy-Item -Destination "$distribution\assets"
         Copy-Item -LiteralPath (Join-Path $repo 'LICENSE') -Destination "$distribution\licenses\Butterpollo.txt"
         Copy-Item -LiteralPath (Join-Path $repo 'rust\README.md') -Destination $distribution
+        Copy-Item -LiteralPath (Join-Path $repo 'rust\PERFORMANCE.md') -Destination $distribution
         Copy-Item -LiteralPath (Join-Path $repo 'rust\THIRD_PARTY.md') -Destination "$distribution\licenses"
         Copy-Item -LiteralPath (Join-Path $repo 'rust\service.ps1') -Destination $distribution
         Copy-Item -LiteralPath (Join-Path $repo 'Cargo.lock') -Destination "$distribution\licenses"

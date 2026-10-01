@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    paths: ['rust/**', 'Cargo.*', 'rust-toolchain.toml', '.cargo/**', 'scripts/build_pyrowave.sh', 'src_assets/common/assets/web/**', '.github/workflows/rust-windows.yml']
+    paths: ['rust/**', 'Cargo.*', 'rust-toolchain.toml', '.cargo/**', 'scripts/build_pyrowave.sh', 'src_assets/common/assets/*.png', 'src_assets/common/assets/*.ico', '.github/workflows/rust-windows.yml']
   workflow_dispatch:
 concurrency:
   group: butterpollo-rust-${{ github.ref }}
@@ -20,9 +20,6 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-      - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238
-        with:
-          node-version: '24'
       - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e
         id: msys
         with:
@@ -50,22 +47,12 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
           key: rust-sdk-v1-ffmpeg-2026.516.30821-pyro-89f7e47-ngx-1.1.0
-      - name: Build administration assets
-        working-directory: src_assets/common/assets/web
-        run: |
-          $env:SUNSHINE_WEB_OUTPUT_DIR = "$env:RUNNER_TEMP\butterpollo-web"
-          npm ci
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          npm run test:unit
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          npm run build
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Test, lint and package Rust
         run: |
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
           Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
-          .\rust\build.ps1 -MsysRoot '${{ steps.msys.outputs.msys2-location }}' -FetchDependencies -Package -TargetDirectory "$env:RUNNER_TEMP\butterpollo-rust-target" -WebAssets "$env:RUNNER_TEMP\butterpollo-web"
+          .\rust\build.ps1 -MsysRoot '${{ steps.msys.outputs.msys2-location }}' -FetchDependencies -Package -TargetDirectory "$env:RUNNER_TEMP\butterpollo-rust-target"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: butterpollo-rust-windows-x64

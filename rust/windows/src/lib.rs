@@ -2,6 +2,8 @@
 #[cfg(windows)]
 pub mod amf;
 #[cfg(windows)]
+mod amf_gpu;
+#[cfg(windows)]
 pub mod audio;
 #[cfg(windows)]
 pub mod capture;
@@ -17,6 +19,8 @@ pub mod display;
 pub mod display_recovery;
 #[cfg(windows)]
 pub mod encoder;
+#[cfg(windows)]
+mod gpu_color;
 #[cfg(windows)]
 pub mod hdr_profile;
 #[cfg(windows)]

@@ -1,7 +1,7 @@
 //! AMD's C ABI is called directly. No Butterpollo C++ code or FFmpeg AMF encoder is linked.
 use crate::{
     amf_abi::*,
-    capture::{Device, Image},
+    capture::{Device, GpuImage, Image},
     encoder::{Convert, Encoded},
     ff,
 };
@@ -11,33 +11,45 @@ use std::{
     time::{Duration, Instant},
 };
 use windows::core::Interface;
-fn check(n: AMF_RESULT) -> Result<()> {
+pub(crate) fn check(n: AMF_RESULT) -> Result<()> {
     if n != AMF_RESULT_AMF_OK {
         bail!("AMF error {n}");
     }
     Ok(())
 }
-fn int(n: i64) -> AMFVariantStruct {
+pub(crate) fn int(n: i64) -> AMFVariantStruct {
     AMFVariantStruct {
         type_: AMF_VARIANT_TYPE_AMF_VARIANT_INT64,
         __bindgen_anon_1: AMFVariantStruct__bindgen_ty_1 { int64Value: n },
     }
 }
-fn wide(s: &str) -> Vec<u16> {
+pub(crate) fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
+}
+struct Submission {
+    pts: i64,
+    started: Instant,
+    _capture: Option<GpuImage>,
+    _converted: Option<std::sync::Arc<windows::Win32::Graphics::Direct3D11::ID3D11Texture2D>>,
 }
 pub struct Encoder {
     component: *mut AMFComponent,
     context: *mut AMFContext,
-    convert: Convert,
+    convert: Option<Convert>,
     config: butterpollo_core::rtsp::Negotiated,
     codec: u8,
     _device: Device,
     _library: libloading::Library,
     index: i64,
+    gpu_convert: Option<crate::amf_gpu::Converter>,
+    in_flight: std::collections::VecDeque<Submission>,
+    bitrate: u32,
 }
 impl Encoder {
     pub fn new(config: &butterpollo_core::rtsp::Negotiated, display: &str) -> Result<Self> {
+        Self::new_device(config, Device::new(display)?)
+    }
+    pub fn new_device(config: &butterpollo_core::rtsp::Negotiated, device: Device) -> Result<Self> {
         if config.yuv444 {
             bail!("AMF does not expose 4:4:4 for this encoder; select NVENC or software");
         }
@@ -65,13 +77,6 @@ impl Encoder {
                 &mut context,
             ))?;
             let mut component = ptr::null_mut();
-            let device = match Device::new(display) {
-                Ok(d) => d,
-                Err(e) => {
-                    ((*(*context).pVtbl).Release.unwrap())(context);
-                    return Err(e);
-                }
-            };
             let result = (|| -> Result<()> {
                 check(((*(*context).pVtbl).InitDX11.unwrap())(
                     context,
@@ -102,31 +107,18 @@ impl Encoder {
                 ((*(*context).pVtbl).Release.unwrap())(context);
                 return Err(e);
             }
-            let convert = match Convert::new(
-                config.width,
-                config.height,
-                if config.hdr {
-                    ff::AVPixelFormat_AV_PIX_FMT_P010LE
-                } else {
-                    ff::AVPixelFormat_AV_PIX_FMT_NV12
-                },
-            ) {
-                Ok(c) => c,
-                Err(e) => {
-                    ((*(*component).pVtbl).Release.unwrap())(component);
-                    ((*(*context).pVtbl).Release.unwrap())(context);
-                    return Err(e);
-                }
-            };
             let mut e = Self {
                 component,
                 context,
-                convert,
+                convert: None,
                 config: config.clone(),
                 codec: config.codec,
                 _device: device,
                 _library: library,
                 index: 0,
+                gpu_convert: None,
+                in_flight: std::collections::VecDeque::new(),
+                bitrate: config.bitrate_kbps,
             };
             e.property("Usage", int(if config.codec == 2 { 2 } else { 1 }))?;
             e.property(
@@ -172,7 +164,18 @@ impl Encoder {
                 // recent VCN drivers, as established by the original backend.
                 e.property("GOPSize", int(0))?;
             }
-            let _ = e.property("QueryTimeout", int(1));
+            if config.codec == 2 {
+                // AMF defaults to 64x16 alignment, which rejects 1080-line
+                // input. RDNA3 still pads that AV1 output to 1082 lines; exact
+                // 1080-line streams require HEVC on that hardware.
+                e.property(
+                    "AlignmentMode",
+                    int(AMF_VIDEO_ENCODER_AV1_ALIGNMENT_MODE_ENUM_AMF_VIDEO_ENCODER_AV1_ALIGNMENT_MODE_NO_RESTRICTIONS as i64),
+                )?;
+                e.property("GOPSize", int(0))?;
+            }
+            // A blocking query can inherit Windows' 15.6 ms scheduler tick.
+            let _ = e.property("QueryTimeout", int(0));
             if config.hdr {
                 e.property("ColorBitDepth", int(10))?;
                 if config.codec == 1 {
@@ -241,7 +244,10 @@ impl Encoder {
             .with_context(|| format!("AMF property {name}"))
         }
     }
-    fn poll(&mut self) -> Result<Vec<Encoded>> {
+    pub fn pending(&self) -> bool {
+        !self.in_flight.is_empty()
+    }
+    pub fn poll(&mut self) -> Result<Vec<Encoded>> {
         unsafe {
             let mut output = vec![];
             loop {
@@ -259,6 +265,13 @@ impl Encoder {
                     break;
                 }
                 let buffer = data as *mut AMFBuffer;
+                let pts = ((*(*data).pVtbl).GetPts.unwrap())(data);
+                let latency = self
+                    .in_flight
+                    .iter()
+                    .position(|s| s.pts == pts)
+                    .and_then(|position| self.in_flight.remove(position))
+                    .map(|s| s.started.elapsed());
                 let v = &*(*buffer).pVtbl;
                 let size = (v.GetSize.unwrap())(buffer);
                 let raw = (v.GetNative.unwrap())(buffer) as *const u8;
@@ -280,14 +293,34 @@ impl Encoder {
                 };
                 let bytes = std::slice::from_raw_parts(raw, size as usize).to_vec();
                 (v.Release.unwrap())(buffer);
-                output.push(Encoded { bytes, idr });
+                output.push(Encoded {
+                    bytes,
+                    idr,
+                    latency,
+                });
             }
             Ok(output)
         }
     }
     pub fn encode(&mut self, image: &Image, idr: bool, bitrate: u32) -> Result<Vec<Encoded>> {
-        self.convert.convert(image)?;
-        self.property("TargetBitrate", int(i64::from(bitrate) * 1000))?;
+        let started = Instant::now();
+        self.set_bitrate(bitrate)?;
+        if self.convert.is_none() {
+            // Native GPU sessions never allocate a CPU YUV frame or swscale
+            // context. Allocate compatibility buffers only when used.
+            self.convert = Some(Convert::new(
+                self.config.width,
+                self.config.height,
+                if self.config.hdr {
+                    ff::AVPixelFormat_AV_PIX_FMT_P010LE
+                } else {
+                    ff::AVPixelFormat_AV_PIX_FMT_NV12
+                },
+            )?);
+        }
+        let convert = self.convert.as_mut().unwrap();
+        convert.convert(image)?;
+        let frame = convert.frame;
         unsafe {
             let mut surface = ptr::null_mut();
             check(((*(*self.context).pVtbl).AllocSurface.unwrap())(
@@ -317,8 +350,8 @@ impl Encoder {
                     let pitch = (pv.GetHPitch.unwrap())(plane) as usize;
                     let width = self.config.width as usize * if self.config.hdr { 2 } else { 1 };
                     let height = self.config.height as usize / if plane_index == 0 { 1 } else { 2 };
-                    let src = (*self.convert.frame).data[plane_index];
-                    let stride = (*self.convert.frame).linesize[plane_index] as usize;
+                    let src = (*frame).data[plane_index];
+                    let stride = (*frame).linesize[plane_index] as usize;
                     if dst.is_null() || pitch < width {
                         bail!("invalid AMF host surface pitch");
                     }
@@ -398,6 +431,119 @@ impl Encoder {
                 result?;
                 break;
             }
+            self.in_flight.push_back(Submission {
+                pts: self.index,
+                started,
+                _capture: None,
+                _converted: None,
+            });
+            self.index += 1;
+            output.extend(self.poll()?);
+            Ok(output)
+        }
+    }
+}
+impl Encoder {
+    fn set_bitrate(&mut self, bitrate: u32) -> Result<()> {
+        if bitrate != self.bitrate {
+            self.property("TargetBitrate", int(i64::from(bitrate) * 1000))?;
+            self.bitrate = bitrate;
+        }
+        Ok(())
+    }
+    fn wait_capacity(&mut self) -> Result<Vec<Encoded>> {
+        let mut output = self.poll()?;
+        let deadline = Instant::now() + Duration::from_millis(100);
+        while self.in_flight.len() >= 8 {
+            output.extend(self.poll()?);
+            if Instant::now() >= deadline {
+                bail!("AMF GPU queue failed to drain");
+            }
+            std::thread::yield_now();
+        }
+        Ok(output)
+    }
+    pub fn encode_gpu(
+        &mut self,
+        image: &GpuImage,
+        idr: bool,
+        bitrate: u32,
+    ) -> Result<Vec<Encoded>> {
+        let started = Instant::now();
+        let mut output = self.wait_capacity()?;
+        if self._device.device.as_raw() != image.gpu.device.as_raw() {
+            bail!("GPU frame and encoder must use the same D3D11 device");
+        }
+        let source = (image.width, image.height, image.pixel);
+        if self
+            .gpu_convert
+            .as_ref()
+            .is_none_or(|converter| converter.source != source)
+        {
+            self.gpu_convert = Some(crate::amf_gpu::Converter::new(
+                &self._device,
+                &self.config,
+                source,
+            )?);
+        }
+        let (surface, converted) = self
+            .gpu_convert
+            .as_mut()
+            .unwrap()
+            .convert(self.context, image)?;
+        self.set_bitrate(bitrate)?;
+        unsafe {
+            let v = &*(*surface.0).pVtbl;
+            (v.SetPts.unwrap())(surface.0, self.index);
+            (v.SetDuration.unwrap())(surface.0, 10_000_000 / i64::from(self.config.fps));
+            if idr {
+                let property = match self.codec {
+                    0 => "ForcePictureType",
+                    1 => "HevcForcePictureType",
+                    _ => "Av1ForceFrameType",
+                };
+                check((v.SetProperty.unwrap())(
+                    surface.0,
+                    wide(property).as_ptr(),
+                    int(if self.codec == 2 { 1 } else { 2 }),
+                ))?;
+                let headers: &[&str] = match self.codec {
+                    0 => &["InsertSPS", "InsertPPS"],
+                    1 => &["HevcInsertHeader"],
+                    _ => &[],
+                };
+                for property in headers {
+                    check((v.SetProperty.unwrap())(
+                        surface.0,
+                        wide(property).as_ptr(),
+                        crate::amf_gpu::boolean(true),
+                    ))?;
+                }
+            }
+            let deadline = Instant::now() + Duration::from_millis(100);
+            loop {
+                let result = ((*(*self.component).pVtbl).SubmitInput.unwrap())(
+                    self.component,
+                    surface.0.cast(),
+                );
+                if result != AMF_RESULT_AMF_INPUT_FULL {
+                    check(result)?;
+                    break;
+                }
+                output.extend(self.poll()?);
+                if Instant::now() >= deadline {
+                    bail!("AMF GPU input queue failed to drain");
+                }
+                std::thread::yield_now();
+            }
+            // Native COM references alone cannot prevent our Arc pool from
+            // reusing an in-flight capture texture. Retain the Arc until output.
+            self.in_flight.push_back(Submission {
+                pts: self.index,
+                started,
+                _capture: Some(image.clone()),
+                _converted: Some(converted),
+            });
             self.index += 1;
             output.extend(self.poll()?);
             Ok(output)
@@ -406,6 +552,8 @@ impl Encoder {
 }
 impl Drop for Encoder {
     fn drop(&mut self) {
+        // Destroy the converter before its context and dynamically loaded runtime.
+        self.gpu_convert.take();
         unsafe {
             if !self.component.is_null() {
                 ((*(*self.component).pVtbl).Terminate.unwrap())(self.component);

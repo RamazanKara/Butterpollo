@@ -167,25 +167,35 @@ impl Host {
                 let negotiated = butterpollo_core::rtsp::Negotiated {
                     width: 640,
                     height: 480,
+                    fps: 30,
+                    bitrate_kbps: 2000,
                     codec,
                     hdr,
                     yuv444,
                     ..Default::default()
                 };
-                if let Ok(mut encoder) = butterpollo_windows::encoder::Encoder::new(
+                match butterpollo_windows::encoder::Encoder::new(
                     &negotiated,
                     config.get("encoder", "auto"),
                     config.get("output_name", ""),
                 ) {
-                    for frame in 0..8 {
-                        match encoder.encode(&image, frame == 0, negotiated.bitrate_kbps) {
-                            Ok(packets) if !packets.is_empty() => {
-                                flags |= bit;
-                                break;
+                    Ok(mut encoder) => {
+                        for frame in 0..8 {
+                            match encoder.encode(&image, frame == 0, negotiated.bitrate_kbps) {
+                                Ok(packets) if !packets.is_empty() => {
+                                    flags |= bit;
+                                    break;
+                                }
+                                Err(error) => {
+                                    tracing::warn!(%error, codec, hdr, "encoder capability probe failed");
+                                    break;
+                                }
+                                _ => std::thread::sleep(Duration::from_millis(5)),
                             }
-                            Err(_) => break,
-                            _ => std::thread::sleep(Duration::from_millis(5)),
                         }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, codec, hdr, "encoder capability initialization failed")
                     }
                 }
             }
