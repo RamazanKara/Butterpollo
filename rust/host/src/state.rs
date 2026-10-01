@@ -41,6 +41,7 @@ pub struct Host {
     pub stop: std::sync::atomic::AtomicBool,
     pub restart: std::sync::atomic::AtomicBool,
     pub codecs: std::sync::atomic::AtomicU32,
+    pub probing_codecs: std::sync::atomic::AtomicBool,
     pub current_app: Mutex<Option<crate::process::RunningApp>>,
     pub live_rtx: Mutex<Option<(String, serde_json::Map<String, Value>)>>,
     pub launch_transition: Mutex<()>,
@@ -49,6 +50,7 @@ pub struct Host {
     pub app_display: Mutex<Option<(Arc<crate::display_session::Ready>, Option<Instant>)>>,
     pub monitors: Mutex<BTreeMap<String, Arc<butterpollo_windows::display::Retained>>>,
     pub updates: Mutex<Value>,
+    pub metadata: Mutex<Option<(Instant, Value)>>,
     pub assets: PathBuf,
 }
 impl Host {
@@ -158,7 +160,8 @@ impl Host {
             web_sessions: Mutex::new(web_sessions),
             stop: std::sync::atomic::AtomicBool::new(false),
             restart: std::sync::atomic::AtomicBool::new(false),
-            codecs: std::sync::atomic::AtomicU32::new(1),
+            codecs: std::sync::atomic::AtomicU32::new(0),
+            probing_codecs: std::sync::atomic::AtomicBool::new(true),
             current_app: Mutex::new(None),
             live_rtx: Default::default(),
             launch_transition: Mutex::new(()),
@@ -170,6 +173,7 @@ impl Host {
                 json!({"status":true,"checking":false,"check_failed":false,"checked_at":0,"releases":[]}),
             ),
             assets,
+            metadata: Mutex::new(None),
         }))
     }
     pub fn assign_apps(&self, apps: &mut [App]) -> Result<()> {
@@ -213,6 +217,9 @@ impl Host {
         let h = self.clone();
         std::thread::spawn(move || {
             let Ok(_com) = butterpollo_windows::capture::ComGuard::new() else {
+                h.probing_codecs
+                    .store(false, std::sync::atomic::Ordering::Release);
+                h.metadata.lock().unwrap().take();
                 return;
             };
             let mut config = h.config.read().unwrap().clone();
@@ -235,9 +242,14 @@ impl Host {
                 (2, true, false, 0x20000),
                 (3, false, false, 0x800000),
                 (3, false, true, 0x1000000),
+                (3, true, false, 0x2000000),
+                (3, true, true, 0x4000000),
             ] {
                 let mode = config.integer(if codec == 1 { "hevc_mode" } else { "av1_mode" }, 0);
                 if matches!(codec, 1 | 2) && (mode == 1 || (hdr && mode == 2)) {
+                    continue;
+                }
+                if codec == 3 && !config.boolean("pyrowave", true) {
                     continue;
                 }
                 if h.stop.load(std::sync::atomic::Ordering::Acquire) {
@@ -264,6 +276,7 @@ impl Host {
                             match encoder.encode(&image, frame == 0, negotiated.bitrate_kbps) {
                                 Ok(packets) if !packets.is_empty() => {
                                     flags |= bit;
+                                    h.codecs.store(flags, std::sync::atomic::Ordering::Release);
                                     if encoder.supports_invalidation() {
                                         flags |= 0x40000000;
                                     }
@@ -283,6 +296,9 @@ impl Host {
                 }
             }
             h.codecs.store(flags, std::sync::atomic::Ordering::Release);
+            h.probing_codecs
+                .store(false, std::sync::atomic::Ordering::Release);
+            h.metadata.lock().unwrap().take();
             tracing::info!(codec_flags = flags, "encoder capability probe completed");
         });
     }

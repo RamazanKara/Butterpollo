@@ -26,13 +26,13 @@ fn main() -> anyhow::Result<()> {
 Repeat-frame throughput excludes capture, network, decoding and display latency.\n\
 --width 1920 --height 1080 --fps 120 --seconds 8 --bitrate 20000\n\
 --codec hevc (h264/hevc/av1/pyrowave) --encoder auto --capture wgc --display NAME\n\
---hdr: HDR10 output; --sdr-10bit; --yuv444; --cpu: CPU conversion/readback path; --paced: requested frame cadence"
+--hdr: HDR10 output; --sdr-10bit; --yuv444; --records: PyroWave record framing; --cpu: CPU conversion/readback path; --paced: requested frame cadence"
             );
             return Ok(());
         }
         if matches!(
             key.as_str(),
-            "--hdr" | "--sdr-10bit" | "--yuv444" | "--cpu" | "--paced"
+            "--hdr" | "--sdr-10bit" | "--yuv444" | "--records" | "--cpu" | "--paced"
         ) {
             fields.insert(key, "1".into());
         } else if matches!(
@@ -73,6 +73,7 @@ Repeat-frame throughput excludes capture, network, decoding and display latency.
         hdr: fields.contains_key("--hdr"),
         sdr_10bit: fields.contains_key("--sdr-10bit"),
         yuv444: fields.contains_key("--yuv444"),
+        pyrowave_records: fields.contains_key("--records"),
         ..Default::default()
     };
     let seconds = number("--seconds", "8")?;
@@ -82,7 +83,8 @@ Repeat-frame throughput excludes capture, network, decoding and display latency.
         || !config.height.is_multiple_of(2)
         || !(1..=240).contains(&config.fps)
         || !(1..=300).contains(&seconds)
-        || !(100..=500000).contains(&config.bitrate_kbps)
+        || !(100..=if config.codec == 3 { 2_000_000 } else { 500000 })
+            .contains(&config.bitrate_kbps)
     {
         bail!("probe settings outside supported bounds");
     }

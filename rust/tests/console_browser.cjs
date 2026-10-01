@@ -31,6 +31,33 @@ assert(output && password, 'Set test artifact directory and test password');
     await page.getByLabel('Remember this device',{exact:true}).check();
     await page.getByRole('button',{name:'Sign in',exact:true}).click();
     assert.equal(page.url(),base+'/');
+    assert((await page.title()).includes('Butterpollo'));
+    assert(await page.getByRole('heading',{name:'Connection checklist',exact:true}).isVisible());
+    const metadata = await api('GET','/api/metadata');
+    results.push({flow:'first_stream',status:metadata.paired_devices===0?'tested':'not_applicable_with_paired_devices'});
+    if(metadata.paired_devices===0) {
+      const firstStream = page.locator('section.card').filter({has:page.getByRole('heading',{name:'Your first stream',exact:true})});
+      assert(await firstStream.isVisible());
+      assert.equal(await firstStream.locator('code').innerText(),metadata.pc_address);
+      assert((await firstStream.innerText()).includes('PIN shown by Moonlight'));
+      await page.screenshot({path:path.join(output,'rust-ui-first-stream-desktop.png'),fullPage:true});
+      await page.setViewportSize({width:390,height:844});
+      assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+      await page.screenshot({path:path.join(output,'rust-ui-first-stream-mobile.png'),fullPage:true});
+      await page.setViewportSize({width:1440,height:900});
+    }
+    const liveResponse = await context.request.get(base+'/?live=1');
+    assert.equal(liveResponse.headers().refresh,'5; url=/?live=1');
+    await page.getByRole('link',{name:'Update every five seconds',exact:true}).click();
+    assert.equal(page.url(),base+'/?live=1');
+    await page.getByRole('link',{name:'Pause updates',exact:true}).click();
+    assert.equal(page.url(),base+'/');
+    assert.equal((await context.request.get(base+'/')).headers().refresh,undefined);
+    await page.locator('.quick-links').getByRole('link',{name:/^Pair a device/}).click();
+    assert.equal(page.url(),base+'/devices');
+    assert((await page.locator('main').innerText()).includes('Moonlight shows a four-digit PIN'));
+    await page.getByRole('link',{name:'Check for a pairing request',exact:true}).click();
+    assert.equal(page.url(),base+'/devices');
     for(const route of ['/','/library','/devices','/logs','/settings','/integrations','/api-tokens','/maintenance']) {
       await page.goto(base+route); assert.equal(await page.locator('script').count(),0);
       assert.deepEqual(await page.locator('[role=alert]').allTextContents(),[]);
@@ -114,6 +141,8 @@ assert(output && password, 'Set test artifact directory and test password');
     assert.deepEqual(errors,[]); assert.deepEqual(failed,[]); assert.deepEqual(scripts,[]);
     const report = {status:'pass',environment:'Chromium, JavaScript disabled, 1440x900 and 390x844',results,
       checks:['remembered sign-in','eight administration pages','escaped application CRUD','ordering',
+        'connection checklist and host network address','first-stream instructions on desktop/mobile',
+        'optional live refresh and pause','Moonlight pairing instructions and request reload',
         'typed TrueHDR and previous nested overrides','unknown-field preservation','reset to inherited settings',
         'live editor projects typed settings','mobile form without overflow','German and traditional Chinese locales preserve data',
         'theme persistence','sign-out'],errors,failed,scripts};

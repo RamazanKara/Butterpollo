@@ -90,6 +90,28 @@ uint planar444(float4 p : SV_Position) : SV_Target {
                            : 512 + (fullRange != 0 ? 1023 : 896) * yuv[plane];
     return uint(floor(clamp(code, 0, 1023) + 0.5)) << 6;
 }
+float4 pyro_y(float4 p : SV_Position) : SV_Target {
+    float y = yuv444(p.xy - 0.5).x;
+    float maximum = tenBit != 0 ? 1023 : 255;
+    float code = tenBit != 0 ? (fullRange != 0 ? 1023*y : 64+876*y) : (fullRange != 0 ? 255*y : 16+219*y);
+    return float4(floor(clamp(code,0,maximum)+0.5)/maximum,0,0,1);
+}
+float2 pyro_chroma(float2 p) {
+    float2 at = p - 0.5;
+    float3 yuv;
+    if (padding != 0) yuv = yuv444(at);
+    else {
+        at = floor(p)*2;
+        float3 rgb = (nonlinear(at)+nonlinear(at+float2(1,0))+nonlinear(at+float2(0,1))+nonlinear(at+float2(1,1)))*0.25;
+        float3 k = weights(); float y = dot(rgb,k);
+        yuv = float3(y,(rgb.b-y)/(2*(1-k.b)),(rgb.r-y)/(2*(1-k.r)));
+    }
+    float maximum = tenBit != 0 ? 1023 : 255;
+    float2 code = tenBit != 0 ? 512+(fullRange != 0 ? 1023 : 896)*yuv.yz : 128+(fullRange != 0 ? 255 : 224)*yuv.yz;
+    return floor(clamp(code,0,maximum)+0.5)/maximum;
+}
+float4 pyro_u(float4 p : SV_Position) : SV_Target { return float4(pyro_chroma(p.xy).x,0,0,1); }
+float4 pyro_v(float4 p : SV_Position) : SV_Target { return float4(pyro_chroma(p.xy).y,0,0,1); }
 "#;
 
 unsafe fn compile(entry: &'static [u8], target: &'static [u8]) -> Result<Vec<u8>> {
@@ -395,6 +417,128 @@ impl Converter {
             lock.Leave();
         }
         Ok(self.targets[index].texture.clone())
+    }
+}
+pub(crate) struct PlanarConverter {
+    base: Converter,
+    shaders: [ID3D11PixelShader; 3],
+    pub textures: [Arc<ID3D11Texture2D>; 3],
+    views: [ID3D11RenderTargetView; 3],
+    divisor: u32,
+}
+impl PlanarConverter {
+    pub fn new(
+        gpu: &Device,
+        config: &butterpollo_core::rtsp::Negotiated,
+        source: (u32, u32, Pixel),
+    ) -> Result<Self> {
+        let mut base = Converter::new(gpu, config, source)?;
+        base.values[11] = u32::from(config.yuv444);
+        base.dirty = true;
+        let divisor = if config.yuv444 { 1 } else { 2 };
+        unsafe {
+            let mut textures = Vec::new();
+            let mut views = Vec::new();
+            let mut shaders = Vec::new();
+            for (plane, entry) in [b"pyro_y\0", b"pyro_u\0", b"pyro_v\0"].iter().enumerate() {
+                let mut shader = None;
+                gpu.device.CreatePixelShader(
+                    &compile(*entry, b"ps_5_0\0")?,
+                    None,
+                    Some(&mut shader),
+                )?;
+                shaders.push(shader.unwrap());
+                let mut texture = None;
+                gpu.device.CreateTexture2D(
+                    &D3D11_TEXTURE2D_DESC {
+                        Width: config.width / if plane == 0 { 1 } else { divisor },
+                        Height: config.height / if plane == 0 { 1 } else { divisor },
+                        MipLevels: 1,
+                        ArraySize: 1,
+                        Format: if config.ten_bit() {
+                            DXGI_FORMAT_R16_UNORM
+                        } else {
+                            DXGI_FORMAT_R8_UNORM
+                        },
+                        SampleDesc: DXGI_SAMPLE_DESC {
+                            Count: 1,
+                            Quality: 0,
+                        },
+                        Usage: D3D11_USAGE_DEFAULT,
+                        BindFlags: (D3D11_BIND_SHADER_RESOURCE.0 | D3D11_BIND_RENDER_TARGET.0)
+                            as u32,
+                        MiscFlags: (D3D11_RESOURCE_MISC_SHARED.0
+                            | D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0)
+                            as u32,
+                        ..Default::default()
+                    },
+                    None,
+                    Some(&mut texture),
+                )?;
+                let texture = texture.unwrap();
+                let mut view = None;
+                gpu.device
+                    .CreateRenderTargetView(&texture, None, Some(&mut view))?;
+                textures.push(Arc::new(texture));
+                views.push(view.unwrap());
+            }
+            Ok(Self {
+                base,
+                shaders: shaders.try_into().ok().unwrap(),
+                textures: textures.try_into().ok().unwrap(),
+                views: views.try_into().ok().unwrap(),
+                divisor,
+            })
+        }
+    }
+    pub fn convert(&mut self, image: &GpuImage, luminance: [f32; 2]) -> Result<()> {
+        self.base.set_luminance(luminance);
+        unsafe {
+            let mut source = None;
+            self.base.gpu.device.CreateShaderResourceView(
+                image.texture.as_ref(),
+                None,
+                Some(&mut source),
+            )?;
+            let context = &self.base.gpu.context;
+            let lock: ID3D11Multithread = windows::core::Interface::cast(context)?;
+            lock.Enter();
+            if self.base.dirty {
+                context.UpdateSubresource(
+                    &self.base.constants,
+                    0,
+                    None,
+                    self.base.values.as_ptr().cast(),
+                    0,
+                    0,
+                );
+                self.base.dirty = false;
+            }
+            context.IASetInputLayout(None);
+            context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            context.VSSetShader(&self.base.vertex, None);
+            context.PSSetShaderResources(0, Some(&[source]));
+            context.PSSetConstantBuffers(0, Some(&[Some(self.base.constants.clone())]));
+            context.RSSetState(None);
+            context.OMSetBlendState(None, None, u32::MAX);
+            for plane in 0..3 {
+                let divisor = if plane == 0 { 1 } else { self.divisor };
+                context.RSSetViewports(Some(&[D3D11_VIEWPORT {
+                    Width: (self.base.width / divisor) as f32,
+                    Height: (self.base.height / divisor) as f32,
+                    MinDepth: 0.,
+                    MaxDepth: 1.,
+                    ..Default::default()
+                }]));
+                context.OMSetRenderTargets(Some(&[Some(self.views[plane].clone())]), None);
+                context.PSSetShader(&self.shaders[plane], None);
+                context.Draw(3, 0);
+            }
+            context.PSSetShaderResources(0, Some(&[None]));
+            context.OMSetRenderTargets(None, None);
+            lock.Leave();
+        }
+        Ok(())
     }
 }
 #[cfg(test)]

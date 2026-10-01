@@ -44,13 +44,13 @@ if ($FetchDependencies) {
         $FfmpegRoot = (Get-ChildItem -LiteralPath $directory -Filter avcodec.h -Recurse | Select-Object -First 1).Directory.Parent.Parent.FullName
     }
     if (!$PyrowaveRoot) {
-        $PyrowaveRoot = Join-Path $Dependencies 'pyrowave-89f7e47'
+        $PyrowaveRoot = Join-Path $Dependencies 'pyrowave-186f0393'
         $cygpath = "$MsysRoot\usr\bin\cygpath.exe"
         $prefix = & $cygpath -u $PyrowaveRoot
         $buildScript = & $cygpath -u (Join-Path $repo 'scripts\build_pyrowave.sh')
         $env:PYROWAVE_WORKDIR = & $cygpath -u (Join-Path $Dependencies 'pyrowave-work')
         $env:MSYSTEM = 'UCRT64'
-        & "$MsysRoot\usr\bin\bash.exe" $buildScript '89f7e47d4abbf650c91fae766728af866c5e32a0' $prefix
+        & "$MsysRoot\usr\bin\bash.exe" $buildScript '186f0393b77f7755953b5ecde994bb1cec2e4155' $prefix
         Assert-NativeExit 'PyroWave SDK build'
     }
     if (!$SkipTrueHdr -and !$NvidiaRoot) {
@@ -65,6 +65,18 @@ if ($FetchDependencies) {
     }
 }
 if (!$FfmpegRoot -or !$PyrowaveRoot) { throw 'Provide FFmpeg/PyroWave SDK paths, or use -FetchDependencies' }
+$pyrowaveInfo = Join-Path $PyrowaveRoot 'share\pyrowave-shared\build-info.txt'
+if (!(Test-Path -LiteralPath $pyrowaveInfo)) { throw 'PyroWave SDK build-info.txt is missing; rebuild using -FetchDependencies' }
+$pyrowaveIdentity = Get-Content -LiteralPath $pyrowaveInfo -Raw
+foreach ($identity in @(
+    'pyrowave_commit=186f0393b77f7755953b5ecde994bb1cec2e4155',
+    'granite_commit=b6cffd5ce81f540f0855e6778428483e14763d9b',
+    'patches=0001-encoder-buffer-pool,0002-payload-data-444-sizing,0003-decoder-reject-short-block'
+)) {
+    if ($pyrowaveIdentity -notmatch ('(?m)^' + [regex]::Escape($identity) + '\r?$')) {
+        throw "PyroWave SDK does not match Vibepollo 2.0: expected $identity. Rebuild using -FetchDependencies without -PyrowaveRoot."
+    }
+}
 $env:BUTTERPOLLO_FFMPEG_ROOT = $FfmpegRoot
 $env:BUTTERPOLLO_PYROWAVE_ROOT = $PyrowaveRoot
 Push-Location -LiteralPath $repo
@@ -125,6 +137,8 @@ try {
         }
         New-Item -ItemType Directory -Path "$distribution\assets\web", "$distribution\licenses" -Force | Out-Null
         foreach ($exe in @('butterpollo.exe', 'butterpollo-service.exe')) { Copy-Item -LiteralPath (Join-Path $output $exe) -Destination $distribution }
+        Copy-Item -LiteralPath (Join-Path $output 'butterpollo-start.exe') -Destination (Join-Path $distribution 'Start Butterpollo.exe')
+        Copy-Item -LiteralPath (Join-Path $PyrowaveRoot 'share\pyrowave-shared\build-info.txt') -Destination "$distribution\licenses\pyrowave-build-info.txt"
         Copy-Item -LiteralPath (Join-Path $output 'examples\performance.exe') -Destination (Join-Path $distribution 'butterpollo-performance.exe')
         Copy-Item -LiteralPath (Join-Path $output 'examples\protocol_performance.exe') -Destination (Join-Path $distribution 'butterpollo-protocol-performance.exe')
         foreach ($dll in $runtimeDlls) { Copy-Item -LiteralPath (Join-Path $output $dll) -Destination $distribution }
@@ -135,6 +149,7 @@ try {
         Copy-Item -LiteralPath (Join-Path $repo 'src_assets\common\assets\remote-session') -Destination "$distribution\assets\remote-session" -Recurse -Force
         Copy-Item -LiteralPath (Join-Path $repo 'LICENSE') -Destination "$distribution\licenses\Butterpollo.txt"
         Copy-Item -LiteralPath (Join-Path $repo 'rust\README.md') -Destination $distribution
+        Copy-Item -LiteralPath (Join-Path $repo 'rust\RELEASE_NOTES.md') -Destination $distribution
         Copy-Item -LiteralPath (Join-Path $repo 'rust\PERFORMANCE.md') -Destination $distribution
         Copy-Item -LiteralPath (Join-Path $repo 'rust\PARITY.md') -Destination $distribution
         Copy-Item -LiteralPath (Join-Path $repo 'rust\THIRD_PARTY.md') -Destination "$distribution\licenses"

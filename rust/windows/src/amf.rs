@@ -29,6 +29,7 @@ pub(crate) fn wide(s: &str) -> Vec<u16> {
 struct Submission {
     pts: i64,
     started: Instant,
+    presentation: Instant,
     after_invalidation: bool,
     _capture: Option<GpuImage>,
     _converted: Option<std::sync::Arc<windows::Win32::Graphics::Direct3D11::ID3D11Texture2D>>,
@@ -514,6 +515,7 @@ impl Encoder {
                     .position(|s| s.pts == pts)
                     .and_then(|position| self.in_flight.remove(position));
                 let latency = submission.as_ref().map(|s| s.started.elapsed());
+                let presentation = submission.as_ref().map(|s| s.presentation);
                 let after_invalidation = submission.is_some_and(|s| s.after_invalidation);
                 let v = &*(*buffer).pVtbl;
                 let size = (v.GetSize.unwrap())(buffer);
@@ -546,6 +548,7 @@ impl Encoder {
                     idr,
                     after_invalidation,
                     latency,
+                    presentation,
                 });
             }
             Ok(output)
@@ -659,6 +662,7 @@ impl Encoder {
             self.in_flight.push_back(Submission {
                 pts: self.index,
                 started,
+                presentation: image.captured,
                 after_invalidation: plan.after_invalidation,
                 _capture: None,
                 _converted: None,
@@ -798,6 +802,7 @@ impl Encoder {
             self.in_flight.push_back(Submission {
                 pts: self.index,
                 started,
+                presentation: image.captured,
                 after_invalidation: plan.after_invalidation,
                 _capture: Some(image.clone()),
                 _converted: Some(converted),

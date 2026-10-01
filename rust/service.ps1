@@ -24,11 +24,11 @@ switch ($Action) {
     'Install' {
         if (!(Test-Path -LiteralPath $executable) -or !(Test-Path -LiteralPath (Join-Path $PSScriptRoot 'butterpollo.exe'))) { throw 'Run this script from the extracted Rust distribution' }
         if ($ConfigSource) {
-            $source = (Resolve-Path -LiteralPath $ConfigSource).Path
+            $source = (Resolve-Path -LiteralPath $ConfigSource).ProviderPath
             if (!(Test-Path -LiteralPath (Join-Path $source 'sunshine.conf'))) { throw '-ConfigSource must contain sunshine.conf' }
             if ((Test-Path -LiteralPath $config) -and (Get-ChildItem -LiteralPath $config -Force | Select-Object -First 1)) { throw 'Rust config directory already contains data; import to a separate empty directory first' }
-            New-Item -ItemType Directory -Path $config -Force | Out-Null
-            Get-ChildItem -LiteralPath $source -Force | Copy-Item -Destination $config -Recurse -Force
+            & (Join-Path $PSScriptRoot 'butterpollo.exe') --config-dir $config --import-config $source
+            if ($LASTEXITCODE -ne 0) { throw "Profile import failed ($LASTEXITCODE); the service has not been installed" }
         }
         if (!$service) {
             New-Service -Name $name -BinaryPathName ('"' + $executable + '"') -DisplayName 'Butterpollo Rust' -StartupType Automatic -Description 'Rust Moonlight streaming host' | Out-Null

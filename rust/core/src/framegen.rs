@@ -169,7 +169,13 @@ impl Policy {
         .to_owned();
         Ok(Self {
             rate,
-            display_rate: Rate(stream.0.saturating_mul(multiplier)),
+            display_rate: if virtual_display
+                && matches!(mode.as_str(), "vrr" | "1000hz" | "1000" | "fixed1000hz")
+            {
+                Rate(1_000_000)
+            } else {
+                Rate(stream.0.saturating_mul(multiplier))
+            },
             enabled: config.boolean("frame_limiter_enable", false)
                 || automatic
                 || (!virtual_display && framegen),
@@ -183,10 +189,44 @@ impl Policy {
             capture,
         })
     }
+    pub fn with_vrr(mut self, config: &Config, virtual_display: bool, requested: bool) -> Self {
+        let mode = normalize(config.get("frame_limiter_auto_virtual_framegen", "legacy"));
+        if virtual_display
+            && requested
+            && !matches!(mode.as_str(), "disabled" | "off" | "false" | "0")
+        {
+            self.display_rate = Rate(1_000_000);
+            if matches!(config.get("capture", "auto"), "" | "auto") {
+                self.capture = "wgc".into();
+            }
+        }
+        self
+    }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn vrr_virtual_display_uses_fixed_1000_hz_without_changing_stream_rate() {
+        let c = Config::default();
+        let p = Policy::resolve(&c, Rate(119880), true, "none", false, false, true, false)
+            .unwrap()
+            .with_vrr(&c, true, true);
+        assert_eq!(p.display_rate, Rate(1_000_000));
+        assert_eq!(p.rate, Rate(119880));
+        assert_eq!(p.capture, "wgc");
+        let c = Config::parse("frame_limiter_auto_virtual_framegen=disabled\ncapture=ddx").unwrap();
+        let p = Policy::resolve(&c, Rate(119880), true, "none", false, false, true, false)
+            .unwrap()
+            .with_vrr(&c, true, true);
+        assert_eq!(p.display_rate, Rate(119880));
+        assert_eq!(p.capture, "ddx");
+        let c = Config::parse("frame_limiter_auto_virtual_framegen=fixed-1000-hz").unwrap();
+        let p = Policy::resolve(&c, Rate(59940), false, "none", false, false, true, false)
+            .unwrap()
+            .with_vrr(&c, false, true);
+        assert_eq!(p.display_rate, Rate(59940));
+    }
     #[test]
     fn fractional_rate_round_trip_and_bounds() {
         assert_eq!(Rate::parse("59.940").unwrap().rational(), (2997, 50));

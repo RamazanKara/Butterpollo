@@ -498,19 +498,21 @@ fn completed_output_retains_inputs_and_async_event_survives_a_busy_lock() -> Res
     });
     let mut encoder = session(&Negotiated::default(), ApiVersion(11, 0))?;
     let slot = input(&mut encoder, 17)?;
-    encoder.submit(slot, None, true)?;
+    let presentation = Instant::now() - Duration::from_millis(10);
+    encoder.submit(slot, None, true, presentation)?;
     assert!(encoder.poll()?.is_empty());
     assert_eq!(encoder.pending.len(), 1);
     state(|d| assert!(d.mapped.contains(&17)));
-    assert!(encoder.submit(slot, None, false).is_err());
+    assert!(encoder.submit(slot, None, false, Instant::now()).is_err());
     let result = encoder.poll()?;
     assert_eq!(result.len(), 1);
     assert!(result[0].idr);
     assert!(!result[0].after_invalidation);
     assert_eq!(result[0].bytes, 1u64.to_le_bytes());
     assert!(result[0].latency.is_some());
+    assert_eq!(result[0].presentation, Some(presentation));
     state(|d| assert!(d.mapped.is_empty()));
-    encoder.submit(slot, None, false)?;
+    encoder.submit(slot, None, false, Instant::now())?;
     assert_eq!(encoder.poll()?[0].bytes, 2u64.to_le_bytes());
     drop(encoder);
     assert_clean();
@@ -533,7 +535,7 @@ fn timed_out_submission_retains_resources_until_native_session_destruction() -> 
     });
     let mut encoder = session(&Negotiated::default(), ApiVersion(13, 0))?;
     let slot = input(&mut encoder, 17)?;
-    encoder.submit(slot, None, true)?;
+    encoder.submit(slot, None, true, Instant::now())?;
     encoder.pending.front_mut().unwrap().started =
         Instant::now() - COMPLETION_TIMEOUT - Duration::from_millis(1);
     assert!(encoder.poll().is_err());
@@ -564,26 +566,26 @@ fn loss_feedback_drains_pending_frames_and_only_confirms_successful_invalidation
     let mut encoder = session(&Negotiated::default(), ApiVersion(13, 0))?;
     let slot = input(&mut encoder, 17)?;
     for frame in 1..=12 {
-        encoder.submit(slot, None, frame == 1)?;
+        encoder.submit(slot, None, frame == 1, Instant::now())?;
         encoder.poll()?;
     }
     // Feedback can arrive while a later picture is still pending. Drain into
     // the output queue; the feedback range includes all dependent pictures.
-    encoder.submit(slot, None, false)?;
+    encoder.submit(slot, None, false, Instant::now())?;
     assert!(encoder.invalidate(11, 11)?);
     state(|d| assert_eq!(d.invalidated, vec![11, 12, 13]));
     assert_eq!(encoder.poll()?[0].bytes, 13u64.to_le_bytes());
-    encoder.submit(slot, None, false)?;
+    encoder.submit(slot, None, false, Instant::now())?;
     assert!(encoder.poll()?[0].after_invalidation);
-    encoder.submit(slot, None, false)?;
+    encoder.submit(slot, None, false, Instant::now())?;
     assert!(!encoder.poll()?[0].after_invalidation);
     assert!(encoder.invalidate(11, 12)?);
     state(|d| assert_eq!(d.invalidated.len(), 3));
     state(|d| d.reject_invalidate = Some(15));
     assert!(encoder.invalidate(14, 14).is_err());
-    encoder.submit(slot, None, false)?;
+    encoder.submit(slot, None, false, Instant::now())?;
     assert!(!encoder.poll()?[0].after_invalidation);
-    encoder.submit(slot, None, true)?;
+    encoder.submit(slot, None, true, Instant::now())?;
     assert!(encoder.poll()?[0].idr);
     assert!(encoder.invalidate(14, 15)?); // Old GOP feedback is already resolved.
     assert!(!encoder.invalidate(17, 17)?); // A lost current IDR needs another IDR.
@@ -626,7 +628,7 @@ fn failed_bitrate_reconfigure_keeps_previous_config_then_higher_rate_requests_id
     });
     assert!(encoder.force_idr);
     let slot = input(&mut encoder, 17)?;
-    encoder.submit(slot, None, false)?;
+    encoder.submit(slot, None, false, Instant::now())?;
     assert!(encoder.poll()?[0].idr);
     encoder.bitrate(10000)?;
     assert!(!encoder.force_idr);
@@ -652,13 +654,13 @@ fn hdr_metadata_is_snapshotted_until_the_gpu_submission_completes() -> Result<()
     encoder
         .metadata
         .update(butterpollo_core::hdr::Metadata::display(600., 0.002, 300.));
-    encoder.submit(slot, None, true)?;
+    encoder.submit(slot, None, true, Instant::now())?;
     encoder
         .metadata
         .update(butterpollo_core::hdr::Metadata::display(1400., 0.001, 800.));
     assert_eq!(encoder.slots[slot].metadata.mastering.maxLuma, 6_000_000);
     assert_eq!(encoder.poll()?.len(), 1);
-    encoder.submit(slot, None, false)?;
+    encoder.submit(slot, None, false, Instant::now())?;
     assert_eq!(encoder.slots[slot].metadata.mastering.maxLuma, 14_000_000);
     assert_eq!(encoder.poll()?.len(), 1);
     drop(encoder);

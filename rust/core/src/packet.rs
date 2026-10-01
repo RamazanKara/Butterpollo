@@ -85,13 +85,21 @@ pub fn concat_and_insert(header: usize, slice: usize, a: &[u8], b: &[u8]) -> Res
     Ok(out)
 }
 pub struct VideoPacketizer {
-    pub sequence: u16,
+    /// Moonlight uses a 24-bit stream index alongside the 16-bit RTP sequence.
+    pub sequence: u32,
     pub iv_counter: u64,
     pub frame: u32,
     pub packet_size: usize,
     pub fec_percent: usize,
     pub min_fec: usize,
     pub key: Option<[u8; 16]>,
+}
+pub struct PyrowaveFec {
+    pub records: bool,
+    pub critical_percentage: usize,
+    pub detail_percentage: usize,
+    pub wire_budget: usize,
+    pub ipv6: bool,
 }
 impl VideoPacketizer {
     pub fn encode(
@@ -111,6 +119,33 @@ impl VideoPacketizer {
         timestamp: u32,
         latency_us: u64,
     ) -> Result<Vec<Vec<u8>>> {
+        self.encode_frame(
+            payload,
+            idr,
+            after_invalidation,
+            timestamp,
+            latency_us,
+            None,
+        )
+    }
+    pub fn encode_pyrowave(
+        &mut self,
+        payload: &[u8],
+        timestamp: u32,
+        latency_us: u64,
+        fec: PyrowaveFec,
+    ) -> Result<Vec<Vec<u8>>> {
+        self.encode_frame(payload, true, false, timestamp, latency_us, Some(fec))
+    }
+    fn encode_frame(
+        &mut self,
+        payload: &[u8],
+        idr: bool,
+        after_invalidation: bool,
+        timestamp: u32,
+        latency_us: u64,
+        pyrowave: Option<PyrowaveFec>,
+    ) -> Result<Vec<Vec<u8>>> {
         if !(256..=1400).contains(&self.packet_size) || self.fec_percent > 100 {
             bail!("invalid packetizer parameters");
         }
@@ -120,6 +155,20 @@ impl VideoPacketizer {
             bail!("encoded frame exceeds Moonlight packet limit");
         }
         let total = payload.len() + 8;
+        let total_shards = total.div_ceil(slice);
+        let layout = pyrowave
+            .as_ref()
+            .filter(|p| p.records)
+            .map(|_| {
+                crate::pyrowave::layout(payload, crate::pyrowave::aligned_payload(self.packet_size))
+            })
+            .transpose()?;
+        let critical = layout.as_ref().map_or(0, |l| l.critical_shards);
+        let minimum = if pyrowave.is_some() {
+            self.min_fec.max(2)
+        } else {
+            self.min_fec
+        };
         let mut header = [0u8; 8];
         header[0] = 1;
         header[1..3].copy_from_slice(
@@ -135,6 +184,7 @@ impl VideoPacketizer {
         let last = total % slice;
         header[4..6]
             .copy_from_slice(&((if last == 0 { slice } else { last }) as u16).to_le_bytes());
+        header[6..8].copy_from_slice(&(critical as u16).to_le_bytes());
         let data = concat_and_insert(32, slice, &header, payload)?;
         let max_data = 255 * 100 / (100 + self.fec_percent);
         let mut blocks = data.len().div_ceil(max_data * block_size);
@@ -144,23 +194,63 @@ impl VideoPacketizer {
             blocks = 4;
         }
         let aligned = data.len().div_ceil(blocks * block_size) * block_size;
+        let plan = if let Some(pyro) = pyrowave.as_ref() {
+            let baseline = crate::pyrowave::plan(
+                total_shards,
+                critical,
+                pyro.critical_percentage,
+                minimum,
+                0,
+                0,
+            )?;
+            let baseline_packets = total_shards
+                + baseline
+                    .iter()
+                    .map(|b| crate::pyrowave::parity(b.data, b.percentage, minimum))
+                    .sum::<usize>();
+            let wire_bytes = block_size
+                + 38
+                + if pyro.ipv6 { 40 } else { 20 }
+                + 8
+                + if self.key.is_some() { 32 } else { 0 };
+            let extra = (pyro.wire_budget / wire_bytes).saturating_sub(baseline_packets);
+            crate::pyrowave::plan(
+                total_shards,
+                critical,
+                pyro.critical_percentage,
+                minimum,
+                pyro.detail_percentage,
+                extra,
+            )?
+        } else {
+            (0..blocks)
+                .map(|block| crate::pyrowave::FecBlock {
+                    data: (data.len().saturating_sub(block * aligned))
+                        .min(aligned)
+                        .div_ceil(block_size),
+                    percentage,
+                })
+                .collect()
+        };
+        blocks = plan.len();
         let mut packets = Vec::new();
-        for block in 0..blocks {
-            let start = block * aligned;
+        let mut first_shard = 0;
+        for (block, planned) in plan.iter().enumerate() {
+            let start = first_shard * block_size;
             if start >= data.len() {
                 bail!("invalid FEC block split");
             }
-            let end = ((block + 1) * aligned).min(data.len());
+            let end = (start + planned.data * block_size).min(data.len());
             let source = &data[start..end];
             let count = source.len().div_ceil(block_size);
             if count >= 1024 {
                 bail!("FEC shard index overflow");
             }
-            let mut fec =
-                count * percentage / 100 + usize::from(!(count * percentage).is_multiple_of(100));
+            let percentage = planned.percentage;
+            let mut fec = (count * percentage).div_ceil(100);
             let mut effective = percentage;
-            if percentage > 0 && fec < self.min_fec {
-                fec = self.min_fec;
+            if percentage > 0 && fec < minimum {
+                fec = minimum;
                 effective = 100 * fec / count;
             }
             if count + fec > 255 && percentage > 0 {
@@ -171,19 +261,24 @@ impl VideoPacketizer {
                 let begin = i * block_size;
                 let n = block_size.min(source.len() - begin);
                 s[..n].copy_from_slice(&source[begin..begin + n]);
-                s[16..20].copy_from_slice(
-                    &(u32::from(self.sequence.wrapping_add(i as u16)) << 8).to_le_bytes(),
-                );
+                s[16..20]
+                    .copy_from_slice(&(self.sequence.wrapping_add(i as u32) << 8).to_le_bytes());
                 s[20..24].copy_from_slice(&self.frame.to_le_bytes());
                 s[24] = 1 | if i == 0 { 4 } else { 0 } | if i == count - 1 { 2 } else { 0 };
                 s[26] = 0x10;
+                if layout
+                    .as_ref()
+                    .is_some_and(|l| l.starts.get(first_shard + i) == Some(&true))
+                {
+                    s[26] |= 0x80;
+                }
                 s[27] = ((block as u8) << 4) | (((blocks - 1) as u8) << 6);
             }
             if fec > 0 {
                 cauchy_encode(&mut shards, count, fec)?;
             }
             for (i, mut shard) in shards.into_iter().enumerate() {
-                let seq = self.sequence.wrapping_add(i as u16);
+                let seq = self.sequence.wrapping_add(i as u32) as u16;
                 shard[0] = 0x90;
                 shard[2..4].copy_from_slice(&seq.to_be_bytes());
                 shard[4..8].copy_from_slice(&timestamp.to_be_bytes());
@@ -210,7 +305,8 @@ impl VideoPacketizer {
                     packets.push(shard);
                 }
             }
-            self.sequence = self.sequence.wrapping_add((count + fec) as u16);
+            self.sequence = self.sequence.wrapping_add((count + fec) as u32);
+            first_shard += count;
         }
         self.frame = self.frame.wrapping_add(1);
         Ok(packets)
@@ -721,10 +817,21 @@ mod tests {
         assert_eq!(packets[1][24], 3);
         assert_eq!(&packets[0][32..40], &[1, 2, 0, 2, 100, 0, 0, 0]);
         assert_eq!(&packets[1][2..4], &[0, 0]);
+        let stream_index =
+            |packet: &[u8]| u32::from_le_bytes(packet[16..20].try_into().unwrap()) >> 8;
+        assert_eq!(stream_index(&packets[0]), 65535);
+        assert_eq!(stream_index(&packets[1]), 65536);
         let recovered = p.encode_recovery(&[3; 16], false, true, 1000, 300).unwrap();
         assert_eq!(recovered[0][35], 5); // Moonlight recovery marker
+        assert_eq!(stream_index(&recovered[0]), 65537);
         let keyframe = p.encode_recovery(&[3; 16], true, true, 1100, 300).unwrap();
         assert_eq!(keyframe[0][35], 2); // IDR takes precedence
+        p.sequence = 0xFFFFFF;
+        let wrapped = p.encode(&vec![3; 1100], true, 1200, 300).unwrap();
+        assert_eq!(stream_index(&wrapped[0]), 0xFFFFFF);
+        assert_eq!(stream_index(&wrapped[1]), 0);
+        assert_eq!(&wrapped[0][2..4], &[0xff, 0xff]);
+        assert_eq!(&wrapped[1][2..4], &[0, 0]);
     }
     #[test]
     fn encrypted_video_nonce_is_unique_and_authenticated() {

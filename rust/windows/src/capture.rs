@@ -374,7 +374,11 @@ impl Duplication {
             let result = (|| {
                 let texture: ID3D11Texture2D =
                     resource.context("empty captured texture")?.cast()?;
-                self.owned.copy(&self.gpu, &texture)
+                let mut image = self.owned.copy(&self.gpu, &texture)?;
+                if let Some(image) = image.as_mut() {
+                    image.captured = qpc_instant(info.LastPresentTime);
+                }
+                Ok(image)
             })();
             let _ = self.duplicate.ReleaseFrame();
             result
@@ -395,7 +399,9 @@ pub struct GpuImage {
 }
 impl GpuImage {
     pub fn readback(&self, staging: &mut Option<ID3D11Texture2D>) -> Result<Image> {
-        read_texture(&self.gpu, &self.texture, staging)
+        let mut image = read_texture(&self.gpu, &self.texture, staging)?;
+        image.captured = self.captured;
+        Ok(image)
     }
     pub fn upload(gpu: &Device, image: &Image) -> Result<Self> {
         let format = match image.pixel {
@@ -586,6 +592,39 @@ pub struct Wgc {
     color_space: Option<DXGI_COLOR_SPACE_TYPE>,
     color_check: Instant,
 }
+pub(crate) fn qpc_frequency() -> i64 {
+    *std::sync::OnceLock::get_or_init(&QPC_FREQUENCY, || {
+        let mut frequency = 0;
+        let _ = unsafe {
+            windows::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency)
+        };
+        frequency.max(1)
+    })
+}
+static QPC_FREQUENCY: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+fn qpc_instant(ticks: i64) -> Instant {
+    let now = Instant::now();
+    let mut current = 0;
+    if ticks <= 0
+        || unsafe { windows::Win32::System::Performance::QueryPerformanceCounter(&mut current) }
+            .is_err()
+    {
+        return now;
+    }
+    let elapsed = current.saturating_sub(ticks).max(0) as u64;
+    let age = Duration::from_secs_f64(elapsed as f64 / qpc_frequency() as f64);
+    if age > Duration::from_secs(2) {
+        now
+    } else {
+        now.checked_sub(age).unwrap_or(now)
+    }
+}
+fn wgc_presentation(frame: &Direct3D11CaptureFrame) -> Instant {
+    let ticks = frame.SystemRelativeTime().map(|t| t.Duration).unwrap_or(0);
+    let ticks = (i128::from(ticks) * i128::from(qpc_frequency()) / 10_000_000)
+        .clamp(0, i128::from(i64::MAX)) as i64;
+    qpc_instant(ticks)
+}
 fn pin_capture_runtime() -> Result<()> {
     use std::sync::OnceLock;
     use windows::Win32::System::LibraryLoader::{
@@ -711,7 +750,8 @@ impl Wgc {
                     }
                 })
             });
-            self.held = Some((frame, deadline.unwrap_or(now), now));
+            let presented = wgc_presentation(&frame);
+            self.held = Some((frame, deadline.unwrap_or(now), presented));
         }
         if self
             .held

@@ -4,6 +4,7 @@ mod maintenance;
 mod network;
 mod nvhttp;
 mod process;
+mod pyrowave_send;
 mod remote_display;
 mod rtsp_server;
 mod state;
@@ -26,6 +27,9 @@ use std::{
 struct Args {
     #[arg(long)]
     config_dir: Option<PathBuf>,
+    /// Copy a Vibepollo/Apollo profile into an empty --config-dir, then exit.
+    #[arg(long, requires = "config_dir")]
+    import_config: Option<PathBuf>,
     #[arg(long)]
     assets: Option<PathBuf>,
     #[arg(long)]
@@ -61,6 +65,9 @@ struct Args {
 async fn main() -> Result<()> {
     butterpollo_windows::capture::enable_dpi_awareness();
     let args = Args::parse();
+    if let Some(source) = &args.import_config {
+        return butterpollo_core::migration::import(source, args.config_dir.as_ref().unwrap());
+    }
     if let Some(path) = &args.rtss_worker {
         return butterpollo_windows::rtss::worker(path);
     }

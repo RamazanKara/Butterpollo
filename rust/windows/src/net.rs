@@ -81,6 +81,81 @@ pub fn local_mac(address: std::net::IpAddr) -> Result<String> {
     }
     Ok("00:00:00:00:00:00".into())
 }
+/// Active Ethernet/Wi-Fi IPv4 addresses for Moonlight's manual Add PC flow.
+pub fn lan_addresses() -> Result<Vec<String>> {
+    use windows::Win32::{
+        Foundation::{ERROR_BUFFER_OVERFLOW, ERROR_SUCCESS},
+        NetworkManagement::IpHelper::*,
+    };
+    let mut size = 15000u32;
+    for _ in 0..3 {
+        anyhow::ensure!(
+            size <= 1024 * 1024,
+            "network interface table exceeds its limit"
+        );
+        let mut storage = vec![0u64; (size as usize).div_ceil(8)];
+        let first = storage.as_mut_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
+        let status = unsafe {
+            GetAdaptersAddresses(
+                AF_INET.0 as u32,
+                GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
+                None,
+                Some(first),
+                &mut size,
+            )
+        };
+        if status == ERROR_BUFFER_OVERFLOW.0 {
+            continue;
+        }
+        if status != ERROR_SUCCESS.0 {
+            return Err(std::io::Error::from_raw_os_error(status as i32).into());
+        }
+        let mut addresses = Vec::new();
+        unsafe {
+            let mut adapter = first;
+            while let Some(row) = adapter.as_ref() {
+                if row.OperStatus.0 == 1 && matches!(row.IfType, 6 | 71) {
+                    let mut interface = MIB_IF_ROW2 {
+                        InterfaceLuid: row.Luid,
+                        ..Default::default()
+                    };
+                    let hardware = GetIfEntry2(&mut interface).0 == 0
+                        && interface.InterfaceAndOperStatusFlags._bitfield & 1 != 0;
+                    let mut unicast = row.FirstUnicastAddress;
+                    while let Some(ip) = unicast.as_ref() {
+                        if !ip.Address.lpSockaddr.is_null()
+                            && ip.Address.iSockaddrLength as usize >= size_of::<SOCKADDR_IN>()
+                        {
+                            let socket = &*ip.Address.lpSockaddr.cast::<SOCKADDR_IN>();
+                            if socket.sin_family == AF_INET {
+                                let address = std::net::Ipv4Addr::from(
+                                    socket.sin_addr.S_un.S_addr.to_ne_bytes(),
+                                );
+                                if !address.is_loopback()
+                                    && !address.is_link_local()
+                                    && !address.is_unspecified()
+                                {
+                                    addresses.push((hardware, address));
+                                }
+                            }
+                        }
+                        unicast = ip.Next;
+                    }
+                }
+                adapter = row.Next;
+            }
+        }
+        // Hyper-V/WSL adapters also identify as Ethernet. Prefer a physical
+        // interface so first-run instructions point at a reachable LAN address.
+        addresses.sort_by_key(|(hardware, address)| (!hardware, !address.is_private(), *address));
+        addresses.dedup_by_key(|(_, address)| *address);
+        return Ok(addresses
+            .into_iter()
+            .map(|(_, address)| address.to_string())
+            .collect());
+    }
+    anyhow::bail!("network interfaces changed during enumeration")
+}
 pub fn configure_udp(socket: &UdpSocket) -> Result<()> {
     let disabled = 0u32;
     let mut returned = 0;
@@ -101,6 +176,33 @@ pub fn configure_udp(socket: &UdpSocket) -> Result<()> {
         return Err(std::io::Error::from_raw_os_error(unsafe { WSAGetLastError() }.0).into());
     }
     Ok(())
+}
+/// Physical Ethernet speed on the route to this client; zero means unknown.
+pub fn routed_link_bps(peer: SocketAddr) -> u64 {
+    use windows::Win32::NetworkManagement::{IpHelper::*, Ndis::IfOperStatusUp};
+    let peer = SocketAddr::new(peer.ip().to_canonical(), peer.port());
+    if peer.ip().is_loopback() {
+        return 0;
+    }
+    let address = socket2::SockAddr::from(peer);
+    let mut index = 0;
+    unsafe {
+        if GetBestInterfaceEx(address.as_ptr().cast(), &mut index) != 0 {
+            return 0;
+        }
+        let mut row = MIB_IF_ROW2 {
+            InterfaceIndex: index,
+            ..Default::default()
+        };
+        if GetIfEntry2(&mut row).0 != 0
+            || row.Type != 6
+            || row.OperStatus != IfOperStatusUp
+            || row.InterfaceAndOperStatusFlags._bitfield & 1 == 0
+        {
+            return 0;
+        }
+        row.TransmitLinkSpeed
+    }
 }
 /// Per-message segmentation leaves the shared socket's options untouched.
 pub struct Batch {

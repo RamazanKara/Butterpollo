@@ -144,6 +144,7 @@ pub fn router(h: Shared, https: bool) -> Router {
             .route("/appasset", get(appasset))
             .route("/bitrate", get(bitrate))
             .route("/api/abr/capabilities", get(abr))
+            .route("/pyrowave-bandwidth-probe", get(pyrowave_bandwidth))
             .route(
                 "/actions/clipboard",
                 get(clipboard_read).post(clipboard_write),
@@ -162,6 +163,11 @@ async fn serverinfo(
     let ports = config.ports().unwrap();
     let client = authenticated(&h, &connection, 0).ok();
     let paired = client.is_some();
+    let pyrowave_link = if paired {
+        butterpollo_windows::net::routed_link_bps(connection.peer) / 1_000_000
+    } else {
+        0
+    };
     let address = connection.local.ip();
     let mac = tokio::task::spawn_blocking(move || butterpollo_windows::net::local_mac(address))
         .await
@@ -214,9 +220,42 @@ async fn serverinfo(
                 (h.codecs.load(std::sync::atomic::Ordering::Acquire) & !0x40000000).to_string(),
             ),
             ("RustHostVersion", env!("CARGO_PKG_VERSION").into()),
+            (
+                "RustHostProfile",
+                if connection.peer.ip().to_canonical().is_loopback() {
+                    butterpollo_core::migration::profile_id(&h.directory)
+                } else {
+                    String::new()
+                },
+            ),
+            ("PyroWaveHostLinkMbps", pyrowave_link.to_string()),
+            (
+                "PyroWaveBandwidthProbeBytes",
+                if paired { "33554432" } else { "0" }.into(),
+            ),
         ],
         None,
     )
+}
+async fn pyrowave_bandwidth(
+    State(h): State<Shared>,
+    Extension(connection): Extension<Connection>,
+) -> Response {
+    if authenticated(&h, &connection, 0).is_err() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    static PAYLOAD: std::sync::OnceLock<Bytes> = std::sync::OnceLock::new();
+    let payload = PAYLOAD
+        .get_or_init(|| Bytes::from(vec![0xa5; 32 * 1024 * 1024]))
+        .clone();
+    (
+        [
+            (header::CONTENT_TYPE, "application/octet-stream"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        payload,
+    )
+        .into_response()
 }
 async fn pair(State(h): State<Shared>, Query(args): Query<Args>) -> Response {
     match do_pair(h, &args).await {
@@ -1009,7 +1048,7 @@ async fn bitrate(
             .or_else(|| args.get("bitrate_kbps"))
             .context("missing bitrate")?
             .parse::<u32>()?;
-        if !(100..=500000).contains(&bitrate) {
+        if !(100..=2_000_000).contains(&bitrate) {
             bail!("invalid bitrate");
         }
         let sessions = h.sessions.lock().unwrap();
@@ -1032,6 +1071,6 @@ async fn abr(State(h): State<Shared>, Extension(c): Extension<Connection>) -> Re
     if authenticated(&h, &c, 1 << 25).is_err() {
         return axum::http::StatusCode::UNAUTHORIZED.into_response();
     }
-    axum::Json(json!({"supported":true,"min_bitrate_kbps":100,"max_bitrate_kbps":500000}))
+    axum::Json(json!({"supported":true,"min_bitrate_kbps":100,"max_bitrate_kbps":2_000_000}))
         .into_response()
 }

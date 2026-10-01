@@ -49,7 +49,7 @@ pub const GLOBAL: &[Setting] = settings! {
         "frame_limiter_enable", "Enable frame limiter", Bool;
         "frame_limiter_provider", "Limiter provider", Choice(&["auto","rtss","nvidia-control-panel","none"]);
         "frame_limiter_fps_limit", "Frame limit (0 uses the client rate)", Number;
-        "frame_limiter_auto_virtual_framegen", "Virtual display frame generation", Choice(&["legacy","enabled","disabled"]);
+        "frame_limiter_auto_virtual_framegen", "Virtual display frame generation", Choice(&["legacy","enabled","fixed-1000hz","disabled"]);
         "frame_limiter_disable_vsync", "Disable driver vertical sync during streaming", Bool;
         "rtss_install_path", "RTSS installation directory", Text;
         "rtss_frame_limit_type", "RTSS limiter mode", Choice(&["async","front-edge-sync","back-edge-sync","nvidia-reflex"]);
@@ -67,6 +67,8 @@ pub const GLOBAL: &[Setting] = settings! {
         "wgc_direct_encoder_input", "Pass GPU capture directly to the encoder", Bool;
         "wgc_slot_aligned_publish", "Align capture publication to frame slots", Bool;
         "fec_percentage", "Forward error correction (%)", Number;
+        "pyrowave", "Enable PyroWave for compatible clients", Bool;
+        "pyrowave_critical_fec_percentage", "PyroWave protection for required image data (%)", Number;
         "packetsize", "Video packet size (0 uses the client request)", Number;
         "video_max_batch_size_kb", "Video send batch limit (KiB)", Number;
         "pacing_max_bitrate_kbps", "Network pacing limit (Kbps; 0 uses 1 Gbps)", Number;

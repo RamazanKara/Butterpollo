@@ -121,6 +121,8 @@ pub struct Negotiated {
     pub intra_refresh: bool,
     #[serde(default)]
     pub vrr_low_latency: bool,
+    #[serde(default)]
+    pub pyrowave_records: bool,
     pub packet_size: usize,
     pub min_fec: usize,
     pub audio_channels: u8,
@@ -147,6 +149,7 @@ impl Default for Negotiated {
             references: 0,
             intra_refresh: false,
             vrr_low_latency: false,
+            pyrowave_records: false,
             packet_size: 1024,
             min_fec: 0,
             audio_channels: 2,
@@ -229,6 +232,8 @@ impl Negotiated {
             get("x-nv-video[0].enableIntraRefresh", 0)?,
         )? != 0;
         n.vrr_low_latency = get("x-ss-video[0].vrrLowLatency", 0)? != 0;
+        n.pyrowave_records = attrs.contains_key("x-ss-video[0].pyrowaveAdaptiveFec")
+            || get("x-ss-video[0].pyrowaveFeatures", 0)? & 1 != 0;
         n.packet_size = get("x-nv-video[0].packetSize", 1024)? as usize;
         n.min_fec = get("x-nv-vqos[0].fec.minRequiredFecPackets", 0)? as usize;
         n.audio_channels = u8::try_from(get("x-nv-audio.surround.numChannels", 2)?)?;
@@ -252,7 +257,7 @@ impl Negotiated {
         }
         if !(1..=4000).contains(&self.fps)
             || self.rate_millihz > 4_000_000
-            || !(1..=500000).contains(&self.bitrate_kbps)
+            || !(1..=2_000_000).contains(&self.bitrate_kbps)
             || self.configured_bitrate_kbps > i32::MAX as u32
             || self.csc_mode > 5
             || self.codec > 3
@@ -291,7 +296,7 @@ pub fn describe(
         s.push_str("a=rtpmap:98 AV1/90000\r\n");
     }
     if pyrowave {
-        s.push_str("a=rtpmap:99 PYROWAVE/90000\r\n");
+        s.push_str("a=rtpmap:99 PYROWAVE/90000\r\na=x-ss-pyrowave.bitstream:186f0393\r\n");
     }
     s.push_str("a=fmtp:97 surround-params=21101\r\na=fmtp:97 surround-params=642014523\r\na=fmtp:97 surround-params=85301456723\r\na=fmtp:97 surround-params=21101\r\na=fmtp:97 surround-params=660014523\r\na=fmtp:97 surround-params=88001456723\r\n");
     s
@@ -319,6 +324,28 @@ mod tests {
     fn sdp_negotiation_rejects_integers_that_would_truncate() {
         assert!(Negotiated::from_sdp(b"a=x-nv-video[0].clientViewportWd:4294967295\n").is_err());
         assert!(Negotiated::from_sdp(b"a=x-nv-vqos[0].bitStreamFormat:256\n").is_err());
+    }
+    #[test]
+    fn pyrowave_framing_presence_and_feature_bit_match_vrr_clients() {
+        for attribute in [
+            "x-ss-video[0].pyrowaveAdaptiveFec:0",
+            "x-ss-video[0].pyrowaveFeatures:1",
+        ] {
+            let sdp = format!(
+                "a=x-nv-vqos[0].bitStreamFormat:3\na={attribute}\na=x-ss-video[0].vrrLowLatency:1\na=x-nv-vqos[0].bw.maximumBitrateKbps:800000\n"
+            );
+            let config = Negotiated::from_sdp(sdp.as_bytes()).unwrap();
+            assert!(config.pyrowave_records && config.vrr_low_latency);
+            assert_eq!(config.codec, 3);
+        }
+        assert!(
+            !Negotiated::from_sdp(b"a=x-ss-video[0].pyrowaveFeatures:2\n")
+                .unwrap()
+                .pyrowave_records
+        );
+        assert!(
+            describe(0, 0, true, true, true).contains("a=x-ss-pyrowave.bitstream:186f0393\r\n")
+        );
     }
     #[test]
     fn fractional_negotiation_does_not_use_stale_display_refresh() {

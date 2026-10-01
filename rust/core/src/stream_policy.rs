@@ -44,14 +44,14 @@ pub fn apply(stream: &mut Negotiated, launch_millihz: u32, config: &Config) {
     });
     if configured > 0 {
         let fec = config.integer("fec_percentage", 20);
-        if (0..=80).contains(&fec) {
+        if stream.codec != 3 && (0..=80).contains(&fec) {
             budget = budget * (100 - fec as u64) / 100;
         }
         let audio = u64::from(stream.audio_channels) * if stream.audio_quality { 256 } else { 96 };
         budget -= audio.min(budget / 5);
         budget -= 500.min(budget / 10);
     }
-    stream.bitrate_kbps = budget.clamp(1, 500000) as u32;
+    stream.bitrate_kbps = budget.clamp(1, 2_000_000) as u32;
     let packet_size = config.integer("packetsize", 0);
     if (256..=1400).contains(&packet_size) {
         stream.packet_size = packet_size as usize;
@@ -80,5 +80,13 @@ mod tests {
         };
         apply(&mut legacy, 0, &config);
         assert_eq!(legacy.bitrate_kbps, 20000);
+        let mut pyro = Negotiated {
+            fps: 120,
+            codec: 3,
+            configured_bitrate_kbps: 800000,
+            ..Default::default()
+        };
+        apply(&mut pyro, 120000, &Config::default());
+        assert_eq!(pyro.bitrate_kbps, 799308); // audio/control, without generic 20% FEC
     }
 }

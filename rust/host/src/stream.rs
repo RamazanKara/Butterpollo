@@ -501,7 +501,10 @@ impl Media {
                 let result = (|| -> Result<()> {
                     let _com = ComGuard::new()?;
                     let _priority = Priority::new();
-                    let c = effective_config(&h, &s.launch)?;
+                    let mut c = effective_config(&h, &s.launch)?;
+                    if s.config.vrr_low_latency {
+                        c.values.insert("wgc_slot_aligned_publish".into(), "false".into());
+                    }
                     let timer = butterpollo_windows::timing::Timer::new()?;
                     let output = s
                         .launch
@@ -618,9 +621,12 @@ impl Media {
                     };
                     let next_wire_frame = std::cell::Cell::new(u64::from(packetizer.frame));
                     let start = Instant::now();
+                    let mut present_stamper = (s.config.codec != 3 && prepared.capture() == "wgc").then(butterpollo_windows::present_timing::Stamper::default);
+                    let pyrowave_sender = if s.config.codec == 3 { Some(crate::pyrowave_send::Sender::new(m.video.clone(),s.clone(),c.clone(),h.clone(),start,prepared.capture() == "wgc")?) } else { None };
                     let period = butterpollo_core::framegen::Rate(s.config.fps_millihz()).period();
                     let mut due = Instant::now();
                     let mut send_due = due;
+                    let mut last_stamp = start;
                     let mut live_at = due;
                     let mut rebuild_encoder = false;
                     let mut runtime_config = c.clone();
@@ -629,15 +635,18 @@ impl Media {
                     let mut profile_due = Instant::now();
                     let mut metadata_due = Instant::now() + Duration::from_secs(1);
                     let minimum_fps = c
-                        .get("minimum_fps_target", "20")
+                        .get("minimum_fps_target", if s.config.codec == 3 { "0" } else { "20" })
                         .parse::<f64>()
                         .unwrap_or(20.);
                     let minimum_fps = if minimum_fps > 0. {
-                        minimum_fps.clamp(1., 1000.)
+                        minimum_fps.clamp(1., f64::from(s.config.fps_millihz()) / 1000.)
+                    } else if s.config.codec == 3 {
+                        f64::from(s.config.fps_millihz()) / 1000.
                     } else {
                         (f64::from(s.config.fps_millihz()) / 5000.).max(10.)
                     };
                     let static_period = Duration::from_secs_f64(1. / minimum_fps);
+                    let limit_static_rate = minimum_fps < f64::from(s.config.fps_millihz()) / 1000.;
                     let mut last_image: Option<Arc<GpuImage>> = None;
                     let mut encoded_at = Instant::now();
                     let mut batch = butterpollo_windows::net::Batch::default();
@@ -650,18 +659,18 @@ impl Media {
                                            peer: std::net::SocketAddr,
                                            call_latency: Duration|
                      -> Result<()> {
+                        if let Some(sender) = &pyrowave_sender { return sender.submit(output,peer,call_latency); }
                         for frame in output {
                             let latency = frame.latency.unwrap_or(call_latency).as_micros() as u64;
                             s.stats.latency_us.store(latency, Ordering::Relaxed);
-                            let timestamp = (start.elapsed().as_secs_f64() * 90000.) as u32;
-                            let packets = packetizer.encode_recovery(
-                                &frame.bytes,
-                                frame.idr,
-                                frame.after_invalidation,
-                                timestamp,
-                                latency,
-                            )?;
+                            let captured = frame.presentation.unwrap_or_else(Instant::now);
+                            let processing = Instant::now().saturating_duration_since(captured).as_micros().max(u128::from(latency)).min(u128::from(u64::MAX)) as u64;
+                            let stamp = present_stamper.as_mut().map_or(captured, |stamper| stamper.stamp(captured, &prepared.output())).max(last_stamp + Duration::from_nanos(11_112));
+                            last_stamp = stamp;
+                            let timestamp = (stamp.saturating_duration_since(start).as_secs_f64() * 90000.) as u32;
+                            let packets = packetizer.encode_recovery(&frame.bytes,frame.idr,frame.after_invalidation,timestamp,processing)?;
                             next_wire_frame.set(u64::from(packetizer.frame));
+                            let frame_bytes = packets.iter().map(|p|p.len() as u64).sum();
                             let bps = c.integer("pacing_max_bitrate_kbps", 0);
                             let bps = if bps > 0 {
                                 (bps as u64 * 1000)
@@ -688,6 +697,7 @@ impl Media {
                                 s.stats.bytes.fetch_add(bytes as u64, Ordering::Relaxed);
                             }
                             s.stats.frames.fetch_add(1, Ordering::Relaxed);
+                            s.stats.performance.lock().unwrap().record(Instant::now(),latency,frame_bytes);
                         }
                         Ok(())
                     };
@@ -696,6 +706,9 @@ impl Media {
                             if Instant::now() >= live_at {
                                 live_at = Instant::now() + Duration::from_millis(250);
                                 runtime_config = effective_config(&h, &s.launch)?;
+                                if s.config.vrr_low_latency {
+                                    runtime_config.values.insert("wgc_slot_aligned_publish".into(), "false".into());
+                                }
                                 *s.output.write().unwrap() = prepared.output();
                                 let runtime = &runtime_config;
                                 let enabled = s.config.hdr && rtx_enabled(runtime);
@@ -733,7 +746,7 @@ impl Media {
                                 continue;
                             };
                             let now = Instant::now();
-                            if now < due {
+                            if !s.config.vrr_low_latency && now < due {
                                 while Instant::now() < due {
                                     if encoder.pending() {
                                         send_frames(encoder.poll()?, peer, Duration::ZERO)?;
@@ -761,16 +774,25 @@ impl Media {
                                 if current.is_none() {
                                     current = latest
                                         .changed
-                                        .wait_timeout(current, Duration::from_millis(50))
+                                        .wait_timeout(current, period.min(Duration::from_millis(50)))
                                         .unwrap()
                                         .0;
                                 }
                                 current.clone()
                             };
                             let Some(image) = image else { continue };
+                            if s.config.vrr_low_latency && last_image.as_ref().is_some_and(|previous| Arc::ptr_eq(previous,&image)) && encoded_at.elapsed() < static_period && !s.idr.load(Ordering::Acquire) && s.invalidation.lock().unwrap().is_none() {
+                                if encoder.pending() { send_frames(encoder.poll()?,peer,Duration::ZERO)?; }
+                                let guard = latest.image.lock().unwrap();
+                                if guard.as_ref().is_some_and(|current| Arc::ptr_eq(current,&image)) {
+                                    let _ = latest.changed.wait_timeout(guard, Duration::from_micros(500).min(static_period.saturating_sub(encoded_at.elapsed()))).unwrap();
+                                }
+                                continue;
+                            }
                             // Resolution changes or DXGI loss can recreate the capture device.
                             rebuild_encoder |= !encoder.accepts_gpu_device(&image);
                             if !rebuild_encoder
+                                && (s.config.vrr_low_latency || limit_static_rate)
                                 && !s.idr.load(Ordering::Acquire)
                                 && s.invalidation.lock().unwrap().is_none()
                                 && last_image
@@ -840,25 +862,29 @@ impl Media {
                                     .clamp(0, 100) as f32,
                                 scale,
                             );
-                            let transformed = if converted { truehdr.as_mut().map(|filter| filter.apply_gpu(&image)).transpose() } else { Ok(None) };
+                            let mut presented_image = image.as_ref().clone();
+                            if last_image.as_ref().is_some_and(|previous| Arc::ptr_eq(previous,&image)) { presented_image.captured = Instant::now(); }
+                            let transformed = if converted { truehdr.as_mut().map(|filter| filter.apply_gpu(&presented_image)).transpose() } else { Ok(None) };
                             let output = if let Ok(Some(transformed)) = transformed.as_ref() {
                                 encoder.encode_gpu(transformed, idr, bitrate)?
                             } else if let Err(error) = transformed {
                                 tracing::warn!(%error, "TrueHDR conversion failed; continuing with SDR-to-PQ");
                                 truehdr = None;
                                 encoder.set_luminance(100. + runtime_config.integer("rtx_hdr_sdr_brightness",0).clamp(0,100) as f32, 1.);
-                                encoder.encode_gpu(&image, idr, bitrate)?
+                                encoder.encode_gpu(&presented_image, idr, bitrate)?
                             } else if c.boolean("wgc_direct_encoder_input", true) {
-                                encoder.encode_gpu(&image, idr, bitrate)?
+                                encoder.encode_gpu(&presented_image, idr, bitrate)?
                             } else {
                                 encoder.encode(
-                                    &image.readback(&mut truehdr_staging)?,
+                                    &presented_image.readback(&mut truehdr_staging)?,
                                     idr,
                                     bitrate,
                                 )?
                             };
                             let call_latency = begin.elapsed();
-                            encoded_at = Instant::now();
+                            // Repeat deadlines start at submission, so encoder work
+                            // does not extend the interval between static frames.
+                            encoded_at = begin;
                             last_image = Some(image);
                             send_frames(output, peer, call_latency)?;
                         }

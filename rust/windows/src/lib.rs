@@ -38,6 +38,8 @@ pub mod input;
 #[cfg(windows)]
 mod keylayout;
 #[cfg(windows)]
+pub mod launcher;
+#[cfg(windows)]
 pub mod limiter;
 #[cfg(windows)]
 pub mod net;
@@ -47,6 +49,8 @@ mod nvapi;
 pub mod nvenc;
 #[cfg(windows)]
 mod nvenc_cuda;
+#[cfg(windows)]
+pub mod present_timing;
 #[cfg(windows)]
 pub mod process;
 #[cfg(windows)]

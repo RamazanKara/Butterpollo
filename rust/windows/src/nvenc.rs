@@ -285,6 +285,7 @@ struct Pending {
     slot: usize,
     frame: u64,
     started: Instant,
+    presentation: Instant,
     after_invalidation: bool,
     _converted: Option<Arc<ID3D11Texture2D>>,
 }
@@ -795,6 +796,7 @@ impl Session {
         slot: usize,
         texture: Option<Arc<ID3D11Texture2D>>,
         idr: bool,
+        presentation: Instant,
     ) -> Result<()> {
         let _guard = self.guard()?;
         if self.pending.len() >= MAX_PENDING || self.pending.iter().any(|p| p.slot == slot) {
@@ -865,6 +867,7 @@ impl Session {
             slot,
             frame: self.next,
             started,
+            presentation,
             after_invalidation,
             _converted: texture,
         });
@@ -926,6 +929,7 @@ impl Session {
                     idr,
                     after_invalidation: pending.after_invalidation && !idr,
                     latency: Some(pending.started.elapsed()),
+                    presentation: Some(pending.presentation),
                 })
             })();
             self.check(
@@ -1241,7 +1245,8 @@ impl Encoder {
         converter.set_luminance(self.luminance);
         let converted = converter.convert(image)?;
         let slot = self.session.texture_slot(converted.as_ref())?;
-        self.session.submit(slot, Some(converted), idr)?;
+        self.session
+            .submit(slot, Some(converted), idr, image.captured)?;
         self.session.poll()
     }
 }

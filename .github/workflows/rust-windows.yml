@@ -46,7 +46,7 @@ jobs:
             ~/AppData/Local/ButterpolloRust/sdk
             ~/.cargo/registry
             ~/.cargo/git
-          key: rust-sdk-v1-ffmpeg-2026.516.30821-pyro-89f7e47-ngx-1.1.0
+          key: rust-sdk-v3-ffmpeg-2026.516.30821-pyro-186f0393-patched-ngx-1.1.0
       - name: Test, lint and package Rust
         run: |
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath

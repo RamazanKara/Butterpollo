@@ -16,6 +16,76 @@ fn rows<'a>(value: &'a Value, key: &str) -> &'a [Value] {
 fn raw(value: &Value) -> String {
     serde_json::to_string_pretty(value).unwrap_or_default()
 }
+fn readiness(meta: &Value) -> String {
+    let video = meta["encoder_status"]["h264"] == true;
+    let checking = meta["encoder_status"]["state"] == "checking";
+    let displays = rows(&meta["capture_status"], "displays");
+    let virtual_requested = meta["capture_status"]["virtual_display_configured"] == true;
+    let display_ready = if virtual_requested {
+        meta["virtual_display"]["capable"] == true
+    } else {
+        !displays.is_empty()
+    };
+    let audio_ready = !rows(meta, "audio_sinks").is_empty();
+    let mut out = "<ul class=\"readiness\">".to_owned();
+    for (ready, label, detail) in [
+        (
+            video,
+            "Video",
+            if video {
+                "Ready to stream. Choose a codec in Moonlight."
+            } else if checking {
+                "Checking your graphics card. Reload in a few seconds."
+            } else {
+                "No working encoder found. Check that your graphics card is enabled and its driver is installed, then restart Butterpollo."
+            },
+        ),
+        (
+            display_ready,
+            "Display",
+            if display_ready {
+                "Ready to capture."
+            } else if virtual_requested {
+                "Virtual display is unavailable. Start the installed Butterpollo service or select your physical display in Settings."
+            } else {
+                "No active display found. Turn on a monitor or set up a virtual display in Settings."
+            },
+        ),
+        (
+            audio_ready || meta["audio_enabled"] == false,
+            "Sound",
+            if meta["audio_enabled"] == false {
+                "Audio streaming is switched off in Settings."
+            } else if audio_ready {
+                "An audio output is available. Choose the output used by your game in Settings."
+            } else {
+                "No active audio output found. Connect headphones or speakers, then check Audio in Settings."
+            },
+        ),
+    ] {
+        out += &format!(
+            "<li><span class=\"badge{}\">{}</span><div><strong>{label}</strong><p>{detail}</p></div></li>",
+            if ready { " ready" } else { "" },
+            if ready {
+                "Ready"
+            } else if label == "Video" && checking {
+                "Checking"
+            } else {
+                "Needs attention"
+            }
+        );
+    }
+    out += "</ul>";
+    if !display_ready || !video || !audio_ready {
+        out += &format!(
+            "<details><summary>Details for troubleshooting</summary><pre>{}</pre></details>",
+            pretty(
+                &json!({"display":meta["virtual_display"],"audio":meta["audio_error"],"capture":meta["capture_status"]["error"]})
+            )
+        );
+    }
+    card("Connection checklist", &out)
+}
 fn credentials(csrf: &str, setup: bool) -> String {
     let mut content = if setup {
         "<p>Create your administrator account to pair devices and manage this host.</p>".into()
@@ -101,6 +171,8 @@ pub(super) async fn render(
                     name,
                     if meta["encoder_status"][key] == true {
                         "Ready"
+                    } else if meta["encoder_status"]["state"] == "checking" {
+                        "Checking"
                     } else {
                         "Unavailable"
                     }
@@ -109,9 +181,31 @@ pub(super) async fn render(
             content += &card(
                 "Streaming capabilities",
                 &format!(
-                    "<div class=\"badges\">{badges}</div><p>Capabilities are checked against the encoder on this computer.</p>"
+                    "<div class=\"badges\">{badges}</div><p>H.264, HEVC and AV1 work with Moonlight. PyroWave and VRR require <a href=\"https://github.com/Nonary/moonlight-qt\" target=\"_blank\" rel=\"noopener noreferrer\">Nonary’s Moonlight client</a>. PyroWave is best suited to a fast wired LAN.</p>"
                 ),
             );
+            content += &readiness(&meta);
+            if meta["paired_devices"].as_u64().unwrap_or(0) == 0 {
+                content += &card(
+                    "Your first stream",
+                    &format!(
+                        "<ol class=\"setup-steps\"><li><strong>Open Moonlight on your other device.</strong> Keep both devices on the same network. Add <code>{}</code> if this PC does not appear automatically.</li><li><strong>Enter the PIN shown by Moonlight.</strong> Open <a href=\"/devices\">Devices</a>, reload to see its pairing request, and enter that PIN.</li><li><strong>Open Desktop in Moonlight.</strong> Start with 1080p at 60 fps, then choose your preferred resolution, frame rate and HDR. Add games in <a href=\"/library\">Library</a>.</li></ol>",
+                        i18n::data(text(&meta, "pc_address"))
+                    ),
+                );
+                let addresses = rows(&meta, "pc_addresses");
+                if addresses.len() > 1 {
+                    content += &format!(
+                        "<p>Other active network addresses: {}. Use the address on the same network as your Moonlight device.</p>",
+                        addresses
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(|address| format!("<code>{}</code>", i18n::data(address)))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
+            }
             content += &card(
                 "Get started",
                 "<div class=\"quick-links\"><a href=\"/devices\"><strong>Pair a device</strong><span>Connect Moonlight to this host</span></a><a href=\"/library\"><strong>Your library</strong><span>Manage applications and desktop streaming</span></a><a href=\"/settings\"><strong>Stream settings</strong><span>Choose your encoder, display, and audio</span></a></div>",
@@ -122,10 +216,25 @@ pub(super) async fn render(
                     "<p>No devices are streaming. Connect from Moonlight to start.</p>",
                 );
             } else {
-                let mut table = "<div class=\"table-scroll\"><table><thead><tr><th>Device</th><th>Video</th><th>Frames sent</th><th>Encode latency</th><th></th></tr></thead><tbody>".to_owned();
+                let mut table = "<div class=\"table-scroll\"><table><thead><tr><th>Device</th><th>Video</th><th>Recent rate</th><th>Encode p95</th><th></th></tr></thead><tbody>".to_owned();
                 for session in active {
+                    let disconnect = button(
+                        "disconnect",
+                        csrf,
+                        "/",
+                        "uuid",
+                        text(session, "uuid"),
+                        "Disconnect",
+                    );
+                    if session["role"] == "input_only" {
+                        table += &format!(
+                            "<tr><td>{}</td><td>Remote Input</td><td colspan=\"2\">Input connection active</td><td>{disconnect}</td></tr>",
+                            i18n::data(text(session, "device_name")),
+                        );
+                        continue;
+                    }
                     table += &format!(
-                        "<tr><td>{}</td><td>{}×{} · {} fps{}</td><td>{}</td><td>{:.2} ms</td><td>{}</td></tr>",
+                        "<tr><td>{}</td><td>{}×{} · {} fps{}{}{}</td><td>{:.1} fps<br>{:.1} Mbps</td><td>{:.2} ms</td><td>{disconnect}</td></tr>",
                         i18n::data(text(session, "device_name")),
                         session["width"],
                         session["height"],
@@ -135,21 +244,62 @@ pub(super) async fn render(
                         } else {
                             ""
                         },
-                        session["frames_sent"],
-                        session["encode_latency_ms"].as_f64().unwrap_or(0.),
-                        button(
-                            "disconnect",
-                            csrf,
-                            "/",
-                            "uuid",
-                            text(session, "uuid"),
-                            "Disconnect"
-                        )
+                        if session["vrr"] == true {
+                            " · VRR"
+                        } else {
+                            ""
+                        },
+                        if session["role"] == "remote_monitor" {
+                            "<br>Remote Monitor"
+                        } else {
+                            ""
+                        },
+                        session["performance"]["fps"].as_f64().unwrap_or(0.),
+                        session["performance"]["bitrate_mbps"]
+                            .as_f64()
+                            .unwrap_or(0.),
+                        session["performance"]["encode_p95_ms"]
+                            .as_f64()
+                            .unwrap_or(0.),
                     );
                 }
                 content += &card("Active sessions", &(table + "</tbody></table></div>"));
+                for session in active {
+                    let skipped = session["frames_replaced"].as_u64().unwrap_or(0);
+                    if skipped > 0 {
+                        content += &format!(
+                            "<p>{}: {skipped} older frames skipped to keep the stream current. If this keeps increasing, lower the PyroWave bitrate or check your wired connection.</p>",
+                            i18n::data(text(session, "device_name"))
+                        );
+                    }
+                }
+                content += "<p class=\"muted\">Rates cover the last two seconds. An unchanged desktop may send fewer frames. Encode latency covers the host encoder; client decoding and network delay add to it.</p>";
+                for session in active {
+                    let history = rows(&session["performance"], "history");
+                    if history.is_empty() {
+                        continue;
+                    }
+                    let mut table = "<details><summary>Recent performance history</summary><div class=\"table-scroll\"><table><thead><tr><th>Sample</th><th>Frames/sec</th><th>Mbps</th><th>Mean encode</th><th>Slowest encode</th></tr></thead><tbody>".to_owned();
+                    for (i, sample) in history.iter().enumerate().rev().take(30) {
+                        table += &format!(
+                            "<tr><td>{}</td><td>{:.1}</td><td>{:.1}</td><td>{:.2} ms</td><td>{:.2} ms</td></tr>",
+                            i + 1,
+                            sample["fps"].as_f64().unwrap_or(0.),
+                            sample["bitrate_mbps"].as_f64().unwrap_or(0.),
+                            sample["encode_mean_ms"].as_f64().unwrap_or(0.),
+                            sample["encode_max_ms"].as_f64().unwrap_or(0.)
+                        );
+                    }
+                    table += "</tbody></table></div><p>The latest 30 completed intervals are shown. The session API retains up to two minutes.</p></details>";
+                    content += &card(text(session, "device_name"), &table);
+                }
             }
-            content + "<p class=\"muted\">Reload to update host status.</p>"
+            content
+                + if query.get("live").is_some_and(|v| v == "1") {
+                    "<p class=\"muted\">Updating every five seconds. <a href=\"/\">Pause updates</a></p>"
+                } else {
+                    "<p class=\"muted\"><a href=\"/?live=1\">Update every five seconds</a></p>"
+                }
         }
         "/library" => {
             let document = get(h, connection, headers, "/api/apps").await?;
@@ -293,7 +443,7 @@ pub(super) async fn render(
             if pending.is_empty() {
                 content += &card(
                     "Pair a device",
-                    "<p>Add this host in Moonlight. Its pairing request and four-digit PIN will appear here after you reload.</p>",
+                    "<p>Add this host in Moonlight. Moonlight shows a four-digit PIN. Reload this page to see the pairing request, then enter that PIN here.</p><a class=\"button secondary\" href=\"/devices\">Check for a pairing request</a>",
                 );
             }
             for (id, name) in pending {

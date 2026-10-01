@@ -347,6 +347,11 @@ pub(crate) async fn page(
         1,
     );
     let mut response = html(i18n::render(&body, &locale));
+    if path == "/" && query.get("live").is_some_and(|v| v == "1") {
+        response
+            .headers_mut()
+            .insert("refresh", "5; url=/?live=1".parse().unwrap());
+    }
     if set_cookie {
         response.headers_mut().append(header::SET_COOKIE, format!("__Host-apollo_anon_csrf={csrf}; Path=/; HttpOnly; SameSite=Strict; Secure; Max-Age=3600").parse().unwrap());
     }

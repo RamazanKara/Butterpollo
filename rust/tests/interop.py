@@ -9,7 +9,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa,padding
 from cryptography.hazmat.primitives.ciphers import Cipher,algorithms,modes
 from cryptography.x509.oid import NameOID
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-artifact=pathlib.Path(sys.argv[1]);client_exe=artifact/'moonlight-client.exe';codec=sys.argv[2] if len(sys.argv)>2 else 'h264'
+artifact=pathlib.Path(sys.argv[1]);client_exe=pathlib.Path(os.environ.get('BUTTERPOLLO_TEST_CLIENT_EXE',artifact/'moonlight-client.exe'));codec=sys.argv[2] if len(sys.argv)>2 else 'h264'
 port=int(os.environ.get('BUTTERPOLLO_TEST_PORT','48123'))
 web=f'https://127.0.0.1:{port+1}';http=f'http://127.0.0.1:{port}';https=f'https://127.0.0.1:{port-5}'
 session=requests.Session();session.verify=False
@@ -62,6 +62,15 @@ if hooks_path:
                      'undo':[{'cmd':f'echo disconnected-$(SUNSHINE_CLIENT_NAME)>>"{hooks_path}"'}]})
 r=session.post(web+'/api/clients/update',json=settings,timeout=10);r.raise_for_status()
 info=ET.fromstring(client.get(https+'/serverinfo',timeout=10).text);assert info.findtext('PairStatus')=='1'
+if codec.startswith('pyrowave'):
+    assert int(info.findtext('ServerCodecModeSupport','0')) & 0x00800000
+    assert info.findtext('PyroWaveBandwidthProbeBytes')=='33554432'
+    probe=client.get(https+'/pyrowave-bandwidth-probe',timeout=10)
+    probe.raise_for_status();assert len(probe.content)==33554432
+    assert probe.headers['Cache-Control']=='no-store'
+    denied=requests.get(https+'/pyrowave-bandwidth-probe',verify=False,timeout=10)
+    assert denied.status_code==401
+    print('PYROWAVE paired bandwidth calibration and access control verified',flush=True)
 apps=ET.fromstring(client.get(https+'/applist',timeout=10).text);app=apps.find('App');assert app is not None
 launch=ET.fromstring(client.get(https+'/launch',params={'appid':app.findtext('ID'),'rikey':bytes(range(16)).hex(),'rikeyid':'123','corever':'1'},timeout=10).text);assert launch.attrib['status_code']=='200',ET.tostring(launch)
 url=launch.findtext('sessionUrl0');print('LAUNCH',url,flush=True)

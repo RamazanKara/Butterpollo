@@ -267,7 +267,12 @@ impl Prepared {
                     .and_then(|a| a.extra.get("config-overrides"))
                     .and_then(serde_json::Value::as_object)
                     .is_some_and(|o| o.contains_key("rtss_frame_limit_type")),
-        )?;
+        )?
+        .with_vrr(
+            config,
+            virtual_mode,
+            stream.vrr_low_latency || launch.vrr_requested,
+        );
         let limiter = limiter::Lease::acquire(&h.directory, config, &framegen)?;
         let vulkan = if stream.hdr && config.boolean("vulkan_hdr_layer", true) {
             Some(vulkan::Lease::acquire()?)

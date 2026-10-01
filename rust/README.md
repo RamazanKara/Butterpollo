@@ -2,7 +2,20 @@
 
 The Windows host, protocol implementation, native helpers and administration console are written in Rust. The executables do not link the previous Butterpollo C++ host. Rust renders the console and handles ordinary HTML forms; no JavaScript, Vue or Node build is needed. Codec libraries, device drivers and GPU SDKs remain external dependencies.
 
-This is the Rust replacement under development on `codex/butterpollo-rust`, based on `2.0.0-beta.3-butter.4`. Do not interpret the C++ performance measurements in the parent README as measurements of this implementation. The installed production service is independent of this checkout.
+**Windows release candidate 2.0.0-rc.1.** This Rust replacement ports the Windows streaming changes in Vibepollo 2.0.0 (`8a8c4b03a280ab9f567beb380110abb80f5220b8`) onto the previous Butterpollo baseline. See [what changed for players](RELEASE_NOTES.md), [feature evidence](PARITY.md) and [Rust performance measurements](PERFORMANCE.md). The retained C++ measurements in the parent README are separate.
+
+## Start streaming
+
+1. Extract the complete Windows x64 ZIP into a folder. Open **Start Butterpollo.exe**.
+2. On first launch, choose whether to import your Vibepollo/Apollo profile. Select its folder containing `sunshine.conf`, or the installation folder containing `config/sunshine.conf`. Import copies settings, paired devices, identity, library and covers into a new Rust profile. The original profile is retained. Choose **No** for a fresh setup.
+3. The launcher opens the console at `https://localhost:47990` (or your configured port). Create the local administrator account if prompted, then use the connection checklist to check video, display and sound.
+4. Open Moonlight on another device on the same network. Add this PC if discovery does not find it. Enter **the PIN shown by Moonlight** in **Devices**, then launch **Desktop**. Start with 1080p/60 and choose your preferred resolution, rate and HDR after the first successful stream.
+
+Opening the launcher again returns to the running profile's console. It also opens the profile of the Rust service installed from the same package. A stopped service or a port occupied by another host produces an actionable error. Logs are in the profile's `logs/butterpollo.log` unless configured otherwise. Portable mode needs no service installation; virtual-display and controller features need their Windows drivers installed separately.
+
+Standard Moonlight supports H.264, HEVC and AV1. PyroWave and VRR require [Nonary's Moonlight client](https://github.com/Nonary/moonlight-qt). Use PyroWave on a fast wired LAN with hundreds of Mbps available; its client bandwidth calibration estimates capacity before connecting. VRR uses 1000 Hz virtual-display capture while preserving the requested stream frame rate. Present-timing tracking falls back to WGC timestamps when Windows does not allow it.
+
+The Overview page shows recent frame rate, bitrate, encode p95 and performance history. Optional live refresh updates every five seconds and can be paused. Older pending PyroWave frames are replaced when a connection is slow; the page explains when reducing bitrate would help.
 
 ## Build
 
@@ -17,7 +30,7 @@ rustup target add x86_64-pc-windows-msvc --toolchain 1.98.1-x86_64-pc-windows-gn
 
 Run in a Visual Studio x64 developer PowerShell for TrueHDR. Alternatively pass `-MsvcSdk` pointing to an xwin layout with `crt/lib/x86_64`, `sdk/lib/um/x86_64` and `sdk/lib/ucrt/x86_64`. `-SkipTrueHdr` builds without the optional NVIDIA DLL. Existing SDKs can be supplied with `-FfmpegRoot`, `-PyrowaveRoot` and `-NvidiaRoot`; downloads are pinned and checked. CMake is used to build the external PyroWave SDK, not the host.
 
-The script checks formatting, tests, lints, builds the host, service and GPU/protocol performance probes plus the optional TrueHDR DLL, then packages runtime libraries, artwork, notices and a SHA-256 manifest. A locked Cargo dependency tree and pinned SDK revisions are included. CI is `.github/workflows/rust-windows.yml`.
+The script checks formatting, tests, lints, builds the host, launcher, service and GPU/protocol performance probes plus the optional TrueHDR DLL, then packages runtime libraries, artwork, notices and a SHA-256 manifest. A locked Cargo dependency tree and pinned SDK revisions are included. PyroWave is pinned to bitstream `186f0393` with Vibepollo 2.0's three codec patches; the build rejects SDKs missing the matching identity. CI is `.github/workflows/rust-windows.yml`.
 
 ## Run and migration
 
@@ -27,7 +40,13 @@ The script checks formatting, tests, lints, builds the host, service and GPU/pro
 
 Without arguments the host uses `%LOCALAPPDATA%\ButterpolloRust\config` and listens on all IPv4 interfaces, preserving the previous host's LAN discovery behavior; the web interface is `https://localhost:47990`. `address_family=both` enables dual-stack listeners, and `bind_address` or `--bind` selects an interface. Initial credential setup requires a local connection. Use `--port 48123 --bind 127.0.0.1` for an isolated instance: web 48124, HTTPS 48118 and RTSP 48144. Standard Moonlight UDP port offsets remain compatible.
 
-Copy the complete original configuration directory, including certificates, `sunshine_state.json`, `vibeshine_state.json`, `apps.json` and `sunshine.conf`, before testing migration. Absolute paths in the copied configuration still refer to their original locations; change those paths to the copy when isolating it. Credentials, certificate identities, app UUIDs, artwork IDs, permissions and unknown configuration/state fields are preserved. Imported legacy clients and booleans are normalized. State writes replace files atomically.
+The launcher imports into `%LOCALAPPDATA%\ButterpolloRust\config`, and refuses to overwrite a nonempty profile. A command-line import into an empty destination is also available; it validates and copies the profile, then exits without starting the host:
+
+```powershell
+.\butterpollo.exe --config-dir C:\path\to\a\new-profile --import-config C:\path\to\old\config
+```
+
+Configured identity/state/library files are copied into owned paths, and existing PNG covers are copied by content. Credentials, certificates, app UUIDs, permissions and unknown fields are retained. Game paths and preparation commands keep their existing meaning. Missing configured identity files, links/junctions or excessive profile sizes abort the import without committing the new profile. Imported legacy clients and booleans are normalized on load. State writes replace files atomically.
 
 The service uses `ApolloService` for compatibility and `%PROGRAMDATA%\Butterpollo\config`. `service.ps1` manages the Rust installation and refuses to alter a service belonging to another executable. Service installation is a separate explicit action; running or building the host never installs it.
 
@@ -41,7 +60,7 @@ The service uses `ApolloService` for compatibility and `%PROGRAMDATA%\Butterpoll
 | `truehdr-runtime` | Rust MSVC DLL directly calling NVIDIA's NGX C ABI |
 | `vulkan-layer` | Rust implicit Vulkan layer providing HDR swapchain formats during owned HDR sessions |
 
-There is no WebRTC, SudoVDA, ViGEm, FFmpeg AMF encoder wrapper or legacy display helper in the Rust build. AMD capture surfaces remain in D3D11 memory through GPU scaling, HDR conversion and AMF encoding. Native NVENC calls the installed NVIDIA driver directly with reviewed API 11.0–13.0 compatibility and capability-gated reference recovery. D3D11 supplies 4:2:0 and 8-bit 4:4:4; ten-bit 4:4:4 uses GPU-only CUDA interop without CPU readback. `nvenc` and `nvenc_experimental` select this native path; `nvenc_legacy` selects the FFmpeg compatibility path. Quick Sync 4:2:0 imports D3D11 frames. NVIDIA/Intel codec execution still requires hardware validation. TrueHDR shares the capture device and snapshots NGX output in GPU memory. Textures and per-frame HDR metadata remain owned until native codec references release them. All frame pools and native encoder queues are bounded. PyroWave, software and unsupported native formats use the CPU compatibility path. Shader math preserves absolute ST.2084 luminance and resizes scRGB in linear light. Reported AMF latency includes asynchronous codec completion.
+AMD capture surfaces remain in D3D11 memory through GPU scaling, HDR conversion and AMF encoding. Native NVENC calls the installed NVIDIA driver directly with reviewed API 11.0–13.0 compatibility and capability-gated reference recovery. D3D11 supplies 4:2:0 and 8-bit 4:4:4; ten-bit 4:4:4 uses GPU-only CUDA interop without CPU readback. `nvenc` and `nvenc_experimental` select this native path; `nvenc_legacy` selects the FFmpeg compatibility path. Quick Sync 4:2:0 imports D3D11 frames. NVIDIA/Intel codec execution still requires hardware validation. TrueHDR shares the capture device and snapshots NGX output in GPU memory. PyroWave shares the capture D3D11 device, converts to planar textures on the GPU and synchronizes Vulkan imports through a shared fence. Only its encoded bitstream returns to the CPU. Textures and per-frame HDR metadata remain owned until native codec references release them. Frame pools, native encoder queues and per-client PyroWave pending queues are bounded. Software and unsupported native formats retain the compatibility path. Shader math preserves absolute ST.2084 luminance and resizes scRGB in linear light. Reported AMF latency includes asynchronous codec completion. WebRTC, SudoVDA, ViGEm and the legacy display helper remain outside the Butterpollo baseline's scope.
 
 Video FEC generation is measured at 1.26–1.40× the speed of the original C++ baseline on representative video blocks, with every parity byte identical and 21–29% less CPU time. The AVX2 implementation shares input loads across parity rows and preserves SSSE3/scalar fallbacks. The package includes `butterpollo-protocol-performance.exe`; [PERFORMANCE.md](PERFORMANCE.md) explains the exact reference sources and reproduction. This is a measured component improvement; whole-host C++ streaming performance remains unmeasured.
 
@@ -49,7 +68,7 @@ Static frames respect `minimum_fps_target`; force it to `1000` for repeat-frame 
 
 ## Validation
 
-Native Windows unit tests cover malformed wire input, authenticated encryption, replay rejection, legacy CBC/GCM behavior, FEC packet boundaries, scalar/SIMD equivalence, audio rates/channel masks, configuration/state migration, scoped API tokens and Windows job teardown. Independent `tests/interop.py` and `tests/moonlight_client.c` perform real PIN pairing, encrypted RTSP, video transport/decryption/FEC, FFmpeg decode and Opus decode. `tests/pyrowave_client.c` decodes the Rust encoder's container through the external vendor decoder.
+Native Windows unit tests cover malformed wire input, authenticated encryption, replay rejection, legacy CBC/GCM behavior, FEC packet boundaries and sequence wraps, scalar/SIMD equivalence, audio rates/channel masks, atomic profile migration, scoped API tokens and Windows job teardown. Independent `tests/interop.py` and `tests/moonlight_client.c` perform real PIN pairing, encrypted RTSP, video transport/decryption/FEC, FFmpeg decode and Opus decode. The pinned Nonary transport in `tests/build-pyrowave-client.ps1` and `tests/pyrowave_stream_client.c` verifies continuous SDR/HDR 4:2:0/4:4:4 PyroWave streams, HDR control flags and the authenticated bandwidth probe. `tests/pyrowave_client.c` and `tests/pyrowave_transport.py` independently check twelve vendor-decoded profiles, 24 encrypted/plain FEC cases and deliberate partial loss.
 
 The test machine is an AMD RX 7900 XT with an HDR display. Sustained release streams at 640×480, 30 fps passed H.264, HEVC, AV1, HEVC Main10 HDR and AV1 Main10 HDR decoding. New 20-second HEVC HDR tests sustained 120 fps host output at 1080p and scaled 4K; independent software decoding reached about 119 fps with no decode errors. HDR frames contain ten-bit BT.2020/PQ metadata. See [performance evidence and reproducible probes](PERFORMANCE.md) for timings, decoder limits and test scope. The RX 7900 XT pads 1080p AV1 to 1082 lines; the strict dimension probe rejects that result, so exact 1080p uses HEVC. PyroWave SDR and HDR container decoding also passed; that vendor decoder probe checks the HDR container flag and decoded output, not a complete ten-bit client rendering path. Unoptimized Rust builds are unsuitable for streaming performance checks.
 

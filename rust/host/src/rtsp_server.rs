@@ -200,7 +200,10 @@ async fn connection(
                     (1, true) => 0x200,
                     (2, false) => 0x10000,
                     (2, true) => 0x20000,
-                    (3, _) => 0x800000,
+                    (3, false) if negotiated.yuv444 => 0x1000000,
+                    (3, true) if negotiated.yuv444 => 0x4000000,
+                    (3, true) => 0x2000000,
+                    (3, false) => 0x800000,
                     _ => 0,
                 };
                 if required_encryption && negotiated.encryption & 6 != 6 {

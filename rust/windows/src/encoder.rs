@@ -15,6 +15,7 @@ pub struct Encoded {
     pub after_invalidation: bool,
     /// Submission through completed codec output, including asynchronous work.
     pub latency: Option<std::time::Duration>,
+    pub presentation: Option<std::time::Instant>,
 }
 pub(crate) fn check(code: i32) -> Result<()> {
     if code >= 0 {
@@ -247,6 +248,7 @@ pub struct Ffmpeg {
     luminance: [f32; 2],
     index: i64,
     pub name: String,
+    presentations: std::collections::BTreeMap<i64, std::time::Instant>,
     staging: Option<windows::Win32::Graphics::Direct3D11::ID3D11Texture2D>,
 }
 impl Ffmpeg {
@@ -439,6 +441,7 @@ impl Ffmpeg {
                 luminance: [100., 1.],
                 index: 0,
                 name: name.into(),
+                presentations: Default::default(),
                 staging: None,
             })
         }
@@ -455,12 +458,12 @@ impl Ffmpeg {
         convert.luminance = self.luminance;
         convert.convert(image)?;
         let frame = convert.frame;
-        self.encode_frame(frame, idr, bitrate_kbps)
+        self.encode_frame(frame, idr, bitrate_kbps, image.captured)
     }
     fn encode_gpu(&mut self, image: &GpuImage, idr: bool, bitrate: u32) -> Result<Vec<Encoded>> {
         if let Some(native) = self.native.as_mut() {
             let frame = native.frame(image)?;
-            self.encode_frame(frame, idr, bitrate)
+            self.encode_frame(frame, idr, bitrate, image.captured)
         } else {
             let image = image.readback(&mut self.staging)?;
             self.encode(&image, idr, bitrate)
@@ -471,6 +474,7 @@ impl Ffmpeg {
         frame: *mut ff::AVFrame,
         idr: bool,
         bitrate_kbps: u32,
+        presentation: std::time::Instant,
     ) -> Result<Vec<Encoded>> {
         unsafe {
             let bitrate = i64::from(bitrate_kbps) * 1000;
@@ -494,6 +498,10 @@ impl Ffmpeg {
             };
             self.index += 1;
             check(ff::avcodec_send_frame(self.context, frame))?;
+            self.presentations.insert((*frame).pts, presentation);
+            if self.presentations.len() > 32 {
+                bail!("codec failed to return bounded output");
+            }
             let mut output = vec![];
             loop {
                 let code = ff::avcodec_receive_packet(self.context, self.packet);
@@ -511,6 +519,7 @@ impl Ffmpeg {
                     idr: (*self.packet).flags & ff::AV_PKT_FLAG_KEY as i32 != 0,
                     after_invalidation: false,
                     latency: None,
+                    presentation: self.presentations.remove(&(*self.packet).pts),
                 });
                 ff::av_packet_unref(self.packet);
             }
@@ -567,6 +576,11 @@ impl Encoder {
         image: &GpuImage,
         tuning: &butterpollo_core::config::Config,
     ) -> Result<Self> {
+        if config.codec == 3 {
+            return Ok(Self::Pyrowave(Box::new(
+                crate::pyrowave::Encoder::new_device(config, image.gpu.clone(), tuning)?,
+            )));
+        }
         if config.codec < 3
             && (matches!(preference, "nvenc" | "nvenc_experimental")
                 || (matches!(preference, "" | "auto")
@@ -642,10 +656,7 @@ impl Encoder {
         match self {
             Self::Ffmpeg(e) => e.encode_gpu(image, idr, bitrate),
             Self::Nvenc(e) => e.encode_gpu(image, idr, bitrate),
-            Self::Pyrowave(e) => {
-                let cpu = image.readback(&mut e.staging)?;
-                e.encode(&cpu, idr, bitrate)
-            }
+            Self::Pyrowave(e) => e.encode_gpu(image, idr, bitrate),
             Self::Amf(_) => unreachable!(),
         }
     }
@@ -658,7 +669,7 @@ impl Encoder {
                 .native
                 .as_ref()
                 .is_none_or(|n| n.device.device.as_raw() == image.gpu.device.as_raw()),
-            Self::Pyrowave(_) => true,
+            Self::Pyrowave(e) => e.accepts_gpu_device(image),
         }
     }
     pub fn pending(&self) -> bool {
@@ -712,9 +723,13 @@ impl Encoder {
         tuning: &butterpollo_core::config::Config,
     ) -> Result<Self> {
         if config.codec == 3 {
-            return Ok(Self::Pyrowave(Box::new(crate::pyrowave::Encoder::new(
-                config, display,
-            )?)));
+            return Ok(Self::Pyrowave(Box::new(
+                crate::pyrowave::Encoder::new_device(
+                    config,
+                    crate::capture::Device::new(display)?,
+                    tuning,
+                )?,
+            )));
         }
         if matches!(preference, "nvenc" | "nvenc_experimental") {
             return Ok(Self::Nvenc(Box::new(
