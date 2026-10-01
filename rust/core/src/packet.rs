@@ -185,15 +185,14 @@ impl VideoPacketizer {
         header[4..6]
             .copy_from_slice(&((if last == 0 { slice } else { last }) as u16).to_le_bytes());
         header[6..8].copy_from_slice(&(critical as u16).to_le_bytes());
-        let data = concat_and_insert(32, slice, &header, payload)?;
         let max_data = 255 * 100 / (100 + self.fec_percent);
-        let mut blocks = data.len().div_ceil(max_data * block_size);
+        let mut blocks = total_shards.div_ceil(max_data);
         let mut percentage = self.fec_percent;
         if blocks > 4 {
             percentage = 0;
             blocks = 4;
         }
-        let aligned = data.len().div_ceil(blocks * block_size) * block_size;
+        let aligned = total_shards.div_ceil(blocks);
         let plan = if let Some(pyro) = pyrowave.as_ref() {
             let baseline = crate::pyrowave::plan(
                 total_shards,
@@ -225,24 +224,25 @@ impl VideoPacketizer {
         } else {
             (0..blocks)
                 .map(|block| crate::pyrowave::FecBlock {
-                    data: (data.len().saturating_sub(block * aligned))
-                        .min(aligned)
-                        .div_ceil(block_size),
+                    data: total_shards.saturating_sub(block * aligned).min(aligned),
                     percentage,
                 })
                 .collect()
         };
         blocks = plan.len();
-        let mut packets = Vec::new();
+        let sealer = self.key.as_ref().map(crypto::PacketSealer::new);
+        let envelope = if sealer.is_some() { 32 } else { 0 };
+        let packet_count = plan
+            .iter()
+            .map(|b| b.data + crate::pyrowave::parity(b.data, b.percentage, minimum))
+            .sum();
+        let mut packets = Vec::with_capacity(packet_count);
         let mut first_shard = 0;
         for (block, planned) in plan.iter().enumerate() {
-            let start = first_shard * block_size;
-            if start >= data.len() {
+            if first_shard >= total_shards {
                 bail!("invalid FEC block split");
             }
-            let end = (start + planned.data * block_size).min(data.len());
-            let source = &data[start..end];
-            let count = source.len().div_ceil(block_size);
+            let count = planned.data.min(total_shards - first_shard);
             if count >= 1024 {
                 bail!("FEC shard index overflow");
             }
@@ -256,11 +256,19 @@ impl VideoPacketizer {
             if count + fec > 255 && percentage > 0 {
                 bail!("FEC parity count exceeds protocol limit");
             }
-            let mut shards = vec![vec![0; block_size]; count + fec];
-            for (i, s) in shards.iter_mut().take(count).enumerate() {
-                let begin = i * block_size;
-                let n = block_size.min(source.len() - begin);
-                s[..n].copy_from_slice(&source[begin..begin + n]);
+            let mut shards = vec![vec![0; envelope + block_size]; count + fec];
+            for (i, shard) in shards.iter_mut().take(count).enumerate() {
+                let s = &mut shard[envelope..];
+                // Place the short header and source payload directly into their
+                // final shards instead of allocating/copying a full packed frame.
+                let offset = (first_shard + i) * slice;
+                let h = header.len().saturating_sub(offset).min(slice);
+                if h > 0 {
+                    s[32..32 + h].copy_from_slice(&header[offset..offset + h]);
+                }
+                let begin = offset.saturating_sub(header.len());
+                let n = (slice - h).min(payload.len() - begin);
+                s[32 + h..32 + h + n].copy_from_slice(&payload[begin..begin + n]);
                 s[16..20]
                     .copy_from_slice(&(self.sequence.wrapping_add(i as u32) << 8).to_le_bytes());
                 s[20..24].copy_from_slice(&self.frame.to_le_bytes());
@@ -275,18 +283,23 @@ impl VideoPacketizer {
                 s[27] = ((block as u8) << 4) | (((blocks - 1) as u8) << 6);
             }
             if fec > 0 {
-                cauchy_encode(&mut shards, count, fec)?;
+                if envelope == 0 {
+                    cauchy_encode(&mut shards, count, fec)?;
+                } else {
+                    cauchy_encode_offset::<32>(&mut shards, count, fec)?;
+                }
             }
             for (i, mut shard) in shards.into_iter().enumerate() {
+                let s = &mut shard[envelope..];
                 let seq = self.sequence.wrapping_add(i as u32) as u16;
-                shard[0] = 0x90;
-                shard[2..4].copy_from_slice(&seq.to_be_bytes());
-                shard[4..8].copy_from_slice(&timestamp.to_be_bytes());
-                shard[20..24].copy_from_slice(&self.frame.to_le_bytes());
-                shard[27] = ((block as u8) << 4) | (((blocks - 1) as u8) << 6);
+                s[0] = 0x90;
+                s[2..4].copy_from_slice(&seq.to_be_bytes());
+                s[4..8].copy_from_slice(&timestamp.to_be_bytes());
+                s[20..24].copy_from_slice(&self.frame.to_le_bytes());
+                s[27] = ((block as u8) << 4) | (((blocks - 1) as u8) << 6);
                 let info = ((i as u32) << 12) | ((count as u32) << 22) | ((effective as u32) << 4);
-                shard[28..32].copy_from_slice(&info.to_le_bytes());
-                if let Some(k) = self.key {
+                s[28..32].copy_from_slice(&info.to_le_bytes());
+                if let Some(sealer) = &sealer {
                     let mut iv = [0; 12];
                     iv[..8].copy_from_slice(&self.iv_counter.to_le_bytes());
                     iv[11] = b'V';
@@ -294,16 +307,14 @@ impl VideoPacketizer {
                         .iv_counter
                         .checked_add(1)
                         .context("video nonce exhausted")?;
-                    let (tag, encrypted) = crypto::gcm_seal(&k, &iv, &shard)?;
-                    let mut p = Vec::with_capacity(32 + encrypted.len());
-                    p.extend_from_slice(&iv);
-                    p.extend_from_slice(&self.frame.to_le_bytes());
-                    p.extend_from_slice(&tag);
-                    p.extend_from_slice(&encrypted);
-                    packets.push(p);
-                } else {
-                    packets.push(shard);
+                    // FEC excludes the reserved envelope. Its owned payload is
+                    // now encrypted in place with no extra allocation or move.
+                    let tag = sealer.seal(&iv, s)?;
+                    shard[..12].copy_from_slice(&iv);
+                    shard[12..16].copy_from_slice(&self.frame.to_le_bytes());
+                    shard[16..32].copy_from_slice(&tag);
                 }
+                packets.push(shard);
             }
             self.sequence = self.sequence.wrapping_add((count + fec) as u32);
             first_shard += count;
@@ -478,7 +489,7 @@ unsafe fn axpy_avx2(out: &mut [u8], input: &[u8], table: &[u8; 32]) {
 // the full input block independently for every row.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn parity_avx2<const ROWS: usize>(
+unsafe fn parity_avx2<const ROWS: usize, const OFFSET: usize>(
     source: &[Vec<u8>],
     destination: &mut [Vec<u8>],
     first: usize,
@@ -486,10 +497,12 @@ unsafe fn parity_avx2<const ROWS: usize>(
 ) {
     use std::arch::x86_64::*;
     unsafe {
-        let size = source[0].len();
-        let pointers: [*mut u8; ROWS] = std::array::from_fn(|i| destination[i].as_mut_ptr());
+        let size = source[0].len() - OFFSET;
+        let pointers: [*mut u8; ROWS] =
+            std::array::from_fn(|i| destination[i].as_mut_ptr().add(OFFSET));
         let mask = _mm256_set1_epi8(15);
         for (column, input) in source.iter().enumerate() {
+            let input = &input[OFFSET..];
             let coefficients: [u8; ROWS] =
                 std::array::from_fn(|row| INVERSES[(parity + column) ^ (first + row)]);
             let low: [__m256i; ROWS] = std::array::from_fn(|row| {
@@ -653,33 +666,41 @@ impl AudioPacketizer {
 
 /// nanors uses a Cauchy matrix; the Vandermonde matrix used by many RS crates is not wire compatible.
 pub fn cauchy_encode(shards: &mut [Vec<u8>], data: usize, parity: usize) -> Result<()> {
+    cauchy_encode_offset::<0>(shards, data, parity)
+}
+fn cauchy_encode_offset<const OFFSET: usize>(
+    shards: &mut [Vec<u8>],
+    data: usize,
+    parity: usize,
+) -> Result<()> {
     if data == 0 || data + parity != shards.len() || data + parity > 255 {
         bail!("invalid Cauchy shard count");
     }
     let size = shards[0].len();
-    if shards.iter().any(|s| s.len() != size) {
+    if size < OFFSET || shards.iter().any(|s| s.len() != size) {
         bail!("unequal shard sizes");
     }
     let (source, dest) = shards.split_at_mut(data);
     for out in dest.iter_mut() {
-        out.fill(0);
+        out[OFFSET..].fill(0);
     }
     #[cfg(target_arch = "x86_64")]
     if std::is_x86_feature_detected!("avx2") {
         let (rows, remainder) = dest.as_chunks_mut::<4>();
         for (batch, out) in rows.iter_mut().enumerate() {
             // Validation above guarantees disjoint, equally sized buffers and
-            // at most 255 rows/columns. Each group writes only its own rows.
+            // at most 255 rows/columns, with OFFSET within each allocation.
+            // Each group writes only its own rows beyond the envelope.
             unsafe {
-                parity_avx2::<4>(source, out, batch * 4, parity);
+                parity_avx2::<4, OFFSET>(source, out, batch * 4, parity);
             }
         }
         let first = parity - remainder.len();
         unsafe {
             match remainder.len() {
-                1 => parity_avx2::<1>(source, remainder, first, parity),
-                2 => parity_avx2::<2>(source, remainder, first, parity),
-                3 => parity_avx2::<3>(source, remainder, first, parity),
+                1 => parity_avx2::<1, OFFSET>(source, remainder, first, parity),
+                2 => parity_avx2::<2, OFFSET>(source, remainder, first, parity),
+                3 => parity_avx2::<3, OFFSET>(source, remainder, first, parity),
                 _ => (),
             }
         }
@@ -688,7 +709,11 @@ pub fn cauchy_encode(shards: &mut [Vec<u8>], data: usize, parity: usize) -> Resu
     for (row, out) in dest.iter_mut().enumerate() {
         for (i, input) in source.iter().enumerate() {
             let base = (parity + i) as u8 ^ row as u8;
-            axpy(out, input, INVERSES[base as usize]);
+            axpy(
+                &mut out[OFFSET..],
+                &input[OFFSET..],
+                INVERSES[base as usize],
+            );
         }
     }
     Ok(())
@@ -696,6 +721,35 @@ pub fn cauchy_encode(shards: &mut [Vec<u8>], data: usize, parity: usize) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fec_excludes_the_reserved_envelope_and_preserves_all_row_tails() {
+        for (data, parity, size) in [
+            (1, 2, 0),
+            (8, 4, 31),
+            (28, 7, 1392),
+            (192, 39, 1408),
+            (254, 1, 1416),
+        ] {
+            let mut expected: Vec<Vec<u8>> = (0..data + parity)
+                .map(|row| (0..size).map(|i| (row * 73 + i * 29) as u8).collect())
+                .collect();
+            let mut actual: Vec<Vec<u8>> = expected
+                .iter()
+                .map(|bytes| {
+                    let mut packet = vec![0xAB; 32];
+                    packet.extend_from_slice(bytes);
+                    packet
+                })
+                .collect();
+            cauchy_encode(&mut expected, data, parity).unwrap();
+            cauchy_encode_offset::<32>(&mut actual, data, parity).unwrap();
+            for (packet, bytes) in actual.iter().zip(expected) {
+                assert_eq!(&packet[..32], &[0xAB; 32]);
+                assert_eq!(&packet[32..], bytes);
+            }
+        }
+        assert!(cauchy_encode_offset::<32>(&mut [vec![0; 31], vec![0; 31]], 1, 1).is_err());
+    }
     #[test]
     fn replay_window_accepts_reordering_but_rejects_duplicates_and_wraps() {
         let mut window = ReplayWindow::default();
@@ -850,5 +904,49 @@ mod tests {
         let plain = crypto::gcm_open(&k, &b[0][..12], &b[0][16..32], &b[0][32..]).unwrap();
         assert_eq!(plain[0], 0x90);
         assert_eq!(plain[24], 5);
+        p.iv_counter = u64::MAX;
+        assert!(p.encode(&[1], true, 124, 0).is_err());
+        assert_eq!(p.iv_counter, u64::MAX);
+    }
+    #[test]
+    fn encrypted_video_matches_independent_per_packet_sealing_across_fec_and_wraps() {
+        let key = std::array::from_fn(|i| i as u8);
+        for packet_size in [256, 1392] {
+            for fec_percent in [0, 20] {
+                let make = |key| VideoPacketizer {
+                    sequence: 0xFFFFFF,
+                    iv_counter: 0xFFFFFFFE,
+                    frame: u32::MAX,
+                    packet_size,
+                    fec_percent,
+                    min_fec: 1,
+                    key,
+                };
+                let mut plain = make(None);
+                let mut encrypted = make(Some(key));
+                let slice = packet_size - 16;
+                for size in [1, slice - 7, 192 * slice - 8, 576 * slice + 13] {
+                    let payload: Vec<_> = (0..size).map(|i| (i * 29) as u8).collect();
+                    let frame = plain.frame;
+                    let nonce = encrypted.iv_counter;
+                    let expected = plain.encode(&payload, true, 9000, 500).unwrap();
+                    let actual = encrypted.encode(&payload, true, 9000, 500).unwrap();
+                    assert_eq!(actual.len(), expected.len());
+                    for (i, (packet, shard)) in actual.iter().zip(expected).enumerate() {
+                        let mut iv = [0; 12];
+                        iv[..8].copy_from_slice(&(nonce + i as u64).to_le_bytes());
+                        iv[11] = b'V';
+                        let (tag, bytes) = crypto::gcm_seal(&key, &iv, &shard).unwrap();
+                        assert_eq!(&packet[..12], &iv);
+                        assert_eq!(&packet[12..16], &frame.to_le_bytes());
+                        assert_eq!(&packet[16..32], &tag);
+                        assert_eq!(&packet[32..], bytes);
+                    }
+                    assert_eq!(plain.frame, encrypted.frame);
+                    assert_eq!(plain.sequence, encrypted.sequence);
+                    assert_eq!(encrypted.iv_counter, nonce + actual.len() as u64);
+                }
+            }
+        }
     }
 }

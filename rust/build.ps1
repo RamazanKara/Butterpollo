@@ -98,7 +98,7 @@ try {
     if (!$DebugBuild) { $probeArgs += '--release' }
     & cargo $toolchain @probeArgs
     Assert-NativeExit 'Rust performance probe build'
-    $protocolArgs = @('build', '-p', 'butterpollo-core', '--example', 'protocol_performance', '--locked')
+    $protocolArgs = @('build', '-p', 'butterpollo-core', '--example', 'protocol_performance', '--example', 'video_packet_performance', '--locked')
     if (!$DebugBuild) { $protocolArgs += '--release' }
     & cargo $toolchain @protocolArgs
     Assert-NativeExit 'Rust protocol performance probe build'
@@ -141,6 +141,7 @@ try {
         Copy-Item -LiteralPath (Join-Path $PyrowaveRoot 'share\pyrowave-shared\build-info.txt') -Destination "$distribution\licenses\pyrowave-build-info.txt"
         Copy-Item -LiteralPath (Join-Path $output 'examples\performance.exe') -Destination (Join-Path $distribution 'butterpollo-performance.exe')
         Copy-Item -LiteralPath (Join-Path $output 'examples\protocol_performance.exe') -Destination (Join-Path $distribution 'butterpollo-protocol-performance.exe')
+        Copy-Item -LiteralPath (Join-Path $output 'examples\video_packet_performance.exe') -Destination (Join-Path $distribution 'butterpollo-video-packet-performance.exe')
         foreach ($dll in $runtimeDlls) { Copy-Item -LiteralPath (Join-Path $output $dll) -Destination $distribution }
         New-Item -ItemType Directory -Path "$distribution\vulkan-layer" -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $output 'butterpollo_vulkan_layer.dll') -Destination "$distribution\vulkan-layer"

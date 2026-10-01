@@ -4,6 +4,23 @@ Measured locally on 2026-10-01: Ryzen 7 5800X3D (8 cores/16 threads), RX 7900 XT
 
 The measured reason to switch is video FEC generation: the Rust implementation is 1.26–1.40× faster than the original C++ implementation on representative video blocks, using 21–29% less CPU time for identical parity bytes. GPU-resident HDR processing, bounded texture/encoder queues and a Rust-rendered console are additional implementation benefits. Changing language alone does not establish a performance improvement, and the FEC results do not establish a whole-host or end-to-end latency improvement.
 
+## Video packet processing after the first 2.0 candidate
+
+Compared with Rust candidate `118d0ef133ae2d63898fb61512d25b6253d9c79b`, the revised packet path uses **11–16% less CPU time for encrypted frames** in these workloads. It reserves the encryption envelope in the final shard allocation, excludes that envelope from FEC, reuses AES-GCM setup within each frame and encrypts the shard in place. Source data goes directly into its shards, avoiding a full packed-frame copy. Windows UDP batches also use a bounded stack buffer for their descriptors.
+
+| Data shards, 20% FEC | Encryption | Previous Rust median | Revised median | CPU time saved |
+| --- | --- | ---: | ---: | ---: |
+| 32 | Off | 8.87 µs | 7.57 µs | 15% |
+| 32 | AES-GCM | 47.73 µs | 40.12 µs | 16% |
+| 192 | Off | 160.61 µs | 151.44 µs | 6% |
+| 192 | AES-GCM | 393.96 µs | 344.61 µs | 13% |
+| 576 | Off | 492.40 µs | 457.43 µs | 7% |
+| 576 | AES-GCM | 1185.92 µs | 1045.23 µs | 12% |
+
+Each case uses seven 250 ms rounds on the same Ryzen/Rust release environment, with prebuilt identical payloads of 44,024, 264,184 and 792,568 bytes. Timing includes header construction, allocations/copies, FEC, optional encryption and packet release; it excludes capture, encoding and UDP sending. Both builds produce the same first-frame SHA-256, packet counts and wire byte totals in all six cases. Tests separately compare every encrypted shard against independent per-packet sealing through FEC, partial tails and sequence/frame/nonce boundaries. These results compare two Rust versions and do not establish a whole-host improvement over C++.
+
+The package includes `butterpollo-video-packet-performance.exe`. Run it without arguments to print the workloads, timing samples and packet fingerprints. The source is `core/examples/video_packet_performance.rs`; use that same harness in the previous checkout when reproducing the comparison.
+
 ## Controlled comparison with the original C++ FEC
 
 The benchmark loads the original C++ host's Reed–Solomon wrapper from baseline commit `f23ee0c9e7857887be7f774de6ac5153500a7e53`, with its pinned nanors implementation at `19f07b513e924e471cadd141943c1ec4adc8d0e0`. The source verification script checks every compiled reference file against its pinned SHA-256. GCC 16.1.0 builds the reference with `-O3 -ftree-vectorize -funroll-loops`; Rust uses the release profile. Both select AVX2 on this Ryzen 7 5800X3D. The original runtime ISA dispatch is retained.

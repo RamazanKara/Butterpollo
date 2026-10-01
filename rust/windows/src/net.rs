@@ -261,18 +261,19 @@ impl Batch {
                 padding: 0,
             };
             let address = socket2::SockAddr::from(peer);
-            let mut buffers: Vec<_> = packets
-                .iter()
-                .map(|p| WSABUF {
-                    len: p.len() as u32,
-                    buf: windows::core::PSTR(p.as_ptr().cast_mut()),
-                })
-                .collect();
+            let mut buffers = [WSABUF {
+                len: 0,
+                buf: windows::core::PSTR::null(),
+            }; 64];
+            for (buffer, packet) in buffers.iter_mut().zip(packets) {
+                buffer.len = packet.len() as u32;
+                buffer.buf = windows::core::PSTR(packet.as_ptr().cast_mut());
+            }
             let message = WSAMSG {
                 name: address.as_ptr().cast_mut().cast(),
                 namelen: address.len(),
                 lpBuffers: buffers.as_mut_ptr(),
-                dwBufferCount: buffers.len() as u32,
+                dwBufferCount: packets.len() as u32,
                 Control: WSABUF {
                     len: std::mem::size_of::<Control>() as u32,
                     buf: windows::core::PSTR((&control as *const Control).cast_mut().cast()),

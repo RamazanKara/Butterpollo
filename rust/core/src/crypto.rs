@@ -65,6 +65,21 @@ pub fn gcm_seal(key: &[u8; 16], nonce: &[u8], data: &[u8]) -> Result<([u8; 16], 
     .map_err(|_| anyhow::anyhow!("AES-GCM encryption failed"))?;
     Ok((tag.into(), b))
 }
+/// Video packets share a key but always have independent 96-bit nonces.
+pub(crate) struct PacketSealer(Aes128Gcm);
+impl PacketSealer {
+    #[inline]
+    pub(crate) fn new(key: &[u8; 16]) -> Self {
+        Self(Aes128Gcm::new_from_slice(key).unwrap())
+    }
+    #[inline]
+    pub(crate) fn seal(&self, nonce: &[u8; 12], bytes: &mut [u8]) -> Result<[u8; 16]> {
+        self.0
+            .encrypt_in_place_detached(Nonce::from_slice(nonce), &[], bytes)
+            .map(Into::into)
+            .map_err(|_| anyhow::anyhow!("AES-GCM encryption failed"))
+    }
+}
 pub fn gcm_open(key: &[u8; 16], nonce: &[u8], tag: &[u8], data: &[u8]) -> Result<Vec<u8>> {
     if tag.len() != 16 {
         bail!("invalid authentication tag");
