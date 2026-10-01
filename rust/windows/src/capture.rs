@@ -652,9 +652,8 @@ impl Wgc {
     }
     pub fn next_frame(&mut self) -> Result<Option<Image>> {
         self.check_color_space()?;
-        let frame = match self.pool.TryGetNextFrame() {
-            Ok(f) => f,
-            Err(_) => return Ok(None),
+        let Some(frame) = self.try_frame()? else {
+            return Ok(None);
         };
         let result = (|| -> Result<Image> {
             self.check_size(&frame)?;
@@ -669,7 +668,7 @@ impl Wgc {
     pub fn next_gpu(&mut self) -> Result<Option<GpuImage>> {
         self.check_color_space()?;
         let now = Instant::now();
-        if let Ok(frame) = self.pool.TryGetNextFrame() {
+        if let Some(frame) = self.try_frame()? {
             if let Err(error) = self.check_size(&frame) {
                 let _ = frame.Close();
                 return Err(error);
@@ -719,6 +718,23 @@ impl Wgc {
         frame.Close()?;
         self.last_publish = now;
         result
+    }
+    fn try_frame(&self) -> Result<Option<Direct3D11CaptureFrame>> {
+        // An empty pool returns a successful HRESULT and a null interface. The
+        // generated binding requires a non-null frame, so preserve the HRESULT
+        // and optional output separately instead of swallowing every error.
+        unsafe {
+            let mut frame = std::ptr::null_mut();
+            (self.pool.vtable().TryGetNextFrame)(self.pool.as_raw(), &mut frame)
+                .ok()
+                .context("Windows capture frame pool failed; reconnect required")?;
+            Ok(if frame.is_null() {
+                None
+            } else {
+                // A successful call transfers this frame reference to us.
+                Some(Direct3D11CaptureFrame::from_raw(frame))
+            })
+        }
     }
     fn check_size(&self, frame: &Direct3D11CaptureFrame) -> Result<()> {
         let size = frame.ContentSize()?;
@@ -842,6 +858,15 @@ mod tests {
                     );
                     std::thread::sleep(Duration::from_millis(1));
                 }
+                capture.pool.Close()?;
+                assert!(
+                    capture.next_gpu().is_err(),
+                    "a closed pool must trigger GPU capture recovery"
+                );
+                assert!(
+                    capture.next_frame().is_err(),
+                    "a closed pool must trigger CPU capture recovery"
+                );
                 drop(capture);
                 drop(com);
                 // Reproduce the unload boundary before a subsequent stream/thread.
