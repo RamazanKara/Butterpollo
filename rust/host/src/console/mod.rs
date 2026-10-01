@@ -1,6 +1,8 @@
 //! Administration is rendered and handled by Rust; the browser needs no script.
 mod actions;
+mod i18n;
 mod pages;
+mod settings;
 
 use crate::{state::Shared, tls::Connection, web};
 pub(crate) use actions::{action, route};
@@ -49,6 +51,10 @@ pub(crate) fn esc(value: &str) -> String {
             '>' => output.push_str("&gt;"),
             '"' => output.push_str("&quot;"),
             '\'' => output.push_str("&#39;"),
+            '\u{fdd0}' => output.push_str("&#64976;"),
+            '\u{fdd1}' => output.push_str("&#64977;"),
+            '\u{fdd2}' => output.push_str("&#64978;"),
+            '\u{fdd3}' => output.push_str("&#64979;"),
             _ => output.push(c),
         }
     }
@@ -66,10 +72,10 @@ pub(crate) fn pretty(value: &Value) -> String {
 pub(crate) fn field(name: &str, label: &str, value: &str, kind: &str) -> String {
     format!(
         "<label>{}<input name=\"{}\" type=\"{}\" value=\"{}\" autocomplete=\"{}\"></label>",
-        esc(label),
+        i18n::label(name, label),
         esc(name),
         esc(kind),
-        esc(value),
+        i18n::data(value),
         if kind == "password" {
             if name.starts_with("current") || name == "password" {
                 "current-password"
@@ -84,15 +90,15 @@ pub(crate) fn field(name: &str, label: &str, value: &str, kind: &str) -> String 
 pub(crate) fn select(name: &str, label: &str, value: &str, options: &[(&str, &str)]) -> String {
     let mut html = format!(
         "<label>{}<select name=\"{}\" aria-label=\"{}\">",
-        esc(label),
+        i18n::label(name, label),
         esc(name),
-        esc(label)
+        i18n::label(name, label)
     );
     if !options.iter().any(|o| o.0 == value) {
         html += &format!(
             "<option selected value=\"{}\">{}</option>",
             esc(value),
-            esc(value)
+            i18n::data(value)
         );
     }
     for &(key, label) in options {
@@ -100,17 +106,18 @@ pub(crate) fn select(name: &str, label: &str, value: &str, options: &[(&str, &st
             "<option value=\"{}\"{}>{}</option>",
             esc(key),
             if key == value { " selected" } else { "" },
-            esc(label)
+            i18n::message(label)
         );
     }
     html + "</select></label>"
 }
 pub(crate) fn area(name: &str, label: &str, value: &str) -> String {
     format!(
-        "<label>{}<textarea name=\"{}\" rows=\"8\" spellcheck=\"false\">{}</textarea></label>",
-        esc(label),
+        "<label>{}<textarea name=\"{}\" aria-label=\"{}\" rows=\"8\" spellcheck=\"false\">{}</textarea></label>",
+        i18n::label(name, label),
         esc(name),
-        esc(value)
+        i18n::label(name, label),
+        i18n::data(value)
     )
 }
 pub(crate) fn form(op: &str, csrf: &str, back: &str, content: &str) -> String {
@@ -141,7 +148,11 @@ pub(crate) fn button(
         op,
         csrf,
         back,
-        &(hidden(key, value) + &format!("<button class=\"secondary\">{}</button>", esc(label))),
+        &(hidden(key, value)
+            + &format!(
+                "<button class=\"secondary\">{}</button>",
+                i18n::message(label)
+            )),
     )
 }
 fn page_path(path: &str) -> Option<&str> {
@@ -193,7 +204,11 @@ pub(crate) async fn get(
 }
 fn csrf(h: &Shared, headers: &HeaderMap) -> (String, bool) {
     if let Some(token) = web::access(headers)
-        && let Some(session) = h.web_sessions.lock().unwrap().get(&token)
+        && let Some(session) = h
+            .web_sessions
+            .lock()
+            .unwrap()
+            .get(&crate::web_sessions::hash(&token))
         && session.expires > Instant::now()
     {
         return (session.csrf.clone(), false);
@@ -220,7 +235,7 @@ pub(crate) fn shell(
     let mut html = format!(
         "<!doctype html><html lang=\"en\" data-theme=\"{}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{} · Butterpollo</title><link rel=\"stylesheet\" href=\"/console.css\"><link rel=\"icon\" href=\"/favicon.svg\"></head><body>",
         esc(&theme),
-        esc(title)
+        i18n::message(title)
     );
     if signed_in {
         html += "<aside><a class=\"brand\" href=\"/\"><span class=\"mark\">B</span>Butterpollo</a><nav aria-label=\"Main navigation\">";
@@ -253,7 +268,7 @@ pub(crate) fn shell(
     }
     html += &format!(
         "<header><p class=\"eyebrow\">Your streaming host</p><h1>{}</h1></header>{body}</main></body></html>",
-        esc(title)
+        i18n::message(title)
     );
     html
 }
@@ -274,6 +289,22 @@ pub(crate) async fn page(
     let signed_in = web::authenticated(&h, &headers);
     if !configured && path != "/setup" {
         return redirect("/setup");
+    }
+    if configured
+        && !signed_in
+        && method == Method::GET
+        && let Some(issued) = web::refresh_browser(&h, &headers, &connection)
+    {
+        if !issued.status().is_success() {
+            return issued;
+        }
+        let mut result = redirect(uri.path_and_query().map_or("/", |p| p.as_str()));
+        for value in issued.headers().get_all(header::SET_COOKIE) {
+            result
+                .headers_mut()
+                .append(header::SET_COOKIE, value.clone());
+        }
+        return result;
     }
     if configured && !signed_in && path != "/login" {
         return redirect("/login");
@@ -297,7 +328,7 @@ pub(crate) async fn page(
     if let Some(notice) = query.get("notice") {
         body += &format!(
             "<div class=\"notice\" role=\"status\">{}</div>",
-            esc(notice)
+            i18n::data(notice)
         );
     }
     match pages::render(&h, &connection, &headers, path, &csrf, &query).await {
@@ -305,11 +336,17 @@ pub(crate) async fn page(
         Err(error) => {
             body += &format!(
                 "<div class=\"notice error\" role=\"alert\">{}</div>",
-                esc(&error)
+                i18n::data(&error)
             )
         }
     }
-    let mut response = html(shell(title, path, &headers, &csrf, &body, signed_in));
+    let locale = h.config.read().unwrap().get("locale", "en").to_owned();
+    let body = shell(title, path, &headers, &csrf, &body, signed_in).replacen(
+        "lang=\"en\"",
+        &format!("lang=\"{}\"", i18n::locale(&locale).replace('_', "-")),
+        1,
+    );
+    let mut response = html(i18n::render(&body, &locale));
     if set_cookie {
         response.headers_mut().append(header::SET_COOKIE, format!("__Host-apollo_anon_csrf={csrf}; Path=/; HttpOnly; SameSite=Strict; Secure; Max-Age=3600").parse().unwrap());
     }

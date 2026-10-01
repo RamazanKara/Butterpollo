@@ -85,7 +85,13 @@ fn sample<const FORMAT: u8>(
         }
     }
 }
-fn convert<const FORMAT: u8>(image: &Image, width: u32, height: u32, out: &mut [u8]) {
+fn convert<const FORMAT: u8>(
+    image: &Image,
+    width: u32,
+    height: u32,
+    luminance: [f32; 2],
+    out: &mut [u8],
+) {
     let stride = width as usize * 8;
     let pixel_bytes = if FORMAT == 1 { 8 } else { 4 };
     let half = half_table();
@@ -124,7 +130,12 @@ fn convert<const FORMAT: u8>(image: &Image, width: u32, height: u32, out: &mut [
             let rgb = if FORMAT == 2 {
                 rgb.map(|value| (value * 65535. + 0.5) as u16)
             } else {
-                let [r, g, b] = rgb;
+                let factor = if FORMAT == 0 {
+                    luminance[0] / 80.
+                } else {
+                    luminance[1]
+                };
+                let [r, g, b] = rgb.map(|v| v * factor);
                 [
                     code(0.627404 * r + 0.329283 * g + 0.043313 * b, pq),
                     code(0.069097 * r + 0.919540 * g + 0.011362 * b, pq),
@@ -149,15 +160,24 @@ pub fn hdr_rgba(image: &Image, out: &mut Vec<u8>) {
     hdr_rgba_scaled(image, image.width, image.height, out);
 }
 pub fn hdr_rgba_scaled(image: &Image, width: u32, height: u32, out: &mut Vec<u8>) {
+    hdr_rgba_scaled_luminance(image, width, height, [100., 1.], out);
+}
+pub fn hdr_rgba_scaled_luminance(
+    image: &Image,
+    width: u32,
+    height: u32,
+    luminance: [f32; 2],
+    out: &mut Vec<u8>,
+) {
     if image.width == 0 || image.height == 0 || width == 0 || height == 0 {
         out.clear();
         return;
     }
     out.resize(width as usize * height as usize * 8, 0);
     match image.pixel {
-        Pixel::Bgra8 => convert::<0>(image, width, height, out),
-        Pixel::RgbaF16 => convert::<1>(image, width, height, out),
-        Pixel::Rgba10Pq => convert::<2>(image, width, height, out),
+        Pixel::Bgra8 => convert::<0>(image, width, height, luminance, out),
+        Pixel::RgbaF16 => convert::<1>(image, width, height, luminance, out),
+        Pixel::Rgba10Pq => convert::<2>(image, width, height, luminance, out),
     }
 }
 #[cfg(test)]

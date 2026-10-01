@@ -2,6 +2,70 @@
 use anyhow::{Result, bail};
 use std::collections::VecDeque;
 
+/// The layouts and bitrates advertised by the retained Moonlight protocol.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpusLayout {
+    pub channels: usize,
+    pub streams: i32,
+    pub coupled: i32,
+    pub mapping: Vec<u8>,
+    pub bitrate: i32,
+}
+impl OpusLayout {
+    pub fn select(channels: usize, quality: bool, custom: Option<&str>) -> Result<Self> {
+        let (streams, coupled, mapping, bitrate) = match (channels, quality) {
+            (2, false) => (1, 1, vec![0, 1], 96000),
+            (2, true) => (1, 1, vec![0, 1], 512000),
+            (6, false) => (4, 2, vec![0, 1, 4, 5, 2, 3], 256000),
+            (6, true) => (6, 0, vec![0, 1, 4, 5, 2, 3], 1536000),
+            (8, false) => (5, 3, vec![0, 1, 4, 5, 6, 7, 2, 3], 450000),
+            (8, true) => (8, 0, vec![0, 1, 4, 5, 6, 7, 2, 3], 2048000),
+            _ => bail!("unsupported Opus layout"),
+        };
+        let mut layout = Self {
+            channels,
+            streams,
+            coupled,
+            mapping,
+            bitrate,
+        };
+        if let Some((streams, coupled, mapping)) =
+            custom.and_then(|s| Self::parse_custom(channels, s))
+        {
+            layout.streams = streams;
+            layout.coupled = coupled;
+            layout.mapping = mapping;
+        }
+        Ok(layout)
+    }
+    fn parse_custom(channels: usize, text: &str) -> Option<(i32, i32, Vec<u8>)> {
+        let b = text.as_bytes();
+        if !matches!(channels, 6 | 8)
+            || b.len() != channels + 3
+            || !b.iter().all(u8::is_ascii_digit)
+        {
+            return None;
+        }
+        let c = usize::from(b[0] - b'0');
+        let streams = i32::from(b[1] - b'0');
+        let coupled = i32::from(b[2] - b'0');
+        let mapping: Vec<_> = b[3..].iter().map(|v| v - b'0').collect();
+        if c != channels
+            || streams + coupled != channels as i32
+            || coupled > streams
+            || streams == 0
+            || mapping.iter().any(|v| usize::from(*v) >= channels)
+        {
+            return None;
+        }
+        Some((streams, coupled, mapping))
+    }
+    pub fn valid_custom(text: &str) -> bool {
+        matches!(text.as_bytes().first(), Some(b'6' | b'8'))
+            && Self::parse_custom(usize::from(text.as_bytes()[0] - b'0'), text).is_some()
+    }
+}
+
 pub struct Resampler {
     queue: VecDeque<f32>,
     channels: usize,
@@ -148,6 +212,33 @@ pub fn mix_matrix(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn opus_layouts_preserve_legacy_surround_quality_and_validate_custom_mapping() {
+        for (channels, streams, coupled, bitrate) in
+            [(2, 1, 1, 512000), (6, 6, 0, 1536000), (8, 8, 0, 2048000)]
+        {
+            let layout = OpusLayout::select(channels, true, None).unwrap();
+            assert_eq!(
+                (layout.streams, layout.coupled, layout.bitrate),
+                (streams, coupled, bitrate)
+            );
+        }
+        let layout = OpusLayout::select(6, false, Some("660012345")).unwrap();
+        assert_eq!((layout.streams, layout.coupled), (6, 0));
+        assert_eq!(layout.mapping, [0, 1, 2, 3, 4, 5]);
+        for invalid in [
+            "600012345",
+            "606012345",
+            "642012346",
+            "88001234567",
+            "64201💥",
+        ] {
+            assert_eq!(
+                OpusLayout::select(6, false, Some(invalid)).unwrap(),
+                OpusLayout::select(6, false, None).unwrap()
+            );
+        }
+    }
     #[test]
     fn fractional_rates_do_not_overrun_and_remain_bounded() {
         for rate in [8000, 44100, 48000, 96000, 192000] {

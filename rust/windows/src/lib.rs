@@ -6,6 +6,8 @@ mod amf_gpu;
 #[cfg(windows)]
 pub mod audio;
 #[cfg(windows)]
+pub mod audio_route;
+#[cfg(windows)]
 pub mod capture;
 #[cfg(windows)]
 pub mod clipboard;
@@ -16,21 +18,39 @@ pub mod crash;
 #[cfg(windows)]
 pub mod display;
 #[cfg(windows)]
+pub mod display_arrangement;
+#[cfg(windows)]
 pub mod display_recovery;
 #[cfg(windows)]
 pub mod encoder;
 #[cfg(windows)]
+mod ffmpeg_gpu;
+#[cfg(windows)]
+pub mod foreground;
+#[cfg(windows)]
 mod gpu_color;
+#[cfg(windows)]
+mod gpu_priority;
 #[cfg(windows)]
 pub mod hdr_profile;
 #[cfg(windows)]
 pub mod input;
 #[cfg(windows)]
+mod keylayout;
+#[cfg(windows)]
+pub mod limiter;
+#[cfg(windows)]
 pub mod net;
+#[cfg(windows)]
+mod nvapi;
 #[cfg(windows)]
 pub mod process;
 #[cfg(windows)]
 pub mod pyrowave;
+#[cfg(windows)]
+pub mod rtss;
+#[cfg(windows)]
+pub mod rtx_profiles;
 #[cfg(windows)]
 pub mod service;
 #[cfg(windows)]
@@ -39,6 +59,8 @@ pub mod timing;
 pub mod tray;
 #[cfg(windows)]
 pub mod truehdr;
+#[cfg(windows)]
+pub mod vulkan;
 
 #[cfg(windows)]
 #[allow(
@@ -46,7 +68,7 @@ pub mod truehdr;
     non_snake_case,
     non_upper_case_globals,
     dead_code,
-    clippy::type_complexity
+    clippy::all
 )]
 pub(crate) mod ff {
     include!(concat!(env!("OUT_DIR"), "/ffmpeg.rs"));

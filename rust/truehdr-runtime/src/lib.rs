@@ -190,7 +190,7 @@ impl TrueHdr {
                 (c"TrueHDR.Contrast", contrast.min(200)),
                 (c"TrueHDR.Saturation", saturation.min(200)),
                 (c"TrueHDR.MiddleGray", middle.clamp(10, 100)),
-                (c"TrueHDR.MaxLuminance", peak.clamp(400, 2000)),
+                (c"TrueHDR.MaxLuminance", peak.clamp(400, 1000)),
             ] {
                 NVSDK_NGX_Parameter_SetUI(self.params, name.as_ptr(), value);
             }

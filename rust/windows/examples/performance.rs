@@ -43,6 +43,7 @@ Repeat-frame throughput excludes capture, network, decoding and display latency.
                 | "--encoder"
                 | "--display"
                 | "--capture"
+                | "--config"
         ) {
             fields.insert(key, args.next().context("option requires a value")?);
         } else {
@@ -52,10 +53,12 @@ Repeat-frame throughput excludes capture, network, decoding and display latency.
     let option =
         |key: &str, default: &str| fields.get(key).cloned().unwrap_or_else(|| default.into());
     let number = |key: &str, default: &str| option(key, default).parse::<u32>();
+    let rate = butterpollo_core::framegen::Rate::parse(&option("--fps", "120"))?;
     let config = Negotiated {
         width: number("--width", "1920")?,
         height: number("--height", "1080")?,
-        fps: number("--fps", "120")?,
+        fps: rate.rounded(),
+        rate_millihz: rate.0,
         bitrate_kbps: number("--bitrate", "20000")?,
         codec: match option("--codec", "hevc").as_str() {
             "h264" => 0,
@@ -80,10 +83,16 @@ Repeat-frame throughput excludes capture, network, decoding and display latency.
     }
     let _com = ComGuard::new()?;
     let _priority = Priority::new();
-    let mut capture = Capture::new_format(
+    let tuning = if let Some(path) = fields.get("--config") {
+        butterpollo_core::config::Config::load(std::path::Path::new(path))?
+    } else {
+        Default::default()
+    };
+    let mut capture = Capture::new_options(
         &option("--display", ""),
         &option("--capture", "wgc"),
         config.hdr,
+        &tuning,
     )?;
     let timeout = Instant::now() + Duration::from_secs(10);
     let image = loop {
@@ -105,9 +114,14 @@ Repeat-frame throughput excludes capture, network, decoding and display latency.
     };
     let preference = option("--encoder", "auto");
     let mut encoder = if cpu {
-        Encoder::new(&config, &preference, &image.gpu.display.display_name)?
+        Encoder::new_options(
+            &config,
+            &preference,
+            &image.gpu.display.display_name,
+            &tuning,
+        )?
     } else {
-        Encoder::new_gpu(&config, &preference, &image)?
+        Encoder::new_gpu_options(&config, &preference, &image, &tuning)?
     };
     let encode = |encoder: &mut Encoder, idr| {
         if let Some(image) = readback.as_ref() {
@@ -130,7 +144,7 @@ Repeat-frame throughput excludes capture, network, decoding and display latency.
     }
     let start = Instant::now();
     let end = start + Duration::from_secs(seconds.into());
-    let period = Duration::from_secs_f64(1. / f64::from(config.fps));
+    let period = rate.period();
     let mut due = start;
     let (mut frames, mut bytes, mut submits) = (0u64, 0u64, 0u64);
     let (mut calls, mut latencies) = (Vec::new(), Vec::new());

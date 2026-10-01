@@ -12,6 +12,9 @@ pub struct Config {
 }
 impl Config {
     pub fn parse(text: &str) -> Result<Self> {
+        if text.contains('\0') {
+            bail!("configuration cannot contain NUL");
+        }
         let mut values = BTreeMap::new();
         let mut pending = String::new();
         let mut depth = 0i32;
@@ -85,7 +88,11 @@ impl Config {
     pub fn boolean(&self, key: &str, default: bool) -> bool {
         self.values
             .get(key)
-            .map(|s| matches!(s.trim(), "true" | "yes" | "1" | "enabled"))
+            .and_then(|s| match s.trim().to_ascii_lowercase().as_str() {
+                "true" | "yes" | "1" | "enabled" | "on" => Some(true),
+                "false" | "no" | "0" | "disabled" | "off" => Some(false),
+                _ => None,
+            })
             .unwrap_or(default)
     }
     pub fn integer(&self, key: &str, default: i64) -> i64 {
@@ -93,6 +100,22 @@ impl Config {
             .get(key)
             .and_then(|s| s.parse().ok())
             .unwrap_or(default)
+    }
+    pub fn log_level(&self) -> &'static str {
+        match self
+            .get("min_log_level", "info")
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "0" | "verbose" | "trace" => "trace",
+            "1" | "debug" => "debug",
+            "2" | "info" => "info",
+            "3" | "warning" | "warn" => "warn",
+            "4" | "5" | "error" | "fatal" => "error",
+            "6" | "none" | "off" => "off",
+            _ => "info",
+        }
     }
     pub fn port(&self) -> Result<u16> {
         let n = self.integer("port", 47989);
@@ -128,10 +151,19 @@ impl Config {
             if !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || key.is_empty() {
                 bail!("invalid configuration key");
             }
+            // Legacy PATCH and POST both reset a setting when its value is
+            // null/empty. Keeping the literal "null" silently defeats defaults.
+            if value.is_null() || value.as_str() == Some("") {
+                next.values.remove(key);
+                continue;
+            }
             let value = match value {
                 serde_json::Value::String(v) => v.clone(),
                 _ => value.to_string(),
             };
+            if value.contains('\0') {
+                bail!("configuration cannot contain NUL");
+            }
             if value.contains(['\r', '\n'])
                 && !(value.trim().starts_with('[') || value.trim().starts_with('{'))
             {
@@ -140,6 +172,7 @@ impl Config {
             next.values.insert(key.clone(), value);
         }
         next.ports()?;
+        crate::framegen::Rate::parse(next.get("frame_limiter_fps_limit", "0"))?;
         *self = next;
         Ok(())
     }
@@ -152,7 +185,35 @@ impl Config {
         }
     }
     pub fn display_request(&self, width: u32, height: u32, fps: u32) -> Result<DisplayRequest> {
-        let resolution = match self.get("dd_resolution_option", "disabled") {
+        let mut request = self.display_request_rate(
+            width,
+            height,
+            crate::framegen::Rate(fps.saturating_mul(1000)),
+            false,
+            false,
+        )?;
+        request.refresh = request.refresh.map(|r| r.saturating_add(500) / 1000);
+        Ok(request)
+    }
+    pub fn display_request_rate(
+        &self,
+        width: u32,
+        height: u32,
+        rate: crate::framegen::Rate,
+        hdr: bool,
+        virtual_display: bool,
+    ) -> Result<DisplayRequest> {
+        if !virtual_display && self.get("dd_configuration_option", "verify_only") == "disabled" {
+            return Ok(DisplayRequest {
+                resolution: None,
+                refresh: None,
+                prefer_highest: false,
+                hdr: None,
+            });
+        }
+        let resolution_option = self.get("dd_resolution_option", "auto");
+        let refresh_option = self.get("dd_refresh_rate_option", "auto");
+        let mut resolution = match resolution_option {
             "disabled" => None,
             "auto" => Some((width, height)),
             "manual" => {
@@ -164,32 +225,96 @@ impl Config {
             }
             _ => bail!("invalid display resolution policy"),
         };
-        let refresh = match self.get("dd_refresh_rate_option", "disabled") {
+        let mut refresh = match refresh_option {
             "disabled" => None,
-            "auto" => Some(fps),
+            "auto" => Some(rate.0),
             "manual" => {
-                let rate: f64 = self.get("dd_manual_refresh_rate", "").parse()?;
-                if !rate.is_finite() || !(1.0..=1000.0).contains(&rate) {
+                let rate = crate::framegen::Rate::parse(self.get("dd_manual_refresh_rate", ""))?;
+                if rate.0 < 1000 {
                     bail!("invalid manual refresh rate");
                 }
-                Some(rate.round() as u32)
+                Some(rate.0)
             }
+            "prefer_highest" => None,
             _ => bail!("invalid display refresh policy"),
         };
+        let remapping_type = match (resolution_option == "auto", refresh_option == "auto") {
+            (true, true) => Some("mixed"),
+            (true, false) => Some("resolution_only"),
+            (false, true) => Some("refresh_rate_only"),
+            _ => None,
+        };
+        if let Some(kind) = remapping_type
+            && let Some(value) = self.values.get("dd_mode_remapping")
+        {
+            let mappings: serde_json::Value =
+                serde_json::from_str(value).context("invalid display mode remapping")?;
+            if let Some(entries) = mappings.get(kind).and_then(serde_json::Value::as_array) {
+                for entry in entries {
+                    let text = |key: &str| {
+                        entry
+                            .get(key)
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("")
+                            .trim()
+                    };
+                    let parse_resolution = |s: &str| -> Result<(u32, u32)> {
+                        let (w, h) = s
+                            .split_once('x')
+                            .context("remapping resolution must be WIDTHxHEIGHT")?;
+                        Ok((w.trim().parse()?, h.trim().parse()?))
+                    };
+                    if kind != "refresh_rate_only"
+                        && !text("requested_resolution").is_empty()
+                        && resolution != Some(parse_resolution(text("requested_resolution"))?)
+                    {
+                        continue;
+                    }
+                    if kind != "resolution_only"
+                        && !text("requested_fps").is_empty()
+                        && refresh != Some(crate::framegen::Rate::parse(text("requested_fps"))?.0)
+                    {
+                        continue;
+                    }
+                    if kind != "refresh_rate_only" && !text("final_resolution").is_empty() {
+                        resolution = Some(parse_resolution(text("final_resolution"))?);
+                    }
+                    if kind != "resolution_only" && !text("final_refresh_rate").is_empty() {
+                        refresh = Some(crate::framegen::Rate::parse(text("final_refresh_rate"))?.0);
+                    }
+                    break;
+                }
+            }
+        }
         if resolution.is_some_and(|(w, h)| !(320..=7680).contains(&w) || !(200..=4320).contains(&h))
-            || refresh.is_some_and(|f| f == 0 || f > 1000)
+            || refresh.is_some_and(|f| !(1000..=1_000_000).contains(&f))
         {
             bail!("display mode is outside its limits");
         }
         Ok(DisplayRequest {
             resolution,
             refresh,
+            prefer_highest: refresh_option == "prefer_highest",
+            hdr: if self.boolean("rtx_hdr", false) {
+                Some(false)
+            } else if self.get("dd_hdr_option", "auto") == "disabled" {
+                None
+            } else {
+                Some(match self.get("dd_hdr_request_override", "auto") {
+                    "auto" => hdr,
+                    "force_on" => true,
+                    "force_off" => false,
+                    _ => bail!("invalid HDR request override"),
+                })
+            },
         })
     }
 }
 pub struct DisplayRequest {
     pub resolution: Option<(u32, u32)>,
     pub refresh: Option<u32>,
+    pub prefer_highest: bool,
+    pub hdr: Option<bool>,
 }
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct Ports {
@@ -243,6 +368,43 @@ mod tests {
         assert_eq!(c.ports().unwrap().rtsp, 48144);
         assert_eq!(Config::parse(&c.text()).unwrap().values, c.values);
         assert_eq!(c.get("unknown_key", ""), "custom");
+        for (legacy, expected) in [
+            ("debug", "debug"),
+            ("1", "debug"),
+            ("warning", "warn"),
+            ("verbose", "trace"),
+            ("fatal", "error"),
+            ("none", "off"),
+            ("invalid", "info"),
+        ] {
+            assert_eq!(
+                Config::parse(&format!("min_log_level={legacy}\n"))
+                    .unwrap()
+                    .log_level(),
+                expected
+            );
+        }
+    }
+    #[test]
+    fn exact_display_remapping_hdr_override_and_disabled_policy() {
+        let c = Config::parse("dd_mode_remapping={\"mixed\":[{\"requested_resolution\":\"1920x1080\",\"requested_fps\":\"59.94\",\"final_resolution\":\"2560x1440\",\"final_refresh_rate\":\"119.88\"}]}\ndd_hdr_request_override=force_off\n").unwrap();
+        let r = c
+            .display_request_rate(1920, 1080, crate::framegen::Rate(59940), true, false)
+            .unwrap();
+        assert_eq!(r.resolution, Some((2560, 1440)));
+        assert_eq!(r.refresh, Some(119880));
+        assert_eq!(r.hdr, Some(false));
+        let c = Config::parse("dd_configuration_option=disabled\ndd_refresh_rate_option=manual\ndd_manual_refresh_rate=119.88\n").unwrap();
+        let r = c
+            .display_request_rate(1920, 1080, crate::framegen::Rate(59940), true, false)
+            .unwrap();
+        assert_eq!((r.resolution, r.refresh, r.hdr), (None, None, None));
+        assert_eq!(
+            c.display_request_rate(1920, 1080, crate::framegen::Rate(59940), true, true)
+                .unwrap()
+                .refresh,
+            Some(119880)
+        );
     }
     #[test]
     fn update_is_transactional_and_rejects_injection() {

@@ -1,4 +1,5 @@
 use crate::{state::Shared, tls::Connection};
+use anyhow::Context;
 use axum::{
     Extension, Json, Router,
     body::Bytes,
@@ -43,12 +44,24 @@ pub(crate) fn access(headers: &HeaderMap) -> Option<String> {
 }
 pub(crate) fn authenticated(h: &Shared, headers: &HeaderMap) -> bool {
     if let Some(token) = access(headers) {
-        return h
-            .web_sessions
-            .lock()
-            .unwrap()
-            .get(&token)
-            .is_some_and(|s| s.expires > Instant::now());
+        let mut sessions = h.web_sessions.lock().unwrap();
+        let key = crate::web_sessions::hash(&token);
+        let Some(session) = sessions
+            .get_mut(&key)
+            .filter(|s| s.expires > Instant::now())
+        else {
+            return false;
+        };
+        let wall = crate::web_sessions::now();
+        if wall.saturating_sub(session.last_seen) >= 300 {
+            let previous = session.last_seen;
+            session.last_seen = wall;
+            if let Err(error) = h.save_web_sessions(&sessions) {
+                sessions.get_mut(&key).unwrap().last_seen = previous;
+                tracing::debug!(%error, "browser session activity could not be saved");
+            }
+        }
+        return true;
     }
     if let Some(encoded) = headers
         .get(header::AUTHORIZATION)
@@ -91,6 +104,8 @@ fn token_catalog() -> Vec<auth::Scope> {
         ("/api/apps/[^/]+/cover", &["GET"][..]),
         ("/api/apps/close", &["POST"][..]),
         ("/api/apps/launch", &["POST"][..]),
+        ("/api/apps/reorder", &["POST"][..]),
+        ("/api/apps/rtx_hdr/live", &["POST"][..]),
         ("/api/clients/list", &["GET"][..]),
         ("/api/clients/update", &["POST"][..]),
         ("/api/clients/unpair", &["POST"][..]),
@@ -98,9 +113,34 @@ fn token_catalog() -> Vec<auth::Scope> {
         ("/api/session/status", &["GET"][..]),
         ("/api/rtsp/sessions", &["GET"][..]),
         ("/api/display-devices", &["GET"][..]),
+        ("/api/framegen/edid-refresh", &["GET"][..]),
+        ("/api/clients/display-layout", &["GET", "PUT"][..]),
+        ("/api/clients/hdr-profiles", &["GET"][..]),
+        ("/api/clients/unpair-all", &["POST"][..]),
+        ("/api/frame-limiter/status", &["GET"][..]),
+        ("/api/rtss/status", &["GET"][..]),
+        ("/api/health/vulkan-hdr-layer", &["GET"][..]),
+        ("/api/health/vulkan-hdr-layer/register", &["POST"][..]),
+        ("/api/health/crashdump", &["GET"][..]),
+        ("/api/health/crashdump/dismiss", &["POST"][..]),
+        ("/api/display/golden_status", &["GET"][..]),
+        ("/api/display/export_golden", &["POST"][..]),
+        ("/api/display/restore_golden", &["POST"][..]),
+        ("/api/display/golden", &["DELETE"][..]),
+        ("/api/display/terminate_virtual", &["POST"][..]),
+        ("/api/reset-display-device-persistence", &["POST"][..]),
+        ("/api/updates", &["GET"][..]),
+        ("/api/updates/check", &["POST"][..]),
+        ("/api/covers/upload", &["POST"][..]),
+        ("/api/covers/[0-9]+", &["GET"][..]),
         ("/api/logs", &["GET"][..]),
+        ("/api/logs/export", &["GET"][..]),
+        ("/api/logs/export_crash", &["GET"][..]),
+        ("/api/logs/export_crash/manifest", &["GET"][..]),
         ("/api/pin", &["POST"][..]),
         ("/api/restart", &["POST"][..]),
+        ("/api/quit", &["POST"][..]),
+        ("/api/password", &["POST"][..]),
     ]
     .into_iter()
     .map(|(path, methods)| auth::Scope {
@@ -204,7 +244,16 @@ async fn guard(State(h): State<Shared>, mut request: Request, next: Next) -> Res
                 .get(header::HOST)
                 .and_then(|v| v.to_str().ok())
                 .map(|host| format!("https://{host}"));
-            if allowed.as_deref() != Some(origin) {
+            let configured = h
+                .config
+                .read()
+                .unwrap()
+                .get("csrf_allowed_origins", "[]")
+                .to_owned();
+            let origins: Vec<String> = serde_json::from_str(&configured).unwrap_or_default();
+            if allowed.as_deref() != Some(origin)
+                && !origins.iter().any(|allowed| allowed == origin)
+            {
                 return error(StatusCode::FORBIDDEN, "request origin is not allowed");
             }
         }
@@ -231,7 +280,9 @@ async fn guard(State(h): State<Shared>, mut request: Request, next: Next) -> Res
             && let Some(token) = access(request.headers())
         {
             let sessions = h.web_sessions.lock().unwrap();
-            let expected = sessions.get(&token).map(|s| s.csrf.as_str());
+            let expected = sessions
+                .get(&crate::web_sessions::hash(&token))
+                .map(|s| s.csrf.as_str());
             let got = request
                 .headers()
                 .get("X-CSRF-Token")
@@ -251,24 +302,102 @@ async fn guard(State(h): State<Shared>, mut request: Request, next: Next) -> Res
     headers.insert("Cache-Control", "no-store".parse().unwrap());
     response
 }
-fn issued(h: &Shared, username: String) -> Response {
-    let (access, refresh, csrf) = h.new_web_session(username);
+fn issued(
+    h: &Shared,
+    username: String,
+    remember_me: bool,
+    headers: &HeaderMap,
+    connection: &Connection,
+    previous: Option<crate::web_sessions::WebSession>,
+) -> Response {
+    let username = h
+        .credentials
+        .read()
+        .unwrap()
+        .as_ref()
+        .filter(|c| c.username.eq_ignore_ascii_case(&username))
+        .map(|c| c.username.clone())
+        .unwrap_or(username);
+    let ttl = h
+        .config
+        .read()
+        .unwrap()
+        .integer("session_token_ttl_seconds", 3600)
+        .clamp(60, 604800) as u64;
+    let user_agent = headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .chars()
+        .take(512)
+        .collect();
+    let (access, refresh, csrf, refresh_ttl) = match h.new_web_session(
+        username,
+        remember_me,
+        user_agent,
+        connection.peer.ip().to_string(),
+        previous,
+    ) {
+        Ok(tokens) => tokens,
+        Err(e) => {
+            if e.is::<crate::web_sessions::Rotated>() {
+                return error(StatusCode::UNAUTHORIZED, "refresh token expired");
+            }
+            tracing::error!(error=%e, "browser session could not be persisted");
+            return error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "browser session could not be saved",
+            );
+        }
+    };
+    let ttl = ttl.min(refresh_ttl);
     let mut r = response(
         StatusCode::OK,
-        json!({"status":true,"access_token":access,"refresh_token":refresh,"csrf_token":csrf,"expires_in":3600,"redirect":"/"}),
+        json!({"status":true,"access_token":access,"refresh_token":refresh,"csrf_token":csrf,"expires_in":ttl,"refresh_expires_in":refresh_ttl,"remember_me":remember_me,"redirect":"/"}),
     );
-    for (name, value) in [
-        ("__Host-apollo_session", access),
-        ("__Host-apollo_refresh", refresh),
+    for (name, value, lifetime) in [
+        ("__Host-apollo_session", access, ttl),
+        ("__Host-apollo_refresh", refresh, refresh_ttl),
     ] {
+        let expiry = if remember_me {
+            format!("; Max-Age={lifetime}")
+        } else {
+            String::new()
+        };
         r.headers_mut().append(
             header::SET_COOKIE,
-            format!("{name}={value}; Path=/; HttpOnly; SameSite=Strict; Secure; Max-Age=86400")
+            format!("{name}={value}; Path=/; HttpOnly; SameSite=Strict; Secure{expiry}")
                 .parse()
                 .unwrap(),
         );
     }
     r
+}
+pub(crate) fn refresh_browser(
+    h: &Shared,
+    headers: &HeaderMap,
+    connection: &Connection,
+) -> Option<Response> {
+    let token = cookie(headers, "__Host-apollo_refresh")?;
+    let hash = crate::web_sessions::hash(&token);
+    let previous = h
+        .web_sessions
+        .lock()
+        .unwrap()
+        .values()
+        .find(|s| {
+            crypto::equal(s.refresh.as_bytes(), hash.as_bytes())
+                && s.refresh_expires > Instant::now()
+        })
+        .cloned()?;
+    Some(issued(
+        h,
+        previous.username.clone(),
+        previous.remember_me,
+        headers,
+        connection,
+        Some(previous),
+    ))
 }
 pub(crate) async fn api(
     State(h): State<Shared>,
@@ -390,8 +519,15 @@ pub(crate) async fn api(
         }
         return result;
     }
-    if method == Method::GET && path.starts_with("/api/apps/") && path.ends_with("/cover") {
-        let id = &path[10..path.len() - 6];
+    if method == Method::GET
+        && ((path.starts_with("/api/apps/") && path.ends_with("/cover"))
+            || path.starts_with("/api/covers/"))
+    {
+        let id = if path.starts_with("/api/apps/") {
+            &path[10..path.len() - 6]
+        } else {
+            &path[12..]
+        };
         let app = h
             .apps
             .read()
@@ -449,7 +585,11 @@ pub(crate) async fn api(
             .is_some_and(|c| c.verifies(username, text("password")))
         {
             ATTEMPTS.lock().unwrap().remove(&connection.peer.ip());
-            return issued(&h, username.into());
+            let remember = data.get("remember_me").is_some_and(|v| {
+                v.as_bool()
+                    .unwrap_or_else(|| matches!(v.as_str(), Some("true" | "1" | "on")))
+            });
+            return issued(&h, username.into(), remember, &headers, &connection, None);
         }
         return error(StatusCode::UNAUTHORIZED, "invalid username or password");
     }
@@ -464,25 +604,38 @@ pub(crate) async fn api(
             .map(str::to_owned)
             .or_else(|| cookie(&headers, "__Host-apollo_refresh"))
             .unwrap_or_else(|| text("refresh_token").into());
-        let user = {
-            let mut sessions = h.web_sessions.lock().unwrap();
-            let key = sessions
+        let previous = {
+            let sessions = h.web_sessions.lock().unwrap();
+            let hash = crate::web_sessions::hash(&token);
+            sessions
                 .iter()
                 .find(|(_, s)| {
-                    crypto::equal(s.refresh.as_bytes(), token.as_bytes())
+                    crypto::equal(s.refresh.as_bytes(), hash.as_bytes())
                         && s.refresh_expires > Instant::now()
                 })
-                .map(|(k, _)| k.clone());
-            key.and_then(|k| sessions.remove(&k)).map(|s| s.username)
+                .map(|(_, s)| s.clone())
         };
-        return match user {
-            Some(u) => issued(&h, u),
+        return match previous {
+            Some(s) => issued(
+                &h,
+                s.username.clone(),
+                s.remember_me,
+                &headers,
+                &connection,
+                Some(s),
+            ),
             None => error(StatusCode::UNAUTHORIZED, "refresh token expired"),
         };
     }
     if path == "/api/auth/logout" {
         if let Some(token) = access(&headers) {
-            h.web_sessions.lock().unwrap().remove(&token);
+            let mut sessions = h.web_sessions.lock().unwrap();
+            let mut next = sessions.clone();
+            next.remove(&crate::web_sessions::hash(&token));
+            if let Err(e) = h.save_web_sessions(&next) {
+                return error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
+            }
+            *sessions = next;
         }
         let mut r = Json(json!({"status":true})).into_response();
         for name in ["__Host-apollo_session", "__Host-apollo_refresh"] {
@@ -505,7 +658,7 @@ pub(crate) async fn api(
                 h.web_sessions
                     .lock()
                     .unwrap()
-                    .get(&t)
+                    .get(&crate::web_sessions::hash(&t))
                     .map(|s| s.csrf.clone())
             })
             .unwrap_or_default();
@@ -536,17 +689,33 @@ pub(crate) async fn api(
             )?,
             ("POST", "/api/display/export_golden") => crate::maintenance::capture_golden(&h)?,
             ("POST", "/api/display/restore_golden") => crate::maintenance::restore_golden(&h)?,
+            ("POST", "/api/reset-display-device-persistence") => {
+                if !h.sessions.lock().unwrap().active.is_empty()
+                    || !h.monitors.lock().unwrap().is_empty()
+                {
+                    anyhow::bail!(
+                        "disconnect active sessions before resetting display persistence"
+                    );
+                }
+                butterpollo_windows::display_recovery::reset()?;
+                json!({"status":true})
+            }
             ("DELETE", "/api/display/golden") => {
                 let path = h.directory.join("display-baseline-rust.json");
                 let exists = path.exists();
                 if exists {
                     std::fs::remove_file(path)?;
                 }
+                state::atomic_write(
+                    &h.directory.join("display-baseline-disabled"),
+                    b"legacy baseline import disabled\n",
+                )?;
                 json!({"status":true,"deleted":exists})
             }
             ("POST", "/api/display/terminate_virtual") => {
                 h.sessions.lock().unwrap().request_stop(None);
                 crate::remote_display::disconnect(&h, None);
+                h.app_display.lock().unwrap().take();
                 json!({"status":true})
             }
             ("GET", "/api/clients/display-layout") => crate::remote_display::snapshot(&h)?,
@@ -554,25 +723,46 @@ pub(crate) async fn api(
             ("GET", "/api/rtss/status" | "/api/frame-limiter/status") => {
                 crate::maintenance::integration_status(&h)
             }
-            ("GET", "/api/health/vulkan-hdr-layer") => {
-                json!({"status":true,"installed":false,"enabled":false,"available":false,"reason":"A Rust Vulkan interception layer is not included in this build"})
-            }
+            ("GET", "/api/health/vulkan-hdr-layer") => butterpollo_windows::vulkan::status(
+                h.config.read().unwrap().boolean("vulkan_hdr_layer", true),
+            ),
             ("POST", "/api/health/vulkan-hdr-layer/register") => {
-                anyhow::bail!("a Rust Vulkan interception layer is not included in this build")
+                butterpollo_windows::vulkan::register(true)?;
+                butterpollo_windows::vulkan::status(
+                    h.config.read().unwrap().boolean("vulkan_hdr_layer", true),
+                )
             }
             ("GET", "/api/auth/sessions") => {
-                let current = access(&headers).unwrap_or_default();
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)?
-                    .as_secs();
-                let sessions: Vec<_> = h.web_sessions.lock().unwrap().iter().filter(|(_, s)| s.refresh_expires > Instant::now()).map(|(token, s)| json!({"id":hex::encode(crypto::hash(token.as_bytes())),"username":s.username,"created_at":s.created,"expires_at":now+s.expires.saturating_duration_since(Instant::now()).as_secs(),"refresh_expires_at":now+s.refresh_expires.saturating_duration_since(Instant::now()).as_secs(),"last_seen":now,"remember_me":false,"current":crypto::equal(token.as_bytes(),current.as_bytes())})).collect();
+                let current = crate::web_sessions::hash(&access(&headers).unwrap_or_default());
+                let sessions: Vec<_> = h
+                    .web_sessions
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(_, s)| s.refresh_expires > Instant::now())
+                    .map(|(token, s)| {
+                        let mut row = crate::web_sessions::record(token, s);
+                        let object = row.as_object_mut().unwrap();
+                        object.remove("refresh_token_hash");
+                        object.remove("rotation_id");
+                        object.remove("hash");
+                        object.insert("id".into(), json!(token));
+                        object.insert(
+                            "current".into(),
+                            json!(crypto::equal(token.as_bytes(), current.as_bytes())),
+                        );
+                        row
+                    })
+                    .collect();
                 json!({"status":true,"sessions":sessions})
             }
             ("DELETE", p) if p.starts_with("/api/auth/sessions/") => {
                 let hash = &p[19..];
-                h.web_sessions.lock().unwrap().retain(|token, _| {
-                    !hex::encode(crypto::hash(token.as_bytes())).eq_ignore_ascii_case(hash)
-                });
+                let mut sessions = h.web_sessions.lock().unwrap();
+                let mut next = sessions.clone();
+                next.retain(|token, _| !token.eq_ignore_ascii_case(hash));
+                h.save_web_sessions(&next)?;
+                *sessions = next;
                 json!({"status":true,"deleted":true})
             }
             ("GET", "/api/token/routes") => json!({"status":true,"routes":token_catalog()}),
@@ -629,16 +819,25 @@ pub(crate) async fn api(
                 let mut next = config.clone();
                 next.update(object)?;
                 state::atomic_write(&h.config_path, next.text().as_bytes())?;
+                let warning =
+                    butterpollo_windows::vulkan::reconcile(next.boolean("vulkan_hdr_layer", true))
+                        .err()
+                        .map(|e| e.to_string());
                 *config = next;
-                json!({"status":true,"restart_required":true})
+                json!({"status":true,"restart_required":true,"warning":warning})
             }
             ("GET", "/api/configLocale") => {
                 json!({"status":true,"locale":h.config.read().unwrap().get("locale","en")})
             }
             ("GET", "/api/meta" | "/api/metadata") => {
                 let codecs = h.codecs.load(std::sync::atomic::Ordering::Acquire);
-                let virtual_display = butterpollo_windows::display::virtual_display_available();
-                json!({"status":true,"platform":"windows","version":env!("CARGO_PKG_VERSION"),"branch":"codex/butterpollo-rust","host_name":h.config.read().unwrap().get("sunshine_name","Butterpollo Rust"),"encoder_status":{"state":if codecs == 0 {"failed"} else {"ready"},"h264":codecs&1!=0,"hevc":codecs&0x100!=0,"av1":codecs&0x10000!=0,"pyrowave":codecs&0x800000!=0},"capture_status":{"configured_backend":h.config.read().unwrap().get("capture","auto"),"virtual_display_configured":h.config.read().unwrap().get("virtual_display_mode","disabled")!="disabled"},"virtual_display":{"capable":virtual_display,"ready":virtual_display,"reason":if virtual_display {""} else {"Compatible VDD driver is unavailable"}},"features":{"rust_host":true,"hdr":true,"truehdr_runtime":butterpollo_windows::truehdr::available(),"pyrowave":butterpollo_windows::pyrowave::available(),"virtual_display":virtual_display},"credentials_exists":h.credentials.read().unwrap().is_some()})
+                let virtual_display = butterpollo_windows::display::virtual_display_status();
+                let capable = virtual_display["capable"].as_bool().unwrap_or(false);
+                let audio = (|| -> anyhow::Result<_> {
+                    let _com = butterpollo_windows::capture::ComGuard::new()?;
+                    butterpollo_windows::audio_route::endpoints()
+                })();
+                json!({"status":true,"platform":"windows","version":env!("CARGO_PKG_VERSION"),"branch":"codex/butterpollo-rust","host_name":h.config.read().unwrap().get("sunshine_name","Butterpollo Rust"),"encoder_status":{"state":if codecs == 0 {"failed"} else {"ready"},"h264":codecs&1!=0,"hevc":codecs&0x100!=0,"av1":codecs&0x10000!=0,"pyrowave":codecs&0x800000!=0},"capture_status":{"configured_backend":h.config.read().unwrap().get("capture","auto"),"virtual_display_configured":h.config.read().unwrap().get("virtual_display_mode","disabled")!="disabled"},"virtual_display":virtual_display,"audio_sinks":audio.as_ref().ok(),"audio_error":audio.as_ref().err().map(|e|e.to_string()),"features":{"rust_host":true,"hdr":true,"truehdr_runtime":butterpollo_windows::truehdr::available(),"pyrowave":butterpollo_windows::pyrowave::available(),"virtual_display":capable},"credentials_exists":h.credentials.read().unwrap().is_some()})
             }
             ("GET", "/api/apps") => {
                 let mut d = h.app_document.read().unwrap().clone();
@@ -651,6 +850,25 @@ pub(crate) async fn api(
                 if app.name.trim().is_empty() {
                     anyhow::bail!("application name required");
                 }
+                let mut tuning = serde_json::Map::new();
+                for &key in crate::stream::RTX_KEYS {
+                    if let Some(value) = app
+                        .extra
+                        .get(&key.replace('_', "-"))
+                        .filter(|value| !value.is_null() && value.as_str() != Some(""))
+                    {
+                        tuning.insert(key.into(), value.clone());
+                    }
+                    if let Some(value) = app
+                        .extra
+                        .get("config-overrides")
+                        .and_then(|v| v.get(key))
+                        .filter(|value| !value.is_null() && value.as_str() != Some(""))
+                    {
+                        tuning.insert(key.into(), value.clone());
+                    }
+                }
+                h.config.read().unwrap().clone().update(&tuning)?;
                 if !app.extra.contains_key("uuid") {
                     app.extra
                         .insert("uuid".into(), json!(uuid::Uuid::new_v4().to_string()));
@@ -675,12 +893,35 @@ pub(crate) async fn api(
                 delete_app(&h, text("uuid"))?;
                 json!({"status":true})
             }
+            ("POST", "/api/apps/reorder") => {
+                let order = data["order"]
+                    .as_array()
+                    .ok_or_else(|| anyhow::anyhow!("order must be an array"))?;
+                let mut apps = h.apps.write().unwrap();
+                let next = butterpollo_core::catalog::reorder(&apps, order);
+                let mut document = h.app_document.read().unwrap().clone();
+                document["apps"] = serde_json::to_value(&next)?;
+                state::write_json(&h.apps_path, &document)?;
+                *apps = next;
+                *h.app_document.write().unwrap() = document;
+                json!({"status":true})
+            }
+            ("POST", "/api/apps/rtx_hdr/live") => {
+                let values = match data.get("config-overrides") {
+                    Some(values) => values
+                        .as_object()
+                        .ok_or_else(|| anyhow::anyhow!("config-overrides must be an object"))?
+                        .clone(),
+                    None => Default::default(),
+                };
+                json!({"status":true,"applied":h.update_live_rtx(text("uuid"),&values)?})
+            }
             ("POST", "/api/apps/close") => {
                 h.sessions
                     .lock()
                     .unwrap()
                     .stop_role(butterpollo_core::session::Role::Stream, None);
-                h.current_app.lock().unwrap().take();
+                h.stop_app();
                 json!({"status":true})
             }
             ("POST", "/api/apps/launch") => {
@@ -801,6 +1042,30 @@ pub(crate) async fn api(
             ("GET", "/api/display-devices") => {
                 serde_json::to_value(butterpollo_windows::display::monitors()?)?
             }
+            ("GET", "/api/framegen/edid-refresh") => {
+                let query: std::collections::HashMap<_, _> =
+                    url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes())
+                        .into_owned()
+                        .collect();
+                let hint = ["device_id", "device", "id", "display"]
+                    .into_iter()
+                    .find_map(|key| query.get(key).filter(|value| !value.trim().is_empty()))
+                    .context("device_id query parameter is required")?;
+                let mut targets = query
+                    .get("targets")
+                    .map(|text| {
+                        text.split(',')
+                            .filter_map(|value| value.trim().parse::<u32>().ok())
+                            .filter(|hz| *hz > 0 && *hz <= 4000)
+                            .take(64)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if targets.is_empty() {
+                    targets = vec![120, 180, 240, 288];
+                }
+                butterpollo_windows::display::edid_refresh(hint, &targets)?
+            }
             ("POST", "/api/pin") => {
                 let pin = text("pin");
                 if pin.len() != 4 || !pin.bytes().all(|c| c.is_ascii_digit()) {
@@ -842,9 +1107,14 @@ pub(crate) async fn api(
                     anyhow::bail!("password confirmation does not match");
                 }
                 let c = Credentials::new(text("newUsername").into(), password)?;
+                // Invalidate durable sessions before changing the password. A
+                // failed credential write may require another login; it cannot
+                // resurrect sessions authenticated by the previous password.
+                let mut sessions = h.web_sessions.lock().unwrap();
+                h.save_web_sessions(&Default::default())?;
+                sessions.clear();
                 h.save_credentials(&c)?;
                 *h.credentials.write().unwrap() = Some(c);
-                h.web_sessions.lock().unwrap().clear();
                 json!({"status":true})
             }
             ("POST", "/api/restart") => {

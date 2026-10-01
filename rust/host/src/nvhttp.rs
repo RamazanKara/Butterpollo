@@ -23,6 +23,73 @@ use std::{
     time::{Duration, Instant},
 };
 type Args = HashMap<String, String>;
+#[derive(Debug)]
+struct LaunchFailure(u16, &'static str);
+impl std::fmt::Display for LaunchFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.1)
+    }
+}
+impl std::error::Error for LaunchFailure {}
+fn remote_owner(h: &Shared, client: &str) -> butterpollo_core::remote::Owner {
+    use butterpollo_core::remote::Owner;
+    if h.monitors.lock().unwrap().contains_key(client) {
+        return Owner::Monitor;
+    }
+    let sessions = h.sessions.lock().unwrap();
+    if sessions
+        .pending
+        .values()
+        .any(|s| s.client.uuid == client && s.role == Role::RemoteMonitor)
+        || sessions.active.values().any(|s| {
+            !s.stopping() && s.launch.client.uuid == client && s.launch.role == Role::RemoteMonitor
+        })
+    {
+        Owner::Monitor
+    } else if sessions
+        .pending
+        .values()
+        .any(|s| s.client.uuid == client && s.role == Role::InputOnly)
+        || sessions.active.values().any(|s| {
+            !s.stopping() && s.launch.client.uuid == client && s.launch.role == Role::InputOnly
+        })
+    {
+        Owner::Input
+    } else {
+        Owner::None
+    }
+}
+fn remote_game(h: &Shared) -> Option<butterpollo_core::remote::Game> {
+    let (id, name, owner, generation) = h.current_app.lock().unwrap().as_ref().map(|app| {
+        (
+            app.id,
+            app.name.clone(),
+            app.owner.clone(),
+            app.generation.clone(),
+        )
+    })?;
+    let uuid = h
+        .apps
+        .read()
+        .unwrap()
+        .iter()
+        .find(|app| app.id() == id)
+        .and_then(|app| app.extra.get("uuid"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    Some(butterpollo_core::remote::Game {
+        app: butterpollo_core::remote::Entry {
+            id,
+            title: name,
+            uuid,
+            art_version: id.to_string(),
+            ..Default::default()
+        },
+        owner,
+        generation,
+    })
+}
 fn escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -91,16 +158,31 @@ async fn serverinfo(
     State(h): State<Shared>,
     Extension(connection): Extension<Connection>,
 ) -> Response {
-    let config = h.config.read().unwrap();
+    let config = h.config.read().unwrap().clone();
     let ports = config.ports().unwrap();
-    let paired = authenticated(&h, &connection, 0).is_ok();
-    let current = h
-        .current_app
-        .lock()
-        .unwrap()
+    let client = authenticated(&h, &connection, 0).ok();
+    let paired = client.is_some();
+    let address = connection.local.ip();
+    let mac = tokio::task::spawn_blocking(move || butterpollo_windows::net::local_mac(address))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_else(|| "00:00:00:00:00:00".into());
+    let game = remote_game(&h);
+    let current = game
         .as_ref()
-        .map(|a| a.id)
-        .unwrap_or(0);
+        .filter(|game| {
+            client.as_ref().is_some_and(|client| {
+                (game.owner == client.uuid
+                    && remote_owner(&h, &client.uuid) == butterpollo_core::remote::Owner::None)
+                    || h.confirmations.lock().unwrap().active(
+                        &client.uuid,
+                        butterpollo_core::remote::Confirmation::Replace,
+                        &game.generation,
+                    )
+            })
+        })
+        .map_or(0, |game| game.app.id);
     xml(
         200,
         &[
@@ -125,13 +207,11 @@ async fn serverinfo(
                 .into(),
             ),
             ("LocalIP", connection.local.ip().to_string()),
-            ("mac", "00:00:00:00:00:00".into()),
+            ("mac", mac),
             ("MaxLumaPixelsHEVC", "1869449984".into()),
             (
                 "ServerCodecModeSupport",
-                h.codecs
-                    .load(std::sync::atomic::Ordering::Acquire)
-                    .to_string(),
+                (h.codecs.load(std::sync::atomic::Ordering::Acquire) & !0x40000000).to_string(),
             ),
             ("RustHostVersion", env!("CARGO_PKG_VERSION").into()),
         ],
@@ -285,26 +365,63 @@ async fn applist(
         Ok(c) => c,
         Err(e) => return xml(401, &[], Some(e.to_string())),
     };
+    use butterpollo_core::remote::{self, Control};
+    let configured = h
+        .apps
+        .read()
+        .unwrap()
+        .iter()
+        .enumerate()
+        .map(|(index, app)| remote::Entry {
+            id: app.id(),
+            title: app.name.clone(),
+            index,
+            uuid: app
+                .extra
+                .get("uuid")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .into(),
+            art_version: app.id().to_string(),
+        })
+        .collect();
+    let config = h.config.read().unwrap().clone();
+    let game = remote_game(&h);
+    let projection = remote::project(
+        &client.uuid,
+        remote_owner(&h, &client.uuid),
+        game.as_ref(),
+        config.boolean("enable_input_only_mode", true),
+        configured,
+    );
+    let entries: Vec<_> = projection
+        .entries
+        .into_iter()
+        .filter(|entry| {
+            let permission = match remote::identify(entry.id, &entry.uuid) {
+                Some(Control::Resume | Control::RunningGame) => 1 << 25,
+                Some(_) => 1 << 26,
+                None => 1 << 24,
+            };
+            client.perm & permission != 0
+        })
+        .collect();
+    let legacy = config.boolean("legacy_ordering", false)
+        && client
+            .extra
+            .get("enable_legacy_ordering")
+            .is_none_or(|value| value != false && value != "false");
+    let hdr = u8::from(
+        h.codecs.load(std::sync::atomic::Ordering::Acquire) & (0x200 | 0x20000 | 0x800000) != 0,
+    );
     let mut s = "<?xml version=\"1.0\"?><root status_code=\"200\">".to_owned();
-    for app in h.apps.read().unwrap().iter() {
-        s.push_str(&format!(
-            "<App><AppTitle>{}</AppTitle><ID>{}</ID><IsHdrSupported>0</IsHdrSupported></App>",
-            escape(&app.name),
-            app.id()
-        ));
-    }
-    for (id, title) in butterpollo_core::remote::tiles() {
-        let allowed = match butterpollo_core::remote::identify(id, "").unwrap() {
-            butterpollo_core::remote::Control::Terminate => client.perm & (1 << 26) != 0,
-            butterpollo_core::remote::Control::Resume => client.perm & (1 << 25) != 0,
-            _ => client.perm & (1 << 26) != 0,
+    for (index, entry) in entries.iter().enumerate() {
+        let title = if legacy {
+            remote::ordered_title(&entry.title, entries.len(), index)
+        } else {
+            entry.title.clone()
         };
-        if allowed {
-            s.push_str(&format!(
-                "<App><AppTitle>{}</AppTitle><ID>{id}</ID><IsHdrSupported>1</IsHdrSupported></App>",
-                escape(title)
-            ));
-        }
+        s.push_str(&format!("<App><AppTitle>{}</AppTitle><UUID>{}</UUID><IDX>{}</IDX><ID>{}</ID><ArtVersion>{}</ArtVersion><IsHdrSupported>{hdr}</IsHdrSupported></App>", escape(&title), escape(&entry.uuid), entry.index, entry.id, escape(&entry.art_version)));
     }
     s.push_str("</root>");
     ([(header::CONTENT_TYPE, "application/xml")], s).into_response()
@@ -329,10 +446,17 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
         .get("appid")
         .and_then(|id| id.parse::<u32>().ok())
         .unwrap_or(0);
-    let control = remote::identify(requested, args.get("appuuid").map_or("", String::as_str));
+    let active = remote_game(&h);
+    let control = remote::identify(requested, args.get("appuuid").map_or("", String::as_str))
+        .or_else(|| {
+            active
+                .as_ref()
+                .filter(|game| requested == remote::running_game_id(game.app.id))
+                .map(|_| Control::RunningGame)
+        });
     let permission = match control {
         Some(Control::Terminate) => 1 << 26,
-        Some(Control::Resume) => 1 << 25,
+        Some(Control::Resume | Control::RunningGame) => 1 << 25,
         _ if resume => 1 << 25,
         _ => 1 << 26,
     };
@@ -340,10 +464,38 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
         Ok(c) => c,
         Err(e) => return xml(401, &[], Some(e.to_string())),
     };
+    let _transition = h.launch_transition.lock().unwrap();
     match control {
         Some(Control::Terminate) => {
+            let Some(game) = remote_game(&h) else {
+                return xml(
+                    409,
+                    &[("gamesession", "0".into())],
+                    Some("No application is running".into()),
+                );
+            };
+            let guard = !h
+                .config
+                .read()
+                .unwrap()
+                .boolean("remote_monitor_terminate_on_first_request", false)
+                && game.owner != client.uuid;
+            let mut confirmations = h.confirmations.lock().unwrap();
+            if guard
+                && !confirmations.confirm(
+                    &client.uuid,
+                    remote::Confirmation::Terminate,
+                    &game.generation,
+                    game.app.id,
+                    Instant::now(),
+                )
+            {
+                return xml(410, &[("resume", "0".into()), ("gamesession", "0".into())], Some("This will close the active stream but leave Remote Monitor and Remote Input connected. Launch Terminate again within 60 seconds to confirm this was intentional.".into()));
+            }
+            confirmations.clear(&client.uuid, remote::Confirmation::Terminate);
+            drop(confirmations);
             h.sessions.lock().unwrap().stop_role(Role::Stream, None);
-            h.current_app.lock().unwrap().take();
+            h.stop_app();
             return xml(
                 410,
                 &[("gamesession", "0".into())],
@@ -371,7 +523,19 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
         }
         _ => {}
     }
-    let resume = resume || control == Some(Control::Resume);
+    let owner = remote_owner(&h, &client.uuid);
+    if (control == Some(Control::Input) && owner != remote::Owner::None)
+        || (control == Some(Control::Monitor) && owner == remote::Owner::Input)
+    {
+        return xml(
+            409,
+            &[("gamesession", "0".into())],
+            Some("Remote session action conflicts with this client's current session state".into()),
+        );
+    }
+    let resume = resume
+        || matches!(control, Some(Control::Resume | Control::RunningGame))
+        || (control == Some(Control::Monitor) && owner == remote::Owner::Monitor);
     let result = (|| -> Result<(String, String)> {
         let key: [u8; 16] = hex::decode(args.get("rikey").context("missing stream key")?)?
             .try_into()
@@ -391,9 +555,21 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
         if args.get("remote_monitor").is_some_and(|v| v == "1") {
             role = Role::RemoteMonitor;
         }
+        if role == Role::InputOnly
+            && !h
+                .config
+                .read()
+                .unwrap()
+                .boolean("enable_input_only_mode", true)
+        {
+            bail!("remote input is disabled by the administrator");
+        }
         let app_id = if resume {
             let game = h.current_app.lock().unwrap().as_ref().map(|a| a.id);
-            if let Some(id) = game {
+            if owner == remote::Owner::Monitor {
+                role = Role::RemoteMonitor;
+                2147483505
+            } else if let Some(id) = game {
                 id
             } else if h.monitors.lock().unwrap().contains_key(&client.uuid) {
                 role = Role::RemoteMonitor;
@@ -437,8 +613,33 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
                 .is_some_and(|v| v.parse::<u32>().unwrap_or(0) >= 1),
             rtsp_counter: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(1)),
             rtsp_received: Default::default(),
+            preparation: Default::default(),
+            vrr_requested: args.get("vrr").is_some_and(|s| s == "1")
+                || args.get("client_vrr").is_some_and(|s| s == "1")
+                || args.get("clientVrrRequested").is_some_and(|s| s == "1"),
+            host_audio: args.get("localAudioPlayMode").is_some_and(|s| s == "1"),
+            requested_rate: args
+                .get("mode")
+                .and_then(|mode| mode.rsplit('x').next())
+                .and_then(|rate| {
+                    if rate.contains('.') {
+                        butterpollo_core::framegen::Rate::parse(rate).ok()
+                    } else {
+                        rate.parse()
+                            .ok()
+                            .map(butterpollo_core::framegen::Rate::from_client)
+                    }
+                })
+                .map_or(0, |rate| rate.0),
+            audio_preparation: Default::default(),
+            options: args.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
         };
         let rtsp_port = h.config.read().unwrap().ports()?.rtsp;
+        if !launch.rtsp_encrypted
+            && crate::network::encryption_mode(&h.config.read().unwrap(), connection.peer.ip()) == 2
+        {
+            bail!("encrypted RTSP is required for this client address");
+        }
         let scheme = if launch.rtsp_encrypted {
             "rtspenc"
         } else {
@@ -447,17 +648,174 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
         let id = launch.id.clone();
         let mut current = h.current_app.lock().unwrap();
         if role == Role::Stream && !resume && current.as_ref().is_some_and(|a| a.id != app_id) {
-            bail!("an application is already running");
-        }
-        h.sessions.lock().unwrap().queue(launch)?;
-        if role == Role::Stream && current.is_none() {
-            match crate::process::launch(&h, app.as_ref().context("application not found")?, &args)
+            if owner != remote::Owner::None {
+                return Err(LaunchFailure(409, "Remote Input or Remote Monitor is active; launch Terminate before starting a different app").into());
+            }
+            let generation = &current.as_ref().unwrap().generation;
+            if h.config
+                .read()
+                .unwrap()
+                .boolean("remote_monitor_confirm_app_replacement", true)
+                && !h.confirmations.lock().unwrap().confirm(
+                    &launch.client.uuid,
+                    remote::Confirmation::Replace,
+                    generation,
+                    app_id,
+                    Instant::now(),
+                )
             {
+                return Err(LaunchFailure(410, "An app is already running. Launch this app again within 60 seconds to confirm that you want to close it.").into());
+            }
+            h.confirmations
+                .lock()
+                .unwrap()
+                .clear(&launch.client.uuid, remote::Confirmation::Replace);
+            h.sessions.lock().unwrap().stop_role(Role::Stream, None);
+            current.take();
+            drop(current);
+            h.app_audio.lock().unwrap().take();
+            h.app_display.lock().unwrap().take();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while h
+                .sessions
+                .lock()
+                .unwrap()
+                .active
+                .values()
+                .any(|s| s.launch.role == Role::Stream)
+            {
+                if Instant::now() >= deadline {
+                    bail!(
+                        "previous game session is still releasing its resources; retry the launch"
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            current = h.current_app.lock().unwrap();
+        }
+        h.sessions.lock().unwrap().queue(launch.clone())?;
+        if role != Role::InputOnly {
+            let prepared = (|| -> Result<std::sync::Arc<crate::display_session::Ready>> {
+                let config = crate::stream::effective_config(&h, &launch)?;
+                let mode = args
+                    .get("mode")
+                    .map(String::as_str)
+                    .unwrap_or(config.get("fallback_mode", "1920x1080x60"));
+                let dimensions: Vec<_> = mode.split('x').collect();
+                if dimensions.len() != 3 {
+                    bail!("launch mode must be WIDTHxHEIGHTxFPS");
+                }
+                let rate = if dimensions[2].contains('.') {
+                    butterpollo_core::framegen::Rate::parse(dimensions[2])?
+                } else {
+                    butterpollo_core::framegen::Rate::from_client(dimensions[2].parse()?)
+                };
+                let mut stream = butterpollo_core::rtsp::Negotiated {
+                    width: dimensions[0].parse()?,
+                    height: dimensions[1].parse()?,
+                    fps: rate.rounded(),
+                    rate_millihz: rate.0,
+                    hdr: args.get("hdrMode").is_some_and(|v| v == "1"),
+                    codec: 1,
+                    vrr_low_latency: launch.vrr_requested,
+                    ..Default::default()
+                };
+                butterpollo_core::stream_policy::apply_color(&mut stream, &config);
+                stream.validate()?;
+                if role == Role::Stream {
+                    let retained = h
+                        .app_display
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .map(|(lease, _)| lease.clone());
+                    if let Some(lease) = retained
+                        && lease.matches(&stream)
+                    {
+                        return Ok(lease);
+                    }
+                    h.app_display.lock().unwrap().take();
+                }
+                crate::display_session::Ready::new(crate::display_session::Prepared::create(
+                    &h, &launch, &stream, &config,
+                )?)
+            })();
+            match prepared {
+                Ok(prepared) => *launch.preparation.lock().unwrap() = Some(Box::new(prepared)),
+                Err(error) => {
+                    h.sessions.lock().unwrap().pending.remove(&id);
+                    return Err(error);
+                }
+            }
+        }
+        if role != Role::InputOnly {
+            let config = crate::stream::effective_config(&h, &launch)?;
+            if config.boolean("stream_audio", true)
+                && !(role == Role::RemoteMonitor
+                    && config.boolean("remote_monitor_mute_audio", false))
+            {
+                let channels = args
+                    .get("surroundAudioInfo")
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .map_or(2, |v| v & 0xffff) as usize;
+                let channels = if matches!(channels, 2 | 6 | 8) {
+                    channels
+                } else {
+                    2
+                };
+                match butterpollo_windows::audio_route::Route::acquire(
+                    &config,
+                    &h.directory,
+                    launch.host_audio,
+                    channels,
+                ) {
+                    Ok(route) => {
+                        *launch.audio_preparation.lock().unwrap() =
+                            Some(Box::new(std::sync::Arc::new(route)))
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "audio route will be retried after stream negotiation")
+                    }
+                }
+            }
+        }
+        if role == Role::Stream && current.is_none() {
+            let mut process_args = args.clone();
+            process_args.insert("clientName".into(), launch.client.name.clone());
+            process_args.insert("clientUuid".into(), launch.client.uuid.clone());
+            match crate::process::launch(
+                &h,
+                app.as_ref().context("application not found")?,
+                &process_args,
+            ) {
                 Ok(running) => *current = Some(running),
                 Err(e) => {
                     h.sessions.lock().unwrap().pending.remove(&id);
                     return Err(e);
                 }
+            }
+        }
+        if role == Role::Stream {
+            *h.app_audio.lock().unwrap() = launch
+                .audio_preparation
+                .lock()
+                .unwrap()
+                .as_ref()
+                .and_then(|route| {
+                    route.downcast_ref::<std::sync::Arc<butterpollo_windows::audio_route::Route>>()
+                })
+                .cloned();
+            if let Some(lease) = launch
+                .preparation
+                .lock()
+                .unwrap()
+                .as_ref()
+                .and_then(|lease| {
+                    lease.downcast_ref::<std::sync::Arc<crate::display_session::Ready>>()
+                })
+                .cloned()
+            {
+                *h.app_display.lock().unwrap() = Some((lease, None));
             }
         }
         let host = match connection.local.ip() {
@@ -476,18 +834,39 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
             None,
         ),
         Err(e) => xml(
-            503,
+            e.downcast_ref::<LaunchFailure>()
+                .map_or(503, |failure| failure.0),
             &[(if resume { "resume" } else { "gamesession" }, "0".into())],
             Some(e.to_string()),
         ),
     }
 }
 async fn cancel(State(h): State<Shared>, Extension(connection): Extension<Connection>) -> Response {
-    if let Err(e) = authenticated(&h, &connection, 1 << 26) {
-        return xml(401, &[], Some(e.to_string()));
+    let client = match authenticated(&h, &connection, 1 << 26) {
+        Ok(client) => client,
+        Err(e) => return xml(401, &[], Some(e.to_string())),
+    };
+    let _transition = h.launch_transition.lock().unwrap();
+    if let Some(game) = remote_game(&h) {
+        let remote_active = !h.monitors.lock().unwrap().is_empty()
+            || h.sessions
+                .lock()
+                .unwrap()
+                .active
+                .values()
+                .any(|s| !s.stopping() && s.launch.role != Role::Stream);
+        if remote_active && game.owner != client.uuid {
+            return xml(
+                403,
+                &[("cancel", "0".into())],
+                Some("Only the game owner may cancel while remote sessions are active".into()),
+            );
+        }
+    } else {
+        return xml(200, &[("cancel", "1".into())], None);
     }
     h.sessions.lock().unwrap().stop_role(Role::Stream, None);
-    h.current_app.lock().unwrap().take();
+    h.stop_app();
     xml(200, &[("cancel", "1".into())], None)
 }
 async fn unpair(State(h): State<Shared>, Extension(connection): Extension<Connection>) -> Response {
@@ -514,6 +893,9 @@ async fn appasset(
         .get("appid")
         .and_then(|id| id.parse::<u32>().ok())
         .and_then(|id| {
+            let id = remote_game(&h)
+                .filter(|game| id == butterpollo_core::remote::running_game_id(game.app.id))
+                .map_or(id, |game| game.app.id);
             h.apps
                 .read()
                 .unwrap()
@@ -522,8 +904,26 @@ async fn appasset(
                 .cloned()
         });
     let assets = h.assets.parent().unwrap_or(&h.assets);
-    let path = app
-        .map(|a| butterpollo_core::catalog::artwork(&a, assets))
+    let control_art = args
+        .get("appid")
+        .and_then(|id| id.parse().ok())
+        .and_then(|id| butterpollo_core::remote::identify(id, ""))
+        .and_then(|control| match control {
+            butterpollo_core::remote::Control::Resume => Some("resume.png"),
+            butterpollo_core::remote::Control::DisconnectMonitor => {
+                Some("disconnect-remote-monitor.png")
+            }
+            butterpollo_core::remote::Control::DisconnectInput => {
+                Some("disconnect-remote-input.png")
+            }
+            butterpollo_core::remote::Control::Terminate => Some("terminate.png"),
+            butterpollo_core::remote::Control::Monitor => Some("remote-monitor.png"),
+            butterpollo_core::remote::Control::Input => Some("remote-input.png"),
+            _ => None,
+        });
+    let path = control_art
+        .map(|name| assets.join("remote-session").join(name))
+        .or_else(|| app.map(|a| butterpollo_core::catalog::artwork(&a, assets)))
         .unwrap_or_else(|| assets.join("box.png"));
     if !tokio::fs::metadata(&path)
         .await

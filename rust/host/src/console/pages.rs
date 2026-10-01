@@ -4,11 +4,8 @@ use serde_json::json;
 fn card(title: &str, content: &str) -> String {
     format!(
         "<section class=\"card\"><h2>{}</h2>{content}</section>",
-        esc(title)
+        i18n::message(title)
     )
-}
-fn json_panel(title: &str, value: &Value) -> String {
-    card(title, &format!("<pre>{}</pre>", pretty(value)))
 }
 fn rows<'a>(value: &'a Value, key: &str) -> &'a [Value] {
     value
@@ -70,6 +67,7 @@ pub(super) async fn render(
                 "/login",
                 &(field("username", "Username", "", "text")
                     + &field("password", "Password", "", "password")
+                    + "<label><input type=\"checkbox\" name=\"remember_me\" value=\"true\"> Remember this device</label>"
                     + "<button>Sign in</button>"),
             ),
         ),
@@ -80,11 +78,11 @@ pub(super) async fn render(
             let active = rows(&sessions, "sessions");
             let mut content = format!(
                 "<p class=\"intro\">Manage your library, pair devices, and tune your stream.</p><div class=\"metrics\"><section class=\"card\"><span>Host</span><strong>{}</strong><small>Version {}</small></section><section class=\"card\"><span>Active streams</span><strong>{}</strong><small>Connected right now</small></section><section class=\"card\"><span>Encoder</span><strong>{}</strong><small>Capture: {}</small></section></div>",
-                esc(text(&meta, "host_name")),
-                esc(text(&meta, "version")),
+                i18n::data(text(&meta, "host_name")),
+                i18n::data(text(&meta, "version")),
                 active.len(),
-                esc(text(&meta["encoder_status"], "state")),
-                esc(text(&meta["capture_status"], "configured_backend"))
+                i18n::data(text(&meta["encoder_status"], "state")),
+                i18n::data(text(&meta["capture_status"], "configured_backend"))
             );
             let mut badges = String::new();
             for (key, name) in [
@@ -128,7 +126,7 @@ pub(super) async fn render(
                 for session in active {
                     table += &format!(
                         "<tr><td>{}</td><td>{}×{} · {} fps{}</td><td>{}</td><td>{:.2} ms</td><td>{}</td></tr>",
-                        esc(text(session, "device_name")),
+                        i18n::data(text(session, "device_name")),
                         session["width"],
                         session["height"],
                         session["fps"],
@@ -160,16 +158,32 @@ pub(super) async fn render(
             for app in apps {
                 let uuid = text(app, "uuid");
                 content += &format!(
-                    "<section class=\"card app\"><h2>{}</h2><p>{}</p><div class=\"actions\"><a class=\"button secondary\" href=\"/library?edit={}\">Edit</a>{}{}</div></section>",
-                    esc(text(app, "name")),
+                    "<section class=\"card app\"><h2>{}</h2><p>{}</p><div class=\"actions\"><a class=\"button secondary\" href=\"/library?edit={}\">Edit</a>{}{}{}{}</div></section>",
+                    i18n::data(text(app, "name")),
                     if text(app, "cmd").is_empty() {
                         "Desktop streaming".into()
                     } else {
-                        esc(text(app, "cmd"))
+                        i18n::data(text(app, "cmd"))
                     },
                     encoded(uuid),
                     button("app-launch", csrf, "/library", "uuid", uuid, "Launch"),
-                    button("app-delete", csrf, "/library", "uuid", uuid, "Remove")
+                    button("app-delete", csrf, "/library", "uuid", uuid, "Remove"),
+                    form(
+                        "app-move",
+                        csrf,
+                        "/library",
+                        &(hidden("uuid", uuid)
+                            + &hidden("direction", "up")
+                            + "<button class=\"secondary\">Move up</button>")
+                    ),
+                    form(
+                        "app-move",
+                        csrf,
+                        "/library",
+                        &(hidden("uuid", uuid)
+                            + &hidden("direction", "down")
+                            + "<button class=\"secondary\">Move down</button>")
+                    )
                 );
             }
             content += "</div>";
@@ -179,6 +193,12 @@ pub(super) async fn render(
                 .cloned()
                 .unwrap_or(json!({"name":"","cmd":"","working-dir":""}));
             let mut advanced = edit.clone();
+            let mut settings = edit.clone();
+            for key in crate::stream::RTX_KEYS {
+                if let Some(value) = edit.get("config-overrides").and_then(|v| v.get(*key)) {
+                    settings[key.replace('_', "-")] = value.clone();
+                }
+            }
             for key in ["name", "cmd", "working-dir", "uuid"] {
                 advanced.as_object_mut().unwrap().remove(key);
             }
@@ -196,6 +216,7 @@ pub(super) async fn render(
                     text(&edit, "working-dir"),
                     "text",
                 )
+                + &super::settings::render("app_", super::settings::APP, &settings)
                 + &format!(
                     "<details><summary>Preparation commands and advanced options</summary>{}</details>",
                     area("advanced", "Application options (JSON)", &raw(&advanced))
@@ -209,6 +230,43 @@ pub(super) async fn render(
                 },
                 &form("app-save", csrf, "/library", &editor),
             );
+            if !text(&edit, "uuid").is_empty() {
+                let mut overrides = edit
+                    .get("config-overrides")
+                    .and_then(Value::as_object)
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter(|(key, _)| crate::stream::RTX_KEYS.contains(&key.as_str()))
+                            .map(|(key, value)| (key.clone(), value.clone()))
+                            .collect::<serde_json::Map<_, _>>()
+                    })
+                    .unwrap_or_default();
+                for &key in crate::stream::RTX_KEYS {
+                    if let Some(value) = edit
+                        .get(key.replace('_', "-"))
+                        .filter(|v| !v.is_null() && v.as_str() != Some(""))
+                    {
+                        overrides.entry(key).or_insert_with(|| value.clone());
+                    }
+                }
+                content += &card(
+                    "Live TrueHDR settings",
+                    &form(
+                        "app-live",
+                        csrf,
+                        "/library",
+                        &(hidden("uuid", text(&edit, "uuid"))
+                            + "<p>Apply brightness and colour settings to this running application without saving them. An empty object restores inherited settings.</p>"
+                            + &area(
+                                "overrides",
+                                "TrueHDR settings (JSON)",
+                                &raw(&Value::Object(overrides)),
+                            )
+                            + "<button>Apply to running application</button>"),
+                    ),
+                );
+            }
             content
                 + &button(
                     "app-close",
@@ -276,6 +334,7 @@ pub(super) async fn render(
                     );
                 }
                 editor += "</div></fieldset>";
+                editor += &super::settings::render("client_", super::settings::CLIENT, client);
                 let mut advanced = client.clone();
                 for key in ["name", "uuid", "perm", "enabled", "connected"] {
                     advanced.as_object_mut().unwrap().remove(key);
@@ -359,7 +418,7 @@ pub(super) async fn render(
             ) + &select(
                 "virtual_display_mode",
                 "Virtual display",
-                &value("virtual_display_mode", "disabled"),
+                &value("virtual_display_mode", "per_client"),
                 &[
                     ("disabled", "Disabled"),
                     ("per_client", "One per client"),
@@ -392,6 +451,7 @@ pub(super) async fn render(
                     csrf,
                     "/settings",
                     &(editor
+                        + &super::settings::render("cfg_", super::settings::GLOBAL, &config)
                         + &format!(
                             "<details><summary>All other settings</summary>{}</details><button>Save settings</button>",
                             area(
@@ -431,7 +491,7 @@ pub(super) async fn render(
                 "Host log",
                 &format!(
                     "<div class=\"actions\"><a class=\"button secondary\" href=\"/logs\">Reload</a><a class=\"button secondary\" href=\"/api/logs/export\">Download log</a><a class=\"button secondary\" href=\"/api/logs/export_crash\">Download support bundle</a></div><pre class=\"log\">{}</pre><small>Showing the most recent 256 KiB.</small>",
-                    esc(&logs)
+                    i18n::data(&logs)
                 ),
             )
         }
@@ -459,8 +519,8 @@ pub(super) async fn render(
                     "External frame limiter",
                     &format!(
                         "<p>{}</p><dl><div><dt>Configured provider</dt><dd>{}</dd></div><div><dt>RTSS</dt><dd>{}</dd></div></dl>",
-                        esc(text(&limiter, "message")),
-                        esc(text(&limiter, "configured_provider")),
+                        i18n::data(text(&limiter, "message")),
+                        i18n::data(text(&limiter, "configured_provider")),
                         if limiter["rtss_available"] == true {
                             "Detected"
                         } else {
@@ -478,8 +538,8 @@ pub(super) async fn render(
             for token in rows(&tokens, "tokens") {
                 list += &format!(
                     "<div class=\"token-row\"><div><strong>{}</strong><small>Created: {}</small><pre>{}</pre></div>{}</div>",
-                    esc(text(token, "username")),
-                    esc(&token["created_at"].to_string()),
+                    i18n::data(text(token, "username")),
+                    i18n::data(&token["created_at"].to_string()),
                     pretty(&token["scopes"]),
                     button(
                         "token-delete",
@@ -500,13 +560,13 @@ pub(super) async fn render(
             for session in rows(&sessions, "sessions") {
                 list += &format!(
                     "<div class=\"token-row\"><div><strong>{}{}</strong><small>Created: {}</small></div>{}</div>",
-                    esc(text(session, "username")),
+                    i18n::data(text(session, "username")),
                     if session["current"] == true {
                         " · This session"
                     } else {
                         ""
                     },
-                    esc(&session["created_at"].to_string()),
+                    i18n::data(&session["created_at"].to_string()),
                     button(
                         "session-revoke",
                         csrf,
@@ -584,7 +644,18 @@ pub(super) async fn render(
                     "Check for updates",
                 ) + &format!("<pre>{}</pre>", pretty(&updates))),
             );
-            content += &json_panel("Crash reports", &crash);
+            let mut crash_content = format!("<pre>{}</pre>", pretty(&crash));
+            if crash["available"] == true && crash["dismissed"] != true {
+                let fields = hidden("filename", crash["filename"].as_str().unwrap_or(""))
+                    + &hidden("captured_at", crash["captured_at"].as_str().unwrap_or(""));
+                crash_content += &form(
+                    "crash-dismiss",
+                    csrf,
+                    "/maintenance",
+                    &(fields + "<button type=\"submit\">Dismiss this report</button>"),
+                );
+            }
+            content += &card("Crash reports", &crash_content);
             content
                 + &card(
                     "Support",

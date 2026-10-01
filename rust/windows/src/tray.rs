@@ -20,6 +20,7 @@ struct State {
     sender: mpsc::Sender<Action>,
     icon: NOTIFYICONDATAW,
     taskbar: u32,
+    hide_controls: bool,
 }
 unsafe extern "system" fn window(
     hwnd: HWND,
@@ -46,10 +47,12 @@ unsafe extern "system" fn window(
                     WM_RBUTTONUP | WM_CONTEXTMENU => {
                         if let Ok(menu) = CreatePopupMenu() {
                             let _ = AppendMenuW(menu, MF_STRING, 1, w!("Open Butterpollo"));
-                            let _ = AppendMenuW(menu, MF_STRING, 2, w!("Disconnect clients"));
-                            let _ = AppendMenuW(menu, MF_STRING, 3, w!("Restart"));
-                            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-                            let _ = AppendMenuW(menu, MF_STRING, 4, w!("Quit"));
+                            if !s.hide_controls {
+                                let _ = AppendMenuW(menu, MF_STRING, 2, w!("Disconnect clients"));
+                                let _ = AppendMenuW(menu, MF_STRING, 3, w!("Restart"));
+                                let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+                                let _ = AppendMenuW(menu, MF_STRING, 4, w!("Quit"));
+                            }
                             let mut point = POINT::default();
                             let _ = GetCursorPos(&mut point);
                             let _ = SetForegroundWindow(hwnd);
@@ -91,6 +94,13 @@ pub struct Tray {
 }
 impl Tray {
     pub fn new(icon: PathBuf, port: u16) -> Result<(Self, mpsc::Receiver<Action>)> {
+        Self::new_options(icon, port, false)
+    }
+    pub fn new_options(
+        icon: PathBuf,
+        port: u16,
+        hide_controls: bool,
+    ) -> Result<(Self, mpsc::Receiver<Action>)> {
         let (sender, receiver) = mpsc::channel();
         let (ready, started) = mpsc::sync_channel(1);
         let worker = thread::Builder::new().name("tray".into()).spawn(move || {
@@ -136,6 +146,7 @@ impl Tray {
                             ..Default::default()
                         },
                         taskbar: RegisterWindowMessageW(w!("TaskbarCreated")),
+                        hide_controls,
                     });
                     let tip: Vec<u16> = format!("Butterpollo Rust — web port {port}")
                         .encode_utf16()

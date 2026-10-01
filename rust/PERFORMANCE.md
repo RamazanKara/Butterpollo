@@ -26,13 +26,13 @@ The independent C fixture uses Moonlight-common-c for encrypted RTSP, control an
 
 | Output and requested rate | Decoder threads | Host steady fps | Decoded fps | Completed encode mean / p95 |
 | --- | ---: | ---: | ---: | ---: |
-| H.264 SDR 1080p/120 | 4 | 120.01 | 118.68 | 2.30 / 2.80 ms |
+| H.264 SDR 1080p/120 | 4 | 120.01 | 118.11 | 2.29 / 2.60 ms |
 | HEVC HDR 1080p/120 | 1 | 120.03 | 118.70 | 2.27 / 2.60 ms |
 | HEVC HDR 4K/120 | 1 | 119.89 | 105.47 | 6.22 / 6.50 ms |
-| HEVC HDR 4K/120 | 4 | 120.02 | 118.66 | 6.27 / 7.10 ms |
-| AV1 HDR 4K/120 | 4 | 119.96 | 118.72 | 5.21 / 5.60 ms |
+| HEVC HDR 4K/120 | 4 | 120.02 | 117.98 | 6.33 / 6.70 ms |
+| AV1 HDR 4K/120 | 4 | 120.04 | 117.96 | 5.43 / 5.80 ms |
 
-All five runs reported zero codec/Opus decoding errors. The single-threaded 4K decoder took 9.33 ms per submitted packet, exceeding the 8.33 ms frame budget; its receive queue eventually dropped packets and requested keyframes. With four decoder threads, the HEVC 4K/120 run received 2383 complete frames and decoded 2380 in 20.057 seconds, with no reported network drops; three frames remained buffered in the decoder. The aligned AV1 4K/120 run received 2384 complete frames and decoded 2382 in 20.064 seconds, also with no reported drops. Completed encode latency covers conversion/submission until the host observes encoded output, including asynchronous work. It excludes capture age, FEC/packetization, networking, decoding and display scanout.
+All five runs reported zero codec/Opus decoding errors. The single-threaded 4K decoder took 9.33 ms per submitted packet, exceeding the 8.33 ms frame budget; its receive queue eventually dropped packets and requested keyframes. The three latest four-thread runs enable `wgc_slot_aligned_publish=true` and `amd_ltr_frames=4`. HEVC 4K/120 received 2371 complete frames and decoded 2368 in 20.072 seconds; three frames remained buffered in the decoder. AV1 4K/120 received 2514 complete frames and decoded 2512 in 21.295 seconds. These client totals include startup/teardown, while host steady rates use counter deltas. Completed encode latency covers conversion/submission until the host observes encoded output, including asynchronous work. It excludes capture age, FEC/packetization, networking, decoding and display scanout.
 
 ## CPU fallback conversion
 
@@ -49,6 +49,10 @@ These timings cover RGB HDR conversion/scaling only, not GPU upload or encoding.
 ## Color and ownership checks
 
 The Rust GPU converter keeps absolute luminance through 10,000 nits. A separate HEVC decode of grayscale patches at 0/80/1000/10000 nits returned limited-range P010 luma codes 64/490/723/940 and neutral chroma 512/512. Hardware tests compare primaries and grayscale against a CPU reference within two ten-bit codes, check a linear-light resize and verify that frames retained by the codec are not overwritten when the bounded pool is reused. The abandoned vendor conversion path clipped the 10,000-nit patch; that path is not used.
+
+Native Winsock checks delivered eight separate datagrams in two send calls on both IPv4 and IPv6, then verified the ordinary-send fallback and a short trailing datagram. This validates segmentation boundaries and the reduced call count; it does not establish a network throughput speedup. Video batches respect the previous 16/32/64 KiB setting, a 64-packet/65,507-byte ceiling and a two-millisecond wire budget.
+
+Independent strict FFmpeg loss fixtures encode 64 frames, omit frames 5–8 and 17–20, and decode all 56 retained frames for H.264, HEVC and AV1. HEVC/AV1 use two LTR recoveries; H.264 uses one LTR recovery and an IDR fallback at its reference-counter wrap. Actual Opus round trips cover 21 stereo/5.1/7.1/custom-layout, quality and packet-duration combinations, preserve every channel and stay inside the transport packet budget. These checks establish recovery/audio correctness, not an end-to-end latency improvement.
 
 ## Reproduce on another machine
 
@@ -76,6 +80,6 @@ The positional arguments after the artifact directory are codec, width, height, 
 
 ## Limits
 
-This machine validates AMD AMF. NVENC, QSV, PyroWave and TrueHDR still use a CPU readback compatibility path. These measurements do not establish their performance, network streaming outside loopback, multiple concurrent 4K sessions, dynamic game content, native 4K capture or end-to-end input/display latency. The GPU texture pools and encoder queue are bounded to eight retained frames; capacity runs may intentionally keep those queues occupied.
+This machine validates AMD AMF. NVENC and QSV 4:2:0 now have native D3D11 imports; TrueHDR has a shared-device GPU path. Their execution/performance needs NVIDIA/Intel hardware. Unsupported native formats, PyroWave and software encoding use CPU compatibility paths. These measurements do not establish network streaming outside loopback, multiple concurrent 4K sessions, dynamic game content, native 4K capture or end-to-end input/display latency. The GPU texture pools and encoder queue are bounded to eight retained frames; capacity runs may intentionally keep those queues occupied. [PARITY.md](PARITY.md) separates implemented features from native validation.
 
 A trustworthy C++ A/B performance comparison remains outstanding. The available local C++ executable was an older `butter.2` build, and its startup performed global virtual-display recovery despite the isolated configuration. It was stopped before streaming tests. No comparative C++ speedup is claimed. Original C++ measurements in the parent README remain reference data for that implementation.

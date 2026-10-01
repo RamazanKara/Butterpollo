@@ -12,15 +12,16 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    net::TcpStream,
 };
 
 pub async fn serve(address: SocketAddr, h: Shared, media: Arc<crate::stream::Media>) -> Result<()> {
-    let listener = TcpListener::bind(address).await?;
+    let listener = crate::network::tcp(address)?;
     let configurations = Arc::new(Mutex::new(HashMap::new()));
     tracing::info!(%address,"RTSP listener ready");
     loop {
         let (socket, peer) = listener.accept().await?;
+        let peer = SocketAddr::new(peer.ip().to_canonical(), peer.port());
         let h = h.clone();
         let media = media.clone();
         let configs = configurations.clone();
@@ -125,14 +126,36 @@ async fn connection(
             )),
             "DESCRIBE" => {
                 let flags = h.codecs.load(std::sync::atomic::Ordering::Acquire);
+                let config = crate::stream::effective_config(&h, &launch)?;
+                let encryption_mode = crate::network::encryption_mode(&config, peer.ip());
                 body = rtsp::describe(
-                    0,
-                    1,
+                    butterpollo_windows::input::capabilities(&config),
+                    if encryption_mode == 2 { 7 } else { 1 },
                     flags & 0x100 != 0,
                     flags & 0x10000 != 0,
                     flags & 0x800000 != 0,
                 )
                 .into_bytes();
+                if flags & 0x40000000 != 0
+                    && config.integer("amd_ltr_frames", 0) > 0
+                    && matches!(config.get("encoder", "auto"), "amf" | "auto" | "")
+                {
+                    body.extend_from_slice(b"a=x-nv-video[0].refPicInvalidation:1\r\n");
+                }
+                if encryption_mode == 0 {
+                    body = String::from_utf8(body)?
+                        .replace("encryptionSupported:7", "encryptionSupported:5")
+                        .into_bytes();
+                }
+                if let Some(custom) = launch.options.get("surroundParams")
+                    && butterpollo_core::audio::OpusLayout::valid_custom(custom)
+                {
+                    let at = body
+                        .windows(9)
+                        .position(|b| b == b"a=fmtp:97")
+                        .unwrap_or(body.len());
+                    body.splice(at..at, format!("a=fmtp:97 surround-params={custom}\r\na=fmtp:97 surround-params={custom}\r\n").bytes());
+                }
                 headers.push(("Content-Type", "application/sdp".into()));
             }
             "SETUP" => {
@@ -154,9 +177,24 @@ async fn connection(
                 }
             }
             "ANNOUNCE" => {
-                let negotiated = Negotiated::from_sdp(&req.body)?;
+                let mut negotiated = Negotiated::from_sdp(&req.body)?;
+                if negotiated.audio_channels == 2
+                    && let Some(host) = req.headers.get("host")
+                {
+                    negotiated.audio_quality = !host.contains("0.0.0.0");
+                }
+                let config = crate::stream::effective_config(&h, &launch)?;
+                let required_encryption = crate::network::encryption_mode(&config, peer.ip()) == 2;
+                butterpollo_core::stream_policy::apply(
+                    &mut negotiated,
+                    launch.requested_rate,
+                    &config,
+                );
+                butterpollo_core::stream_policy::apply_color(&mut negotiated, &config);
+                negotiated.validate()?;
+                negotiated.vrr_low_latency |= launch.vrr_requested;
                 let flags = h.codecs.load(std::sync::atomic::Ordering::Acquire);
-                let bit = match (negotiated.codec, negotiated.hdr) {
+                let bit = match (negotiated.codec, negotiated.ten_bit()) {
                     (0, false) => 1,
                     (1, false) => 0x100,
                     (1, true) => 0x200,
@@ -165,7 +203,10 @@ async fn connection(
                     (3, _) => 0x800000,
                     _ => 0,
                 };
-                if (negotiated.hdr && negotiated.codec == 0) || flags & bit == 0 {
+                if required_encryption && negotiated.encryption & 6 != 6 {
+                    code = 403;
+                    reason = "Required audio and video encryption was not negotiated";
+                } else if (negotiated.ten_bit() && negotiated.codec == 0) || flags & bit == 0 {
                     code = 406;
                     reason = "Requested codec is unavailable";
                 } else {

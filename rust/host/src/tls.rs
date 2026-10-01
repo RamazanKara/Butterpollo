@@ -6,7 +6,6 @@ use hyper_util::{
     service::TowerToHyperService,
 };
 use std::{net::SocketAddr, sync::Arc};
-use tokio::net::TcpListener;
 use tokio_rustls::{
     TlsAcceptor,
     rustls::{
@@ -103,12 +102,14 @@ pub async fn serve(
     router: Router,
     acceptor: Option<TlsAcceptor>,
 ) -> Result<()> {
-    let listener = TcpListener::bind(address).await?;
+    let listener = crate::network::tcp(address)?;
     tracing::info!(%address,tls=acceptor.is_some(),"HTTP listener ready");
     loop {
         let (socket, peer) = listener.accept().await?;
+        let peer = SocketAddr::new(peer.ip().to_canonical(), peer.port());
         socket.set_nodelay(true)?;
         let local = socket.local_addr()?;
+        let local = SocketAddr::new(local.ip().to_canonical(), local.port());
         let router = router.clone();
         let acceptor = acceptor.clone();
         tokio::spawn(async move {

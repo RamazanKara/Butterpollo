@@ -17,7 +17,7 @@ use windows::{
         Security::*,
         System::{Environment::*, JobObjects::*, RemoteDesktop::*, Threading::*},
     },
-    core::{PCWSTR, PWSTR},
+    core::{BOOL, PCWSTR, PWSTR},
 };
 fn owned(handle: HANDLE) -> OwnedHandle {
     unsafe { OwnedHandle::from_raw_handle(handle.0) }
@@ -474,6 +474,29 @@ impl Process {
             Ok(info.ActiveProcesses)
         }
     }
+    pub fn process_ids(&self) -> Result<Vec<u32>> {
+        let mut words = vec![0usize; 4098];
+        let list = words.as_mut_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>();
+        unsafe {
+            QueryInformationJobObject(
+                Some(raw(&self.job)),
+                JobObjectBasicProcessIdList,
+                list.cast(),
+                (words.len() * size_of::<usize>()) as u32,
+                None,
+            )?;
+            let count = (*list).NumberOfProcessIdsInList as usize;
+            if count > 4096 {
+                bail!("application process group exceeds its limit");
+            }
+            Ok(
+                std::slice::from_raw_parts((*list).ProcessIdList.as_ptr(), count)
+                    .iter()
+                    .filter_map(|id| u32::try_from(*id).ok())
+                    .collect(),
+            )
+        }
+    }
     pub fn wait(&self, timeout: Duration) -> Result<u32> {
         unsafe {
             if WaitForSingleObject(
@@ -492,6 +515,60 @@ impl Process {
         }
         self.wait(Duration::from_secs(10))?;
         Ok(())
+    }
+    pub fn stop_graceful(&self, timeout: Duration) -> Result<()> {
+        use windows::Win32::UI::WindowsAndMessaging::*;
+        struct Closing {
+            ids: std::collections::BTreeSet<u32>,
+            sent: bool,
+        }
+        unsafe extern "system" fn close_window(window: HWND, data: LPARAM) -> BOOL {
+            unsafe {
+                let closing = &mut *(data.0 as *mut Closing);
+                let mut pid = 0;
+                GetWindowThreadProcessId(window, Some(&mut pid));
+                if closing.ids.contains(&pid)
+                    && PostMessageW(Some(window), WM_CLOSE, WPARAM(0), LPARAM(0)).is_ok()
+                {
+                    closing.sent = true;
+                }
+                BOOL(1)
+            }
+        }
+        if timeout.is_zero() || self.active_processes()? == 0 {
+            return self.stop();
+        }
+        let mut words = vec![0usize; 4098];
+        let list = words.as_mut_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>();
+        unsafe {
+            QueryInformationJobObject(
+                Some(raw(&self.job)),
+                JobObjectBasicProcessIdList,
+                list.cast(),
+                (words.len() * size_of::<usize>()) as u32,
+                None,
+            )?;
+            let count = (*list).NumberOfProcessIdsInList as usize;
+            if count > 4096 {
+                bail!("application process group exceeds its limit");
+            }
+            let ids = std::slice::from_raw_parts((*list).ProcessIdList.as_ptr(), count)
+                .iter()
+                .filter_map(|id| u32::try_from(*id).ok())
+                .collect();
+            let mut closing = Closing { ids, sent: false };
+            EnumWindows(
+                Some(close_window),
+                LPARAM((&mut closing as *mut Closing) as isize),
+            )?;
+            if closing.sent {
+                let deadline = std::time::Instant::now() + timeout;
+                while self.active_processes()? != 0 && std::time::Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+        }
+        self.stop()
     }
     pub fn shutdown_host(&self) -> Result<()> {
         let name: Vec<u16> = format!("Local\\Butterpollo.Stop.{}\0", self.pid)

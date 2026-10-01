@@ -1,5 +1,7 @@
 mod console;
+mod display_session;
 mod maintenance;
+mod network;
 mod nvhttp;
 mod process;
 mod remote_display;
@@ -8,6 +10,7 @@ mod state;
 mod stream;
 mod tls;
 mod web;
+mod web_sessions;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -27,8 +30,8 @@ struct Args {
     assets: Option<PathBuf>,
     #[arg(long)]
     port: Option<u16>,
-    #[arg(long, default_value = "127.0.0.1")]
-    bind: IpAddr,
+    #[arg(long)]
+    bind: Option<IpAddr>,
     #[arg(long)]
     diagnostics: bool,
     #[arg(long)]
@@ -50,12 +53,17 @@ struct Args {
     #[arg(long, hide = true)]
     display_watch: Option<u32>,
     #[arg(long, hide = true)]
+    rtss_worker: Option<PathBuf>,
+    #[arg(long, hide = true)]
     open_web: Option<u16>,
 }
 #[tokio::main]
 async fn main() -> Result<()> {
     butterpollo_windows::capture::enable_dpi_awareness();
     let args = Args::parse();
+    if let Some(path) = &args.rtss_worker {
+        return butterpollo_windows::rtss::worker(path);
+    }
     if let Some(port) = args.open_web {
         return butterpollo_windows::tray::open_web(port);
     }
@@ -107,13 +115,23 @@ async fn main() -> Result<()> {
     let h = state::Host::load(directory, assets, args.port)?;
     butterpollo_windows::crash::initialize(&h.directory)?;
     butterpollo_windows::display_recovery::initialize(&h.directory)?;
-    let appender = tracing_appender::rolling::never(h.directory.join("logs"), "butterpollo.log");
+    let log_path = h
+        .config
+        .read()
+        .unwrap()
+        .path("log_path", &h.directory, "logs/butterpollo.log");
+    std::fs::create_dir_all(log_path.parent().context("log directory missing")?)?;
+    let appender = tracing_appender::rolling::never(
+        log_path.parent().unwrap(),
+        log_path.file_name().context("log filename missing")?,
+    );
+    let log_level = h.config.read().unwrap().log_level();
     let (writer, _log_guard) = tracing_appender::non_blocking(appender);
     use tracing_subscriber::prelude::*;
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "butterpollo=info".into()),
+                .unwrap_or_else(|_| log_level.into()),
         )
         .with(
             tracing_subscriber::fmt::layer()
@@ -123,12 +141,27 @@ async fn main() -> Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
     let ports = h.config.read().unwrap().ports()?;
+    if let Err(error) = butterpollo_windows::vulkan::reconcile(
+        h.config.read().unwrap().boolean("vulkan_hdr_layer", true),
+    ) {
+        tracing::warn!(%error, "Vulkan HDR registration could not be reconciled");
+    }
+    let bind = network::bind_address(&h.config.read().unwrap(), args.bind)?;
+    let discovery = match network::Discovery::start(&h.config.read().unwrap(), bind) {
+        Ok(discovery) => discovery,
+        Err(error) => {
+            tracing::warn!(%error, "Moonlight discovery unavailable");
+            None
+        }
+    };
+    let port_forward = network::port_forward(h.clone(), bind);
     if let Err(error) = butterpollo_windows::display::configure_permanent(&h.config.read().unwrap())
     {
         tracing::warn!(%error, "configured permanent virtual displays could not be applied");
     }
     let stop_signal = butterpollo_windows::process::StopSignal::new()?;
-    let (tray, actions) = if args.no_tray {
+    let (tray, actions) = if args.no_tray || !h.config.read().unwrap().boolean("system_tray", true)
+    {
         (None, None)
     } else {
         let icon = h.assets.parent().unwrap_or(&h.assets).join("apollo.ico");
@@ -137,7 +170,14 @@ async fn main() -> Result<()> {
         } else {
             h.assets.join("images/apollo.ico")
         };
-        match butterpollo_windows::tray::Tray::new(icon, ports.web) {
+        match butterpollo_windows::tray::Tray::new_options(
+            icon,
+            ports.web,
+            h.config
+                .read()
+                .unwrap()
+                .boolean("hide_tray_controls", false),
+        ) {
             Ok((tray, events)) => (Some(tray), Some(events)),
             Err(e) => {
                 tracing::warn!(error=%e,"tray unavailable");
@@ -145,7 +185,7 @@ async fn main() -> Result<()> {
             }
         }
     };
-    let media = stream::Media::new(h.clone(), args.bind)?;
+    let media = stream::Media::new(h.clone(), bind)?;
     h.probe_codecs();
     let mut tasks = tokio::task::JoinSet::new();
     for (port, https, web) in [
@@ -163,11 +203,11 @@ async fn main() -> Result<()> {
         } else {
             None
         };
-        let address = (args.bind, port).into();
+        let address = (bind, port).into();
         tasks.spawn(tls::serve(address, router, acceptor));
     }
     tasks.spawn(rtsp_server::serve(
-        (args.bind, ports.rtsp).into(),
+        (bind, ports.rtsp).into(),
         h.clone(),
         media,
     ));
@@ -187,12 +227,21 @@ async fn main() -> Result<()> {
             }
         },
         _=async move{
+            let mut update_at = Instant::now();
             while !stop.stop.load(Ordering::Acquire) {
+                stop.sessions.lock().unwrap().expire();
+                stop.reap_paused_display();
+                if Instant::now() >= update_at {
+                    let interval = stop.config.read().unwrap().integer("update_check_interval",86400);
+                    if interval > 0 { maintenance::trigger_update(&stop); }
+                    update_at = Instant::now() + Duration::from_secs(if interval > 0 { interval as u64 } else { 60 });
+                }
                 if stop_signal.requested(){stop.stop.store(true,Ordering::Release);}
-                let finished={let mut app=stop.current_app.lock().unwrap();app.as_mut().is_some_and(|app|match app.exited(){Ok(finished)=>finished,Err(error)=>{tracing::warn!(%error,"application exit check failed");false}})};
+                let connected=stop.sessions.lock().unwrap().active.values().any(|session|session.launch.role==butterpollo_core::session::Role::Stream && !session.stopping());
+                let finished={let mut app=stop.current_app.lock().unwrap();app.as_mut().is_some_and(|app|app.connection_state(connected) || match app.exited(){Ok(finished)=>finished,Err(error)=>{tracing::warn!(%error,"application exit check failed");false}})};
                 if finished {
                     stop.sessions.lock().unwrap().stop_role(butterpollo_core::session::Role::Stream,None);
-                    stop.current_app.lock().unwrap().take();
+                    stop.stop_app();
                 }
                 if let Some(actions)=&actions {while let Ok(action)=actions.try_recv(){
                     use butterpollo_windows::tray::Action;
@@ -215,8 +264,16 @@ async fn main() -> Result<()> {
     }
     tasks.abort_all();
     while tasks.join_next().await.is_some() {}
-    h.current_app.lock().unwrap().take();
+    h.stop_app();
     remote_display::disconnect(&h, None);
+    drop(discovery);
+    if let Some(mut task) = port_forward
+        && tokio::time::timeout(Duration::from_secs(10), &mut task)
+            .await
+            .is_err()
+    {
+        task.abort();
+    }
     drop(tray);
     if h.restart.load(Ordering::Acquire) {
         if butterpollo_windows::process::is_system() {

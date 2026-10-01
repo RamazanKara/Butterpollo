@@ -6,22 +6,54 @@ use butterpollo_core::{
     packet::{AudioPacketizer, VideoPacketizer},
     session::{Role, Session},
 };
-
-fn client_config(h: &Shared, s: &Session) -> Result<Config> {
-    let mut config = h.config.read().unwrap().clone();
-    if let Some(overrides) = h
-        .apps
-        .read()
-        .unwrap()
-        .iter()
-        .find(|a| a.id() == s.launch.app_id)
-        .and_then(|app| app.extra.get("config-overrides"))
-        .and_then(serde_json::Value::as_object)
-    {
-        apply_overrides(&mut config, overrides)?;
+pub(crate) const RTX_KEYS: &[&str] = &[
+    "rtx_hdr",
+    "rtx_hdr_sdr_brightness",
+    "rtx_hdr_contrast",
+    "rtx_hdr_saturation",
+    "rtx_hdr_middle_gray",
+    "rtx_hdr_peak_brightness",
+];
+fn rtx_parameters(config: &Config) -> [u32; 4] {
+    let peak = config
+        .integer("rtx_hdr_peak_brightness", 1000)
+        .clamp(400, 2000) as u32;
+    let scale = (peak as f32 / 1000.).max(1.);
+    [
+        (config.integer("rtx_hdr_contrast", 0) + 100).clamp(0, 200) as u32,
+        (config.integer("rtx_hdr_saturation", 0) + 100).clamp(0, 200) as u32,
+        (config.integer("rtx_hdr_middle_gray", 50).clamp(10, 100) as f32 / scale)
+            .round()
+            .clamp(10., 100.) as u32,
+        peak.min(1000),
+    ]
+}
+fn rtx_enabled(config: &Config) -> bool {
+    config.boolean("rtx_hdr", false)
+        && config.boolean(&butterpollo_core::rtx_policy::marker("rtx_hdr"), false)
+}
+fn truehdr_filter(
+    image: &GpuImage,
+    config: &Config,
+) -> Option<butterpollo_windows::truehdr::Filter> {
+    if image.pixel != butterpollo_windows::capture::Pixel::Bgra8 {
+        return None;
     }
-    if let Some(overrides) = s
-        .launch
+    match butterpollo_windows::truehdr::Filter::new_gpu(image, rtx_parameters(config)) {
+        Ok(filter) => Some(filter),
+        Err(error) => {
+            tracing::warn!(%error, "TrueHDR unavailable; using neutral SDR-to-PQ conversion");
+            None
+        }
+    }
+}
+
+pub(crate) fn effective_config(
+    h: &Shared,
+    launch: &butterpollo_core::session::Launch,
+) -> Result<Config> {
+    let mut config = h.config.read().unwrap().clone();
+    if let Some(overrides) = launch
         .client
         .extra
         .get("config_overrides")
@@ -29,18 +61,159 @@ fn client_config(h: &Shared, s: &Session) -> Result<Config> {
     {
         apply_overrides(&mut config, overrides)?;
     }
+    if let Some(value) = launch
+        .client
+        .extra
+        .get("prefer_10bit_sdr")
+        .filter(|v| !v.is_null() && v.as_str() != Some(""))
+    {
+        config.values.insert(
+            "prefer_sdr_10bit".into(),
+            value
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| value.to_string()),
+        );
+    }
+    let inherited = config.clone();
+    let app_uuid = h
+        .apps
+        .read()
+        .unwrap()
+        .iter()
+        .find(|app| app.id() == launch.app_id || app.aliases.contains(&launch.app_id))
+        .and_then(|app| app.extra.get("uuid"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    if let Some(app) = h
+        .apps
+        .read()
+        .unwrap()
+        .iter()
+        .find(|a| a.id() == launch.app_id || a.aliases.contains(&launch.app_id))
+    {
+        for (source, target) in [
+            ("gamepad", "gamepad"),
+            ("dd-configuration-option", "dd_configuration_option"),
+            ("prefer-10bit-sdr", "prefer_sdr_10bit"),
+            ("rtx-hdr", "rtx_hdr"),
+            ("rtx-hdr-sdr-brightness", "rtx_hdr_sdr_brightness"),
+            ("rtx-hdr-contrast", "rtx_hdr_contrast"),
+            ("rtx-hdr-saturation", "rtx_hdr_saturation"),
+            ("rtx-hdr-middle-gray", "rtx_hdr_middle_gray"),
+            ("rtx-hdr-peak-brightness", "rtx_hdr_peak_brightness"),
+        ] {
+            if let Some(value) = app
+                .extra
+                .get(source)
+                .filter(|value| !value.is_null() && value.as_str() != Some(""))
+            {
+                config.values.insert(
+                    target.into(),
+                    value
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| value.to_string()),
+                );
+                if RTX_KEYS.contains(&target) {
+                    config
+                        .values
+                        .insert(butterpollo_core::rtx_policy::marker(target), "true".into());
+                }
+            }
+        }
+    }
+    if let Some(overrides) = h
+        .apps
+        .read()
+        .unwrap()
+        .iter()
+        .find(|a| a.id() == launch.app_id || a.aliases.contains(&launch.app_id))
+        .and_then(|app| app.extra.get("config-overrides"))
+        .and_then(serde_json::Value::as_object)
+    {
+        apply_overrides(&mut config, overrides)?;
+    }
+    if let Some((uuid, values)) = h.live_rtx.lock().unwrap().as_ref()
+        && Some(uuid) == app_uuid.as_ref()
+    {
+        for &key in RTX_KEYS {
+            match inherited.values.get(key) {
+                Some(value) => {
+                    config.values.insert(key.into(), value.clone());
+                }
+                None => {
+                    config.values.remove(key);
+                }
+            }
+            let marker = butterpollo_core::rtx_policy::marker(key);
+            if let Some(value) = inherited.values.get(&marker) {
+                config.values.insert(marker, value.clone());
+            } else {
+                config.values.remove(&marker);
+            }
+        }
+        apply_overrides(&mut config, values)?;
+    }
+    if !config.boolean(
+        &butterpollo_core::rtx_policy::marker("rtx_hdr_peak_brightness"),
+        false,
+    ) && let Some(selection) = launch
+        .client
+        .extra
+        .get("hdr_profile")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        match butterpollo_windows::hdr_profile::peak_luminance(selection) {
+            Ok(Some(peak)) => {
+                config.values.insert(
+                    "rtx_hdr_peak_brightness".into(),
+                    peak.clamp(400, 2000).to_string(),
+                );
+                config.values.insert(
+                    butterpollo_core::rtx_policy::marker("rtx_hdr_peak_brightness"),
+                    "true".into(),
+                );
+            }
+            Ok(None) => tracing::debug!(%selection, "HDR calibration has no MHC2 peak"),
+            Err(error) => tracing::debug!(%error, %selection, "HDR calibration peak unavailable"),
+        }
+    }
+    if let Some(value) = launch.options.get("virtualDisplay") {
+        config.values.insert(
+            "virtual_display_mode".into(),
+            if value == "0" {
+                "disabled"
+            } else {
+                "per_client"
+            }
+            .into(),
+        );
+    }
     Ok(config)
 }
 fn apply_overrides(
     config: &mut Config,
     overrides: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<()> {
-    let overrides = overrides
+    let overrides: serde_json::Map<String, serde_json::Value> = overrides
         .iter()
         .filter(|(_, v)| v.as_str() != Some(""))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    config.update(&overrides)
+    config.update(&overrides)?;
+    for (key, value) in overrides {
+        if RTX_KEYS.contains(&key.as_str()) {
+            let marker = butterpollo_core::rtx_policy::marker(&key);
+            if value.is_null() {
+                config.values.remove(&marker);
+            } else {
+                config.values.insert(marker, "true".into());
+            }
+        }
+    }
+    Ok(())
 }
 use butterpollo_windows::{
     audio::{Loopback, Opus},
@@ -67,6 +240,7 @@ struct Latest {
 }
 struct Source {
     latest: Arc<Latest>,
+    grid: Arc<Mutex<butterpollo_windows::capture::ClaimGrid>>,
     stop: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
 }
@@ -95,8 +269,8 @@ pub struct Media {
 impl Media {
     pub fn new(h: Shared, bind: IpAddr) -> Result<Arc<Self>> {
         let ports = h.config.read().unwrap().ports()?;
-        let video = UdpSocket::bind((bind, ports.video))?;
-        let audio = UdpSocket::bind((bind, ports.audio))?;
+        let video = crate::network::udp((bind, ports.video).into())?;
+        let audio = crate::network::udp((bind, ports.audio).into())?;
         butterpollo_windows::net::configure_udp(&video)?;
         butterpollo_windows::net::configure_udp(&audio)?;
         video.set_nonblocking(true)?;
@@ -126,7 +300,7 @@ impl Media {
                             Ok((n, peer)) => {
                                 let sessions = h.sessions.lock().unwrap();
                                 for s in sessions.active.values() {
-                                    if s.launch.peer != peer.ip() {
+                                    if s.launch.peer != peer.ip().to_canonical() {
                                         continue;
                                     }
                                     let valid = (n >= 16
@@ -136,7 +310,9 @@ impl Media {
                                             && sessions
                                                 .active
                                                 .values()
-                                                .filter(|s| s.launch.peer == peer.ip())
+                                                .filter(|s| {
+                                                    s.launch.peer == peer.ip().to_canonical()
+                                                })
                                                 .count()
                                                 == 1);
                                     if valid {
@@ -169,8 +345,23 @@ impl Media {
             })?;
         Ok(m)
     }
-    fn capture(&self, output: &str, kind: &str, hdr: bool) -> Result<Arc<Source>> {
-        let key = format!("{kind}:{output}:{hdr}");
+    fn capture(
+        &self,
+        kind: &str,
+        hdr: bool,
+        config: &Config,
+        rate: butterpollo_core::framegen::Rate,
+        phase: &str,
+        prepared: Arc<crate::display_session::Ready>,
+    ) -> Result<Arc<Source>> {
+        let output = prepared.output();
+        let aligned = config.boolean("wgc_slot_aligned_publish", false);
+        let key = format!(
+            "{kind}:{output}:{hdr}:{}:{}:{}",
+            config.get("adapter_name", ""),
+            config.get("adapter_pnp_id", ""),
+            if aligned { phase } else { "" },
+        );
         let mut captures = self.captures.lock().unwrap();
         if let Some(existing) = captures.get(&key).and_then(Weak::upgrade) {
             return Ok(existing);
@@ -183,8 +374,13 @@ impl Media {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = stop.clone();
         let worker = latest.clone();
-        let output = output.to_owned();
+        let grid = Arc::new(Mutex::new(butterpollo_windows::capture::ClaimGrid {
+            anchor: Instant::now(),
+            period: rate.period(),
+        }));
+        let worker_grid = grid.clone();
         let kind = kind.to_owned();
+        let capture_config = config.clone();
         let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
         let thread = thread::Builder::new()
             .name("capture".into())
@@ -192,26 +388,66 @@ impl Media {
                 let result = (|| -> Result<()> {
                     let _com = ComGuard::new()?;
                     let _priority = Priority::new();
-                    let mut capture = match Capture::new_format(&output, &kind, hdr) {
-                        Ok(c) => c,
-                        Err(e) => {
-                            let _ = started_tx.send(Err(e.to_string()));
-                            return Ok(());
-                        }
-                    };
+                    let timer = butterpollo_windows::timing::Timer::new()?;
+                    let mut target = prepared.capture_target();
+                    let mut capture =
+                        match Capture::new_options(&target.0, &kind, hdr, &capture_config) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                let _ = started_tx.send(Err(e.to_string()));
+                                return Ok(());
+                            }
+                        };
+                    capture.set_claim_grid(worker_grid.clone(), aligned);
                     let _ = started_tx.send(Ok(()));
+                    let mut check_target = Instant::now();
                     while !worker_stop.load(Ordering::Acquire) {
+                        if Instant::now() >= check_target {
+                            check_target = Instant::now() + Duration::from_millis(100);
+                            let next = prepared.capture_target();
+                            if next != target {
+                                *worker.image.lock().unwrap() = None;
+                                capture =
+                                    Capture::new_options(&next.0, &kind, hdr, &capture_config)?;
+                                capture.set_claim_grid(worker_grid.clone(), aligned);
+                                target = next;
+                            }
+                        }
                         match capture.next_gpu() {
                             Ok(Some(image)) => {
                                 *worker.image.lock().unwrap() = Some(Arc::new(image));
                                 worker.changed.notify_all();
                             }
-                            Ok(None) => thread::sleep(Duration::from_millis(1)),
+                            Ok(None) => timer.until(
+                                capture
+                                    .publication_deadline()
+                                    .unwrap_or(Instant::now() + Duration::from_millis(1))
+                                    .min(Instant::now() + Duration::from_millis(1)),
+                            ),
                             Err(e) => {
                                 tracing::warn!(error=%e,"capture restarting");
                                 thread::sleep(Duration::from_millis(100));
                                 *worker.image.lock().unwrap() = None;
-                                capture = Capture::new_format(&output, &kind, hdr)?;
+                                let deadline = Instant::now() + Duration::from_secs(30);
+                                loop {
+                                    if worker_stop.load(Ordering::Acquire) {
+                                        return Ok(());
+                                    }
+                                    let next = prepared.capture_target();
+                                    match Capture::new_options(&next.0, &kind, hdr, &capture_config)
+                                    {
+                                        Ok(recovered) => {
+                                            capture = recovered;
+                                            target = next;
+                                            break;
+                                        }
+                                        Err(error) if Instant::now() >= deadline => {
+                                            return Err(error);
+                                        }
+                                        Err(_) => thread::sleep(Duration::from_millis(100)),
+                                    }
+                                }
+                                capture.set_claim_grid(worker_grid.clone(), aligned);
                             }
                         }
                     }
@@ -225,6 +461,7 @@ impl Media {
             })?;
         let latest = Arc::new(Source {
             latest,
+            grid,
             stop,
             thread: Some(thread),
         });
@@ -264,7 +501,7 @@ impl Media {
                 let result = (|| -> Result<()> {
                     let _com = ComGuard::new()?;
                     let _priority = Priority::new();
-                    let c = client_config(&h, &s)?;
+                    let c = effective_config(&h, &s.launch)?;
                     let timer = butterpollo_windows::timing::Timer::new()?;
                     let output = s
                         .launch
@@ -278,7 +515,7 @@ impl Media {
                         let monitors = butterpollo_windows::display::monitors()?;
                         let monitor = monitors
                             .iter()
-                            .find(|m| m.device_id == output || m.display_name == output)
+                            .find(|m| m.matches(output))
                             .or_else(|| monitors.iter().find(|m| m.primary))
                             .context("input display unavailable")?;
                         *s.output.write().unwrap() = monitor.display_name.clone();
@@ -288,120 +525,70 @@ impl Media {
                         }
                         return Ok(());
                     }
-                    let app = h
-                        .apps
-                        .read()
+                    let initial = s
+                        .launch
+                        .preparation
+                        .lock()
                         .unwrap()
-                        .iter()
-                        .find(|a| a.id() == s.launch.app_id)
-                        .cloned();
-                    let app_option = |key: &str| {
-                        app.as_ref()
-                            .and_then(|a| a.extra.get(key))
-                            .and_then(serde_json::Value::as_str)
+                        .take()
+                        .map(|p| p.downcast::<Arc<crate::display_session::Ready>>())
+                        .transpose()
+                        .map_err(|_| anyhow::anyhow!("invalid launch preparation"))?;
+                    let prepared = match initial {
+                        Some(p) if p.matches(&s.config) => *p,
+                        previous => {
+                            drop(previous);
+                            h.app_display.lock().unwrap().take();
+                            crate::display_session::Ready::new(
+                                crate::display_session::Prepared::create(
+                                    &h, &s.launch, &s.config, &c,
+                                )?,
+                            )?
+                        }
                     };
-                    let mode = s
-                        .launch
-                        .client
-                        .extra
-                        .get("virtual_display_mode")
-                        .and_then(serde_json::Value::as_str)
-                        .filter(|s| !s.is_empty())
-                        .or_else(|| app_option("virtual-display-mode"))
-                        .filter(|v| !v.is_empty())
-                        .unwrap_or(c.get("virtual_display_mode", "disabled"));
-                    let explicit = s
-                        .launch
-                        .client
-                        .extra
-                        .get("always_use_virtual_display")
-                        .is_some_and(|v| v == true || v == "true")
-                        || app.as_ref().is_some_and(|a| {
-                            a.extra
-                                .get("virtual-display")
-                                .and_then(serde_json::Value::as_bool)
-                                == Some(true)
-                        });
-                    let virtual_mode = explicit
-                        || (mode != "disabled"
-                            && butterpollo_windows::display::virtual_display_available());
-                    let client_stream_id = format!("{}:stream", s.launch.client.uuid);
-                    let stable_id = if mode == "shared" {
-                        "butterpollo-rust-shared"
-                    } else {
-                        &client_stream_id
-                    };
-                    let requested_display = c.display_request(s.config.width, s.config.height, s.config.fps)?;
-                    let retained = if s.launch.role == Role::RemoteMonitor {
-                        Some(crate::remote_display::activate(
-                            &h,
-                            &s.launch.client.uuid,
-                            &s.config,
-                        )?)
-                    } else {
-                        None
-                    };
-                    let mut display = if retained.is_none() {
-                        Some(butterpollo_windows::display::Guard::new(
-                            output,
-                            virtual_mode,
-                            stable_id,
-                            s.config.width,
-                            s.config.height,
-                            s.config.fps,
-                            s.config.hdr,
-                            requested_display.resolution,
-                            requested_display.refresh,
-                        )?)
-                    } else {
-                        None
-                    };
-                    let output = retained
-                        .as_ref()
-                        .map(|d| d.output.clone())
-                        .or_else(|| display.as_ref().map(|d| d.output.clone()))
-                        .context("display lease unavailable")?;
+                    if s.launch.role == Role::Stream {
+                        *h.app_display.lock().unwrap() = Some((prepared.clone(), None));
+                    }
+                    let output = prepared.output();
                     *s.output.write().unwrap() = output.clone();
-                    let _profile = if s.config.hdr {
-                        s.launch.client.extra.get("hdr_profile").and_then(serde_json::Value::as_str).filter(|p| !p.is_empty()).and_then(|selection| {
-                            match butterpollo_windows::hdr_profile::Lease::acquire(&output, selection) {
-                                Ok(profile) => Some(profile),
-                                Err(error) => { tracing::warn!(%error, "selected HDR profile could not be applied"); None }
-                            }
-                        })
-                    } else { None };
                     // Declaration order closes the encoder and joins capture before the display lease is removed.
-                    let use_truehdr = s.config.hdr && c.boolean("rtx_hdr", false);
-                    let latest = m.capture(
-                        &output,
-                        c.get("capture", "auto"),
-                        s.config.hdr && !use_truehdr,
+                    let mut use_truehdr = s.config.hdr && rtx_enabled(&c);
+                    let mut latest = m.capture(
+                        &prepared.capture(),
+                        s.config.hdr,
+                        &c,
+                        butterpollo_core::framegen::Rate(s.config.fps_millihz()),
+                        &s.launch.id,
+                        prepared.clone(),
                     )?;
-                    let mut truehdr = if use_truehdr {
-                        Some(butterpollo_windows::truehdr::Filter::new(
-                            &output,
-                            [
-                                (c.integer("rtx_hdr_contrast", 0) + 100).clamp(0, 200) as u32,
-                                (c.integer("rtx_hdr_saturation", 0) + 100).clamp(0, 200) as u32,
-                                c.integer("rtx_hdr_middle_gray", 50).clamp(10, 100) as u32,
-                                c.integer("rtx_hdr_peak_brightness", 1000).clamp(400, 2000) as u32,
-                            ],
-                        )?)
-                    } else {
-                        None
-                    };
                     let first = {
                         let deadline = Instant::now() + Duration::from_secs(10);
                         let mut image = latest.image.lock().unwrap();
                         while image.is_none() {
-                            if let Some(error) = &*latest.error.lock().unwrap() { anyhow::bail!("capture stopped: {error}"); }
-                            if s.stopping() || h.stop.load(Ordering::Acquire) { return Ok(()); }
-                            if Instant::now() >= deadline { anyhow::bail!("capture produced no GPU frame"); }
-                            image = latest.changed.wait_timeout(image, Duration::from_millis(50)).unwrap().0;
+                            if let Some(error) = &*latest.error.lock().unwrap() {
+                                anyhow::bail!("capture stopped: {error}");
+                            }
+                            if s.stopping() || h.stop.load(Ordering::Acquire) {
+                                return Ok(());
+                            }
+                            if Instant::now() >= deadline {
+                                anyhow::bail!("capture produced no GPU frame");
+                            }
+                            image = latest
+                                .changed
+                                .wait_timeout(image, Duration::from_millis(50))
+                                .unwrap()
+                                .0;
                         }
                         image.as_ref().unwrap().clone()
                     };
-                    let mut encoder = Encoder::new_gpu(&s.config, c.get("encoder", "auto"), &first)?;
+                    let mut encoder =
+                        Encoder::new_gpu_options(&s.config, c.get("encoder", "auto"), &first, &c)?;
+                    let mut truehdr = if use_truehdr {
+                        truehdr_filter(&first, &c)
+                    } else {
+                        None
+                    };
                     drop(first);
                     let mut truehdr_staging = None;
                     let _client_commands = crate::process::ClientCommands::start(&h, &s)?;
@@ -411,7 +598,6 @@ impl Media {
                     let audio = thread::Builder::new().name("audio".into()).spawn(move || {
                         if let Err(e) = audio_m.audio(audio_h, audio_s.clone()) {
                             tracing::warn!(error=%e,"audio worker stopped");
-                            audio_s.stop();
                         }
                     })?;
                     let mut packetizer = VideoPacketizer {
@@ -428,47 +614,101 @@ impl Media {
                         },
                     };
                     let start = Instant::now();
-                    let period = Duration::from_secs_f64(1. / f64::from(s.config.fps));
+                    let period = butterpollo_core::framegen::Rate(s.config.fps_millihz()).period();
                     let mut due = Instant::now();
                     let mut send_due = due;
-                    let mut send_frames = |output: Vec<butterpollo_windows::encoder::Encoded>, peer: std::net::SocketAddr, call_latency: Duration| -> Result<()> {
-                            for frame in output {
-                                let latency = frame.latency.unwrap_or(call_latency).as_micros() as u64;
-                                s.stats.latency_us.store(latency, Ordering::Relaxed);
-                                let timestamp = (start.elapsed().as_secs_f64() * 90000.) as u32;
-                                let packets = packetizer.encode(
-                                    &frame.bytes,
-                                    frame.idr,
-                                    timestamp,
-                                    latency,
-                                )?;
-                                let bps = c.integer("pacing_max_bitrate_kbps", 0);
-                                let bps = if bps > 0 {
-                                    (bps as u64 * 1000)
-                                        .max(u64::from(s.bitrate.load(Ordering::Relaxed)) * 1100)
-                                } else {
-                                    800_000_000
-                                };
-                                send_due = send_due.max(Instant::now());
-                                for p in packets {
-                                    let now = Instant::now();
-                                    if send_due > now {
-                                        timer.until(send_due);
-                                    }
-                                    let bytes = m.video.send_to(&p, peer)?;
-                                    send_due +=
-                                        Duration::from_secs_f64(bytes as f64 * 8. / bps as f64);
-                                    s.stats.packets.fetch_add(1, Ordering::Relaxed);
-                                    s.stats.bytes.fetch_add(bytes as u64, Ordering::Relaxed);
+                    let mut live_at = due;
+                    let mut rebuild_encoder = false;
+                    let mut runtime_config = c.clone();
+                    let mut profiles = None;
+                    let mut foreground = None;
+                    let mut profile_due = Instant::now();
+                    let minimum_fps = c
+                        .get("minimum_fps_target", "20")
+                        .parse::<f64>()
+                        .unwrap_or(20.);
+                    let minimum_fps = if minimum_fps > 0. {
+                        minimum_fps.clamp(1., 1000.)
+                    } else {
+                        (f64::from(s.config.fps_millihz()) / 5000.).max(10.)
+                    };
+                    let static_period = Duration::from_secs_f64(1. / minimum_fps);
+                    let mut last_image: Option<Arc<GpuImage>> = None;
+                    let mut encoded_at = Instant::now();
+                    let mut batch = butterpollo_windows::net::Batch::default();
+                    let batch_kb = match c.integer("video_max_batch_size_kb", 64) {
+                        16 => 16,
+                        32 => 32,
+                        _ => 64,
+                    };
+                    let mut send_frames = |output: Vec<butterpollo_windows::encoder::Encoded>,
+                                           peer: std::net::SocketAddr,
+                                           call_latency: Duration|
+                     -> Result<()> {
+                        for frame in output {
+                            let latency = frame.latency.unwrap_or(call_latency).as_micros() as u64;
+                            s.stats.latency_us.store(latency, Ordering::Relaxed);
+                            let timestamp = (start.elapsed().as_secs_f64() * 90000.) as u32;
+                            let packets = packetizer.encode_recovery(
+                                &frame.bytes,
+                                frame.idr,
+                                frame.after_invalidation,
+                                timestamp,
+                                latency,
+                            )?;
+                            let bps = c.integer("pacing_max_bitrate_kbps", 0);
+                            let bps = if bps > 0 {
+                                (bps as u64 * 1000)
+                                    .max(u64::from(s.bitrate.load(Ordering::Relaxed)) * 1100)
+                            } else {
+                                800_000_000
+                            };
+                            send_due = send_due.max(Instant::now());
+                            let mut remaining = packets.as_slice();
+                            while !remaining.is_empty() {
+                                let now = Instant::now();
+                                if send_due > now {
+                                    timer.until(send_due);
                                 }
-                                s.stats.frames.fetch_add(1, Ordering::Relaxed);
+                                let budget = (bps / 4000)
+                                    .clamp(remaining[0].len() as u64, batch_kb * 1024)
+                                    as usize;
+                                let count =
+                                    butterpollo_windows::net::Batch::count(remaining, budget);
+                                let bytes = batch.send(&m.video, &remaining[..count], peer)?;
+                                remaining = &remaining[count..];
+                                send_due += Duration::from_secs_f64(bytes as f64 * 8. / bps as f64);
+                                s.stats.packets.fetch_add(count as u64, Ordering::Relaxed);
+                                s.stats.bytes.fetch_add(bytes as u64, Ordering::Relaxed);
                             }
+                            s.stats.frames.fetch_add(1, Ordering::Relaxed);
+                        }
                         Ok(())
                     };
                     let result = (|| -> Result<()> {
                         while !s.stopping() && !h.stop.load(Ordering::Acquire) {
-                            if let Some(display) = display.as_mut() {
-                                display.feed()?;
+                            if Instant::now() >= live_at {
+                                live_at = Instant::now() + Duration::from_millis(250);
+                                runtime_config = effective_config(&h, &s.launch)?;
+                                *s.output.write().unwrap() = prepared.output();
+                                let runtime = &runtime_config;
+                                let enabled = s.config.hdr && rtx_enabled(runtime);
+                                if enabled != use_truehdr {
+                                    truehdr = None;
+                                    latest = m.capture(
+                                        &prepared.capture(),
+                                        s.config.hdr,
+                                        runtime,
+                                        butterpollo_core::framegen::Rate(s.config.fps_millihz()),
+                                        &s.launch.id,
+                                        prepared.clone(),
+                                    )?;
+                                    use_truehdr = enabled;
+                                    rebuild_encoder = true;
+                                }
+                                if let Some(filter) = truehdr.as_mut() {
+                                    filter.set_parameters(rtx_parameters(runtime));
+                                }
                             }
                             if let Some(error) = &*latest.error.lock().unwrap() {
                                 anyhow::bail!("capture stopped: {error}");
@@ -480,7 +720,7 @@ impl Media {
                                 .get(&(s.launch.id.clone(), false))
                                 .copied();
                             let Some(peer) = peer else {
-                                if start.elapsed() > Duration::from_secs(10) {
+                                if start.elapsed() > crate::network::ping_timeout(&c) {
                                     anyhow::bail!("client video ping timed out");
                                 }
                                 timer.until(Instant::now() + Duration::from_millis(1));
@@ -492,7 +732,10 @@ impl Media {
                                     if encoder.pending() {
                                         send_frames(encoder.poll()?, peer, Duration::ZERO)?;
                                         if encoder.pending() {
-                                            timer.until((Instant::now() + Duration::from_micros(250)).min(due));
+                                            timer.until(
+                                                (Instant::now() + Duration::from_micros(250))
+                                                    .min(due),
+                                            );
                                         }
                                     } else {
                                         timer.until(due);
@@ -501,8 +744,12 @@ impl Media {
                             }
                             // Keep the cadence anchored to the previous due time;
                             // scheduler overshoot must not accumulate each frame.
-                            due += period;
-                            due = due.max(Instant::now());
+                            due = if c.boolean("wgc_pacing_smoothing", true) {
+                                (due + period).max(Instant::now())
+                            } else {
+                                Instant::now() + period
+                            };
+                            latest.grid.lock().unwrap().anchor = due;
                             let image = {
                                 let mut current = latest.image.lock().unwrap();
                                 if current.is_none() {
@@ -515,14 +762,90 @@ impl Media {
                                 current.clone()
                             };
                             let Some(image) = image else { continue };
+                            // Resolution changes or DXGI loss can recreate the capture device.
+                            rebuild_encoder |= !encoder.accepts_gpu_device(&image);
+                            if !rebuild_encoder
+                                && !s.idr.load(Ordering::Acquire)
+                                && s.invalidation.lock().unwrap().is_none()
+                                && last_image
+                                    .as_ref()
+                                    .is_some_and(|previous| Arc::ptr_eq(previous, &image))
+                                && encoded_at.elapsed() < static_period
+                            {
+                                continue;
+                            }
+                            if use_truehdr && Instant::now() >= profile_due {
+                                profile_due = Instant::now() + Duration::from_millis(250);
+                                let (active, owned) = {
+                                    let app = h.current_app.lock().unwrap();
+                                    (app.is_some(), app.as_ref().and_then(|app| app.child.as_ref()).and_then(|child| child.process_ids().ok()).unwrap_or_default())
+                                };
+                                let visible = if active { foreground.get_or_insert_with(butterpollo_windows::foreground::Tracker::default).poll(&owned, &image.gpu.display) } else { None };
+                                let profiles = profiles.get_or_insert_with(butterpollo_windows::rtx_profiles::Profiles::new);
+                                runtime_config = butterpollo_core::rtx_policy::resolve(&runtime_config, visible.is_some(), profiles.poll(visible.as_deref()));
+                                if let Some(filter) = truehdr.as_mut() { filter.set_parameters(rtx_parameters(&runtime_config)); }
+                            }
+                            if rebuild_encoder {
+                                encoder = Encoder::new_gpu_options(
+                                    &s.config,
+                                    c.get("encoder", "auto"),
+                                    &image,
+                                    &c,
+                                )?;
+                                truehdr = if use_truehdr {
+                                    truehdr_filter(&image, &runtime_config)
+                                } else {
+                                    None
+                                };
+                                truehdr_staging = None;
+                                s.request_idr();
+                                rebuild_encoder = false;
+                            }
                             let begin = Instant::now();
+                            if let Some((first, last)) = s.invalidation.lock().unwrap().take()
+                                && !encoder.invalidate_ref_frames(first, last)
+                            {
+                                s.request_idr();
+                            }
                             let idr = s.idr.swap(false, Ordering::AcqRel);
                             let bitrate = s.bitrate.load(Ordering::Acquire);
-                            let output = if let Some(filter) = truehdr.as_mut() {
-                                let cpu = image.readback(&mut truehdr_staging)?;
-                                encoder.encode(&filter.apply(&cpu)?, idr, bitrate)?
-                            } else { encoder.encode_gpu(&image, idr, bitrate)? };
+                            let converted = truehdr.is_some()
+                                && image.pixel == butterpollo_windows::capture::Pixel::Bgra8;
+                            let scale = if converted {
+                                (runtime_config
+                                    .integer("rtx_hdr_peak_brightness", 1000)
+                                    .clamp(400, 2000) as f32
+                                    / 1000.)
+                                    .max(1.)
+                            } else {
+                                1.
+                            };
+                            encoder.set_luminance(
+                                100. + runtime_config
+                                    .integer("rtx_hdr_sdr_brightness", 0)
+                                    .clamp(0, 100) as f32,
+                                scale,
+                            );
+                            let transformed = if converted { truehdr.as_mut().map(|filter| filter.apply_gpu(&image)).transpose() } else { Ok(None) };
+                            let output = if let Ok(Some(transformed)) = transformed.as_ref() {
+                                encoder.encode_gpu(transformed, idr, bitrate)?
+                            } else if let Err(error) = transformed {
+                                tracing::warn!(%error, "TrueHDR conversion failed; continuing with SDR-to-PQ");
+                                truehdr = None;
+                                encoder.set_luminance(100. + runtime_config.integer("rtx_hdr_sdr_brightness",0).clamp(0,100) as f32, 1.);
+                                encoder.encode_gpu(&image, idr, bitrate)?
+                            } else if c.boolean("wgc_direct_encoder_input", true) {
+                                encoder.encode_gpu(&image, idr, bitrate)?
+                            } else {
+                                encoder.encode(
+                                    &image.readback(&mut truehdr_staging)?,
+                                    idr,
+                                    bitrate,
+                                )?
+                            };
                             let call_latency = begin.elapsed();
+                            encoded_at = Instant::now();
+                            last_image = Some(image);
                             send_frames(output, peer, call_latency)?;
                         }
                         Ok(())
@@ -557,21 +880,29 @@ impl Media {
     fn audio(&self, h: Shared, s: Arc<Session>) -> Result<()> {
         let _com = ComGuard::new()?;
         let _priority = Priority::new();
-        let config = client_config(&h, &s)?;
+        let config = effective_config(&h, &s.launch)?;
         let muted = !config.boolean("stream_audio", true)
             || (s.launch.role == Role::RemoteMonitor
                 && config.boolean("remote_monitor_mute_audio", false));
-        let mut capture = if muted {
-            None
-        } else {
-            Some(Loopback::new(s.config.audio_channels as usize)?)
-        };
+        let mut route = s
+            .launch
+            .audio_preparation
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|route| route.downcast_ref::<Arc<butterpollo_windows::audio_route::Route>>())
+            .cloned();
+        let mut capture: Option<Loopback> = None;
+        let mut sink = String::new();
+        let mut audio_check = Instant::now();
+        let mut capture_failed = false;
         let directory = std::env::current_exe()?.parent().unwrap().to_owned();
-        let mut opus = Opus::new(
-            &directory,
+        let layout = butterpollo_core::audio::OpusLayout::select(
             s.config.audio_channels as usize,
             s.config.audio_quality,
+            s.launch.options.get("surroundParams").map(String::as_str),
         )?;
+        let mut opus = Opus::new_layout_duration(&directory, &layout, s.config.audio_packet_ms)?;
         let mut p = AudioPacketizer::new(
             s.launch.key,
             s.launch.key_id,
@@ -586,22 +917,81 @@ impl Media {
         let silence = vec![0.; frames * s.config.audio_channels as usize];
         while !s.stopping() && !h.stop.load(Ordering::Acquire) {
             timer.until(next);
+            if !muted && Instant::now() >= audio_check {
+                audio_check = Instant::now() + Duration::from_secs(1);
+                if route.is_none() {
+                    match butterpollo_windows::audio_route::Route::acquire(
+                        &config,
+                        &h.directory,
+                        s.launch.host_audio,
+                        s.config.audio_channels as usize,
+                    ) {
+                        Ok(value) => {
+                            let value = Arc::new(value);
+                            if s.launch.role == Role::Stream
+                                && h.current_app.lock().unwrap().is_some()
+                            {
+                                *h.app_audio.lock().unwrap() = Some(value.clone());
+                            }
+                            route = Some(value);
+                        }
+                        Err(error) => {
+                            tracing::debug!(%error, "audio endpoint is unavailable; retrying")
+                        }
+                    }
+                }
+                if let Some(route) = &route {
+                    if let Err(error) = route.maintain_default() {
+                        tracing::debug!(%error, "audio default could not be maintained");
+                    }
+                    let selected = route
+                        .capture_sink(&config)
+                        .unwrap_or_else(|_| route.sink.clone());
+                    if selected != sink {
+                        capture = None;
+                        sink = selected;
+                        capture_failed = false;
+                    }
+                    if capture.is_none()
+                        && (!capture_failed || config.boolean("auto_capture_sink", true))
+                    {
+                        if let Err(error) = route.set_channels(s.config.audio_channels as usize) {
+                            tracing::warn!(%error, "virtual surround format could not be applied");
+                        }
+                        match Loopback::new_sink(s.config.audio_channels as usize, &sink) {
+                            Ok(value) => {
+                                capture = Some(value);
+                                capture_failed = false;
+                            }
+                            Err(error) => {
+                                capture_failed = true;
+                                tracing::debug!(%error, "WASAPI capture is unavailable; retrying");
+                            }
+                        }
+                    }
+                }
+            }
             let peer = self
                 .peers
                 .lock()
                 .unwrap()
                 .get(&(s.launch.id.clone(), true))
                 .copied();
-            let samples = capture
-                .as_mut()
-                .map(|capture| capture.read(frames))
-                .transpose()?
-                .flatten();
+            let samples = match capture.as_mut().map(|capture| capture.read(frames)) {
+                Some(Ok(value)) => value,
+                Some(Err(error)) => {
+                    tracing::warn!(%error, "audio endpoint changed; reopening WASAPI");
+                    capture = None;
+                    capture_failed = true;
+                    None
+                }
+                None => None,
+            };
             if let Some(peer) = peer {
                 for packet in p.encode(&opus.encode(samples.as_deref().unwrap_or(&silence))?)? {
                     self.audio.send_to(&packet, peer)?;
                 }
-            } else if start.elapsed() > Duration::from_secs(10) {
+            } else if start.elapsed() > crate::network::ping_timeout(&config) {
                 anyhow::bail!("client audio ping timed out");
             }
             next += interval;
@@ -612,7 +1002,7 @@ impl Media {
         Ok(())
     }
     fn control(&self, h: Shared) -> Result<()> {
-        let socket = UdpSocket::bind((self.bind, self.control_port))?;
+        let socket = crate::network::udp((self.bind, self.control_port).into())?;
         butterpollo_windows::net::configure_udp(&socket)?;
         let mut host = Host::new(
             socket,
@@ -627,6 +1017,7 @@ impl Media {
         let mut peers: HashMap<PeerID, ControlPeer> = HashMap::new();
         let mut feedback_at = Instant::now();
         while !h.stop.load(Ordering::Acquire) {
+            let ping_timeout = crate::network::ping_timeout(&h.config.read().unwrap());
             // Bound each pass so a busy input peer cannot starve cleanup or feedback.
             for _ in 0..512 {
                 let Some(event) = host.service()? else { break };
@@ -639,7 +1030,7 @@ impl Media {
                             .values()
                             .map(|s| &s.launch)
                             .chain(sessions.pending.values())
-                            .filter(|l| l.peer == address.ip())
+                            .filter(|l| l.peer == address.ip().to_canonical())
                             .collect();
                         let launch = candidates
                             .iter()
@@ -735,6 +1126,14 @@ impl Media {
                         p.seen = Instant::now();
                         match kind {
                             0x3000 if s.launch.client.allows(1 << 20) && payload.len() == 1 => {
+                                if h.current_app
+                                    .lock()
+                                    .unwrap()
+                                    .as_ref()
+                                    .is_some_and(|app| !app.allow_client_commands)
+                                {
+                                    continue;
+                                }
                                 if p.command_at
                                     .is_some_and(|last| last.elapsed() < Duration::from_secs(1))
                                 {
@@ -765,6 +1164,14 @@ impl Media {
                                         tracing::warn!(error=%e, "configured server command failed");
                                     }
                                 }
+                            }
+                            0x0301 if payload.len() == 8 => {
+                                s.request_invalidation(
+                                    u64::from(u32::from_le_bytes(payload[..4].try_into().unwrap())),
+                                    u64::from(u32::from_le_bytes(
+                                        payload[4..8].try_into().unwrap(),
+                                    )),
+                                );
                             }
                             0x0301 | 0x0302 => s.request_idr(),
                             0x0109 => {
@@ -819,7 +1226,7 @@ impl Media {
                 drop(sessions);
                 if let Some(s) = s {
                     p.session = Some(s.clone());
-                    if s.stopping() || p.seen.elapsed() > Duration::from_secs(30) {
+                    if s.stopping() || p.seen.elapsed() > ping_timeout {
                         if let Ok(message) = p.encrypt(&s, 0x0109, &0x80030023u32.to_be_bytes()) {
                             let peer = host.peer_mut(*peer_id);
                             let _ = peer.send(0, &Packet::new(message, PacketKind::Reliable));
@@ -847,15 +1254,16 @@ impl Media {
                         }
                     }
                     if !p.inputs.is_empty() && p.injector.is_none() {
-                        let c = h.config.read().unwrap();
+                        let c = effective_config(&h, &s.launch)?;
                         let output = s.output.read().unwrap().clone();
-                        match Injector::new(
+                        match Injector::new_options(
                             if output.is_empty() {
                                 c.get("output_name", "")
                             } else {
                                 &output
                             },
                             c.get("gamepad", "auto"),
+                            &c,
                         ) {
                             Ok(i) => p.injector = Some(i),
                             Err(e) => tracing::warn!(error=%e,"input initialization failed"),
@@ -869,7 +1277,9 @@ impl Media {
                                     if let input::Input::Arrival {
                                         id, capabilities, ..
                                     } = event
-                                        && i.gamepads.as_ref().is_some_and(|g| g.motion_supported())
+                                        && i.gamepads
+                                            .as_ref()
+                                            .is_some_and(|g| g.motion_supported(u16::from(id)))
                                     {
                                         for (cap, kind) in [(0x10, 1), (0x20, 2)] {
                                             if capabilities & cap != 0 {
@@ -892,25 +1302,33 @@ impl Media {
                         }
                     }
                     if poll_feedback {
+                        let mut messages = Vec::new();
                         if let Some(i) = &mut p.injector
                             && let Err(e) = i.refresh()
                         {
                             tracing::debug!(error=%e,"pointer refresh failed");
                         }
-                        if let Some(g) = p.injector.as_mut().and_then(|i| i.gamepads.as_mut()) {
+                        if let Some(i) = &mut p.injector
+                            && let Some(g) = &mut i.gamepads
+                        {
                             let feedback = g.feedback().unwrap_or_default();
                             for (id, kind, data) in feedback {
-                                for (kind, payload) in feedback_packets(id, kind, &data) {
-                                    if let Ok(message) = p.encrypt(&s, kind, &payload) {
-                                        let _ = host
-                                            .peer_mut(*peer_id)
-                                            .send(1, &Packet::new(message, PacketKind::Reliable));
-                                    }
-                                }
+                                messages.extend(
+                                    feedback_packets(id, kind, &data)
+                                        .into_iter()
+                                        .filter(|(kind, _)| i.feedback_allowed(*kind)),
+                                );
+                            }
+                        }
+                        for (kind, payload) in messages {
+                            if let Ok(message) = p.encrypt(&s, kind, &payload) {
+                                let _ = host
+                                    .peer_mut(*peer_id)
+                                    .send(1, &Packet::new(message, PacketKind::Reliable));
                             }
                         }
                     }
-                } else if !pending || p.seen.elapsed() > Duration::from_secs(30) {
+                } else if !pending || p.seen.elapsed() > ping_timeout {
                     host.peer_mut(*peer_id).disconnect_now(0);
                     remove.push(*peer_id);
                 }

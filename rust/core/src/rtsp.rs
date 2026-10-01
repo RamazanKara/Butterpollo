@@ -101,10 +101,26 @@ pub struct Negotiated {
     pub width: u32,
     pub height: u32,
     pub fps: u32,
+    #[serde(default)]
+    pub rate_millihz: u32,
     pub bitrate_kbps: u32,
+    #[serde(default)]
+    pub configured_bitrate_kbps: u32,
+    #[serde(default)]
+    pub csc_mode: u8,
     pub codec: u8,
     pub hdr: bool,
+    #[serde(default)]
+    pub sdr_10bit: bool,
     pub yuv444: bool,
+    #[serde(default)]
+    pub slices: u32,
+    #[serde(default)]
+    pub references: u32,
+    #[serde(default)]
+    pub intra_refresh: bool,
+    #[serde(default)]
+    pub vrr_low_latency: bool,
     pub packet_size: usize,
     pub min_fec: usize,
     pub audio_channels: u8,
@@ -119,10 +135,18 @@ impl Default for Negotiated {
             width: 1920,
             height: 1080,
             fps: 60,
+            rate_millihz: 0,
             bitrate_kbps: 20000,
+            configured_bitrate_kbps: 0,
+            csc_mode: 2,
             codec: 0,
             hdr: false,
+            sdr_10bit: false,
             yuv444: false,
+            slices: 1,
+            references: 0,
+            intra_refresh: false,
+            vrr_low_latency: false,
             packet_size: 1024,
             min_fec: 0,
             audio_channels: 2,
@@ -134,6 +158,30 @@ impl Default for Negotiated {
     }
 }
 impl Negotiated {
+    pub fn ten_bit(&self) -> bool {
+        self.hdr || self.sdr_10bit
+    }
+    pub fn color_matrix(&self) -> u8 {
+        if self.hdr {
+            2
+        } else {
+            match self.csc_mode >> 1 {
+                0 => 0,
+                2 if self.ten_bit() => 2,
+                _ => 1,
+            }
+        }
+    }
+    pub fn full_range(&self) -> bool {
+        self.csc_mode & 1 != 0
+    }
+    pub fn fps_millihz(&self) -> u32 {
+        if self.rate_millihz > 0 {
+            self.rate_millihz
+        } else {
+            self.fps.saturating_mul(1000)
+        }
+    }
     pub fn from_sdp(b: &[u8]) -> Result<Self> {
         let mut attrs = BTreeMap::new();
         for l in std::str::from_utf8(b)?.lines() {
@@ -153,10 +201,34 @@ impl Negotiated {
         n.width = get("x-nv-video[0].clientViewportWd", n.width)?;
         n.height = get("x-nv-video[0].clientViewportHt", n.height)?;
         n.fps = get("x-nv-video[0].maxFPS", n.fps)?;
+        n.rate_millihz = if n.fps > 1000 {
+            n.fps
+        } else {
+            n.fps.saturating_mul(1000)
+        };
+        if n.fps > 4000 {
+            n.rate_millihz = n.fps;
+            n.fps = n.fps.saturating_add(500) / 1000;
+        }
+        let refresh_x100 = get("x-nv-video[0].clientRefreshRateX100", 0)?;
+        if refresh_x100 > 0 && refresh_x100.saturating_add(50) / 100 == n.fps {
+            n.rate_millihz = refresh_x100
+                .checked_mul(10)
+                .ok_or_else(|| anyhow::anyhow!("refresh rate overflow"))?;
+        }
         n.bitrate_kbps = get("x-nv-vqos[0].bw.maximumBitrateKbps", n.bitrate_kbps)?;
+        n.configured_bitrate_kbps = get("x-ml-video.configuredBitrateKbps", 0)?;
+        n.csc_mode = u8::try_from(get("x-nv-video[0].encoderCscMode", 0)?)?;
         n.codec = u8::try_from(get("x-nv-vqos[0].bitStreamFormat", 0)?)?;
         n.hdr = get("x-nv-video[0].dynamicRangeMode", 0)? != 0;
         n.yuv444 = get("x-ss-video[0].chromaSamplingType", 0)? != 0;
+        n.slices = get("x-nv-video[0].videoEncoderSlicesPerFrame", 1)?;
+        n.references = get("x-nv-video[0].maxNumReferenceFrames", 0)?;
+        n.intra_refresh = get(
+            "x-ss-video[0].intraRefresh",
+            get("x-nv-video[0].enableIntraRefresh", 0)?,
+        )? != 0;
+        n.vrr_low_latency = get("x-ss-video[0].vrrLowLatency", 0)? != 0;
         n.packet_size = get("x-nv-video[0].packetSize", 1024)? as usize;
         n.min_fec = get("x-nv-vqos[0].fec.minRequiredFecPackets", 0)? as usize;
         n.audio_channels = u8::try_from(get("x-nv-audio.surround.numChannels", 2)?)?;
@@ -178,9 +250,14 @@ impl Negotiated {
         {
             bail!("invalid stream dimensions");
         }
-        if !(1..=1000).contains(&self.fps)
-            || !(100..=500000).contains(&self.bitrate_kbps)
+        if !(1..=4000).contains(&self.fps)
+            || self.rate_millihz > 4_000_000
+            || !(1..=500000).contains(&self.bitrate_kbps)
+            || self.configured_bitrate_kbps > i32::MAX as u32
+            || self.csc_mode > 5
             || self.codec > 3
+            || self.slices > 16
+            || self.references > 16
         {
             bail!("invalid encoder parameters");
         }
@@ -216,7 +293,7 @@ pub fn describe(
     if pyrowave {
         s.push_str("a=rtpmap:99 PYROWAVE/90000\r\n");
     }
-    s.push_str("a=fmtp:97 surround-params=21101\r\na=fmtp:97 surround-params=642014523\r\na=fmtp:97 surround-params=85301456723\r\na=fmtp:97 surround-params=642012345\r\na=fmtp:97 surround-params=85301234567\r\n");
+    s.push_str("a=fmtp:97 surround-params=21101\r\na=fmtp:97 surround-params=642014523\r\na=fmtp:97 surround-params=85301456723\r\na=fmtp:97 surround-params=21101\r\na=fmtp:97 surround-params=660014523\r\na=fmtp:97 surround-params=88001456723\r\n");
     s
 }
 #[cfg(test)]
@@ -242,5 +319,24 @@ mod tests {
     fn sdp_negotiation_rejects_integers_that_would_truncate() {
         assert!(Negotiated::from_sdp(b"a=x-nv-video[0].clientViewportWd:4294967295\n").is_err());
         assert!(Negotiated::from_sdp(b"a=x-nv-vqos[0].bitStreamFormat:256\n").is_err());
+    }
+    #[test]
+    fn fractional_negotiation_does_not_use_stale_display_refresh() {
+        let n = Negotiated::from_sdp(
+            b"a=x-nv-video[0].maxFPS:60\na=x-nv-video[0].clientRefreshRateX100:5994\n",
+        )
+        .unwrap();
+        assert_eq!(n.fps_millihz(), 59940);
+        let n = Negotiated::from_sdp(
+            b"a=x-nv-video[0].maxFPS:120\na=x-nv-video[0].clientRefreshRateX100:5994\n",
+        )
+        .unwrap();
+        assert_eq!(n.fps_millihz(), 120000);
+        assert_eq!(
+            Negotiated::from_sdp(b"a=x-nv-video[0].maxFPS:119880\n")
+                .unwrap()
+                .fps_millihz(),
+            119880
+        );
     }
 }

@@ -13,6 +13,8 @@ type Mode = (u32, u32, u32);
 struct Entry {
     output: String,
     mode: Option<(Mode, Mode)>,
+    #[serde(default)]
+    mode_rate: Option<(Mode, Mode)>,
     hdr: Option<(bool, bool)>,
     #[serde(default)]
     position: Option<(
@@ -21,13 +23,35 @@ struct Entry {
     )>,
     #[serde(default)]
     profile: Option<(Option<String>, String, bool)>,
+    #[serde(default)]
+    external: bool,
+    #[serde(default)]
+    audio: bool,
+    #[serde(default)]
+    arrangement: Option<(
+        crate::display::Snapshot,
+        Vec<butterpollo_core::topology::Node>,
+    )>,
+    #[serde(default)]
+    baseline: Option<(crate::display::Snapshot, Vec<String>)>,
+    #[serde(default)]
+    activation: Option<(
+        crate::display::Snapshot,
+        Vec<butterpollo_core::topology::Node>,
+    )>,
 }
 impl Entry {
     fn pending(&self) -> bool {
         self.mode.is_some()
             || self.hdr.is_some()
+            || self.mode_rate.is_some()
             || self.position.is_some()
             || self.profile.is_some()
+            || self.external
+            || self.audio
+            || self.arrangement.is_some()
+            || self.baseline.is_some()
+            || self.activation.is_some()
     }
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -87,6 +111,9 @@ fn identity(pid: u32) -> Result<Option<u64>> {
         let result = GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user);
         let _ = CloseHandle(process);
         result?;
+        if exited.dwLowDateTime != 0 || exited.dwHighDateTime != 0 {
+            return Ok(None);
+        }
         Ok(Some(
             u64::from(created.dwLowDateTime) | (u64::from(created.dwHighDateTime) << 32),
         ))
@@ -141,7 +168,11 @@ fn change(id: &str, output: &str, update: impl FnOnce(&mut Entry)) -> Result<()>
     let entry = journal.entries.entry(id.into()).or_default();
     entry.output = output.into();
     update(entry);
+    journal.entries.retain(|_, entry| entry.pending());
     butterpollo_core::state::write_json(path, &journal)?;
+    if journal.entries.is_empty() {
+        return Ok(());
+    }
     if let Err(e) = watch(path) {
         butterpollo_core::state::write_json(path, &prior)?;
         return Err(e);
@@ -151,8 +182,41 @@ fn change(id: &str, output: &str, update: impl FnOnce(&mut Entry)) -> Result<()>
 pub fn mode(id: &str, output: &str, before: Mode, applied: Mode) -> Result<()> {
     change(id, output, |e| e.mode = Some((before, applied)))
 }
+pub fn mode_rate(id: &str, output: &str, before: Mode, applied: Mode) -> Result<()> {
+    change(id, output, |e| e.mode_rate = Some((before, applied)))
+}
 pub fn hdr(id: &str, output: &str, before: bool, applied: bool) -> Result<()> {
     change(id, output, |e| e.hdr = Some((before, applied)))
+}
+pub fn external(pending: bool) -> Result<()> {
+    change("external-limiter", "", |e| e.external = pending)
+}
+pub fn audio(pending: bool) -> Result<()> {
+    change("audio-routing", "", |e| e.audio = pending)
+}
+pub fn arrangement(
+    value: Option<(
+        crate::display::Snapshot,
+        Vec<butterpollo_core::topology::Node>,
+    )>,
+) -> Result<()> {
+    change("display-arrangement", "", |e| e.arrangement = value)
+}
+pub fn baseline(value: Option<(crate::display::Snapshot, Vec<String>)>) -> Result<()> {
+    change("saved-display-baseline", "", |entry| entry.baseline = value)
+}
+pub fn activation(
+    value: Option<(
+        crate::display::Snapshot,
+        Vec<butterpollo_core::topology::Node>,
+    )>,
+) -> Result<()> {
+    change("display-activation", "", |entry| entry.activation = value)
+}
+pub fn reset() -> Result<()> {
+    let path = PATH.get().context("display recovery is not initialized")?;
+    let _guard = lock(path)?;
+    recover(path)
 }
 pub fn release(id: &str) -> Result<()> {
     let Some(path) = PATH.get().filter(|p| p.exists()) else {
@@ -162,6 +226,7 @@ pub fn release(id: &str) -> Result<()> {
     let mut journal: Journal = serde_json::from_slice(&std::fs::read(path)?)?;
     if let Some(entry) = journal.entries.get_mut(id) {
         entry.mode = None;
+        entry.mode_rate = None;
         entry.hdr = None;
     }
     journal.entries.retain(|_, e| e.pending());
@@ -215,6 +280,20 @@ fn recover(path: &Path) -> Result<()> {
         return Ok(());
     }
     let journal: Journal = serde_json::from_slice(&std::fs::read(path)?)?;
+    if journal.entries.values().any(|e| e.external) {
+        crate::limiter::recover(path.parent().context("journal directory missing")?)?;
+    }
+    if journal.entries.values().any(|e| e.audio) {
+        crate::audio_route::recover(path.parent().context("journal directory missing")?)?;
+    }
+    for entry in journal.entries.values() {
+        if let Some((before, applied)) = &entry.arrangement {
+            let current = crate::display::Topology::query()?.nodes()?;
+            if crate::display_arrangement::matches(&current, applied) {
+                before.restore()?;
+            }
+        }
+    }
     let monitors = crate::display::monitors()?;
     for (id, entry) in &journal.entries {
         let Some(m) = monitors.iter().find(|m| &m.device_id == id) else {
@@ -239,6 +318,18 @@ fn recover(path: &Path) -> Result<()> {
                 crate::display::set_mode(&m.display_name, previous.0, previous.1, previous.2)?;
             }
         }
+        if let Some((previous, applied)) = entry.mode_rate {
+            let current = crate::display::mode(&m.display_name)?;
+            let rate = crate::display::Topology::query()?.refresh(id)?;
+            if (current.dmPelsWidth, current.dmPelsHeight, rate.0) == applied {
+                crate::display::Topology::set_mode_rate(
+                    &m.display_name,
+                    previous.0,
+                    previous.1,
+                    butterpollo_core::framegen::Rate(previous.2),
+                )?;
+            }
+        }
     }
     let mut topology = crate::display::Topology::query()?;
     let nodes = topology.nodes()?;
@@ -255,6 +346,20 @@ fn recover(path: &Path) -> Result<()> {
         .collect::<BTreeMap<_, _>>();
     if !positions.is_empty() {
         topology.set_positions(&positions)?;
+    }
+    for entry in journal.entries.values() {
+        if let Some((before, applied)) = &entry.activation
+            && (applied.is_empty()
+                || crate::display_arrangement::matches(
+                    &crate::display::Topology::query()?.nodes()?,
+                    applied,
+                ))
+        {
+            before.restore()?;
+        }
+        if let Some((snapshot, excluded)) = &entry.baseline {
+            snapshot.restore_excluding(excluded)?;
+        }
     }
     // Keep a valid empty document so interrupted reads never see partial JSON.
     butterpollo_core::state::write_json(path, &Journal::default())
@@ -304,4 +409,23 @@ pub fn wait_and_recover(pid: u32, directory: &Path) -> Result<()> {
         }
     }
     recover(&path)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn exited_process_handles_do_not_keep_recovery_journals_owned() {
+        use std::os::windows::process::CommandExt;
+        let mut child = std::process::Command::new("cmd.exe")
+            .args(["/C", "exit", "0"])
+            .current_dir(std::env::temp_dir())
+            .creation_flags(CREATE_NO_WINDOW.0)
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        // Child still retains its process handle here, just like SCM/watchers.
+        assert_eq!(identity(pid).unwrap(), None);
+        assert!(identity(std::process::id()).unwrap().is_some());
+    }
 }

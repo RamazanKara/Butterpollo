@@ -25,7 +25,7 @@ fn nodes(h: &Shared) -> Result<Vec<Node>> {
     for (id, lease) in retained.iter() {
         let monitor = monitors
             .iter()
-            .find(|m| m.display_name == lease.output)
+            .find(|m| m.display_name == lease.current_output())
             .context("retained display disappeared")?;
         let node = nodes
             .iter_mut()
@@ -96,7 +96,14 @@ pub fn save(h: &Shared, value: &Value) -> Result<Value> {
 pub fn activate(h: &Shared, client: &str, config: &Negotiated) -> Result<Arc<Retained>> {
     let mut monitors = h.monitors.lock().unwrap();
     if let Some(existing) = monitors.get(client) {
-        if existing.mode != (config.width, config.height, config.fps, config.hdr) {
+        if existing.mode
+            != (
+                config.width,
+                config.height,
+                config.fps_millihz(),
+                config.hdr,
+            )
+        {
             bail!("retained monitor uses a different mode; disconnect it before changing mode");
         }
         return Ok(existing.clone());
@@ -104,12 +111,45 @@ pub fn activate(h: &Shared, client: &str, config: &Negotiated) -> Result<Arc<Ret
     if monitors.len() >= 4 {
         bail!("remote monitor capacity reached");
     }
-    let lease = Arc::new(Retained::create(
+    let identity = h
+        .paired
+        .read()
+        .unwrap()
+        .clients
+        .iter()
+        .find(|c| c.uuid == client)
+        .cloned();
+    let options = display::VirtualOptions {
+        label: identity
+            .as_ref()
+            .map_or_else(|| "Moonlight Client".into(), |c| c.name.clone()),
+        peak_nits: identity
+            .as_ref()
+            .and_then(|c| c.extra.get("hdr_profile"))
+            .and_then(Value::as_str)
+            .and_then(|p| {
+                butterpollo_windows::hdr_profile::peak_luminance(p)
+                    .ok()
+                    .flatten()
+            })
+            .unwrap_or(1000)
+            .clamp(400, 2000),
+    };
+    let host = Arc::downgrade(h);
+    let lease = Arc::new(Retained::create_options(
         client,
         config.width,
         config.height,
-        config.fps,
+        butterpollo_core::framegen::Rate(config.fps_millihz()),
         config.hdr,
+        &options,
+        Some(Box::new(move || {
+            if let Some(h) = host.upgrade() {
+                let desired = layout(&h)?.compose(&nodes(&h)?)?;
+                display::apply_layout(&desired)?;
+            }
+            Ok(())
+        })),
     )?);
     monitors.insert(client.into(), lease.clone());
     drop(monitors);

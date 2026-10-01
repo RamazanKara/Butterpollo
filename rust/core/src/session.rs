@@ -43,6 +43,12 @@ mod tests {
             rtsp_encrypted: true,
             rtsp_counter: Arc::new(AtomicU32::new(1)),
             rtsp_received: Default::default(),
+            preparation: Default::default(),
+            vrr_requested: false,
+            host_audio: false,
+            requested_rate: 0,
+            options: Default::default(),
+            audio_preparation: Default::default(),
         }
     }
     #[test]
@@ -90,6 +96,14 @@ pub struct Launch {
     pub rtsp_encrypted: bool,
     pub rtsp_counter: Arc<AtomicU32>,
     pub rtsp_received: Arc<std::sync::Mutex<crate::packet::ReplayWindow>>,
+    /// The platform host owns launch preparation. Keeping it on the launch
+    /// gives expired, rejected and disconnected requests the same RAII teardown.
+    pub preparation: Arc<std::sync::Mutex<Option<Box<dyn std::any::Any + Send>>>>,
+    pub vrr_requested: bool,
+    pub host_audio: bool,
+    pub requested_rate: u32,
+    pub options: BTreeMap<String, String>,
+    pub audio_preparation: Arc<std::sync::Mutex<Option<Box<dyn std::any::Any + Send + Sync>>>>,
 }
 #[derive(Default)]
 pub struct Stats {
@@ -104,6 +118,7 @@ pub struct Session {
     pub config: Negotiated,
     pub stop: AtomicBool,
     pub idr: AtomicBool,
+    pub invalidation: std::sync::Mutex<Option<(u64, u64)>>,
     pub bitrate: AtomicU32,
     pub stats: Stats,
     pub started: Instant,
@@ -117,6 +132,7 @@ impl Session {
             config,
             stop: AtomicBool::new(false),
             idr: AtomicBool::new(true),
+            invalidation: Default::default(),
             bitrate: AtomicU32::new(bitrate),
             stats: Stats::default(),
             started: Instant::now(),
@@ -132,6 +148,14 @@ impl Session {
     pub fn request_idr(&self) {
         self.idr.store(true, Ordering::Release);
         self.stats.idr_requests.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn request_invalidation(&self, first: u64, last: u64) {
+        if first == 0 || first > last {
+            self.request_idr();
+            return;
+        }
+        let mut pending = self.invalidation.lock().unwrap();
+        *pending = Some(pending.map_or((first, last), |(a, b)| (a.min(first), b.max(last))));
     }
     pub fn info(&self) -> serde_json::Value {
         serde_json::json!({"uuid":self.launch.client.uuid,"device_name":self.launch.client.name,"width":self.config.width,"height":self.config.height,"fps":self.config.fps,"video_format":self.config.codec,"hdr":self.config.hdr,"encoder_bitrate_kbps":self.bitrate.load(Ordering::Relaxed),"audio_channels":self.config.audio_channels,"state":if self.stopping(){"STOPPING"}else{"RUNNING"},"frames_sent":self.stats.frames.load(Ordering::Relaxed),"packets_sent":self.stats.packets.load(Ordering::Relaxed),"bytes_sent":self.stats.bytes.load(Ordering::Relaxed),"idr_requests":self.stats.idr_requests.load(Ordering::Relaxed),"encode_latency_ms":self.stats.latency_us.load(Ordering::Relaxed) as f64/1000.,"uptime_seconds":self.started.elapsed().as_secs_f64(),"role":self.launch.role})

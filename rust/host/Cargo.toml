@@ -36,3 +36,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 zip = { version = "4.6", default-features = false }
 tokio-util = { version = "0.7", features = ["io"] }
 time = { version = "0.3", features = ["formatting"] }
+mdns-sd = "=0.21.1"
+igd-next = { version = "=0.17.1", default-features = false, features = ["aio_tokio"] }
+if-addrs = "=0.15.0"
+xmltree = "=0.10.3"

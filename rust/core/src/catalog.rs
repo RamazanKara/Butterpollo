@@ -186,9 +186,60 @@ pub fn assign(apps: &mut [App], document: &mut Value, assets: &Path) -> Result<(
     document["root"]["app_id_aliases"] = serde_json::to_value(persisted)?;
     Ok(())
 }
+
+/// Previous reorder semantics: ignore unknown/duplicate IDs, then append every
+/// application omitted by the caller in its existing relative order.
+pub fn reorder(apps: &[App], order: &[Value]) -> Vec<App> {
+    let mut moved = std::collections::BTreeSet::new();
+    let mut next = Vec::with_capacity(apps.len());
+    for id in order.iter().filter_map(Value::as_str) {
+        if let Some((index, app)) = apps.iter().enumerate().find(|(index, app)| {
+            !moved.contains(index) && app.extra.get("uuid").and_then(Value::as_str) == Some(id)
+        }) {
+            moved.insert(index);
+            next.push(app.clone());
+        }
+    }
+    next.extend(
+        apps.iter()
+            .enumerate()
+            .filter(|(index, _)| !moved.contains(index))
+            .map(|(_, app)| app.clone()),
+    );
+    next
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reorder_ignores_invalid_ids_and_preserves_omitted_apps_and_unknown_fields() {
+        let apps: Vec<App> = ["a", "b", "c", "d"]
+            .iter()
+            .map(|uuid| {
+                serde_json::from_value(json!({"name":uuid,"uuid":uuid,"custom":{"nested":true}}))
+                    .unwrap()
+            })
+            .collect();
+        let ordered = reorder(
+            &apps,
+            &[
+                json!("c"),
+                json!(17),
+                json!(null),
+                json!("c"),
+                json!("missing"),
+                json!("a"),
+            ],
+        );
+        assert_eq!(
+            ordered
+                .iter()
+                .map(|a| a.extra["uuid"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["c", "a", "b", "d"]
+        );
+        assert!(ordered.iter().all(|a| a.extra["custom"]["nested"] == true));
+    }
     #[test]
     fn renaming_preserves_uuid_and_old_ids_resolve_after_cover_changes() {
         let d = tempfile::tempdir().unwrap();

@@ -12,7 +12,20 @@ pub(crate) fn route(fields: &Fields) -> Result<(Method, String), String> {
         "logout" => (Method::POST, "/api/auth/logout"),
         "config" | "theme" => (Method::POST, "/api/config"),
         "app-save" => (Method::POST, "/api/apps"),
-        "app-delete" => (Method::POST, "/api/apps/delete"),
+        "app-move" => (Method::POST, "/api/apps/reorder"),
+        "app-live" => (Method::POST, "/api/apps/rtx_hdr/live"),
+        "app-delete" => {
+            let uuid = fields
+                .get("uuid")
+                .ok_or("application identifier required")?;
+            if uuid.is_empty()
+                || uuid.len() > 64
+                || !uuid.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-')
+            {
+                return Err("invalid application identifier".into());
+            }
+            return Ok((Method::DELETE, format!("/api/apps/{uuid}")));
+        }
         "app-launch" => (Method::POST, "/api/apps/launch"),
         "app-close" => (Method::POST, "/api/apps/close"),
         "client-save" => (Method::POST, "/api/clients/update"),
@@ -70,7 +83,7 @@ fn payload(h: &Shared, fields: &Fields) -> Result<Value, String> {
             .collect::<Map<String, Value>>()
     };
     Ok(match value("op") {
-        "login" => Value::Object(copy(&["username", "password"])),
+        "login" => Value::Object(copy(&["username", "password", "remember_me"])),
         "setup" | "password" => Value::Object(copy(&[
             "currentUsername",
             "currentPassword",
@@ -80,6 +93,7 @@ fn payload(h: &Shared, fields: &Fields) -> Result<Value, String> {
         ])),
         "config" => {
             let mut config = object(fields, "advanced")?;
+            super::settings::apply("cfg_", super::settings::GLOBAL, fields, &mut config)?;
             for key in [
                 "sunshine_name",
                 "encoder",
@@ -115,6 +129,17 @@ fn payload(h: &Shared, fields: &Fields) -> Result<Value, String> {
                 app = original;
             }
             app.extend(copy(&["name", "cmd", "working-dir"]));
+            super::settings::apply("app_", super::settings::APP, fields, &mut app)?;
+            if let Some(overrides) = app
+                .get_mut("config-overrides")
+                .and_then(Value::as_object_mut)
+            {
+                for key in crate::stream::RTX_KEYS {
+                    if fields.contains_key(&format!("app_{}", key.replace('_', "-"))) {
+                        overrides.remove(*key);
+                    }
+                }
+            }
             if value("uuid").is_empty() {
                 app.remove("uuid");
             } else {
@@ -122,10 +147,30 @@ fn payload(h: &Shared, fields: &Fields) -> Result<Value, String> {
             }
             Value::Object(app)
         }
+        "app-move" => {
+            let apps = h.apps.read().unwrap();
+            let mut order: Vec<_> = apps
+                .iter()
+                .map(|app| app.extra.get("uuid").cloned().unwrap_or(Value::Null))
+                .collect();
+            let index = order
+                .iter()
+                .position(|uuid| uuid.as_str() == Some(value("uuid")))
+                .ok_or("application not found")?;
+            match value("direction") {
+                "up" if index > 0 => order.swap(index, index - 1),
+                "down" if index + 1 < order.len() => order.swap(index, index + 1),
+                "up" | "down" => {}
+                _ => return Err("invalid ordering direction".into()),
+            }
+            json!({"order": order})
+        }
+        "app-live" => json!({"uuid":value("uuid"),"config-overrides":object(fields,"overrides")?}),
         "client-save" => {
             let mut client = object(fields, "advanced")?;
             client.remove("cert");
             client.extend(copy(&["uuid", "name"]));
+            super::settings::apply("client_", super::settings::CLIENT, fields, &mut client)?;
             let perm = PERMISSIONS.iter().fold(0, |mask, (bit, _)| {
                 if fields.contains_key(&format!("perm_{bit}")) {
                     mask | bit
@@ -145,7 +190,9 @@ fn payload(h: &Shared, fields: &Fields) -> Result<Value, String> {
         "token-create" => {
             json!({"scopes":serde_json::from_str::<Value>(value("scopes")).map_err(|e| format!("Token scopes: {e}"))?})
         }
-        "crash-dismiss" => json!({"id":value("id")}),
+        "crash-dismiss" => {
+            json!({"filename":value("filename"),"captured_at":value("captured_at")})
+        }
         _ => json!({}),
     })
 }

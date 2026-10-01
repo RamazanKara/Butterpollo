@@ -22,7 +22,7 @@ zeroize = "1.8"
 pem = "3.0"
 x509-parser = "0.18"
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring", "pem"] }
-uuid = { version = "1.18", features = ["v4", "serde"] }
+uuid = { version = "1.18", features = ["v4", "v5", "serde"] }
 crc32fast = "1.5"
 regex = "1.12"
 

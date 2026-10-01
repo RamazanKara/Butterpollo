@@ -1,5 +1,5 @@
 //! Optional Rust NGX adapter; creation, conversion and teardown stay on one thread.
-use crate::capture::{Device, Image, Pixel, read_texture};
+use crate::capture::{Device, GpuImage, GpuPool, Image, Pixel, read_texture};
 use anyhow::{Context, Result, bail};
 use std::{ffi::c_void, ptr};
 use windows::{
@@ -19,6 +19,7 @@ pub struct Filter {
     staging: Option<ID3D11Texture2D>,
     size: (u32, u32),
     parameters: [u32; 4],
+    pool: GpuPool,
     _dll: libloading::Library,
 }
 pub fn available() -> bool {
@@ -28,8 +29,26 @@ pub fn available() -> bool {
         .is_some_and(|p| p.exists())
 }
 impl Filter {
+    pub fn set_parameters(&mut self, parameters: [u32; 4]) {
+        self.parameters = parameters;
+    }
     pub fn new(display: &str, parameters: [u32; 4]) -> Result<Self> {
-        let device = Device::new(display)?;
+        Self::new_device(Device::new(display)?, parameters)
+    }
+    pub fn new_gpu(image: &GpuImage, parameters: [u32; 4]) -> Result<Self> {
+        Self::new_device(image.gpu.clone(), parameters)
+    }
+    fn new_device(device: Device, parameters: [u32; 4]) -> Result<Self> {
+        unsafe {
+            let adapter = device
+                .device
+                .cast::<windows::Win32::Graphics::Dxgi::IDXGIDevice>()?
+                .GetAdapter()?
+                .GetDesc()?;
+            if adapter.VendorId != 0x10de {
+                bail!("TrueHDR requires an NVIDIA adapter");
+            }
+        }
         let path = std::env::current_exe()?
             .parent()
             .context("executable directory unavailable")?
@@ -58,8 +77,42 @@ impl Filter {
                 staging: None,
                 size: (0, 0),
                 parameters,
+                pool: GpuPool::default(),
                 _dll: dll,
             })
+        }
+    }
+    /// Snapshot NGX's mutable output into the bounded pool before another conversion.
+    pub fn apply_gpu(&mut self, image: &GpuImage) -> Result<GpuImage> {
+        if image.pixel != Pixel::Bgra8 || image.gpu.device.as_raw() != self.device.device.as_raw() {
+            bail!("TrueHDR requires an SDR texture on the capture device");
+        }
+        unsafe {
+            let lock: ID3D11Multithread = self.device.context.cast()?;
+            lock.Enter();
+            let result = (|| {
+                let [contrast, saturation, middle, peak] = self.parameters;
+                let mut error = 0;
+                let output = (self.convert)(
+                    self.state,
+                    image.texture.as_raw(),
+                    contrast,
+                    saturation,
+                    middle,
+                    peak,
+                    &mut error,
+                );
+                let texture = ID3D11Texture2D::from_raw_borrowed(&output)
+                    .context(format!("NVIDIA TrueHDR conversion failed ({error:#x})"))?;
+                let mut converted = self
+                    .pool
+                    .copy(&self.device, texture)?
+                    .context("TrueHDR texture pool is occupied by pending frames")?;
+                converted.captured = image.captured;
+                Ok(converted)
+            })();
+            lock.Leave();
+            result
         }
     }
     pub fn apply(&mut self, image: &Image) -> Result<Image> {

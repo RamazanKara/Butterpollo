@@ -29,6 +29,7 @@ pub(crate) fn wide(s: &str) -> Vec<u16> {
 struct Submission {
     pts: i64,
     started: Instant,
+    after_invalidation: bool,
     _capture: Option<GpuImage>,
     _converted: Option<std::sync::Arc<windows::Win32::Graphics::Direct3D11::ID3D11Texture2D>>,
 }
@@ -44,16 +45,26 @@ pub struct Encoder {
     gpu_convert: Option<crate::amf_gpu::Converter>,
     in_flight: std::collections::VecDeque<Submission>,
     bitrate: u32,
+    references: butterpollo_core::ltr::References,
+    ownership: Box<crate::amf_gpu::Ownership>,
+    pub(crate) luminance: [f32; 2],
 }
 impl Encoder {
     pub fn new(config: &butterpollo_core::rtsp::Negotiated, display: &str) -> Result<Self> {
         Self::new_device(config, Device::new(display)?)
     }
     pub fn new_device(config: &butterpollo_core::rtsp::Negotiated, device: Device) -> Result<Self> {
+        Self::new_device_options(config, device, &butterpollo_core::config::Config::default())
+    }
+    pub fn new_device_options(
+        config: &butterpollo_core::rtsp::Negotiated,
+        device: Device,
+        options: &butterpollo_core::config::Config,
+    ) -> Result<Self> {
         if config.yuv444 {
             bail!("AMF does not expose 4:4:4 for this encoder; select NVENC or software");
         }
-        if config.hdr && config.codec == 0 {
+        if config.ten_bit() && config.codec == 0 {
             bail!("H.264 does not support HDR10");
         }
         unsafe {
@@ -119,16 +130,68 @@ impl Encoder {
                 gpu_convert: None,
                 in_flight: std::collections::VecDeque::new(),
                 bitrate: config.bitrate_kbps,
+                references: Default::default(),
+                ownership: crate::amf_gpu::Ownership::new(),
+                luminance: [100., 1.],
             };
-            e.property("Usage", int(if config.codec == 2 { 2 } else { 1 }))?;
-            e.property(
-                "QualityPreset",
-                int(match config.codec {
-                    0 => 1,
-                    1 => 10,
-                    _ => 100,
-                }),
-            )?;
+            for property in butterpollo_core::encoder_policy::amf(options, config)? {
+                use butterpollo_core::encoder_policy::Value;
+                let value = match property.value {
+                    Value::Integer(n) => int(n),
+                    Value::Boolean(on) => AMFVariantStruct {
+                        type_: AMF_VARIANT_TYPE_AMF_VARIANT_BOOL,
+                        __bindgen_anon_1: AMFVariantStruct__bindgen_ty_1 {
+                            boolValue: u8::from(on),
+                        },
+                    },
+                };
+                let result = e.property_raw(&property.name, value).and_then(|()| {
+                    let mut applied = int(0);
+                    check(((*(*e.component).pVtbl).GetProperty.unwrap())(
+                        e.component,
+                        wide(&property.name).as_ptr(),
+                        &mut applied,
+                    ))?;
+                    let matches = match property.value {
+                        Value::Integer(n) => {
+                            applied.type_ == AMF_VARIANT_TYPE_AMF_VARIANT_INT64
+                                && (applied.__bindgen_anon_1.int64Value == n
+                                    || (property.name == "Av1NumTilesPerFrame"
+                                        && applied.__bindgen_anon_1.int64Value > 0))
+                        }
+                        Value::Boolean(on) => match applied.type_ {
+                            AMF_VARIANT_TYPE_AMF_VARIANT_BOOL => {
+                                (applied.__bindgen_anon_1.boolValue != 0) == on
+                            }
+                            AMF_VARIANT_TYPE_AMF_VARIANT_INT64 => {
+                                (applied.__bindgen_anon_1.int64Value != 0) == on
+                            }
+                            _ => false,
+                        },
+                    };
+                    if !matches {
+                        bail!(
+                            "AMF did not apply {} = {:?} (reported variant {}, integer {})",
+                            property.name,
+                            property.value,
+                            applied.type_,
+                            if applied.type_ == AMF_VARIANT_TYPE_AMF_VARIANT_INT64 {
+                                applied.__bindgen_anon_1.int64Value
+                            } else {
+                                -1
+                            }
+                        );
+                    }
+                    Ok(())
+                });
+                if let Err(error) = result {
+                    if property.required {
+                        return Err(error)
+                            .with_context(|| format!("AMF setting {}", property.name));
+                    }
+                    tracing::warn!(%error, setting=%property.name, "AMF setting unavailable; retaining driver default");
+                }
+            }
             e.property(
                 "FrameSize",
                 AMFVariantStruct {
@@ -147,17 +210,13 @@ impl Encoder {
                     type_: AMF_VARIANT_TYPE_AMF_VARIANT_RATE,
                     __bindgen_anon_1: AMFVariantStruct__bindgen_ty_1 {
                         rateValue: AMFRate {
-                            num: config.fps,
-                            den: 1,
+                            num: config.fps_millihz(),
+                            den: 1000,
                         },
                     },
                 },
             )?;
             e.property("TargetBitrate", int(i64::from(config.bitrate_kbps) * 1000))?;
-            e.property(
-                "RateControlMethod",
-                int(if config.codec == 0 { 2 } else { 3 }),
-            )?;
             let _ = e.property("BPicturesPattern", int(0));
             if config.codec == 1 {
                 // Request keyframes and headers per surface: finite GOPs stall
@@ -176,44 +235,68 @@ impl Encoder {
             }
             // A blocking query can inherit Windows' 15.6 ms scheduler tick.
             let _ = e.property("QueryTimeout", int(0));
-            if config.hdr {
+            if config.ten_bit() {
                 e.property("ColorBitDepth", int(10))?;
                 if config.codec == 1 {
                     e.property("Profile", int(2))?;
                 }
-                let prefix = if config.codec == 1 { "Hevc" } else { "Av1" };
-                for (name, value) in if config.codec == 1 {
-                    [
-                        ("InColorProfile", 2),
-                        ("OutColorProfile", 2),
-                        ("InColorTransferChar", 16),
-                        ("OutColorTransferChar", 16),
-                        ("InColorPrimaries", 9),
-                        ("OutColorPrimaries", 9),
-                    ]
-                } else {
-                    [
-                        ("InputColorProfile", 2),
-                        ("OutputColorProfile", 2),
-                        ("InputColorTransferChar", 16),
-                        ("OutputColorTransferChar", 16),
-                        ("InputColorPrimaries", 9),
-                        ("OutputColorPrimaries", 9),
-                    ]
-                } {
-                    e.property_raw(&format!("{prefix}{name}"), int(value))?;
-                }
             }
-            let _ = e.property(
-                "PreAnalysisEnable",
-                AMFVariantStruct {
-                    type_: AMF_VARIANT_TYPE_AMF_VARIANT_BOOL,
-                    __bindgen_anon_1: AMFVariantStruct__bindgen_ty_1 { boolValue: 0 },
+            let matrix = config.color_matrix();
+            let profile = if config.full_range() {
+                match matrix {
+                    0 => 3,
+                    1 => 7,
+                    _ => 8,
+                }
+            } else {
+                i64::from(matrix)
+            };
+            let primaries = match matrix {
+                0 => 6,
+                2 => 9,
+                _ => 1,
+            };
+            let transfer = if config.hdr {
+                16
+            } else {
+                match matrix {
+                    0 => 6,
+                    2 => 14,
+                    _ => 1,
+                }
+            };
+            let prefix = match config.codec {
+                0 => "",
+                1 => "Hevc",
+                _ => "Av1",
+            };
+            let (input, output) = if config.codec == 2 {
+                ("Input", "Output")
+            } else {
+                ("In", "Out")
+            };
+            for (suffix, value) in [
+                ("ColorProfile", profile),
+                ("ColorTransferChar", transfer),
+                ("ColorPrimaries", primaries),
+            ] {
+                e.property_raw(&format!("{prefix}{input}{suffix}"), int(value))?;
+                e.property_raw(&format!("{prefix}{output}{suffix}"), int(value))?;
+            }
+            let full = AMFVariantStruct {
+                type_: AMF_VARIANT_TYPE_AMF_VARIANT_BOOL,
+                __bindgen_anon_1: AMFVariantStruct__bindgen_ty_1 {
+                    boolValue: u8::from(config.full_range()),
                 },
-            );
+            };
+            e.property_raw(&format!("{prefix}InputFullRangeColor"), full)?;
+            if config.codec == 0 {
+                e.property_raw("FullRangeColor", full)?;
+            }
+            e.configure_ltr(options.integer("amd_ltr_frames", 0).clamp(0, 4) as usize);
             check(((*(*e.component).pVtbl).Init.unwrap())(
                 e.component,
-                if config.hdr {
+                if config.ten_bit() {
                     AMF_SURFACE_FORMAT_AMF_SURFACE_P010
                 } else {
                     AMF_SURFACE_FORMAT_AMF_SURFACE_NV12
@@ -247,6 +330,161 @@ impl Encoder {
     pub fn pending(&self) -> bool {
         !self.in_flight.is_empty()
     }
+    pub fn supports_invalidation(&self) -> bool {
+        self.references.enabled()
+    }
+    pub fn invalidate_ref_frames(&mut self, first: u64, last: u64) -> bool {
+        // VCN AVC uses a four-bit frame_num with POC type 2. A decoder cannot
+        // reliably infer a missing counter wrap. Use a recovery IDR for that
+        // window, and keep LTR recovery for losses within the same epoch.
+        if self.codec == 0 && first.saturating_sub(2) / 16 != self.index as u64 / 16 {
+            return false;
+        }
+        self.references.invalidate(first, last)
+    }
+    fn ltr_properties(&self) -> [&'static str; 4] {
+        match self.codec {
+            0 => [
+                "MaxOfLTRFrames",
+                "LTRMode",
+                "MarkCurrentWithLTRIndex",
+                "ForceLTRReferenceBitfield",
+            ],
+            1 => [
+                "HevcMaxOfLTRFrames",
+                "HevcLTRMode",
+                "HevcMarkCurrentWithLTRIndex",
+                "HevcForceLTRReferenceBitfield",
+            ],
+            _ => [
+                "Av1MaxNumLTRFrames",
+                "Av1LTRMode",
+                "Av1MarkCurrentWithLTRIndex",
+                "Av1ForceLTRReferenceBitfield",
+            ],
+        }
+    }
+    fn configure_ltr(&mut self, mut count: usize) {
+        if count == 0 || self.config.intra_refresh {
+            return;
+        }
+        let [maximum, mode, _, _] = self.ltr_properties();
+        let result = (|| -> Result<usize> {
+            unsafe {
+                let mut info = ptr::null();
+                if ((*(*self.component).pVtbl).GetPropertyInfo.unwrap())(
+                    self.component,
+                    wide(maximum).as_ptr(),
+                    &mut info,
+                ) == AMF_RESULT_AMF_OK
+                    && !info.is_null()
+                {
+                    let maximum = &(*info).maxValue;
+                    if maximum.type_ == AMF_VARIANT_TYPE_AMF_VARIANT_INT64 {
+                        count = count.min(maximum.__bindgen_anon_1.int64Value.max(0) as usize);
+                    }
+                }
+                if self.codec == 2 {
+                    let mut caps = ptr::null_mut();
+                    if ((*(*self.component).pVtbl).GetCaps.unwrap())(self.component, &mut caps)
+                        == AMF_RESULT_AMF_OK
+                        && !caps.is_null()
+                    {
+                        let mut limit = int(0);
+                        let result = ((*(*caps).pVtbl).GetProperty.unwrap())(
+                            caps,
+                            wide("Av1CapMaxNumLTRFrames").as_ptr(),
+                            &mut limit,
+                        );
+                        if result == AMF_RESULT_AMF_OK
+                            && limit.type_ == AMF_VARIANT_TYPE_AMF_VARIANT_INT64
+                        {
+                            count = count.min(limit.__bindgen_anon_1.int64Value.max(0) as usize);
+                        }
+                        ((*(*caps).pVtbl).Release.unwrap())(caps);
+                    }
+                }
+                if count == 0 {
+                    bail!("driver reports no LTR slots");
+                }
+                self.property_raw(maximum, int(count as i64))?;
+                self.property_raw(mode, int(0))?;
+                let mut applied = int(0);
+                check(((*(*self.component).pVtbl).GetProperty.unwrap())(
+                    self.component,
+                    wide(maximum).as_ptr(),
+                    &mut applied,
+                ))?;
+                if applied.type_ != AMF_VARIANT_TYPE_AMF_VARIANT_INT64
+                    || applied.__bindgen_anon_1.int64Value <= 0
+                {
+                    bail!("LTR slot readback failed");
+                }
+                Ok(count.min(applied.__bindgen_anon_1.int64Value as usize))
+            }
+        })();
+        match result {
+            Ok(count) => {
+                self.references = butterpollo_core::ltr::References::new(count);
+                tracing::info!(count, "AMF long-term reference recovery enabled");
+            }
+            Err(error) => {
+                let _ = self.property_raw(maximum, int(0));
+                tracing::warn!(%error,"AMF LTR unavailable; using IDR recovery");
+            }
+        }
+    }
+    fn prepare_surface(
+        &mut self,
+        surface: *mut AMFSurface,
+        mut idr: bool,
+    ) -> Result<butterpollo_core::ltr::Plan> {
+        let mut plan = self.references.plan(self.index as u64 + 1, idr);
+        let [_, _, mark, reference] = self.ltr_properties();
+        let apply = |name: &str, value: AMFVariantStruct| -> Result<()> {
+            unsafe {
+                check(((*(*surface).pVtbl).SetProperty.unwrap())(
+                    surface,
+                    wide(name).as_ptr(),
+                    value,
+                ))
+            }
+        };
+        let ltr = (|| -> Result<()> {
+            if let Some(slot) = plan.mark {
+                apply(mark, int(slot as i64))?;
+            }
+            if let Some(slot) = plan.reference {
+                apply(reference, int(1 << slot))?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = ltr {
+            tracing::warn!(%error,"AMF LTR surface rejected; requesting IDR recovery");
+            self.references.disable();
+            idr = true;
+            plan = self.references.plan(self.index as u64 + 1, true);
+        }
+        if idr {
+            apply(
+                match self.codec {
+                    0 => "ForcePictureType",
+                    1 => "HevcForcePictureType",
+                    _ => "Av1ForceFrameType",
+                },
+                int(if self.codec == 2 { 1 } else { 2 }),
+            )?;
+            let headers: &[&str] = match self.codec {
+                0 => &["InsertSPS", "InsertPPS"],
+                1 => &["HevcInsertHeader"],
+                _ => &[],
+            };
+            for header in headers {
+                apply(header, crate::amf_gpu::boolean(true))?;
+            }
+        }
+        Ok(plan)
+    }
     pub fn poll(&mut self) -> Result<Vec<Encoded>> {
         unsafe {
             let mut output = vec![];
@@ -266,12 +504,13 @@ impl Encoder {
                 }
                 let buffer = data as *mut AMFBuffer;
                 let pts = ((*(*data).pVtbl).GetPts.unwrap())(data);
-                let latency = self
+                let submission = self
                     .in_flight
                     .iter()
                     .position(|s| s.pts == pts)
-                    .and_then(|position| self.in_flight.remove(position))
-                    .map(|s| s.started.elapsed());
+                    .and_then(|position| self.in_flight.remove(position));
+                let latency = submission.as_ref().map(|s| s.started.elapsed());
+                let after_invalidation = submission.is_some_and(|s| s.after_invalidation);
                 let v = &*(*buffer).pVtbl;
                 let size = (v.GetSize.unwrap())(buffer);
                 let raw = (v.GetNative.unwrap())(buffer) as *const u8;
@@ -291,11 +530,17 @@ impl Encoder {
                 } else {
                     self.index == 1
                 };
-                let bytes = std::slice::from_raw_parts(raw, size as usize).to_vec();
+                let bytes = std::slice::from_raw_parts(raw, size as usize);
+                let bytes = if self.codec == 0 && idr && self.references.enabled() {
+                    butterpollo_core::bitstream::h264_reference_recovery(bytes)
+                } else {
+                    bytes.to_vec()
+                };
                 (v.Release.unwrap())(buffer);
                 output.push(Encoded {
                     bytes,
                     idr,
+                    after_invalidation,
                     latency,
                 });
             }
@@ -308,10 +553,9 @@ impl Encoder {
         if self.convert.is_none() {
             // Native GPU sessions never allocate a CPU YUV frame or swscale
             // context. Allocate compatibility buffers only when used.
-            self.convert = Some(Convert::new(
-                self.config.width,
-                self.config.height,
-                if self.config.hdr {
+            self.convert = Some(Convert::new_config(
+                &self.config,
+                if self.config.ten_bit() {
                     ff::AVPixelFormat_AV_PIX_FMT_P010LE
                 } else {
                     ff::AVPixelFormat_AV_PIX_FMT_NV12
@@ -319,6 +563,7 @@ impl Encoder {
             )?);
         }
         let convert = self.convert.as_mut().unwrap();
+        convert.luminance = self.luminance;
         convert.convert(image)?;
         let frame = convert.frame;
         unsafe {
@@ -326,7 +571,7 @@ impl Encoder {
             check(((*(*self.context).pVtbl).AllocSurface.unwrap())(
                 self.context,
                 AMF_MEMORY_TYPE_AMF_MEMORY_HOST,
-                if self.config.hdr {
+                if self.config.ten_bit() {
                     AMF_SURFACE_FORMAT_AMF_SURFACE_P010
                 } else {
                     AMF_SURFACE_FORMAT_AMF_SURFACE_NV12
@@ -339,7 +584,10 @@ impl Encoder {
             let v = &*(*surface).pVtbl;
             let prepared = (|| -> Result<()> {
                 (v.SetPts.unwrap())(surface, self.index);
-                (v.SetDuration.unwrap())(surface, 10_000_000 / i64::from(self.config.fps));
+                (v.SetDuration.unwrap())(
+                    surface,
+                    10_000_000_000 / i64::from(self.config.fps_millihz()),
+                );
                 for plane_index in 0..2 {
                     let plane = (v.GetPlaneAt.unwrap())(surface, plane_index);
                     if plane.is_null() {
@@ -348,7 +596,8 @@ impl Encoder {
                     let pv = &*(*plane).pVtbl;
                     let dst = (pv.GetNative.unwrap())(plane) as *mut u8;
                     let pitch = (pv.GetHPitch.unwrap())(plane) as usize;
-                    let width = self.config.width as usize * if self.config.hdr { 2 } else { 1 };
+                    let width =
+                        self.config.width as usize * if self.config.ten_bit() { 2 } else { 1 };
                     let height = self.config.height as usize / if plane_index == 0 { 1 } else { 2 };
                     let src = (*frame).data[plane_index];
                     let stride = (*frame).linesize[plane_index] as usize;
@@ -363,47 +612,19 @@ impl Encoder {
                         );
                     }
                 }
-                if idr {
-                    let prop = match self.codec {
-                        0 => "ForcePictureType",
-                        1 => "HevcForcePictureType",
-                        _ => "Av1ForceFrameType",
-                    };
-                    check((v.SetProperty.unwrap())(
-                        surface,
-                        wide(prop).as_ptr(),
-                        int(if self.codec == 2 { 1 } else { 2 }),
-                    ))?;
-                    let flag = AMFVariantStruct {
-                        type_: AMF_VARIANT_TYPE_AMF_VARIANT_BOOL,
-                        __bindgen_anon_1: AMFVariantStruct__bindgen_ty_1 { boolValue: 1 },
-                    };
-                    if self.codec == 1 {
-                        check((v.SetProperty.unwrap())(
-                            surface,
-                            wide("HevcInsertHeader").as_ptr(),
-                            flag,
-                        ))
-                        .context("AMF keyframe headers")?;
-                    } else if self.codec == 0 {
-                        check((v.SetProperty.unwrap())(
-                            surface,
-                            wide("InsertSPS").as_ptr(),
-                            flag,
-                        ))?;
-                        check((v.SetProperty.unwrap())(
-                            surface,
-                            wide("InsertPPS").as_ptr(),
-                            flag,
-                        ))?;
-                    }
-                }
                 Ok(())
             })();
             if let Err(e) = prepared {
                 (v.Release.unwrap())(surface);
                 return Err(e);
             }
+            let plan = match self.prepare_surface(surface, idr) {
+                Ok(plan) => plan,
+                Err(error) => {
+                    (v.Release.unwrap())(surface);
+                    return Err(error);
+                }
+            };
             let mut output = vec![];
             let deadline = Instant::now() + Duration::from_millis(100);
             loop {
@@ -434,9 +655,11 @@ impl Encoder {
             self.in_flight.push_back(Submission {
                 pts: self.index,
                 started,
+                after_invalidation: plan.after_invalidation,
                 _capture: None,
                 _converted: None,
             });
+            self.references.accepted(self.index as u64 + 1, &plan);
             self.index += 1;
             output.extend(self.poll()?);
             Ok(output)
@@ -447,14 +670,59 @@ impl Encoder {
     fn set_bitrate(&mut self, bitrate: u32) -> Result<()> {
         if bitrate != self.bitrate {
             self.property("TargetBitrate", int(i64::from(bitrate) * 1000))?;
+            for suffix in ["PeakBitrate", "VBVBufferSize", "MaxAUSize"] {
+                let prefix = match self.codec {
+                    0 => "",
+                    1 => "Hevc",
+                    _ => "Av1",
+                };
+                let name = format!("{prefix}{suffix}");
+                unsafe {
+                    let mut current = int(0);
+                    let mut info = ptr::null();
+                    let table = &*(*self.component).pVtbl;
+                    if (table.GetProperty.unwrap())(
+                        self.component,
+                        wide(&name).as_ptr(),
+                        &mut current,
+                    ) == AMF_RESULT_AMF_OK
+                        && current.type_ == AMF_VARIANT_TYPE_AMF_VARIANT_INT64
+                        && current.__bindgen_anon_1.int64Value > 0
+                        && (table.GetPropertyInfo.unwrap())(
+                            self.component,
+                            wide(&name).as_ptr(),
+                            &mut info,
+                        ) == AMF_RESULT_AMF_OK
+                        && !info.is_null()
+                    {
+                        let mut scaled = current
+                            .__bindgen_anon_1
+                            .int64Value
+                            .saturating_mul(i64::from(bitrate))
+                            / i64::from(self.bitrate.max(1));
+                        if (*info).minValue.type_ == AMF_VARIANT_TYPE_AMF_VARIANT_INT64 {
+                            scaled = scaled.max((*info).minValue.__bindgen_anon_1.int64Value);
+                        }
+                        if (*info).maxValue.type_ == AMF_VARIANT_TYPE_AMF_VARIANT_INT64 {
+                            scaled = scaled.min((*info).maxValue.__bindgen_anon_1.int64Value);
+                        }
+                        if let Err(error) = self.property_raw(&name, int(scaled)) {
+                            tracing::debug!(%error,"AMF driver retains its existing rate-control buffer");
+                        }
+                    }
+                }
+            }
             self.bitrate = bitrate;
         }
         Ok(())
     }
+    pub fn accepts_gpu_device(&self, image: &GpuImage) -> bool {
+        self._device.device.as_raw() == image.gpu.device.as_raw()
+    }
     fn wait_capacity(&mut self) -> Result<Vec<Encoded>> {
         let mut output = self.poll()?;
         let deadline = Instant::now() + Duration::from_millis(100);
-        while self.in_flight.len() >= 8 {
+        while self.in_flight.len() >= 8 || self.ownership.retained() >= 8 {
             output.extend(self.poll()?);
             if Instant::now() >= deadline {
                 bail!("AMF GPU queue failed to drain");
@@ -486,40 +754,25 @@ impl Encoder {
                 source,
             )?);
         }
-        let (surface, converted) = self
-            .gpu_convert
+        self.gpu_convert
             .as_mut()
             .unwrap()
-            .convert(self.context, image)?;
+            .color
+            .set_luminance(self.luminance);
+        let (surface, converted) =
+            self.gpu_convert
+                .as_mut()
+                .unwrap()
+                .convert(self.context, image, &mut self.ownership)?;
         self.set_bitrate(bitrate)?;
         unsafe {
             let v = &*(*surface.0).pVtbl;
             (v.SetPts.unwrap())(surface.0, self.index);
-            (v.SetDuration.unwrap())(surface.0, 10_000_000 / i64::from(self.config.fps));
-            if idr {
-                let property = match self.codec {
-                    0 => "ForcePictureType",
-                    1 => "HevcForcePictureType",
-                    _ => "Av1ForceFrameType",
-                };
-                check((v.SetProperty.unwrap())(
-                    surface.0,
-                    wide(property).as_ptr(),
-                    int(if self.codec == 2 { 1 } else { 2 }),
-                ))?;
-                let headers: &[&str] = match self.codec {
-                    0 => &["InsertSPS", "InsertPPS"],
-                    1 => &["HevcInsertHeader"],
-                    _ => &[],
-                };
-                for property in headers {
-                    check((v.SetProperty.unwrap())(
-                        surface.0,
-                        wide(property).as_ptr(),
-                        crate::amf_gpu::boolean(true),
-                    ))?;
-                }
-            }
+            (v.SetDuration.unwrap())(
+                surface.0,
+                10_000_000_000 / i64::from(self.config.fps_millihz()),
+            );
+            let plan = self.prepare_surface(surface.0, idr)?;
             let deadline = Instant::now() + Duration::from_millis(100);
             loop {
                 let result = ((*(*self.component).pVtbl).SubmitInput.unwrap())(
@@ -541,9 +794,11 @@ impl Encoder {
             self.in_flight.push_back(Submission {
                 pts: self.index,
                 started,
+                after_invalidation: plan.after_invalidation,
                 _capture: Some(image.clone()),
                 _converted: Some(converted),
             });
+            self.references.accepted(self.index as u64 + 1, &plan);
             self.index += 1;
             output.extend(self.poll()?);
             Ok(output)
@@ -566,3 +821,6 @@ impl Drop for Encoder {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

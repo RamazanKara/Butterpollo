@@ -1,15 +1,25 @@
 //! Moonlight protocol and durable host state. No Windows or vendor SDK dependencies.
 pub mod audio;
 pub mod auth;
+pub mod bitstream;
+pub mod capture_policy;
 pub mod catalog;
 pub mod config;
 pub mod crypto;
+pub mod display_policy;
+pub mod edid;
+pub mod encoder_policy;
+pub mod framegen;
 pub mod input;
+pub mod input_policy;
+pub mod ltr;
 pub mod packet;
 pub mod pairing;
 pub mod pyrowave;
 pub mod remote;
 pub mod rtsp;
+pub mod rtx_policy;
 pub mod session;
 pub mod state;
+pub mod stream_policy;
 pub mod topology;

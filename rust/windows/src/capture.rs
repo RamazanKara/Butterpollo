@@ -3,7 +3,10 @@ use serde::Serialize;
 use std::time::{Duration, Instant};
 use windows::{
     Graphics::{
-        Capture::{Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession},
+        Capture::{
+            Direct3D11CaptureFrame, Direct3D11CaptureFramePool, GraphicsCaptureItem,
+            GraphicsCaptureSession,
+        },
         DirectX::{Direct3D11::IDirect3DDevice, DirectXPixelFormat},
     },
     Win32::{
@@ -89,6 +92,54 @@ pub fn displays() -> Result<Vec<Display>> {
     }
 }
 pub struct ComGuard;
+#[derive(serde::Serialize)]
+pub struct Gpu {
+    pub name: String,
+    pub vendor: u32,
+    pub dedicated_memory: u64,
+    pub luid: (u32, i32),
+    pub pnp_id: Option<String>,
+}
+fn adapter_pnp_id(luid: windows::Win32::Foundation::LUID) -> Option<String> {
+    use windows::Win32::Devices::Display::*;
+    let mut info = DISPLAYCONFIG_ADAPTER_NAME::default();
+    info.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_ADAPTER_NAME;
+    info.header.size = std::mem::size_of_val(&info) as u32;
+    info.header.adapterId = luid;
+    if unsafe { DisplayConfigGetDeviceInfo(&mut info.header) } != 0 {
+        return None;
+    }
+    let path = wide(&info.adapterDevicePath);
+    let path = path.strip_prefix(r"\\?\")?;
+    let mut parts = path.split('#');
+    let (bus, hardware, instance) = (parts.next()?, parts.next()?, parts.next()?);
+    if bus.is_empty() || hardware.is_empty() || instance.is_empty() {
+        return None;
+    }
+    Some(format!("{bus}\\{hardware}\\{instance}"))
+}
+pub fn gpus() -> Result<Vec<Gpu>> {
+    unsafe {
+        let factory: IDXGIFactory1 = CreateDXGIFactory1()?;
+        let mut result = Vec::new();
+        for index in 0..32 {
+            let Ok(adapter) = factory.EnumAdapters1(index) else {
+                break;
+            };
+            let info = adapter.GetDesc1()?;
+            if info.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 == 0 {
+                result.push(Gpu {
+                    name: wide(&info.Description),
+                    vendor: info.VendorId,
+                    dedicated_memory: info.DedicatedVideoMemory as u64,
+                    luid: (info.AdapterLuid.LowPart, info.AdapterLuid.HighPart),
+                    pnp_id: adapter_pnp_id(info.AdapterLuid),
+                });
+            }
+        }
+        Ok(result)
+    }
+}
 impl ComGuard {
     pub fn new() -> Result<Self> {
         unsafe {
@@ -165,9 +216,12 @@ pub struct Device {
 }
 impl Device {
     pub fn new(name: &str) -> Result<Self> {
+        Self::new_adapter(name, "", "")
+    }
+    pub fn new_adapter(name: &str, adapter_name: &str, pnp_id: &str) -> Result<Self> {
         unsafe {
             let choices = displays()?;
-            let display = choices
+            let mut display = choices
                 .iter()
                 .find(|d| d.display_name == name || d.device_id == name)
                 .or_else(|| choices.iter().find(|d| d.primary))
@@ -177,6 +231,39 @@ impl Device {
             let factory: IDXGIFactory1 = CreateDXGIFactory1()?;
             let adapter = factory.EnumAdapters1(display.adapter_index)?;
             let output = adapter.EnumOutputs(display.output_index)?.cast()?;
+            let adapter = if adapter_name.is_empty() && pnp_id.is_empty() {
+                adapter
+            } else {
+                let mut matches = Vec::new();
+                for index in 0..32 {
+                    let Ok(candidate) = factory.EnumAdapters1(index) else {
+                        break;
+                    };
+                    let desc = candidate.GetDesc1()?;
+                    if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0 {
+                        continue;
+                    }
+                    let matched = if !pnp_id.is_empty() {
+                        adapter_pnp_id(desc.AdapterLuid)
+                            .is_some_and(|id| id.eq_ignore_ascii_case(pnp_id))
+                    } else {
+                        wide(&desc.Description) == adapter_name
+                    };
+                    if matched {
+                        matches.push(candidate);
+                        if pnp_id.is_empty() {
+                            break;
+                        }
+                    }
+                }
+                if matches.len() != 1 {
+                    bail!(
+                        "configured GPU adapter was not resolved uniquely: {adapter_name} {pnp_id}"
+                    );
+                }
+                matches.remove(0)
+            };
+            display.adapter = wide(&adapter.GetDesc1()?.Description);
             let mut device = None;
             let mut context = None;
             D3D11CreateDevice(
@@ -213,7 +300,9 @@ impl Duplication {
         Self::new_format(name, false)
     }
     pub fn new_format(name: &str, hdr: bool) -> Result<Self> {
-        let gpu = Device::new(name)?;
+        Self::new_device(Device::new(name)?, hdr)
+    }
+    fn new_device(gpu: Device, hdr: bool) -> Result<Self> {
         let duplicate = unsafe {
             if hdr {
                 gpu.output.cast::<IDXGIOutput5>()?.DuplicateOutput1(
@@ -342,11 +431,15 @@ impl GpuImage {
 }
 
 #[derive(Default)]
-struct GpuPool {
+pub(crate) struct GpuPool {
     textures: Vec<std::sync::Arc<ID3D11Texture2D>>,
 }
 impl GpuPool {
-    fn copy(&mut self, gpu: &Device, source: &ID3D11Texture2D) -> Result<Option<GpuImage>> {
+    pub(crate) fn copy(
+        &mut self,
+        gpu: &Device,
+        source: &ID3D11Texture2D,
+    ) -> Result<Option<GpuImage>> {
         unsafe {
             let mut desc = D3D11_TEXTURE2D_DESC::default();
             source.GetDesc(&mut desc);
@@ -451,35 +544,90 @@ pub fn read_texture(
         })
     }
 }
+pub struct ClaimGrid {
+    pub anchor: Instant,
+    pub period: Duration,
+}
+fn nanos(at: Instant, origin: Instant) -> i64 {
+    if at >= origin {
+        at.duration_since(origin).as_nanos().min(i64::MAX as u128) as i64
+    } else {
+        -(origin.duration_since(at).as_nanos().min(i64::MAX as u128) as i64)
+    }
+}
 pub struct Wgc {
     gpu: Device,
     pool: Direct3D11CaptureFramePool,
     session: GraphicsCaptureSession,
     staging: Option<ID3D11Texture2D>,
     owned: GpuPool,
+    grid: Option<std::sync::Arc<std::sync::Mutex<ClaimGrid>>>,
+    intervals: butterpollo_core::capture_policy::Intervals,
+    origin: Instant,
+    last_publish: Instant,
+    held: Option<(Direct3D11CaptureFrame, Instant, Instant)>,
+    size: (i32, i32),
+    color_space: Option<DXGI_COLOR_SPACE_TYPE>,
+    color_check: Instant,
+}
+fn pin_capture_runtime() -> Result<()> {
+    use std::sync::OnceLock;
+    use windows::Win32::System::LibraryLoader::{
+        GET_MODULE_HANDLE_EX_FLAG_PIN, GetModuleHandleExW,
+    };
+    static PINNED: OnceLock<windows::core::Result<()>> = OnceLock::new();
+    // Closing a free-threaded pool does not join all of GraphicsCapture's workers.
+    // COM teardown can unload the DLL while one is still returning through it:
+    // https://github.com/robmikh/Win32CaptureSample/issues/99
+    // Keep only the system runtime loaded for the process lifetime; sessions,
+    // frame pools and their GPU resources still close and release normally.
+    PINNED
+        .get_or_init(|| unsafe {
+            let mut module = HMODULE::default();
+            GetModuleHandleExW(
+                GET_MODULE_HANDLE_EX_FLAG_PIN,
+                windows::core::w!("GraphicsCapture.dll"),
+                &mut module,
+            )
+        })
+        .clone()
+        .context("keep the Windows capture runtime loaded during asynchronous shutdown")
 }
 impl Wgc {
     pub fn new(name: &str) -> Result<Self> {
         Self::new_format(name, false)
     }
     pub fn new_format(name: &str, hdr: bool) -> Result<Self> {
+        Self::new_device(Device::new(name)?, hdr)
+    }
+    fn new_device(gpu: Device, hdr: bool) -> Result<Self> {
         unsafe {
-            let gpu = Device::new(name)?;
             let d = gpu.output.GetDesc()?;
+            let color_space = gpu
+                .output
+                .cast::<IDXGIOutput6>()
+                .and_then(|output| output.GetDesc1())
+                .map(|desc| desc.ColorSpace)
+                .ok();
+            let native_hdr = color_space
+                .map(|space| space == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020)
+                .unwrap_or(hdr);
             let interop: IGraphicsCaptureItemInterop =
                 windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
+            pin_capture_runtime()?;
             let item: GraphicsCaptureItem = interop.CreateForMonitor(d.Monitor)?;
             let dxgi: IDXGIDevice = gpu.device.cast()?;
             let winrt: IDirect3DDevice = CreateDirect3D11DeviceFromDXGIDevice(&dxgi)?.cast()?;
+            let size = item.Size()?;
             let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
                 &winrt,
-                if hdr {
+                if native_hdr {
                     DirectXPixelFormat::R16G16B16A16Float
                 } else {
                     DirectXPixelFormat::B8G8R8A8UIntNormalized
                 },
                 2,
-                item.Size()?,
+                size,
             )?;
             let session = pool.CreateCaptureSession(&item)?;
             session.SetIsCursorCaptureEnabled(true)?;
@@ -491,15 +639,25 @@ impl Wgc {
                 session,
                 staging: None,
                 owned: GpuPool::default(),
+                grid: None,
+                intervals: Default::default(),
+                origin: Instant::now(),
+                last_publish: Instant::now(),
+                held: None,
+                size: (size.Width, size.Height),
+                color_space,
+                color_check: Instant::now() + Duration::from_secs(1),
             })
         }
     }
     pub fn next_frame(&mut self) -> Result<Option<Image>> {
+        self.check_color_space()?;
         let frame = match self.pool.TryGetNextFrame() {
             Ok(f) => f,
             Err(_) => return Ok(None),
         };
         let result = (|| -> Result<Image> {
+            self.check_size(&frame)?;
             let surface = frame.Surface()?;
             let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
             let texture: ID3D11Texture2D = unsafe { access.GetInterface()? };
@@ -509,41 +667,141 @@ impl Wgc {
         result.map(Some)
     }
     pub fn next_gpu(&mut self) -> Result<Option<GpuImage>> {
-        let frame = match self.pool.TryGetNextFrame() {
-            Ok(frame) => frame,
-            Err(_) => return Ok(None),
-        };
+        self.check_color_space()?;
+        let now = Instant::now();
+        if let Ok(frame) = self.pool.TryGetNextFrame() {
+            if let Err(error) = self.check_size(&frame) {
+                let _ = frame.Close();
+                return Err(error);
+            }
+            let composition = self.intervals.observe(nanos(now, self.origin));
+            if let Some((previous, _, _)) = self.held.take() {
+                previous.Close()?;
+            }
+            let deadline = self.grid.as_ref().and_then(|grid| {
+                let grid = grid.lock().unwrap();
+                butterpollo_core::capture_policy::publication_deadline(
+                    grid.period.as_nanos().min(i64::MAX as u128) as i64,
+                    nanos(now, grid.anchor),
+                    composition,
+                    nanos(self.last_publish, grid.anchor),
+                )
+                .and_then(|deadline| {
+                    if deadline >= 0 {
+                        grid.anchor
+                            .checked_add(Duration::from_nanos(deadline as u64))
+                    } else {
+                        grid.anchor
+                            .checked_sub(Duration::from_nanos(deadline.unsigned_abs()))
+                    }
+                })
+            });
+            self.held = Some((frame, deadline.unwrap_or(now), now));
+        }
+        if self
+            .held
+            .as_ref()
+            .is_none_or(|(_, deadline, _)| *deadline > now)
+        {
+            return Ok(None);
+        }
+        let (frame, _, captured) = self.held.take().unwrap();
         let result = (|| {
             let surface = frame.Surface()?;
             let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
             let texture: ID3D11Texture2D = unsafe { access.GetInterface()? };
-            self.owned.copy(&self.gpu, &texture)
+            let mut image = self.owned.copy(&self.gpu, &texture)?;
+            if let Some(image) = image.as_mut() {
+                image.captured = captured;
+            }
+            Ok(image)
         })();
         frame.Close()?;
+        self.last_publish = now;
         result
     }
+    fn check_size(&self, frame: &Direct3D11CaptureFrame) -> Result<()> {
+        let size = frame.ContentSize()?;
+        if (size.Width, size.Height) != self.size {
+            bail!("capture output dimensions changed");
+        }
+        Ok(())
+    }
+    fn check_color_space(&mut self) -> Result<()> {
+        if Instant::now() < self.color_check {
+            return Ok(());
+        }
+        self.color_check = Instant::now() + Duration::from_secs(1);
+        let current = unsafe {
+            self.gpu
+                .output
+                .cast::<IDXGIOutput6>()
+                .and_then(|output| output.GetDesc1())
+        }
+        .map(|desc| desc.ColorSpace)
+        .ok();
+        if current.is_some() && current != self.color_space {
+            bail!("capture output color space changed");
+        }
+        Ok(())
+    }
 }
+
 impl Drop for Wgc {
     fn drop(&mut self) {
+        if let Some((frame, _, _)) = self.held.take() {
+            let _ = frame.Close();
+        }
         let _ = self.session.Close();
         let _ = self.pool.Close();
     }
 }
 pub enum Capture {
-    Wgc(Wgc),
+    Wgc(Box<Wgc>),
     Dxgi(Duplication),
 }
 impl Capture {
+    pub fn set_claim_grid(
+        &mut self,
+        grid: std::sync::Arc<std::sync::Mutex<ClaimGrid>>,
+        enabled: bool,
+    ) {
+        if let Self::Wgc(wgc) = self {
+            wgc.grid = enabled.then_some(grid);
+        }
+    }
+    pub fn publication_deadline(&self) -> Option<Instant> {
+        match self {
+            Self::Wgc(wgc) => wgc.held.as_ref().map(|(_, deadline, _)| *deadline),
+            _ => None,
+        }
+    }
     pub fn new(name: &str, kind: &str) -> Result<Self> {
         Self::new_format(name, kind, false)
     }
     pub fn new_format(name: &str, kind: &str, hdr: bool) -> Result<Self> {
+        Self::new_options(name, kind, hdr, &Default::default())
+    }
+    pub fn new_options(
+        name: &str,
+        kind: &str,
+        hdr: bool,
+        config: &butterpollo_core::config::Config,
+    ) -> Result<Self> {
+        let gpu = Device::new_adapter(
+            name,
+            config.get("adapter_name", ""),
+            config.get("adapter_pnp_id", ""),
+        )?;
+        if let Err(error) = crate::gpu_priority::configure(&gpu, config) {
+            tracing::debug!(%error, "GPU priority remains at the process default");
+        }
         match kind {
-            "wgc" => Ok(Self::Wgc(Wgc::new_format(name, hdr)?)),
-            "dxgi" => Ok(Self::Dxgi(Duplication::new_format(name, hdr)?)),
-            _ => Wgc::new_format(name, hdr)
-                .map(Self::Wgc)
-                .or_else(|_| Duplication::new_format(name, hdr).map(Self::Dxgi)),
+            "wgc" => Ok(Self::Wgc(Box::new(Wgc::new_device(gpu, hdr)?))),
+            "dxgi" => Ok(Self::Dxgi(Duplication::new_device(gpu, hdr)?)),
+            _ => Wgc::new_device(gpu.clone(), hdr)
+                .map(|capture| Self::Wgc(Box::new(capture)))
+                .or_else(|_| Duplication::new_device(gpu, hdr).map(Self::Dxgi)),
         }
     }
     pub fn next_frame(&mut self) -> Result<Option<Image>> {
@@ -557,5 +815,45 @@ impl Capture {
             Self::Wgc(w) => w.next_gpu(),
             Self::Dxgi(d) => d.next_gpu(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires an interactive Windows desktop with WGC support"]
+    fn wgc_reconnect_and_com_teardown_keep_the_runtime_loaded() -> Result<()> {
+        use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+        for cycle in 0..16 {
+            std::thread::spawn(move || -> Result<()> {
+                let com = ComGuard::new()?;
+                let mut capture = Wgc::new("")?;
+                let until = Instant::now() + Duration::from_secs(5);
+                loop {
+                    if let Some(frame) = capture.next_gpu()? {
+                        assert!(frame.width > 0 && frame.height > 0);
+                        break;
+                    }
+                    anyhow::ensure!(
+                        Instant::now() < until,
+                        "WGC reconnect {cycle} produced no frame"
+                    );
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                drop(capture);
+                drop(com);
+                // Reproduce the unload boundary before a subsequent stream/thread.
+                unsafe {
+                    CoFreeUnusedLibrariesEx(0, None);
+                    GetModuleHandleW(windows::core::w!("GraphicsCapture.dll"))?;
+                }
+                Ok(())
+            })
+            .join()
+            .expect("capture worker panicked")?;
+        }
+        Ok(())
     }
 }

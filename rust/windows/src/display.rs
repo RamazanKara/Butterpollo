@@ -35,6 +35,7 @@ fn header(
 #[derive(Clone, Serialize)]
 pub struct Monitor {
     pub device_id: String,
+    pub monitor_device_path: String,
     pub display_name: String,
     pub friendly_name: String,
     pub hdr_supported: bool,
@@ -47,17 +48,301 @@ pub struct Monitor {
     #[serde(skip)]
     pub source: u32,
 }
+impl Monitor {
+    pub fn matches(&self, hint: &str) -> bool {
+        [
+            &self.device_id,
+            &self.monitor_device_path,
+            &self.display_name,
+        ]
+        .iter()
+        .any(|value| value.eq_ignore_ascii_case(hint))
+    }
+}
+
+fn monitor_edid(path: &str) -> Vec<u8> {
+    let parts: Vec<_> = path.split('#').collect();
+    if parts.len() < 3 || parts[1..3].iter().any(|p| p.contains(['\\', '/'])) {
+        return Vec::new();
+    }
+    let key: Vec<u16> = format!(
+        "SYSTEM\\CurrentControlSet\\Enum\\DISPLAY\\{}\\{}\\Device Parameters\0",
+        parts[1], parts[2]
+    )
+    .encode_utf16()
+    .collect();
+    unsafe {
+        use windows::Win32::System::Registry::*;
+        let mut size = 0;
+        if RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR(key.as_ptr()),
+            windows::core::w!("EDID"),
+            RRF_RT_REG_BINARY,
+            None,
+            None,
+            Some(&mut size),
+        )
+        .is_err()
+            || size > 65536
+        {
+            return Vec::new();
+        }
+        let mut bytes = vec![0; size as usize];
+        if RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR(key.as_ptr()),
+            windows::core::w!("EDID"),
+            RRF_RT_REG_BINARY,
+            None,
+            Some(bytes.as_mut_ptr().cast()),
+            Some(&mut size),
+        )
+        .is_err()
+        {
+            return Vec::new();
+        }
+        bytes.truncate(size as usize);
+        bytes
+    }
+}
+fn monitor_instance(path: &str) -> Result<String> {
+    use windows::Win32::Devices::DeviceAndDriverInstallation::*;
+    let guid = GUID::from_u128(0xe6f07b5f_ee97_4a90_b076_33f57bf4eaa7);
+    unsafe {
+        let set = SetupDiGetClassDevsW(Some(&guid), PCWSTR::null(), None, DIGCF_DEVICEINTERFACE)?;
+        let result = (|| -> Result<String> {
+            let path: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
+            let mut interface = SP_DEVICE_INTERFACE_DATA {
+                cbSize: size_of::<SP_DEVICE_INTERFACE_DATA>() as u32,
+                ..Default::default()
+            };
+            SetupDiOpenDeviceInterfaceW(set, PCWSTR(path.as_ptr()), 0, Some(&mut interface))?;
+            let mut required = 0;
+            let mut device = SP_DEVINFO_DATA {
+                cbSize: size_of::<SP_DEVINFO_DATA>() as u32,
+                ..Default::default()
+            };
+            let _ = SetupDiGetDeviceInterfaceDetailW(
+                set,
+                &interface,
+                None,
+                0,
+                Some(&mut required),
+                None,
+            );
+            if !(8..=65536).contains(&required) {
+                bail!("invalid monitor interface size");
+            }
+            let mut buffer = vec![0u64; (required as usize).div_ceil(8)];
+            let detail = buffer
+                .as_mut_ptr()
+                .cast::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>();
+            (*detail).cbSize = size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>() as u32;
+            SetupDiGetDeviceInterfaceDetailW(
+                set,
+                &interface,
+                Some(detail),
+                required,
+                None,
+                Some(&mut device),
+            )?;
+            let _ = SetupDiGetDeviceInstanceIdW(set, &device, None, Some(&mut required));
+            if required == 0 || required > 32768 {
+                bail!("invalid monitor instance size");
+            }
+            let mut instance = vec![0u16; required as usize];
+            SetupDiGetDeviceInstanceIdW(set, &device, Some(&mut instance), None)?;
+            Ok(wide(&instance))
+        })();
+        let _ = SetupDiDestroyDeviceInfoList(set);
+        result
+    }
+}
+fn monitor_id(path: &str) -> String {
+    static IDS: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::BTreeMap<String, (Instant, String)>>,
+    > = std::sync::LazyLock::new(Default::default);
+    let mut ids = IDS.lock().unwrap();
+    ids.retain(|_, (at, _)| at.elapsed() < Duration::from_secs(1));
+    if let Some((_, id)) = ids.get(path) {
+        return id.clone();
+    }
+    let id = butterpollo_core::display_policy::legacy_device_id(
+        path,
+        monitor_instance(path).ok().as_deref(),
+        &monitor_edid(path),
+    );
+    if ids.len() < 512 {
+        ids.insert(path.into(), (Instant::now(), id.clone()));
+    }
+    id
+}
 pub struct Topology {
     paths: Vec<DISPLAYCONFIG_PATH_INFO>,
     modes: Vec<DISPLAYCONFIG_MODE_INFO>,
 }
+fn extended_paths(
+    candidates: &[Vec<DISPLAYCONFIG_PATH_INFO>],
+) -> Result<Vec<DISPLAYCONFIG_PATH_INFO>> {
+    type Source = (u32, i32, u32);
+    fn assign(
+        target: usize,
+        candidates: &[Vec<DISPLAYCONFIG_PATH_INFO>],
+        chosen: &mut [Option<DISPLAYCONFIG_PATH_INFO>],
+        occupied: &mut std::collections::BTreeMap<Source, usize>,
+        visited: &mut std::collections::BTreeSet<Source>,
+    ) -> bool {
+        for path in &candidates[target] {
+            let source = (
+                path.sourceInfo.adapterId.LowPart,
+                path.sourceInfo.adapterId.HighPart,
+                path.sourceInfo.id,
+            );
+            if !visited.insert(source) {
+                continue;
+            }
+            if occupied
+                .get(&source)
+                .copied()
+                .is_none_or(|previous| assign(previous, candidates, chosen, occupied, visited))
+            {
+                occupied.insert(source, target);
+                chosen[target] = Some(*path);
+                return true;
+            }
+        }
+        false
+    }
+    let mut chosen = vec![None; candidates.len()];
+    let mut occupied = std::collections::BTreeMap::new();
+    for target in 0..candidates.len() {
+        if !assign(
+            target,
+            candidates,
+            &mut chosen,
+            &mut occupied,
+            &mut Default::default(),
+        ) {
+            bail!("connected displays cannot be assigned independent desktop sources");
+        }
+    }
+    Ok(chosen.into_iter().flatten().collect())
+}
 impl Topology {
+    fn rotations(&self) -> std::collections::BTreeMap<String, u32> {
+        self.monitors()
+            .iter()
+            .filter_map(|m| {
+                self.paths
+                    .iter()
+                    .find(|p| p.targetInfo.adapterId == m.adapter && p.targetInfo.id == m.target)
+                    .map(|p| (m.device_id.clone(), p.targetInfo.rotation.0 as u32))
+            })
+            .collect()
+    }
+    fn set_rotations(&mut self, rotations: &std::collections::BTreeMap<String, u32>) -> Result<()> {
+        let monitors = self.monitors();
+        let mut changed = false;
+        for monitor in monitors {
+            if let Some(rotation) = rotations.get(&monitor.device_id) {
+                if !(1..=4).contains(rotation) {
+                    bail!("invalid saved display rotation");
+                }
+                if let Some(path) = self.paths.iter_mut().find(|p| {
+                    p.targetInfo.adapterId == monitor.adapter && p.targetInfo.id == monitor.target
+                }) && path.targetInfo.rotation.0 != *rotation as i32
+                {
+                    let swap = (path.targetInfo.rotation.0 - *rotation as i32).abs() % 2 != 0;
+                    if swap
+                        && let Some(mode) = self
+                            .modes
+                            .get_mut(unsafe { path.sourceInfo.Anonymous.modeInfoIdx } as usize)
+                        && mode.infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE
+                    {
+                        unsafe {
+                            std::mem::swap(
+                                &mut mode.Anonymous.sourceMode.width,
+                                &mut mode.Anonymous.sourceMode.height,
+                            );
+                        }
+                    }
+                    path.targetInfo.rotation = DISPLAYCONFIG_ROTATION(*rotation as i32);
+                    path.targetInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.restore()?;
+        }
+        Ok(())
+    }
+    fn clone_groups(&self) -> Vec<Vec<String>> {
+        let mut groups = std::collections::BTreeMap::<(u32, i32, u32), Vec<String>>::new();
+        for monitor in self.monitors() {
+            groups
+                .entry((
+                    monitor.adapter.LowPart,
+                    monitor.adapter.HighPart,
+                    monitor.source,
+                ))
+                .or_default()
+                .push(monitor.device_id);
+        }
+        groups
+            .into_values()
+            .filter(|group| group.len() > 1)
+            .collect()
+    }
+    fn restore_clone_groups(&mut self, groups: &[Vec<String>]) -> Result<()> {
+        let monitors = self.monitors();
+        let mut changed = false;
+        for group in groups {
+            let selected: Vec<_> = group
+                .iter()
+                .filter_map(|id| monitors.iter().find(|m| m.device_id == *id))
+                .collect();
+            let Some(first) = selected.first() else {
+                continue;
+            };
+            let source = self
+                .paths
+                .iter()
+                .find(|p| {
+                    p.targetInfo.adapterId == first.adapter && p.targetInfo.id == first.target
+                })
+                .context("clone source unavailable")?
+                .sourceInfo;
+            for monitor in &selected[1..] {
+                if monitor.adapter != first.adapter {
+                    bail!("clone targets now belong to different adapters");
+                }
+                let path = self
+                    .paths
+                    .iter_mut()
+                    .find(|p| {
+                        p.targetInfo.adapterId == monitor.adapter
+                            && p.targetInfo.id == monitor.target
+                    })
+                    .context("clone target unavailable")?;
+                path.sourceInfo = source;
+                path.targetInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+                changed = true;
+            }
+        }
+        if changed {
+            self.restore()?;
+        }
+        Ok(())
+    }
     pub fn nodes(&self) -> Result<Vec<butterpollo_core::topology::Node>> {
         use butterpollo_core::topology::{Kind, Mode, Node, Position};
         self.monitors()
             .into_iter()
             .map(|m| {
                 let mode = mode(&m.display_name)?;
+                let refresh = self.refresh(&m.device_id)?;
                 let position = unsafe { mode.Anonymous1.Anonymous2.dmPosition };
                 Ok(Node {
                     id: m.device_id.clone(),
@@ -73,7 +358,7 @@ impl Topology {
                     mode: Mode {
                         width: mode.dmPelsWidth,
                         height: mode.dmPelsHeight,
-                        refresh_hz: f64::from(mode.dmDisplayFrequency),
+                        refresh_hz: f64::from(refresh.0) / 1000.0,
                     },
                 })
             })
@@ -110,17 +395,25 @@ impl Topology {
         self.restore()
     }
     pub fn query() -> Result<Self> {
+        Self::query_with_flags(QDC_ONLY_ACTIVE_PATHS)
+    }
+    pub fn query_all() -> Result<Self> {
+        Self::query_with_flags(QDC_ALL_PATHS)
+    }
+    fn query_with_flags(flags: QUERY_DISPLAY_CONFIG_FLAGS) -> Result<Self> {
         unsafe {
             for _ in 0..8 {
                 let (mut np, mut nm) = (0, 0);
-                GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut np, &mut nm).ok()?;
-                if np > 256 || nm > 768 {
-                    bail!("display configuration exceeds the limit");
+                GetDisplayConfigBufferSizes(flags, &mut np, &mut nm).ok()?;
+                // QDC_ALL_PATHS includes every source/target combination, not
+                // just attached monitors. VDDs can legitimately exceed 256.
+                if np > 16384 || nm > 32768 {
+                    bail!("display configuration exceeds the limit: {np} paths, {nm} modes");
                 }
                 let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); np as usize];
                 let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); nm as usize];
                 let result = QueryDisplayConfig(
-                    QDC_ONLY_ACTIVE_PATHS,
+                    flags,
                     &mut np,
                     paths.as_mut_ptr(),
                     &mut nm,
@@ -147,14 +440,133 @@ impl Topology {
             ))
         }
     }
+    pub fn refresh(&self, id: &str) -> Result<butterpollo_core::framegen::Rate> {
+        let monitor = self
+            .monitors()
+            .into_iter()
+            .find(|m| m.device_id == id)
+            .context("display unavailable")?;
+        let path = self
+            .paths
+            .iter()
+            .find(|p| {
+                p.targetInfo.adapterId == monitor.adapter && p.targetInfo.id == monitor.target
+            })
+            .context("display path unavailable")?;
+        let rate = path.targetInfo.refreshRate;
+        if rate.Denominator == 0 {
+            bail!("display refresh has no denominator");
+        }
+        Ok(butterpollo_core::framegen::Rate(u32::try_from(
+            (u64::from(rate.Numerator) * 1000 + u64::from(rate.Denominator) / 2)
+                / u64::from(rate.Denominator),
+        )?))
+    }
+    pub fn set_mode_rate(
+        name: &str,
+        width: u32,
+        height: u32,
+        rate: butterpollo_core::framegen::Rate,
+    ) -> Result<()> {
+        if width == 0 || height == 0 || rate.0 == 0 {
+            bail!("invalid display mode");
+        }
+        let mut topology = Self::query()?;
+        let monitor = topology
+            .monitors()
+            .into_iter()
+            .find(|m| m.matches(name))
+            .context("display unavailable")?;
+        let (num, den) = rate.rational();
+        for path in &mut topology.paths {
+            if path.targetInfo.adapterId == monitor.adapter && path.targetInfo.id == monitor.target
+            {
+                let index = unsafe { path.sourceInfo.Anonymous.modeInfoIdx } as usize;
+                let source = topology
+                    .modes
+                    .get_mut(index)
+                    .context("display source mode unavailable")?;
+                if source.infoType != DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE {
+                    bail!("invalid source mode");
+                }
+                source.Anonymous.sourceMode.width = width;
+                source.Anonymous.sourceMode.height = height;
+                path.targetInfo.refreshRate = DISPLAYCONFIG_RATIONAL {
+                    Numerator: num,
+                    Denominator: den,
+                };
+                path.targetInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+            }
+        }
+        topology.restore()
+    }
+    pub fn set_active(ids: &[String]) -> Result<()> {
+        if ids.is_empty() {
+            bail!("display topology cannot be empty");
+        }
+        let topology = Self::query_all()?;
+        let mut candidates_by_target = Vec::new();
+        for id in ids {
+            let mut candidates = topology
+                .paths
+                .iter()
+                .filter(|path| unsafe {
+                    let mut name = DISPLAYCONFIG_TARGET_DEVICE_NAME {
+                        header: header(
+                            DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
+                            size_of::<DISPLAYCONFIG_TARGET_DEVICE_NAME>(),
+                            path.targetInfo.adapterId,
+                            path.targetInfo.id,
+                        ),
+                        ..Default::default()
+                    };
+                    DisplayConfigGetDeviceInfo(&mut name.header) == 0
+                        && (wide(&name.monitorDevicePath).eq_ignore_ascii_case(id)
+                            || monitor_id(&wide(&name.monitorDevicePath)).eq_ignore_ascii_case(id))
+                        && path.targetInfo.targetAvailable.as_bool()
+                })
+                .copied()
+                .collect::<Vec<_>>();
+            candidates.sort_by_key(|p| p.flags & DISPLAYCONFIG_PATH_ACTIVE == 0);
+            if !candidates.is_empty() {
+                candidates_by_target.push(candidates);
+            }
+        }
+        let mut paths = extended_paths(&candidates_by_target)?;
+        for path in &mut paths {
+            path.flags = DISPLAYCONFIG_PATH_ACTIVE;
+            path.sourceInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+            path.targetInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+        }
+        if paths.is_empty() {
+            bail!("no saved display targets are currently connected");
+        }
+        unsafe {
+            check(SetDisplayConfig(
+                Some(&paths),
+                None,
+                SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES,
+            ))
+        }
+    }
     pub fn monitors(&self) -> Vec<Monitor> {
         let primary = crate::capture::displays()
             .unwrap_or_default()
             .into_iter()
             .find(|d| d.primary)
             .map(|d| d.display_name);
-        self.paths
-            .iter()
+        let mut paths: Vec<_> = self.paths.iter().collect();
+        paths.sort_by_key(|p| p.flags & DISPLAYCONFIG_PATH_ACTIVE == 0);
+        let mut targets = std::collections::BTreeSet::new();
+        paths
+            .into_iter()
+            .filter(|p| {
+                targets.insert((
+                    p.targetInfo.adapterId.LowPart,
+                    p.targetInfo.adapterId.HighPart,
+                    p.targetInfo.id,
+                ))
+            })
             .filter_map(|p| unsafe {
                 let mut source = DISPLAYCONFIG_SOURCE_DEVICE_NAME {
                     header: header(
@@ -194,8 +606,10 @@ impl Topology {
                     0
                 };
                 let display_name = wide(&source.viewGdiDeviceName);
+                let monitor_device_path = wide(&target.monitorDevicePath);
                 Some(Monitor {
-                    device_id: wide(&target.monitorDevicePath),
+                    device_id: monitor_id(&monitor_device_path),
+                    monitor_device_path,
                     friendly_name: wide(&target.monitorFriendlyDeviceName),
                     primary: primary.as_ref() == Some(&display_name),
                     display_name,
@@ -212,14 +626,208 @@ impl Topology {
 pub fn monitors() -> Result<Vec<Monitor>> {
     Ok(Topology::query()?.monitors())
 }
+pub fn edid_refresh(hint: &str, targets: &[u32]) -> Result<serde_json::Value> {
+    let monitors = Topology::query_all()?.monitors();
+    let monitor = monitors
+        .iter()
+        .find(|monitor| monitor.matches(hint) || monitor.friendly_name.eq_ignore_ascii_case(hint))
+        .context("display device not found for EDID refresh validation")?;
+    let parts: Vec<_> = monitor.monitor_device_path.split('#').collect();
+    let mut bytes = Vec::new();
+    if parts.len() >= 3 && parts[1..3].iter().all(|part| !part.contains(['\\', '/'])) {
+        let key = format!(
+            "SYSTEM\\CurrentControlSet\\Enum\\DISPLAY\\{}\\{}\\Device Parameters",
+            parts[1], parts[2]
+        );
+        let key: Vec<_> = key.encode_utf16().chain(Some(0)).collect();
+        let name: Vec<_> = "EDID\0".encode_utf16().collect();
+        let mut size = 0u32;
+        unsafe {
+            use windows::Win32::System::Registry::*;
+            if RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                PCWSTR(key.as_ptr()),
+                PCWSTR(name.as_ptr()),
+                RRF_RT_REG_BINARY,
+                None,
+                None,
+                Some(&mut size),
+            )
+            .is_ok()
+                && size <= 65536
+            {
+                bytes.resize(size as usize, 0);
+                if RegGetValueW(
+                    HKEY_LOCAL_MACHINE,
+                    PCWSTR(key.as_ptr()),
+                    PCWSTR(name.as_ptr()),
+                    RRF_RT_REG_BINARY,
+                    None,
+                    Some(bytes.as_mut_ptr().cast()),
+                    Some(&mut size),
+                )
+                .is_err()
+                {
+                    bytes.clear();
+                }
+            }
+        }
+    }
+    let info = butterpollo_core::edid::Refresh::parse(&bytes);
+    let mut response = serde_json::to_value(&info)?;
+    response["status"] = true.into();
+    response["device_id"] = monitor.device_id.clone().into();
+    response["device_label"] = monitor.friendly_name.clone().into();
+    response["targets"] = targets
+        .iter()
+        .map(|hz| {
+            let (supported, method) = info.support(*hz);
+            serde_json::json!({"hz":hz,"supported":supported,"method":method})
+        })
+        .collect::<Vec<_>>()
+        .into();
+    Ok(response)
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     pub version: u32,
     pub nodes: Vec<butterpollo_core::topology::Node>,
     pub hdr: std::collections::BTreeMap<String, bool>,
+    #[serde(default)]
+    pub clone_groups: Vec<Vec<String>>,
+    #[serde(default)]
+    pub scale: std::collections::BTreeMap<String, u32>,
+    #[serde(default)]
+    pub rotation: std::collections::BTreeMap<String, u32>,
 }
 impl Snapshot {
+    pub fn read(path: &std::path::Path) -> Result<Self> {
+        if std::fs::metadata(path)?.len() > 4 * 1024 * 1024 {
+            bail!("display snapshot exceeds its limit");
+        }
+        let value = serde_json::from_slice(&std::fs::read(path)?)?;
+        let mut snapshot = Self::decode(&value)?;
+        let available = Topology::query_all()?.monitors();
+        let normalized = |id: &str| {
+            available
+                .iter()
+                .find(|m| m.matches(id))
+                .map_or_else(|| id.to_owned(), |m| m.device_id.clone())
+        };
+        for node in &mut snapshot.nodes {
+            node.id = normalized(&node.id);
+            node.device_id = normalized(&node.device_id);
+        }
+        snapshot.hdr = snapshot
+            .hdr
+            .into_iter()
+            .map(|(id, v)| (normalized(&id), v))
+            .collect();
+        snapshot.scale = snapshot
+            .scale
+            .into_iter()
+            .map(|(id, v)| (normalized(&id), v))
+            .collect();
+        snapshot.rotation = snapshot
+            .rotation
+            .into_iter()
+            .map(|(id, v)| (normalized(&id), v))
+            .collect();
+        snapshot.clone_groups = snapshot
+            .clone_groups
+            .iter()
+            .map(|group| group.iter().map(|id| normalized(id)).collect())
+            .collect();
+        Ok(snapshot)
+    }
+    pub fn decode(value: &serde_json::Value) -> Result<Self> {
+        if value.get("version").is_some() {
+            let snapshot: Self = serde_json::from_value(value.clone())?;
+            if snapshot.version != 1
+                || snapshot.nodes.is_empty()
+                || snapshot.nodes.len() > 64
+                || snapshot.nodes.iter().any(|node| {
+                    node.mode.width == 0
+                        || node.mode.height == 0
+                        || !node.mode.refresh_hz.is_finite()
+                        || !(1.0..=1000.0).contains(&node.mode.refresh_hz)
+                })
+            {
+                bail!("invalid Rust display snapshot");
+            }
+            return Ok(snapshot);
+        }
+        use butterpollo_core::topology::{Kind, Mode, Node, Position};
+        let groups: Vec<Vec<String>> = serde_json::from_value(
+            value
+                .get("topology")
+                .cloned()
+                .context("saved display topology is missing")?,
+        )?;
+        let modes = value["modes"]
+            .as_object()
+            .context("saved display modes are missing")?;
+        if groups.len() > 64 || modes.len() > 64 {
+            bail!("saved display count exceeds its limit");
+        }
+        let active: std::collections::BTreeSet<_> = groups.iter().flatten().collect();
+        let mut snapshot = Self {
+            version: 1,
+            nodes: vec![],
+            hdr: Default::default(),
+            clone_groups: groups.iter().filter(|g| g.len() > 1).cloned().collect(),
+            scale: Default::default(),
+            rotation: Default::default(),
+        };
+        for (id, mode) in modes {
+            let number = |key| mode[key].as_u64().context("invalid saved display mode");
+            let (width, height, num, den) = (
+                u32::try_from(number("w")?)?,
+                u32::try_from(number("h")?)?,
+                number("num")?,
+                number("den")?,
+            );
+            if width == 0 || height == 0 || width > 16384 || height > 16384 || den == 0 || num == 0
+            {
+                bail!("invalid saved display mode");
+            }
+            let x = i32::try_from(value["origins"][id]["x"].as_i64().unwrap_or(0))?;
+            let y = i32::try_from(value["origins"][id]["y"].as_i64().unwrap_or(0))?;
+            snapshot.nodes.push(Node {
+                id: id.clone(),
+                device_id: id.clone(),
+                label: id.clone(),
+                kind: Kind::Physical,
+                active: active.contains(id),
+                primary: value["primary"].as_str() == Some(id),
+                desired_position: Position { x, y },
+                mode: Mode {
+                    width,
+                    height,
+                    refresh_hz: num as f64 / den as f64,
+                },
+            });
+            if let Some(enabled) = match value["hdr"][id].as_str() {
+                Some("on") => Some(true),
+                Some("off") => Some(false),
+                _ => value["hdr"][id].as_bool(),
+            } {
+                snapshot.hdr.insert(id.clone(), enabled);
+            }
+            if let Some(degrees) = value["layouts"][id]["rotation"].as_u64()
+                && matches!(degrees, 0 | 90 | 180 | 270)
+            {
+                snapshot
+                    .rotation
+                    .insert(id.clone(), degrees as u32 / 90 + 1);
+            }
+        }
+        if snapshot.nodes.is_empty() {
+            bail!("saved display snapshot is empty");
+        }
+        Ok(snapshot)
+    }
     pub fn capture() -> Result<Self> {
         let topology = Topology::query()?;
         Ok(Self {
@@ -230,34 +838,181 @@ impl Snapshot {
                 .into_iter()
                 .map(|m| (m.device_id, m.hdr_enabled))
                 .collect(),
+            rotation: topology.rotations(),
+            clone_groups: topology.clone_groups(),
+            scale: topology
+                .monitors()
+                .iter()
+                .filter_map(|m| {
+                    dpi_scale(m)
+                        .ok()
+                        .map(|percent| (m.device_id.clone(), percent))
+                })
+                .collect(),
         })
     }
     pub fn restore(&self) -> Result<()> {
+        self.restore_excluding(&[])
+    }
+    pub fn restore_excluding(&self, excluded: &[String]) -> Result<()> {
         if self.version != 1 {
             bail!("unsupported Rust display snapshot version");
         }
+        let current = Topology::query()?;
+        let available = Topology::query_all()?.monitors();
+        let preserve = |id: &str| excluded.iter().any(|e| id.eq_ignore_ascii_case(e));
+        let mut ids = self
+            .nodes
+            .iter()
+            .filter(|n| {
+                n.active
+                    && !preserve(&n.device_id)
+                    && available.iter().any(|m| m.device_id == n.device_id)
+            })
+            .map(|n| n.device_id.clone())
+            .collect::<Vec<_>>();
+        ids.extend(
+            current
+                .monitors()
+                .iter()
+                .filter(|m| preserve(&m.device_id))
+                .map(|m| m.device_id.clone()),
+        );
+        Topology::set_active(&ids)?;
+        Topology::query()?.set_rotations(
+            &self
+                .rotation
+                .iter()
+                .filter(|(id, _)| !preserve(id))
+                .map(|(id, r)| (id.clone(), *r))
+                .collect(),
+        )?;
         let monitors = monitors()?;
         for n in &self.nodes {
+            if preserve(&n.device_id) {
+                continue;
+            }
             if let Some(m) = monitors.iter().find(|m| m.device_id == n.device_id) {
-                set_mode(
+                Topology::set_mode_rate(
                     &m.display_name,
                     n.mode.width,
                     n.mode.height,
-                    n.mode.refresh_hz.round() as u32,
+                    butterpollo_core::framegen::Rate((n.mode.refresh_hz * 1000.0).round() as u32),
                 )?;
                 if let Some(enabled) = self.hdr.get(&n.device_id) {
                     set_hdr(m, *enabled)?;
                 }
+                if let Some(percent) = self.scale.get(&n.device_id) {
+                    set_dpi_scale(m, *percent)?;
+                }
             }
         }
-        Topology::query()?.set_positions(
+        let mut topology = Topology::query()?;
+        topology.set_positions(
             &self
                 .nodes
                 .iter()
+                .filter(|n| !preserve(&n.device_id))
                 .map(|n| (n.device_id.clone(), n.desired_position))
                 .collect(),
+        )?;
+        topology = Topology::query()?;
+        topology.restore_clone_groups(
+            &self
+                .clone_groups
+                .iter()
+                .filter(|group| group.iter().all(|id| !preserve(id)))
+                .cloned()
+                .collect::<Vec<_>>(),
         )
     }
+}
+
+const SCALES: [u32; 12] = [100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500];
+#[repr(C)]
+struct DpiGet {
+    header: DISPLAYCONFIG_DEVICE_INFO_HEADER,
+    min: i32,
+    current: i32,
+    max: i32,
+}
+#[repr(C)]
+struct DpiSet {
+    header: DISPLAYCONFIG_DEVICE_INFO_HEADER,
+    relative: i32,
+}
+fn dpi_query(monitor: &Monitor) -> Result<DpiGet> {
+    let mut value = DpiGet {
+        header: header(
+            DISPLAYCONFIG_DEVICE_INFO_TYPE(-3),
+            size_of::<DpiGet>(),
+            monitor.adapter,
+            monitor.source,
+        ),
+        min: 0,
+        current: 0,
+        max: 0,
+    };
+    unsafe {
+        check(DisplayConfigGetDeviceInfo(&mut value.header))?;
+    }
+    Ok(value)
+}
+pub fn dpi_scale(monitor: &Monitor) -> Result<u32> {
+    let value = dpi_query(monitor)?;
+    let index = i64::from(value.current) - i64::from(value.min);
+    SCALES
+        .get(usize::try_from(index)?)
+        .copied()
+        .context("Windows reports an unknown DPI scale")
+}
+pub fn set_dpi_scale(monitor: &Monitor, percent: u32) -> Result<()> {
+    let value = dpi_query(monitor)?;
+    let desired = SCALES
+        .iter()
+        .position(|p| *p == percent)
+        .context("unsupported Windows DPI scale")? as i64
+        + i64::from(value.min);
+    if desired < i64::from(value.min) || desired > i64::from(value.max) {
+        bail!("requested DPI scale is outside this display's range");
+    }
+    if desired == i64::from(value.current) {
+        return Ok(());
+    }
+    let set = DpiSet {
+        header: header(
+            DISPLAYCONFIG_DEVICE_INFO_TYPE(-4),
+            size_of::<DpiSet>(),
+            monitor.adapter,
+            monitor.source,
+        ),
+        relative: desired as i32,
+    };
+    unsafe { check(DisplayConfigSetDeviceInfo(&set.header)) }
+}
+pub fn virtual_scale(output: &str, configured: i64, width: u32, height: u32) -> Result<()> {
+    if configured == 0 {
+        return Ok(());
+    }
+    let monitors = monitors()?;
+    let monitor = monitors
+        .iter()
+        .find(|m| m.display_name == output)
+        .context("virtual display is unavailable for scaling")?;
+    let desired = if configured < 0 {
+        let ideal = f64::from(width.min(height)) * 100.0 / 864.0;
+        *SCALES
+            .iter()
+            .min_by(|a, b| {
+                (f64::from(**a) - ideal)
+                    .abs()
+                    .total_cmp(&(f64::from(**b) - ideal).abs())
+            })
+            .unwrap()
+    } else {
+        u32::try_from(configured)?
+    };
+    set_dpi_scale(monitor, desired)
 }
 
 type PositionChanges = std::collections::BTreeMap<
@@ -460,11 +1215,59 @@ impl Drop for Driver {
 pub fn virtual_display_available() -> bool {
     Driver::open().is_ok()
 }
-fn display_label() -> [u8; 32] {
-    let name = b"Butterpollo Rust";
+pub fn virtual_display_status() -> serde_json::Value {
+    match Driver::open() {
+        Ok(_) => serde_json::json!({"capable":true,"ready":true,"reason":"","protocol":"3.6+"}),
+        Err(error) => {
+            serde_json::json!({"capable":false,"ready":false,"reason":format!("{error:#}"),"protocol":"3.6+"})
+        }
+    }
+}
+fn display_label(name: &str) -> [u8; 32] {
     let mut label = [0u8; 32];
-    label[..name.len()].copy_from_slice(name);
+    let name: Vec<_> = name
+        .bytes()
+        .filter(|c| (0x20..=0x7e).contains(c))
+        .take(31)
+        .collect();
+    let end = name.iter().rposition(|c| *c != b' ').map_or(0, |n| n + 1);
+    if end == 0 {
+        label[..b"Butterpollo".len()].copy_from_slice(b"Butterpollo");
+    } else {
+        label[..end].copy_from_slice(&name[..end]);
+    }
     label
+}
+#[derive(Clone, Debug)]
+pub struct VirtualOptions {
+    pub label: String,
+    pub peak_nits: u32,
+}
+impl Default for VirtualOptions {
+    fn default() -> Self {
+        Self {
+            label: "Butterpollo".into(),
+            peak_nits: 1000,
+        }
+    }
+}
+fn temporary_request(
+    lease: u64,
+    id: u64,
+    mode: (u32, u32, u32),
+    options: &VirtualOptions,
+) -> Vec<u8> {
+    let mut request = NAMESPACE.to_vec();
+    request.extend_from_slice(&lease.to_le_bytes());
+    request.extend_from_slice(&id.to_le_bytes());
+    for value in [mode.0, mode.1, 600, 340, mode.2, 10000] {
+        request.extend_from_slice(&value.to_le_bytes());
+    }
+    request.extend_from_slice(&display_label(&options.label));
+    request.extend_from_slice(&0u32.to_le_bytes()); // Retain Windows identity across sessions.
+    request.extend_from_slice(&options.peak_nits.clamp(400, 2000).to_le_bytes());
+    request.extend_from_slice(&butterpollo_core::crypto::random::<32>());
+    request
 }
 fn permanent_request(count: u32) -> Result<Vec<u8>> {
     if count > 4 {
@@ -474,7 +1277,7 @@ fn permanent_request(count: u32) -> Result<Vec<u8>> {
     for value in [count, 0, 1920, 1080, 600, 340, 60000] {
         request.extend_from_slice(&value.to_le_bytes());
     }
-    request.extend_from_slice(&display_label());
+    request.extend_from_slice(&display_label("Butterpollo"));
     Ok(request)
 }
 fn permanent_response(bytes: &[u8]) -> Result<u32> {
@@ -527,6 +1330,8 @@ pub struct VirtualDisplay {
     id: u64,
     last_feed: Instant,
     mode: (u32, u32, u32),
+    options: VirtualOptions,
+    generation: u64,
 }
 // Driver IOCTLs use a thread-safe Windows device handle; shared access is
 // serialized by the enclosing mutex, including feed and final teardown.
@@ -535,7 +1340,13 @@ type DisplayLease = std::sync::Arc<std::sync::Mutex<VirtualDisplay>>;
 static DISPLAYS: std::sync::Mutex<
     std::collections::BTreeMap<String, std::sync::Weak<std::sync::Mutex<VirtualDisplay>>>,
 > = std::sync::Mutex::new(std::collections::BTreeMap::new());
-fn display_lease(id: &str, width: u32, height: u32, fps: u32) -> Result<DisplayLease> {
+fn display_lease(
+    id: &str,
+    width: u32,
+    height: u32,
+    fps: u32,
+    options: &VirtualOptions,
+) -> Result<DisplayLease> {
     let mut displays = DISPLAYS.lock().unwrap();
     displays.retain(|_, lease| lease.strong_count() != 0);
     if let Some(display) = displays.get(id).and_then(std::sync::Weak::upgrade) {
@@ -544,42 +1355,47 @@ fn display_lease(id: &str, width: u32, height: u32, fps: u32) -> Result<DisplayL
         }
         return Ok(display);
     }
-    let display = std::sync::Arc::new(std::sync::Mutex::new(VirtualDisplay::create(
-        id, width, height, fps,
+    let display = std::sync::Arc::new(std::sync::Mutex::new(VirtualDisplay::create_options(
+        id,
+        width,
+        height,
+        fps,
+        options.clone(),
     )?));
     displays.insert(id.into(), std::sync::Arc::downgrade(&display));
     Ok(display)
 }
 impl VirtualDisplay {
     pub fn create(stable_id: &str, width: u32, height: u32, fps: u32) -> Result<Self> {
-        if !(320..=7680).contains(&width) || !(200..=4320).contains(&height) || fps == 0 {
+        Self::create_rate(
+            stable_id,
+            width,
+            height,
+            fps.checked_mul(1000).context("refresh overflow")?,
+        )
+    }
+    pub fn create_rate(stable_id: &str, width: u32, height: u32, fps: u32) -> Result<Self> {
+        Self::create_options(stable_id, width, height, fps, VirtualOptions::default())
+    }
+    pub fn create_options(
+        stable_id: &str,
+        width: u32,
+        height: u32,
+        fps: u32,
+        options: VirtualOptions,
+    ) -> Result<Self> {
+        if !(320..=7680).contains(&width)
+            || !(200..=4320).contains(&height)
+            || !(1000..=1_000_000).contains(&fps)
+        {
             bail!("virtual display mode is outside the driver limits");
         }
         let driver = Driver::open()?;
         let lease = (u64::from_le_bytes(butterpollo_core::crypto::random())
             & 0x1fff_ffff_ffff_ffff)
             | 0x6000_0000_0000_0000;
-        let mut id = 0xcbf29ce484222325u64;
-        for b in stable_id.bytes() {
-            id = (id ^ u64::from(b)).wrapping_mul(0x100000001b3);
-        }
-        let mut request = NAMESPACE.to_vec();
-        request.extend_from_slice(&lease.to_le_bytes());
-        request.extend_from_slice(&id.to_le_bytes());
-        for value in [
-            width,
-            height,
-            600,
-            340,
-            fps.checked_mul(1000).context("refresh overflow")?,
-            10000,
-        ] {
-            request.extend_from_slice(&value.to_le_bytes());
-        }
-        request.extend_from_slice(&display_label());
-        request.extend_from_slice(&1u32.to_le_bytes());
-        request.extend_from_slice(&1000u32.to_le_bytes());
-        request.extend_from_slice(&butterpollo_core::crypto::random::<32>());
+        let id = butterpollo_core::display_policy::virtual_display_id(stable_id);
+        let request = temporary_request(lease, id, (width, height, fps), &options);
         let result = driver.ioctl(0x90c, 3, &request, 56)?;
         let mut display = Self {
             driver,
@@ -588,11 +1404,17 @@ impl VirtualDisplay {
             id,
             last_feed: Instant::now(),
             mode: (width, height, fps),
+            options,
+            generation: 0,
         };
+        display.resolve(&result)?;
+        Ok(display)
+    }
+    fn resolve(&mut self, result: &[u8]) -> Result<()> {
         if result.len() != 56
             || result[..16] != NAMESPACE
-            || result[16..24] != lease.to_le_bytes()
-            || result[24..32] != id.to_le_bytes()
+            || result[16..24] != self.lease.to_le_bytes()
+            || result[24..32] != self.id.to_le_bytes()
         {
             bail!("invalid virtual display identity response");
         }
@@ -608,22 +1430,43 @@ impl VirtualDisplay {
                     .into_iter()
                     .find(|m| m.adapter == luid && m.target == target)
             {
-                display.name = m.display_name;
-                return Ok(display);
+                self.name = m.display_name;
+                self.last_feed = Instant::now();
+                return Ok(());
             }
-            display.feed()?;
+            if self.last_feed.elapsed() >= Duration::from_secs(1) {
+                self.renew()?;
+                self.last_feed = Instant::now();
+            }
             std::thread::sleep(Duration::from_millis(50));
         }
         bail!("virtual display did not become active before the deadline")
     }
+    fn renew(&mut self) -> Result<()> {
+        let mut request = NAMESPACE.to_vec();
+        request.extend_from_slice(&self.lease.to_le_bytes());
+        request.extend_from_slice(&10000u32.to_le_bytes());
+        request.extend_from_slice(&0u32.to_le_bytes());
+        self.driver.ioctl(0x903, 3, &request, 0)?;
+        Ok(())
+    }
     pub fn feed(&mut self) -> Result<()> {
         if self.last_feed.elapsed() >= Duration::from_secs(1) {
-            let mut request = NAMESPACE.to_vec();
-            request.extend_from_slice(&self.lease.to_le_bytes());
-            request.extend_from_slice(&10000u32.to_le_bytes());
-            request.extend_from_slice(&0u32.to_le_bytes());
-            self.driver.ioctl(0x903, 3, &request, 0)?;
             self.last_feed = Instant::now();
+            let renewed = self.renew();
+            let present = monitors().map(|m| m.iter().any(|m| m.display_name == self.name));
+            if renewed.is_ok() && present? {
+                return Ok(());
+            }
+            // Recreate with the same owner lease and stable display ID. The
+            // driver can renew an existing owned monitor or recover an expired
+            // one, without adopting an unrelated display with the same name.
+            self.driver = Driver::open()?;
+            let request = temporary_request(self.lease, self.id, self.mode, &self.options);
+            let response = self.driver.ioctl(0x90c, 3, &request, 56)?;
+            self.resolve(&response)?;
+            self.generation = self.generation.wrapping_add(1);
+            tracing::info!(output=%self.name, "owned virtual display recovered");
         }
         Ok(())
     }
@@ -646,8 +1489,8 @@ impl Drop for VirtualDisplay {
 // cannot change the display underneath another client.
 struct Settings {
     users: usize,
-    mode: Option<(DEVMODEW, (u32, u32, u32))>,
-    color: Option<(Monitor, bool)>,
+    mode: Option<(DEVMODEW, butterpollo_core::framegen::Rate, (u32, u32, u32))>,
+    color: Option<(Monitor, bool, bool)>,
 }
 static SETTINGS: std::sync::Mutex<std::collections::BTreeMap<String, Settings>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
@@ -655,6 +1498,56 @@ pub struct Guard {
     pub output: String,
     virtual_display: Option<DisplayLease>,
     identity: String,
+    generation: u64,
+    hdr: Option<bool>,
+}
+pub fn highest_refresh(
+    output: &str,
+    resolution: Option<(u32, u32)>,
+) -> Result<butterpollo_core::framegen::Rate> {
+    let monitors = monitors()?;
+    let monitor = monitors
+        .iter()
+        .find(|m| m.matches(output))
+        .or_else(|| {
+            if output.is_empty() {
+                monitors
+                    .iter()
+                    .find(|m| m.primary)
+                    .or_else(|| monitors.first())
+            } else {
+                None
+            }
+        })
+        .context("selected display unavailable")?;
+    let current = mode(&monitor.display_name)?;
+    let (width, height) = resolution.unwrap_or((current.dmPelsWidth, current.dmPelsHeight));
+    let name: Vec<_> = monitor.display_name.encode_utf16().chain(Some(0)).collect();
+    let mut best = 0;
+    for index in 0..4096 {
+        let mut candidate = DEVMODEW {
+            dmSize: size_of::<DEVMODEW>() as u16,
+            ..Default::default()
+        };
+        if !unsafe {
+            EnumDisplaySettingsW(
+                PCWSTR(name.as_ptr()),
+                ENUM_DISPLAY_SETTINGS_MODE(index),
+                &mut candidate,
+            )
+        }
+        .as_bool()
+        {
+            break;
+        }
+        if candidate.dmPelsWidth == width && candidate.dmPelsHeight == height {
+            best = best.max(candidate.dmDisplayFrequency);
+        }
+    }
+    if best == 0 {
+        bail!("selected display has no mode for {width}x{height}");
+    }
+    Ok(butterpollo_core::framegen::Rate(best.saturating_mul(1000)))
 }
 impl Guard {
     #[allow(clippy::too_many_arguments)] // Native display lease parameters.
@@ -669,8 +1562,58 @@ impl Guard {
         physical_resolution: Option<(u32, u32)>,
         physical_refresh: Option<u32>,
     ) -> Result<Self> {
+        Self::new_options(
+            output,
+            virtual_mode,
+            stable_id,
+            width,
+            height,
+            butterpollo_core::framegen::Rate(fps.checked_mul(1000).context("refresh overflow")?),
+            Some(hdr),
+            physical_resolution,
+            physical_refresh.map(|r| butterpollo_core::framegen::Rate(r.saturating_mul(1000))),
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_options(
+        output: &str,
+        virtual_mode: bool,
+        stable_id: &str,
+        width: u32,
+        height: u32,
+        rate: butterpollo_core::framegen::Rate,
+        hdr: Option<bool>,
+        physical_resolution: Option<(u32, u32)>,
+        physical_refresh: Option<butterpollo_core::framegen::Rate>,
+    ) -> Result<Self> {
+        Self::new_virtual_options(
+            output,
+            virtual_mode,
+            stable_id,
+            width,
+            height,
+            rate,
+            hdr,
+            physical_resolution,
+            physical_refresh,
+            &VirtualOptions::default(),
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_virtual_options(
+        output: &str,
+        virtual_mode: bool,
+        stable_id: &str,
+        width: u32,
+        height: u32,
+        rate: butterpollo_core::framegen::Rate,
+        hdr: Option<bool>,
+        physical_resolution: Option<(u32, u32)>,
+        physical_refresh: Option<butterpollo_core::framegen::Rate>,
+        options: &VirtualOptions,
+    ) -> Result<Self> {
         let virtual_display = if virtual_mode {
-            Some(display_lease(stable_id, width, height, fps)?)
+            Some(display_lease(stable_id, width, height, rate.0, options)?)
         } else {
             None
         };
@@ -679,16 +1622,25 @@ impl Guard {
             let name = v.lock().unwrap().name.clone();
             choices.iter().find(|d| d.display_name == name)
         } else {
-            choices
-                .iter()
-                .find(|d| d.display_name == output || d.device_id == output)
-                .or_else(|| choices.iter().find(|d| d.primary))
-                .or_else(|| choices.first())
+            choices.iter().find(|d| d.matches(output)).or_else(|| {
+                if output.is_empty() {
+                    choices
+                        .iter()
+                        .find(|d| d.primary)
+                        .or_else(|| choices.first())
+                } else {
+                    None
+                }
+            })
         }
         .context("display unavailable")?
         .clone();
         let guard = Self {
             output: chosen.display_name.clone(),
+            generation: virtual_display
+                .as_ref()
+                .map_or(0, |v| v.lock().unwrap().generation),
+            hdr,
             virtual_display,
             identity: chosen.device_id.clone(),
         };
@@ -704,51 +1656,118 @@ impl Guard {
                 && guard.virtual_display.is_none()
             {
                 let previous = mode(&guard.output)?;
+                let previous_rate = Topology::query()?.refresh(&guard.identity)?;
                 let (width, height) =
                     physical_resolution.unwrap_or((previous.dmPelsWidth, previous.dmPelsHeight));
-                let fps = physical_refresh.unwrap_or(previous.dmDisplayFrequency);
+                let fps = physical_refresh.unwrap_or(previous_rate).0;
                 let requested = (width, height, fps);
-                if let Some((_, applied)) = &settings.mode {
+                if let Some((_, _, applied)) = &settings.mode {
                     if *applied != requested {
                         bail!("another stream owns a different display mode");
                     }
                 } else {
-                    if (
-                        previous.dmPelsWidth,
-                        previous.dmPelsHeight,
-                        previous.dmDisplayFrequency,
-                    ) != requested
-                    {
-                        crate::display_recovery::mode(
+                    if (previous.dmPelsWidth, previous.dmPelsHeight, previous_rate.0) != requested {
+                        crate::display_recovery::mode_rate(
                             &guard.identity,
                             &guard.output,
-                            (
-                                previous.dmPelsWidth,
-                                previous.dmPelsHeight,
-                                previous.dmDisplayFrequency,
-                            ),
+                            (previous.dmPelsWidth, previous.dmPelsHeight, previous_rate.0),
                             requested,
                         )?;
-                        settings.mode = Some((previous, requested));
-                        set_mode(&guard.output, width, height, fps)?;
+                        settings.mode = Some((previous, previous_rate, requested));
+                        Topology::set_mode_rate(
+                            &guard.output,
+                            width,
+                            height,
+                            butterpollo_core::framegen::Rate(fps),
+                        )?;
+                        let actual = mode(&guard.output)?;
+                        let actual_rate = Topology::query()?.refresh(&guard.identity)?;
+                        let actual_mode = (actual.dmPelsWidth, actual.dmPelsHeight, actual_rate.0);
+                        crate::display_recovery::mode_rate(
+                            &guard.identity,
+                            &guard.output,
+                            (previous.dmPelsWidth, previous.dmPelsHeight, previous_rate.0),
+                            actual_mode,
+                        )?;
+                        settings.mode = Some((previous, previous_rate, actual_mode));
                     }
                 }
             }
-            if hdr && !chosen.hdr_enabled && settings.color.is_none() {
-                crate::display_recovery::hdr(&guard.identity, &guard.output, false, true)?;
-                settings.color = Some((chosen.clone(), false));
-                set_hdr(&chosen, true)?;
+            if let Some(enabled) = hdr
+                && enabled != chosen.hdr_enabled
+                && settings.color.is_none()
+            {
+                crate::display_recovery::hdr(
+                    &guard.identity,
+                    &guard.output,
+                    chosen.hdr_enabled,
+                    enabled,
+                )?;
+                settings.color = Some((chosen.clone(), chosen.hdr_enabled, enabled));
+                set_hdr(&chosen, enabled)?;
             }
             Ok(())
         })();
         result?;
         Ok(guard)
     }
-    pub fn feed(&mut self) -> Result<()> {
+    pub fn feed(&mut self) -> Result<bool> {
         if let Some(display) = &mut self.virtual_display {
-            display.lock().unwrap().feed()?;
+            let mut display = display.lock().unwrap();
+            display.feed()?;
+            if display.generation != self.generation {
+                let chosen = monitors()?
+                    .into_iter()
+                    .find(|m| m.display_name == display.name)
+                    .context("recovered display unavailable")?;
+                let mut settings = SETTINGS.lock().unwrap();
+                if chosen.device_id != self.identity {
+                    if let Some(old) = settings.get_mut(&self.identity) {
+                        old.users -= 1;
+                        if old.users == 0 {
+                            settings.remove(&self.identity);
+                        }
+                    }
+                    if !settings.contains_key(&self.identity) {
+                        crate::display_recovery::release(&self.identity)?;
+                    }
+                    settings
+                        .entry(chosen.device_id.clone())
+                        .or_insert(Settings {
+                            users: 0,
+                            mode: None,
+                            color: None,
+                        })
+                        .users += 1;
+                    self.identity = chosen.device_id.clone();
+                }
+                if let Some(hdr) = self.hdr {
+                    if let Some(color) = settings
+                        .get_mut(&self.identity)
+                        .and_then(|s| s.color.as_mut())
+                    {
+                        color.0 = chosen.clone();
+                    }
+                    if chosen.hdr_enabled != hdr {
+                        crate::display_recovery::hdr(
+                            &self.identity,
+                            &chosen.display_name,
+                            chosen.hdr_enabled,
+                            hdr,
+                        )?;
+                        let state = settings.get_mut(&self.identity).unwrap();
+                        if state.color.is_none() {
+                            state.color = Some((chosen.clone(), chosen.hdr_enabled, hdr));
+                        }
+                        set_hdr(&chosen, hdr)?;
+                    }
+                }
+                self.output = display.name.clone();
+                self.generation = display.generation;
+                return Ok(true);
+            }
         }
-        Ok(())
+        Ok(false)
     }
 }
 impl Drop for Guard {
@@ -763,20 +1782,28 @@ impl Drop for Guard {
         }
         let settings = all.remove(&self.identity).unwrap();
         let mut restored = true;
-        if let Some((monitor, previous)) = settings.color
+        if let Some((monitor, previous, applied)) = settings.color
             && monitors().is_ok_and(|all| {
                 all.iter()
-                    .any(|m| m.device_id == monitor.device_id && m.hdr_enabled)
+                    .any(|m| m.device_id == monitor.device_id && m.hdr_enabled == applied)
             })
             && let Err(e) = set_hdr(&monitor, previous)
         {
             restored = false;
             tracing::warn!(error=%e,"HDR restoration failed");
         }
-        if let Some((previous, applied)) = settings.mode
+        if let Some((previous, previous_rate, applied)) = settings.mode
             && mode(&self.output)
-                .is_ok_and(|m| (m.dmPelsWidth, m.dmPelsHeight, m.dmDisplayFrequency) == applied)
-            && let Err(e) = apply_mode(&self.output, &previous)
+                .is_ok_and(|m| (m.dmPelsWidth, m.dmPelsHeight) == (applied.0, applied.1))
+            && Topology::query()
+                .and_then(|t| t.refresh(&self.identity))
+                .is_ok_and(|r| r.0 == applied.2)
+            && let Err(e) = Topology::set_mode_rate(
+                &self.output,
+                previous.dmPelsWidth,
+                previous.dmPelsHeight,
+                previous_rate,
+            )
         {
             restored = false;
             tracing::warn!(error=%e,"display mode restoration failed");
@@ -797,17 +1824,67 @@ pub struct Retained {
     worker: Option<std::thread::JoinHandle<()>>,
 }
 impl Retained {
+    pub fn current_output(&self) -> String {
+        self.guard
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or_else(|| self.output.clone(), |g| g.output.clone())
+    }
+    pub fn current_generation(&self) -> u64 {
+        self.guard
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or(0, |g| g.generation)
+    }
     pub fn create(id: &str, width: u32, height: u32, fps: u32, hdr: bool) -> Result<Self> {
-        let guard = Guard::new(
-            "",
-            true,
-            &format!("{id}:remote-monitor"),
+        Self::create_rate(
+            id,
             width,
             height,
-            fps,
+            butterpollo_core::framegen::Rate(fps.checked_mul(1000).context("refresh overflow")?),
             hdr,
+        )
+    }
+    pub fn create_rate(
+        id: &str,
+        width: u32,
+        height: u32,
+        rate: butterpollo_core::framegen::Rate,
+        hdr: bool,
+    ) -> Result<Self> {
+        Self::create_options(
+            id,
+            width,
+            height,
+            rate,
+            hdr,
+            &VirtualOptions::default(),
+            None,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_options(
+        id: &str,
+        width: u32,
+        height: u32,
+        rate: butterpollo_core::framegen::Rate,
+        hdr: bool,
+        options: &VirtualOptions,
+        on_recovery: Option<Box<dyn Fn() -> Result<()> + Send>>,
+    ) -> Result<Self> {
+        let guard = Guard::new_virtual_options(
+            "",
+            true,
+            id,
+            width,
+            height,
+            rate,
+            Some(hdr),
             None,
             None,
+            options,
         )?;
         let output = guard.output.clone();
         let guard = std::sync::Arc::new(std::sync::Mutex::new(Some(guard)));
@@ -817,18 +1894,40 @@ impl Retained {
         let worker = std::thread::Builder::new()
             .name("monitor-lease".into())
             .spawn(move || {
+                let mut pending = false;
+                let mut retry_at = Instant::now();
                 while !worker_stop.load(std::sync::atomic::Ordering::Acquire) {
-                    if let Some(guard) = worker_guard.lock().unwrap().as_mut()
-                        && let Err(e) = guard.feed()
-                    {
-                        tracing::warn!(error=%e,"retained monitor lease heartbeat failed");
+                    let result = worker_guard
+                        .lock()
+                        .unwrap()
+                        .as_mut()
+                        .map(Guard::feed)
+                        .transpose();
+                    match result {
+                        Ok(Some(true)) => {
+                            pending = true;
+                            retry_at = Instant::now();
+                        }
+                        Err(e) => {
+                            tracing::warn!(error=%e,"retained monitor lease heartbeat failed")
+                        }
+                        _ => {}
+                    }
+                    if pending && Instant::now() >= retry_at {
+                        retry_at = Instant::now() + Duration::from_secs(1);
+                        match on_recovery.as_ref().map(|callback| callback()).transpose() {
+                            Ok(_) => pending = false,
+                            Err(error) => {
+                                tracing::warn!(%error, "retained monitor layout recovery failed")
+                            }
+                        }
                     }
                     std::thread::sleep(Duration::from_millis(25));
                 }
             })?;
         Ok(Self {
             output,
-            mode: (width, height, fps, hdr),
+            mode: (width, height, rate.0, hdr),
             guard,
             stop,
             worker: Some(worker),
@@ -847,6 +1946,60 @@ impl Drop for Retained {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn temporary_monitor_metadata_preserves_the_owned_identity_and_sanitizes_labels() {
+        let options = VirtualOptions {
+            label: "Living Room\0\n😀   ".into(),
+            peak_nits: 1500,
+        };
+        let request = temporary_request(17, 23, (1920, 1080, 59940), &options);
+        assert_eq!(request.len(), 128);
+        assert_eq!(&request[16..24], &17u64.to_le_bytes());
+        assert_eq!(&request[24..32], &23u64.to_le_bytes());
+        assert_eq!(&request[48..52], &59940u32.to_le_bytes());
+        assert_eq!(&request[56..88], &display_label("Living Room"));
+        assert_eq!(&request[88..92], &0u32.to_le_bytes());
+        assert_eq!(&request[92..96], &1500u32.to_le_bytes());
+        assert_eq!(&display_label("😀")[..11], b"Butterpollo");
+        assert_eq!(display_label(&"A".repeat(40))[31], 0);
+    }
+    #[test]
+    fn extending_a_cloned_desktop_assigns_distinct_sources_and_rejects_impossible_routes() {
+        let path = |source, target| {
+            let mut path = DISPLAYCONFIG_PATH_INFO::default();
+            path.sourceInfo.id = source;
+            path.targetInfo.id = target;
+            path
+        };
+        let result = extended_paths(&[vec![path(0, 10), path(1, 10)], vec![path(0, 20)]]).unwrap();
+        assert_eq!(result[0].sourceInfo.id, 1);
+        assert_eq!(result[1].sourceInfo.id, 0);
+        assert!(extended_paths(&[vec![path(0, 10)], vec![path(0, 20)]]).is_err());
+    }
+    #[test]
+    fn previous_golden_snapshot_import_preserves_fractional_rates_clones_hdr_and_origins() {
+        let document = serde_json::json!({
+            "topology":[["a","b"]],"primary":"a",
+            "modes":{"a":{"w":1920,"h":1080,"num":60000,"den":1001},"b":{"w":1920,"h":1080,"num":60000,"den":1001}},
+            "hdr":{"a":"on","b":"off"}, "origins":{"a":{"x":-1920,"y":0},"b":{"x":-1920,"y":0}},
+            "layouts":{"a":{"rotation":90},"b":{"rotation":0}}
+        });
+        let snapshot = Snapshot::decode(&document).unwrap();
+        assert!((snapshot.nodes[0].mode.refresh_hz - 59.94005994).abs() < 1e-8);
+        assert_eq!(snapshot.nodes[0].desired_position.x, -1920);
+        assert!(snapshot.nodes[0].primary);
+        assert_eq!(
+            snapshot.clone_groups,
+            [vec!["a".to_owned(), "b".to_owned()]]
+        );
+        assert!(snapshot.hdr["a"]);
+        assert!(!snapshot.hdr["b"]);
+        assert_eq!(snapshot.rotation["a"], 2);
+        let mut malformed = document.clone();
+        malformed["modes"]["a"]["den"] = 0.into();
+        assert!(Snapshot::decode(&malformed).is_err());
+        assert!(Snapshot::decode(&serde_json::json!({"version":2,"nodes":[],"hdr":{}})).is_err());
+    }
     #[test]
     fn permanent_monitor_payload_matches_driver_v3_contract() {
         let request = permanent_request(4).unwrap();

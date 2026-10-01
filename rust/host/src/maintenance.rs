@@ -3,7 +3,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::{
     io::{Read, Seek, SeekFrom, Write},
-    path::{Path, PathBuf},
+    path::PathBuf,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -41,6 +41,11 @@ pub fn trigger_update(h: &Shared) {
                     .into_iter()
                     .filter(|r| {
                         r["draft"] != true
+                            && (r["prerelease"] != true
+                                || h.config
+                                    .read()
+                                    .unwrap()
+                                    .boolean("notify_pre_releases", false))
                             && r["assets"].as_array().is_some_and(|assets| {
                                 assets.iter().any(|a| {
                                     a["name"].as_str().is_some_and(|s| {
@@ -144,14 +149,7 @@ pub fn dismiss_crash(h: &Shared, data: &Value) -> Result<Value> {
     Ok(json!({"status":true,"dismissed_at":dismissed_at}))
 }
 pub fn golden_status(h: &Shared, compare: bool) -> Result<Value> {
-    let path = h.directory.join("display-baseline-rust.json");
-    let snapshot = if path.exists() {
-        Some(serde_json::from_slice::<
-            butterpollo_windows::display::Snapshot,
-        >(&std::fs::read(path)?)?)
-    } else {
-        None
-    };
+    let snapshot = baseline(h)?;
     let mismatch = if compare && let Some(old) = snapshot.as_ref() {
         let current = butterpollo_windows::display::Snapshot::capture()?;
         serde_json::to_value(&current)? != serde_json::to_value(old)?
@@ -170,17 +168,47 @@ pub fn capture_golden(h: &Shared) -> Result<Value> {
         &h.directory.join("display-baseline-rust.json"),
         &butterpollo_windows::display::Snapshot::capture()?,
     )?;
+    let tombstone = h.directory.join("display-baseline-disabled");
+    if tombstone.exists() {
+        std::fs::remove_file(tombstone)?;
+    }
     Ok(json!({"status":true}))
 }
 pub fn restore_golden(h: &Shared) -> Result<Value> {
     if h.sessions.lock().unwrap().owns_capture() || !h.monitors.lock().unwrap().is_empty() {
         bail!("disconnect all streams and remote monitors before restoring a baseline");
     }
-    let snapshot: butterpollo_windows::display::Snapshot = serde_json::from_slice(&std::fs::read(
-        h.directory.join("display-baseline-rust.json"),
-    )?)?;
-    snapshot.restore()?;
+    let snapshot = baseline(h)?.context("saved display baseline is unavailable")?;
+    snapshot.restore_excluding(&display_exclusions(&h.config.read().unwrap())?)?;
     Ok(json!({"status":true}))
+}
+pub fn display_exclusions(config: &butterpollo_core::config::Config) -> Result<Vec<String>> {
+    Ok(serde_json::from_str(
+        config.get("dd_snapshot_exclude_devices", "[]"),
+    )?)
+}
+/// Read previous snapshots without modifying the old installation's files.
+pub fn baseline(h: &Shared) -> Result<Option<butterpollo_windows::display::Snapshot>> {
+    let own = h.directory.join("display-baseline-rust.json");
+    if own.exists() {
+        return Ok(Some(butterpollo_windows::display::Snapshot::read(&own)?));
+    }
+    if h.directory.join("display-baseline-disabled").exists() {
+        return Ok(None);
+    }
+    let mut candidates = vec![h.directory.join("display_golden_restore.json")];
+    let environment = butterpollo_windows::process::user_environment()?;
+    for key in ["APPDATA", "LOCALAPPDATA", "PROGRAMDATA"] {
+        if let Some(root) = environment.get(key) {
+            candidates.push(PathBuf::from(root).join("Sunshine/display_golden_restore.json"));
+        }
+    }
+    for path in candidates {
+        if path.is_file() {
+            return Ok(Some(butterpollo_windows::display::Snapshot::read(&path)?));
+        }
+    }
+    Ok(None)
 }
 pub fn bundle_manifest(h: &Shared) -> Value {
     let dump = newest_dump(h).map_or(0, |d| d.size);
@@ -242,15 +270,5 @@ pub fn bundle(h: &Shared) -> Result<PathBuf> {
     Ok(path)
 }
 pub fn integration_status(h: &Shared) -> Value {
-    let c = h.config.read().unwrap();
-    let configured = c.get("rtss_path", "");
-    let root = if configured.is_empty() {
-        Path::new("C:/Program Files (x86)/RivaTuner Statistics Server")
-    } else {
-        Path::new(configured)
-    };
-    let path = root.join("RTSS.exe");
-    let exists = path.exists();
-    let hooks = root.join("RTSSHooks64.dll").exists();
-    json!({"status":true,"enabled":c.boolean("frame_limiter_enable",false),"configured_provider":c.get("frame_limiter_provider","auto"),"active_provider":"none","nvidia_available":false,"nvcp_ready":false,"rtss_available":exists&&hooks,"disable_vsync":false,"nv_overrides_supported":false,"configured_path":configured,"path_configured":!configured.is_empty(),"resolved_path":root,"path_exists":exists,"hooks_found":hooks,"profile_found":root.join("Profiles/Global").exists(),"can_bootstrap_profile":exists,"process_running":false,"message":"Automatic external frame-limiter overrides are not available in this Rust build."})
+    butterpollo_windows::limiter::status(&h.config.read().unwrap())
 }

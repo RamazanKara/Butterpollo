@@ -19,7 +19,8 @@ const SHADER: &str = r#"
 Texture2D<float4> source : register(t0);
 cbuffer Config : register(b0) {
     uint2 sourceSize; uint2 targetSize;
-    uint pixel; uint hdr; uint2 padding;
+    uint pixel; uint hdr; uint colorMatrix; uint fullRange;
+    uint tenBit; float sdrWhiteScale; float hdrScale; uint padding;
 };
 float4 vertex(uint id : SV_VertexID) : SV_Position {
     float2 p = float2((id << 1) & 2, id & 2);
@@ -29,7 +30,9 @@ float3 load(int2 p) {
     float3 rgb = source.Load(int3(clamp(p, int2(0, 0), int2(sourceSize) - 1), 0)).rgb;
     if (hdr != 0 && pixel == 0) {
         rgb = lerp(pow((rgb + 0.055) / 1.055, 2.4), rgb / 12.92, step(rgb, 0.04045));
+        rgb *= sdrWhiteScale;
     }
+    if (hdr != 0 && pixel == 1) rgb *= hdrScale;
     return rgb;
 }
 float3 nonlinear(float2 target) {
@@ -47,11 +50,11 @@ float3 nonlinear(float2 target) {
     return pow((3424.0 / 4096.0 + 2413.0 / 128.0 * power) /
                (1.0 + 2392.0 / 128.0 * power), 2523.0 / 32.0);
 }
-float3 weights() { return hdr != 0 ? float3(0.2627, 0.6780, 0.0593) : float3(0.2126, 0.7152, 0.0722); }
+float3 weights() { return colorMatrix == 2 ? float3(0.2627, 0.6780, 0.0593) : colorMatrix == 0 ? float3(0.299, 0.587, 0.114) : float3(0.2126, 0.7152, 0.0722); }
 float4 luma(float4 p : SV_Position) : SV_Target {
     float y = dot(nonlinear(p.xy - 0.5), weights());
-    float code = hdr != 0 ? floor(clamp(64 + 876 * y, 0, 1023) + 0.5) * 64 / 65535.0
-                         : floor(clamp(16 + 219 * y, 0, 255) + 0.5) / 255.0;
+    float code = tenBit != 0 ? floor(clamp((fullRange != 0 ? 1023 * y : 64 + 876 * y), 0, 1023) + 0.5) * 64 / 65535.0
+                            : floor(clamp((fullRange != 0 ? 255 * y : 16 + 219 * y), 0, 255) + 0.5) / 255.0;
     return float4(code, 0, 0, 1);
 }
 float4 chroma(float4 p : SV_Position) : SV_Target {
@@ -61,8 +64,8 @@ float4 chroma(float4 p : SV_Position) : SV_Target {
     float3 k = weights();
     float y = dot(rgb, k);
     float2 uv = float2((rgb.b - y) / (2 * (1 - k.b)), (rgb.r - y) / (2 * (1 - k.r)));
-    float2 code = hdr != 0 ? floor(clamp(512 + 896 * uv, 0, 1023) + 0.5) * 64 / 65535.0
-                          : floor(clamp(128 + 224 * uv, 0, 255) + 0.5) / 255.0;
+    float2 code = tenBit != 0 ? floor(clamp(512 + (fullRange != 0 ? 1023 : 896) * uv, 0, 1023) + 0.5) * 64 / 65535.0
+                             : floor(clamp(128 + (fullRange != 0 ? 255 : 224) * uv, 0, 255) + 0.5) / 255.0;
     return float4(code, 0, 1);
 }
 "#;
@@ -115,6 +118,8 @@ pub(crate) struct Converter {
     luma: ID3D11PixelShader,
     chroma: ID3D11PixelShader,
     constants: ID3D11Buffer,
+    values: [u32; 12],
+    dirty: bool,
     width: u32,
     height: u32,
     hdr: bool,
@@ -166,14 +171,18 @@ impl Converter {
                     Pixel::Rgba10Pq => 2,
                 },
                 u32::from(config.hdr),
-                0,
+                u32::from(config.color_matrix()),
+                u32::from(config.full_range()),
+                u32::from(config.ten_bit()),
+                1.25f32.to_bits(),
+                1.0f32.to_bits(),
                 0,
             ];
             let mut constants = None;
             gpu.device.CreateBuffer(
                 &D3D11_BUFFER_DESC {
-                    ByteWidth: 32,
-                    Usage: D3D11_USAGE_IMMUTABLE,
+                    ByteWidth: 48,
+                    Usage: D3D11_USAGE_DEFAULT,
                     BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32,
                     ..Default::default()
                 },
@@ -189,11 +198,22 @@ impl Converter {
                 luma: luma.unwrap(),
                 chroma: chroma.unwrap(),
                 constants: constants.unwrap(),
+                values,
+                dirty: false,
                 width: config.width,
                 height: config.height,
-                hdr: config.hdr,
+                hdr: config.ten_bit(),
                 targets: vec![],
             })
+        }
+    }
+    pub fn set_luminance(&mut self, luminance: [f32; 2]) {
+        let white = (luminance[0] / 80.).to_bits();
+        let scale = luminance[1].to_bits();
+        if self.values[9] != white || self.values[10] != scale {
+            self.values[9] = white;
+            self.values[10] = scale;
+            self.dirty = true;
         }
     }
     fn target(&mut self) -> Result<usize> {
@@ -283,6 +303,17 @@ impl Converter {
             // together rather than merely protecting individual context calls.
             let lock: ID3D11Multithread = windows::core::Interface::cast(context)?;
             lock.Enter();
+            if self.dirty {
+                context.UpdateSubresource(
+                    &self.constants,
+                    0,
+                    None,
+                    self.values.as_ptr().cast(),
+                    0,
+                    0,
+                );
+                self.dirty = false;
+            }
             context.IASetInputLayout(None);
             context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             context.VSSetShader(&self.vertex, None);
@@ -373,6 +404,43 @@ mod tests {
     }
     #[test]
     #[ignore = "requires a D3D11 GPU with native P010 render views"]
+    fn gpu_sdr_ten_bit_respects_client_matrix_and_full_range() -> Result<()> {
+        let _com = ComGuard::new()?;
+        let gpu = Device::new("")?;
+        let image = Image {
+            width: 64,
+            height: 64,
+            stride: 256,
+            bytes: [0, 0, 255, 255].repeat(64 * 64),
+            pixel: Pixel::Bgra8,
+            captured: Instant::now(),
+        };
+        let uploaded = GpuImage::upload(&gpu, &image)?;
+        for (csc_mode, expected) in [
+            (0, [326, 361, 960]),
+            (1, [306, 339, 1023]),
+            (2, [250, 409, 960]),
+            (3, [217, 395, 1023]),
+        ] {
+            let config = butterpollo_core::rtsp::Negotiated {
+                width: 64,
+                height: 64,
+                codec: 1,
+                sdr_10bit: true,
+                csc_mode,
+                ..Default::default()
+            };
+            let mut convert = Converter::new(&gpu, &config, (64, 64, Pixel::Bgra8))?;
+            let output = readback(&gpu, convert.convert(&uploaded)?.as_ref())?;
+            let observed = [output[0], output[4096], output[4097]];
+            for (actual, wanted) in observed.into_iter().zip(expected) {
+                assert!(actual.abs_diff(wanted) <= 1, "CSC {csc_mode}: {observed:?}");
+            }
+        }
+        Ok(())
+    }
+    #[test]
+    #[ignore = "requires a D3D11 GPU with native P010 render views"]
     fn gpu_hdr_preserves_absolute_luminance_gamut_and_linear_resize() -> Result<()> {
         let _com = ComGuard::new()?;
         let gpu = Device::new("")?;
@@ -433,6 +501,35 @@ mod tests {
         }
         assert_eq!(output[32 * width + 32], 64);
         assert_eq!(output[32 * width + 3 * 64 + 32], 940);
+        convert.set_luminance([100., 2.]);
+        let expanded = readback(&gpu, convert.convert(&uploaded)?.as_ref())?;
+        let expected = (64. + 876. * 0.82742465f32).round() as u16; // ST.2084 at 2000 nits
+        assert!(expanded[32 * width + 2 * 64 + 32].abs_diff(expected) <= 2);
+        let sdr = Image {
+            width: 64,
+            height: 64,
+            stride: 256,
+            bytes: vec![255; 64 * 256],
+            captured: Instant::now(),
+            pixel: Pixel::Bgra8,
+        };
+        let sdr = GpuImage::upload(&gpu, &sdr)?;
+        let mut sdr_convert = Converter::new(
+            &gpu,
+            &butterpollo_core::rtsp::Negotiated {
+                width: 64,
+                height: 64,
+                hdr: true,
+                codec: 1,
+                ..Default::default()
+            },
+            (64, 64, Pixel::Bgra8),
+        )?;
+        for (white, pq) in [(100., 0.5080784f32), (200., 0.5791332f32)] {
+            sdr_convert.set_luminance([white, 1.]);
+            let output = readback(&gpu, sdr_convert.convert(&sdr)?.as_ref())?;
+            assert!(output[32 * 64 + 32].abs_diff((64. + 876. * pq).round() as u16) <= 2);
+        }
         let resized = make_image(&[[0.; 3], [25.; 3], [0.; 3], [25.; 3]], 1, 2);
         let config = butterpollo_core::rtsp::Negotiated {
             width: 2,

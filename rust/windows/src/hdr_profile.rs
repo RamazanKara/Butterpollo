@@ -136,6 +136,71 @@ fn installed(selection: &str) -> Result<String> {
         .find(|name| directory.join(name).is_file())
         .context("selected ICC profile is not installed")
 }
+/// MHC2 stores the calibration peak as signed 16.16 nits, in big endian.
+pub fn peak_luminance(selection: &str) -> Result<Option<u32>> {
+    // Effective settings are polled during streaming. A calibration file is
+    // normally unchanged; avoid repeated file reads on the encode thread.
+    type Peaks = BTreeMap<String, (std::time::Instant, Option<u32>)>;
+    static PEAKS: std::sync::OnceLock<Mutex<Peaks>> = std::sync::OnceLock::new();
+    let cache = PEAKS.get_or_init(Mutex::default);
+    if let Some((at, peak)) = cache.lock().unwrap().get(selection)
+        && at.elapsed() < std::time::Duration::from_secs(30)
+    {
+        return Ok(*peak);
+    }
+    let name = installed(selection)?;
+    let path =
+        PathBuf::from(std::env::var_os("SystemRoot").context("Windows directory unavailable")?)
+            .join("System32/spool/drivers/color")
+            .join(name);
+    let mut file = std::fs::File::open(path)?;
+    if !(132..=32 * 1024 * 1024).contains(&file.metadata()?.len()) {
+        return Ok(None);
+    }
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(
+        &mut std::io::Read::take(&mut file, 32 * 1024 * 1024 + 1),
+        &mut bytes,
+    )?;
+    let peak = mhc2_peak(&bytes);
+    let mut cache = cache.lock().unwrap();
+    if cache.len() >= 128 {
+        cache.clear();
+    }
+    cache.insert(selection.into(), (std::time::Instant::now(), peak));
+    Ok(peak)
+}
+fn mhc2_peak(bytes: &[u8]) -> Option<u32> {
+    if !(132..=32 * 1024 * 1024).contains(&bytes.len()) {
+        return None;
+    }
+    let word = |offset: usize| -> Option<u32> {
+        Some(u32::from_be_bytes(
+            bytes.get(offset..offset.checked_add(4)?)?.try_into().ok()?,
+        ))
+    };
+    let count = word(128)? as usize;
+    if count > (bytes.len() - 132) / 12 {
+        return None;
+    }
+    for index in 0..count {
+        let entry = 132 + index * 12;
+        if bytes.get(entry..entry + 4)? != b"MHC2" {
+            continue;
+        }
+        let offset = word(entry + 4)? as usize;
+        let size = word(entry + 8)? as usize;
+        if size < 20
+            || offset.checked_add(size)? > bytes.len()
+            || bytes.get(offset..offset.checked_add(4)?)? != b"MHC2"
+        {
+            return None;
+        }
+        let peak = word(offset + 16)? as i32 as f64 / 65536.;
+        return (peak > 0. && peak <= 100000.).then(|| peak.round() as u32);
+    }
+    None
+}
 struct State {
     users: usize,
     previous: Option<String>,
@@ -254,6 +319,22 @@ impl Drop for Lease {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mhc2_peak_reads_calibration_and_rejects_truncated_or_negative_tags() {
+        let mut bytes = vec![0; 164];
+        bytes[128..132].copy_from_slice(&1u32.to_be_bytes());
+        bytes[132..136].copy_from_slice(b"MHC2");
+        bytes[136..140].copy_from_slice(&144u32.to_be_bytes());
+        bytes[140..144].copy_from_slice(&20u32.to_be_bytes());
+        bytes[144..148].copy_from_slice(b"MHC2");
+        bytes[160..164].copy_from_slice(&(1234i32 * 65536 + 32768).to_be_bytes());
+        assert_eq!(mhc2_peak(&bytes), Some(1235));
+        assert_eq!(mhc2_peak(&bytes[..163]), None);
+        bytes[160..164].copy_from_slice(&(-65536i32).to_be_bytes());
+        assert_eq!(mhc2_peak(&bytes), None);
+        bytes[136..140].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert_eq!(mhc2_peak(&bytes), None);
+    }
     #[test]
     fn installed_profile_selection_cannot_escape_the_color_directory() {
         for bad in [

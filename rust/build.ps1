@@ -123,10 +123,15 @@ try {
         foreach ($exe in @('butterpollo.exe', 'butterpollo-service.exe')) { Copy-Item -LiteralPath (Join-Path $output $exe) -Destination $distribution }
         Copy-Item -LiteralPath (Join-Path $output 'examples\performance.exe') -Destination (Join-Path $distribution 'butterpollo-performance.exe')
         foreach ($dll in $runtimeDlls) { Copy-Item -LiteralPath (Join-Path $output $dll) -Destination $distribution }
+        New-Item -ItemType Directory -Path "$distribution\vulkan-layer" -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path $output 'butterpollo_vulkan_layer.dll') -Destination "$distribution\vulkan-layer"
+        Copy-Item -LiteralPath (Join-Path $repo 'rust\vulkan-layer\VkLayer_butterpollo_hdr.json') -Destination "$distribution\vulkan-layer"
         Get-ChildItem -LiteralPath (Join-Path $repo 'src_assets\common\assets') -File | Where-Object { $_.Extension -in '.png','.ico' } | Copy-Item -Destination "$distribution\assets"
+        Copy-Item -LiteralPath (Join-Path $repo 'src_assets\common\assets\remote-session') -Destination "$distribution\assets\remote-session" -Recurse -Force
         Copy-Item -LiteralPath (Join-Path $repo 'LICENSE') -Destination "$distribution\licenses\Butterpollo.txt"
         Copy-Item -LiteralPath (Join-Path $repo 'rust\README.md') -Destination $distribution
         Copy-Item -LiteralPath (Join-Path $repo 'rust\PERFORMANCE.md') -Destination $distribution
+        Copy-Item -LiteralPath (Join-Path $repo 'rust\PARITY.md') -Destination $distribution
         Copy-Item -LiteralPath (Join-Path $repo 'rust\THIRD_PARTY.md') -Destination "$distribution\licenses"
         Copy-Item -LiteralPath (Join-Path $repo 'rust\service.ps1') -Destination $distribution
         Copy-Item -LiteralPath (Join-Path $repo 'Cargo.lock') -Destination "$distribution\licenses"

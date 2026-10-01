@@ -70,31 +70,68 @@ pub struct Gamepads {
     handle: HANDLE,
     active: BTreeMap<u16, u16>,
     profile: u16,
+    available: u32,
+    profiles: BTreeMap<u16, u16>,
+    arrivals: BTreeMap<u16, (u8, u16)>,
+    states: BTreeMap<u16, (Event, butterpollo_core::input_policy::BackButton)>,
+    policy: butterpollo_core::input_policy::Policy,
+    started: std::time::Instant,
     pointers: BTreeMap<(u8, u32), u8>,
 }
 static SLOTS: std::sync::Mutex<[bool; 16]> = std::sync::Mutex::new([false; 16]);
 static HELD: std::sync::Mutex<BTreeMap<(bool, u16), usize>> =
     std::sync::Mutex::new(BTreeMap::new());
+
+pub fn capabilities(config: &butterpollo_core::config::Config) -> u32 {
+    use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+    let mut flags = 0;
+    if config.boolean("mouse", true)
+        && config.boolean("native_pen_touch", true)
+        && unsafe {
+            GetModuleHandleW(windows::core::w!("user32.dll")).is_ok_and(|module| {
+                GetProcAddress(module, windows::core::s!("CreateSyntheticPointerDevice")).is_some()
+            })
+        }
+    {
+        flags |= 1;
+    }
+    if config.boolean("controller", true)
+        && !matches!(
+            config.get("gamepad", "auto"),
+            "vhf_xbox" | "vhf_xbox_one" | "x360" | "vhf_switch"
+        )
+    {
+        flags |= 2;
+    }
+    flags
+}
 impl Gamepads {
     pub fn open(profile: u16) -> Result<Self> {
+        Self::open_options(
+            profile,
+            butterpollo_core::input_policy::Policy::resolve(&Default::default())?,
+        )
+    }
+    fn open_options(profile: u16, policy: butterpollo_core::input_policy::Policy) -> Result<Self> {
         let handle = open_interface(GUID::from_u128(0x27debbf5_1d1e_4e9c_906d_d104b1418b2b))?;
         let mut g = Self {
             handle,
             active: BTreeMap::new(),
             profile,
+            available: 0,
+            profiles: BTreeMap::new(),
+            arrivals: BTreeMap::new(),
+            states: BTreeMap::new(),
+            policy,
+            started: std::time::Instant::now(),
             pointers: BTreeMap::new(),
         };
         let out = g.ioctl(0x800, &request(8, None), 28)?;
         if out.len() != 28 || u16::from_le_bytes(out[4..6].try_into().unwrap()) != 2 {
             bail!("incompatible VHF gamepad protocol");
         }
-        let available = u32::from_le_bytes(out[12..16].try_into().unwrap());
-        if profile == 0 {
-            g.profile = [4, 6, 5]
-                .into_iter()
-                .find(|p| available & (1 << (p - 1)) != 0)
-                .ok_or_else(|| anyhow::anyhow!("VHF driver has no supported automatic profile"))?;
-        } else if available & (1 << (profile - 1)) == 0 {
+        g.available = u32::from_le_bytes(out[12..16].try_into().unwrap());
+        if profile != 0 && g.available & (1 << (profile - 1)) == 0 {
             bail!("configured controller profile is unavailable in the installed VHF driver");
         }
         Ok(g)
@@ -125,8 +162,21 @@ impl Gamepads {
         if id >= 16 {
             bail!("controller ID out of range");
         }
-        if self.active.contains_key(&id) {
-            return Ok(());
+        let (kind, capabilities) = self.arrivals.get(&id).copied().unwrap_or_default();
+        let profile = self
+            .policy
+            .controller_profile(self.profile, kind, capabilities, self.available)
+            .ok_or_else(|| anyhow::anyhow!("VHF driver has no supported controller profile"))?;
+        if let Some(global) = self.active.get(&id).copied() {
+            if self.profiles.get(&id) == Some(&profile) {
+                return Ok(());
+            }
+            // Some clients send arrival capabilities after their first state.
+            self.ioctl(0x802, &request(12, Some(u32::from(global))), 0)?;
+            self.active.remove(&id);
+            self.profiles.remove(&id);
+            self.pointers.retain(|(pad, _), _| u16::from(*pad) != id);
+            SLOTS.lock().unwrap()[global as usize] = false;
         }
         let mut slots = SLOTS.lock().unwrap();
         for global in 0..16u16 {
@@ -134,11 +184,12 @@ impl Gamepads {
                 continue;
             }
             let mut b = request(16, Some(u32::from(global)));
-            b.extend_from_slice(&self.profile.to_le_bytes());
+            b.extend_from_slice(&profile.to_le_bytes());
             b.extend_from_slice(&0u16.to_le_bytes());
             if self.ioctl(0x801, &b, 0).is_ok() {
                 slots[global as usize] = true;
                 self.active.insert(id, global);
+                self.profiles.insert(id, profile);
                 return Ok(());
             }
         }
@@ -154,10 +205,16 @@ impl Gamepads {
                 right_trigger,
                 sticks,
             } => {
+                if *id >= 16 {
+                    bail!("controller ID out of range");
+                }
                 for (i, global) in self.active.clone() {
                     if active & (1 << i) == 0 {
                         self.ioctl(0x802, &request(12, Some(u32::from(global))), 0)?;
                         self.active.remove(&i);
+                        self.profiles.remove(&i);
+                        self.arrivals.remove(&i);
+                        self.states.remove(&i);
                         self.pointers.retain(|(id, _), _| u16::from(*id) != i);
                         SLOTS.lock().unwrap()[global as usize] = false;
                     }
@@ -166,17 +223,32 @@ impl Gamepads {
                     return Ok(());
                 }
                 self.ensure(*id)?;
-                let mut b = request(28, Some(u32::from(self.active[id])));
-                b.extend_from_slice(&buttons.to_le_bytes());
-                for stick in sticks {
-                    b.extend_from_slice(&stick.to_le_bytes());
-                }
-                b.extend_from_slice(&[*left_trigger, *right_trigger, 0, 0]);
-                self.ioctl(0x803, &b, 0)?;
+                let state = self
+                    .states
+                    .entry(*id)
+                    .or_insert_with(|| (event.clone(), Default::default()));
+                state.0 = event.clone();
+                let buttons = state.1.update(
+                    *buttons,
+                    self.started.elapsed(),
+                    self.policy.back_button_timeout,
+                );
+                self.submit(*id, buttons, *left_trigger, *right_trigger, sticks)?;
             }
-            Event::Arrival { id, .. } => self.ensure(u16::from(*id))?,
+            Event::Arrival {
+                id,
+                kind,
+                capabilities,
+                ..
+            } => {
+                self.arrivals.insert(u16::from(*id), (*kind, *capabilities));
+                self.ensure(u16::from(*id))?;
+            }
             Event::Motion { id, kind, xyz } => {
                 self.ensure(u16::from(*id))?;
+                if !self.motion_supported(u16::from(*id)) {
+                    return Ok(());
+                }
                 let mut b = request(28, Some(u32::from(self.active[&u16::from(*id)])));
                 b.extend_from_slice(&[*kind, 0, 0, 0]);
                 for f in xyz {
@@ -196,6 +268,9 @@ impl Gamepads {
                 pressure,
             } => {
                 self.ensure(u16::from(*id))?;
+                if !matches!(self.profiles.get(&u16::from(*id)), Some(5 | 6)) {
+                    return Ok(());
+                }
                 let mut b = request(22, Some(u32::from(self.active[&u16::from(*id)])));
                 let event = match event {
                     0..=4 => *event,
@@ -258,8 +333,45 @@ impl Gamepads {
         }
         Ok(output)
     }
-    pub fn motion_supported(&self) -> bool {
-        matches!(self.profile, 5 | 6)
+    fn submit(
+        &mut self,
+        id: u16,
+        buttons: u32,
+        left: u8,
+        right: u8,
+        sticks: &[i16; 4],
+    ) -> Result<()> {
+        let mut b = request(28, Some(u32::from(self.active[&id])));
+        b.extend_from_slice(&buttons.to_le_bytes());
+        for stick in sticks {
+            b.extend_from_slice(&stick.to_le_bytes());
+        }
+        b.extend_from_slice(&[left, right, 0, 0]);
+        self.ioctl(0x803, &b, 0)?;
+        Ok(())
+    }
+    fn refresh(&mut self) -> Result<()> {
+        let mut updates = Vec::new();
+        for (id, (event, back)) in &mut self.states {
+            if let Some(buttons) =
+                back.poll(self.started.elapsed(), self.policy.back_button_timeout)
+                && let Event::Controller {
+                    left_trigger,
+                    right_trigger,
+                    sticks,
+                    ..
+                } = event
+            {
+                updates.push((*id, buttons, *left_trigger, *right_trigger, *sticks));
+            }
+        }
+        for (id, buttons, left, right, sticks) in updates {
+            self.submit(id, buttons, left, right, &sticks)?;
+        }
+        Ok(())
+    }
+    pub fn motion_supported(&self, id: u16) -> bool {
+        matches!(self.profiles.get(&id), Some(5..=7))
     }
 }
 impl Drop for Gamepads {
@@ -284,9 +396,25 @@ pub struct Injector {
     refreshed: std::time::Instant,
     pub gamepads: Option<Gamepads>,
     rect: RECT,
+    policy: butterpollo_core::input_policy::Policy,
+    key_flags: BTreeMap<u16, u8>,
+    repeat: Option<(u16, u8, std::time::Instant)>,
+    scroll: [i32; 2],
+    haptics: bool,
 }
 impl Injector {
     pub fn new(output: &str, profile: &str) -> Result<Self> {
+        Self::new_options(
+            output,
+            profile,
+            &butterpollo_core::config::Config::default(),
+        )
+    }
+    pub fn new_options(
+        output: &str,
+        profile: &str,
+        config: &butterpollo_core::config::Config,
+    ) -> Result<Self> {
         let d = crate::capture::displays()?
             .into_iter()
             .find(|d| d.display_name == output || output.is_empty())
@@ -303,12 +431,17 @@ impl Injector {
                 "vhf_xbox" => 4,
                 "vhf_xbox_one" | "x360" => 3,
                 "vhf_ds4" | "ds4" => 5,
-                "vhf_ds5" => 6,
+                "vhf_ds5" | "ds5" => 6,
                 "vhf_switch" => 7,
                 _ => bail!("unknown controller profile"),
             },
             refreshed: std::time::Instant::now(),
             gamepads: None,
+            policy: butterpollo_core::input_policy::Policy::resolve(config)?,
+            key_flags: BTreeMap::new(),
+            repeat: None,
+            scroll: [0; 2],
+            haptics: true,
             rect: RECT {
                 left: d.x,
                 top: d.y,
@@ -339,7 +472,7 @@ impl Injector {
                         KEYEVENTF_KEYUP
                     }) | if unicode {
                         KEYEVENTF_UNICODE
-                    } else if matches!(key, 0x21..=0x2e | 0xa3 | 0xa5 | 0x5b | 0x5c) {
+                    } else if matches!(key, 0x21..=0x2e | 0xa3 | 0xa5 | 0x5b | 0x5c | 0x5d | 0x6f) {
                         KEYEVENTF_EXTENDEDKEY
                     } else {
                         KEYBD_EVENT_FLAGS(0)
@@ -348,6 +481,26 @@ impl Injector {
                 },
             },
         }
+    }
+    fn key_scan(&self, key: u16, down: bool, flags: u8) -> INPUT {
+        let mut input = Self::key(key, down, false);
+        // Normalized Moonlight VKs always use the fixed US table. Non-normalized
+        // keys follow the host's layout only when the administrator asks for it.
+        let scan = if flags & 1 == 0 {
+            crate::keylayout::SCANCODES[(key & 255) as usize] as u16
+        } else if self.policy.always_send_scancodes && !matches!(key, 0x5b | 0x5c | 0x13) {
+            unsafe { MapVirtualKeyW(u32::from(key), MAPVK_VK_TO_VSC) as u16 }
+        } else {
+            0
+        };
+        if scan != 0 {
+            unsafe {
+                input.Anonymous.ki.wVk = VIRTUAL_KEY(0);
+                input.Anonymous.ki.wScan = scan;
+                input.Anonymous.ki.dwFlags |= KEYEVENTF_SCANCODE;
+            }
+        }
+        input
     }
     fn mouse(dx: i32, dy: i32, data: u32, flags: MOUSE_EVENT_FLAGS) -> INPUT {
         INPUT {
@@ -591,6 +744,19 @@ impl Injector {
         Ok(())
     }
     pub fn refresh(&mut self) -> Result<()> {
+        if let Some(gamepads) = &mut self.gamepads {
+            gamepads.refresh()?;
+        }
+        if let Some((key, flags, due)) = self.repeat
+            && std::time::Instant::now() >= due
+        {
+            Self::send(&[self.key_scan(key, true, flags)])?;
+            self.repeat = Some((
+                key,
+                flags,
+                std::time::Instant::now() + self.policy.repeat_period,
+            ));
+        }
         if self.refreshed.elapsed() < std::time::Duration::from_millis(250) {
             return Ok(());
         }
@@ -612,6 +778,9 @@ impl Injector {
         Ok(())
     }
     pub fn apply(&mut self, e: &Event) -> Result<()> {
+        if !self.policy.allows(e) {
+            return Ok(());
+        }
         use Event::*;
         match e {
             Relative { x, y } => Self::send(&[Self::mouse(
@@ -660,23 +829,57 @@ impl Injector {
                     self.buttons.remove(button);
                 }
             }
-            Scroll { amount, horizontal } => Self::send(&[Self::mouse(
-                0,
-                0,
-                i32::from(*amount) as u32,
-                if *horizontal {
-                    MOUSEEVENTF_HWHEEL
+            Scroll { amount, horizontal } => {
+                let index = usize::from(*horizontal);
+                let amount = if self.policy.high_resolution_scrolling {
+                    i32::from(*amount)
                 } else {
-                    MOUSEEVENTF_WHEEL
-                },
-            )])?,
-            Keyboard { key, down, .. } => {
-                let owned = self.keys.contains(key);
-                Self::held(true, *key, *down, owned, Self::key(*key, *down, false))?;
+                    self.scroll[index] += i32::from(*amount);
+                    let amount = self.scroll[index] / 120 * 120;
+                    self.scroll[index] -= amount;
+                    amount
+                };
+                Self::send(&[Self::mouse(
+                    0,
+                    0,
+                    amount as u32,
+                    if *horizontal {
+                        MOUSEEVENTF_HWHEEL
+                    } else {
+                        MOUSEEVENTF_WHEEL
+                    },
+                )])?;
+            }
+            Keyboard {
+                key, down, flags, ..
+            } => {
+                let key = self.policy.key(*key);
+                let owned = self.keys.contains(&key);
+                let flags = if *down {
+                    *flags
+                } else {
+                    self.key_flags.get(&key).copied().unwrap_or(*flags)
+                };
+                Self::held(true, key, *down, owned, self.key_scan(key, *down, flags))?;
                 if *down {
-                    self.keys.insert(*key);
+                    self.keys.insert(key);
+                    self.key_flags.insert(key, flags);
+                    if !owned && !matches!(key,0x10..=0x12|0xa0..=0xa5|0x5b|0x5c) {
+                        self.repeat = Some((
+                            key,
+                            flags,
+                            std::time::Instant::now() + self.policy.repeat_delay,
+                        ));
+                    }
                 } else {
-                    self.keys.remove(key);
+                    self.keys.remove(&key);
+                    self.key_flags.remove(&key);
+                    if self
+                        .repeat
+                        .is_some_and(|(repeating, _, _)| repeating == key)
+                    {
+                        self.repeat = None;
+                    }
                 }
             }
             Text(s) => {
@@ -704,10 +907,11 @@ impl Injector {
                 rotation,
                 tilt,
             } => self.pen(*event, *tool, *buttons, *x, *y, *pressure, *rotation, *tilt)?,
-            Haptics(_) => {}
+            Haptics(enabled) => self.haptics = *enabled,
             _ => {
                 if self.gamepads.is_none() {
-                    self.gamepads = Some(Gamepads::open(self.profile)?);
+                    self.gamepads =
+                        Some(Gamepads::open_options(self.profile, self.policy.clone())?);
                 }
                 self.gamepads.as_mut().unwrap().apply(e)?;
             }
@@ -734,11 +938,20 @@ impl Injector {
         }
         Ok(())
     }
+    pub fn feedback_allowed(&self, kind: u16) -> bool {
+        !matches!(kind, 0x010b | 0x5500 | 0x5503) || (self.policy.forward_rumble && self.haptics)
+    }
 }
 impl Drop for Injector {
     fn drop(&mut self) {
         for key in &self.keys {
-            let _ = Self::held(true, *key, false, true, Self::key(*key, false, false));
+            let _ = Self::held(
+                true,
+                *key,
+                false,
+                true,
+                self.key_scan(*key, false, self.key_flags.get(key).copied().unwrap_or(0)),
+            );
         }
         for button in &self.buttons {
             let _ = Self::held(

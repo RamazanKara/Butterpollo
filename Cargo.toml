@@ -1,5 +1,5 @@
 [workspace]
-members = ["rust/core", "rust/windows", "rust/host"]
+members = ["rust/core", "rust/windows", "rust/host", "rust/vulkan-layer"]
 exclude = ["rust/truehdr-runtime"]
 resolver = "3"
 

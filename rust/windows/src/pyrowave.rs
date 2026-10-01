@@ -218,6 +218,7 @@ pub struct Encoder {
     interop: Option<Interop>,
     config: Negotiated,
     scratch: Vec<u8>,
+    pub(crate) luminance: [f32; 2],
     bitstream: Vec<u8>,
     packets: Vec<p::pyrowave_packet>,
 }
@@ -238,6 +239,7 @@ impl Encoder {
             interop: None,
             config: config.clone(),
             scratch: vec![],
+            luminance: [100., 1.],
             bitstream: vec![],
             packets: vec![],
         };
@@ -304,7 +306,13 @@ impl Encoder {
             )?);
         }
         if self.config.hdr {
-            crate::color::hdr_rgba(image, &mut self.scratch);
+            crate::color::hdr_rgba_scaled_luminance(
+                image,
+                image.width,
+                image.height,
+                self.luminance,
+                &mut self.scratch,
+            );
         } else if image.pixel != Pixel::Bgra8 {
             bail!("SDR PyroWave received an HDR capture surface");
         }
@@ -442,6 +450,7 @@ impl Encoder {
             Ok(vec![Encoded {
                 bytes: pyrowave::container(&self.bitstream, &slices, self.config.hdr)?,
                 idr: true,
+                after_invalidation: false,
                 latency: None,
             }])
         }

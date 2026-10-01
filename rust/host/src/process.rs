@@ -20,6 +20,18 @@ pub struct ClientCommands {
 }
 impl ClientCommands {
     pub fn start(h: &crate::state::Shared, s: &butterpollo_core::session::Session) -> Result<Self> {
+        if s.launch.role == butterpollo_core::session::Role::InputOnly
+            || h.current_app
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|app| !app.allow_client_commands)
+        {
+            return Ok(Self {
+                undo: vec![],
+                environment: BTreeMap::new(),
+            });
+        }
         let environment = h
             .current_app
             .lock()
@@ -34,8 +46,24 @@ impl ClientCommands {
         environment.insert("SUNSHINE_CLIENT_UUID".into(), s.launch.client.uuid.clone());
         environment.insert("SUNSHINE_CLIENT_WIDTH".into(), s.config.width.to_string());
         environment.insert("SUNSHINE_CLIENT_HEIGHT".into(), s.config.height.to_string());
-        environment.insert("SUNSHINE_CLIENT_FPS".into(), s.config.fps.to_string());
+        environment.insert(
+            "SUNSHINE_CLIENT_FPS".into(),
+            if h.config
+                .read()
+                .unwrap()
+                .boolean("envvar_compatibility_mode", false)
+            {
+                s.config.fps.to_string()
+            } else {
+                butterpollo_core::framegen::Rate(s.config.fps_millihz()).to_string()
+            },
+        );
         environment.insert("SUNSHINE_CLIENT_HDR".into(), s.config.hdr.to_string());
+        for (key, value) in environment.clone() {
+            if let Some(suffix) = key.strip_prefix("SUNSHINE_") {
+                environment.insert(format!("APOLLO_{suffix}"), value);
+            }
+        }
         Self::with_environment(&s.launch.client.extra, environment)
     }
     fn with_environment(
@@ -85,7 +113,10 @@ impl Drop for ClientCommands {
 pub struct RunningApp {
     pub id: u32,
     pub name: String,
+    pub uuid: String,
     pub child: Option<Process>,
+    pub owner: String,
+    pub generation: String,
     undo: Vec<PrepCommand>,
     working: String,
     environment: BTreeMap<String, String>,
@@ -93,6 +124,11 @@ pub struct RunningApp {
     auto_detach: bool,
     wait_all: bool,
     detached: bool,
+    pub allow_client_commands: bool,
+    terminate_on_pause: bool,
+    connected: bool,
+    state_events: Option<std::sync::mpsc::Sender<bool>>,
+    exit_timeout: Duration,
 }
 fn directory(s: &str) -> Option<&Path> {
     if s.is_empty() {
@@ -106,7 +142,18 @@ impl RunningApp {
         let mut running = Self {
             id: app.id(),
             name: app.name.clone(),
+            uuid: app
+                .extra
+                .get("uuid")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
             child: None,
+            owner: environment
+                .get("SUNSHINE_CLIENT_UUID")
+                .cloned()
+                .unwrap_or_default(),
+            generation: uuid::Uuid::new_v4().to_string(),
             undo: vec![],
             working: app.working_dir.clone(),
             environment,
@@ -114,7 +161,67 @@ impl RunningApp {
             auto_detach: app_bool(app, "auto-detach", true),
             wait_all: app_bool(app, "wait-all", true),
             detached: false,
+            allow_client_commands: app_bool(app, "allow-client-commands", true),
+            terminate_on_pause: app_bool(app, "terminate-on-pause", false),
+            connected: false,
+            state_events: None,
+            exit_timeout: Duration::from_secs(
+                app.extra
+                    .get("exit-timeout")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(10)
+                    .min(300),
+            ),
         };
+        let commands: Vec<PrepCommand> = serde_json::from_value(
+            app.extra
+                .get("state-cmd")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([])),
+        )?;
+        if !commands.is_empty() {
+            let (sender, receiver) = std::sync::mpsc::channel::<bool>();
+            let mut environment = running.environment.clone();
+            let working = running.working.clone();
+            std::thread::Builder::new()
+                .name("app-state-commands".into())
+                .spawn(move || {
+                    for active in receiver {
+                        environment.insert(
+                            "APOLLO_APP_STATUS".into(),
+                            if active { "RESUMING" } else { "PAUSING" }.into(),
+                        );
+                        for command in &commands {
+                            let cmd = if active { &command.r#do } else { &command.undo };
+                            if cmd.is_empty() {
+                                continue;
+                            }
+                            match expand(cmd, &environment)
+                                .and_then(|cmd| {
+                                    Process::shell(
+                                        &cmd,
+                                        directory(&working),
+                                        command.elevated,
+                                        &environment,
+                                    )
+                                })
+                                .and_then(|process| process.wait(Duration::from_secs(120)))
+                            {
+                                Ok(0) => {}
+                                Ok(code) => {
+                                    tracing::warn!(code, "application state command failed");
+                                    break;
+                                }
+                                Err(error) => {
+                                    tracing::warn!(%error,"application state command failed");
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                })?;
+            running.state_events = Some(sender);
+        }
         for prep in &app.prep {
             if !prep.r#do.is_empty() {
                 let child = Process::shell(
@@ -179,7 +286,11 @@ impl RunningApp {
         Ok(running)
     }
     pub fn stop(&mut self) {
-        if let Some(child) = self.child.take() {
+        self.state_events.take();
+        if let Some(child) = self.child.take()
+            && let Err(error) = child.stop_graceful(self.exit_timeout)
+        {
+            tracing::warn!(%error, "application could not exit gracefully");
             let _ = child.stop();
         }
         for prep in self.undo.drain(..).rev() {
@@ -215,6 +326,20 @@ impl RunningApp {
             return Ok(false);
         }
         Ok(!self.wait_all || child.active_processes()? == 0)
+    }
+    /// Return true when the last game transport leaves an app that closes on pause.
+    pub fn connection_state(&mut self, connected: bool) -> bool {
+        if self.connected == connected {
+            return false;
+        }
+        self.connected = connected;
+        if !connected && self.terminate_on_pause {
+            return true;
+        }
+        if let Some(events) = &self.state_events {
+            let _ = events.send(connected);
+        }
+        false
     }
 }
 pub fn app_bool(app: &App, name: &str, default: bool) -> bool {
@@ -273,22 +398,44 @@ pub fn launch(
         }
     }
     drop(document);
+    if !app_bool(&app, "exclude-global-state-cmd", false) {
+        let mut global: Vec<PrepCommand> =
+            serde_json::from_str(h.config.read().unwrap().get("global_state_cmd", "[]"))?;
+        let mut local: Vec<PrepCommand> = serde_json::from_value(
+            app.extra
+                .get("state-cmd")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([])),
+        )?;
+        global.append(&mut local);
+        app.extra
+            .insert("state-cmd".into(), serde_json::to_value(global)?);
+    }
     let mode: Vec<_> = args
         .get("mode")
         .map_or("1920x1080x60", String::as_str)
         .split('x')
         .collect();
+    let (render_width, render_height) = butterpollo_core::display_policy::render_dimensions(
+        mode.first()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1920),
+        mode.get(1)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1080),
+        args.get("scaleFactor")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(100),
+        app.extra
+            .get("scale-factor")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(100),
+    );
     for (name, value) in [
         ("SUNSHINE_APP_ID", app.id().to_string()),
         ("SUNSHINE_APP_NAME", app.name.clone()),
-        (
-            "SUNSHINE_CLIENT_WIDTH",
-            mode.first().unwrap_or(&"1920").to_string(),
-        ),
-        (
-            "SUNSHINE_CLIENT_HEIGHT",
-            mode.get(1).unwrap_or(&"1080").to_string(),
-        ),
+        ("SUNSHINE_CLIENT_WIDTH", render_width.to_string()),
+        ("SUNSHINE_CLIENT_HEIGHT", render_height.to_string()),
         (
             "SUNSHINE_CLIENT_FPS",
             mode.get(2).unwrap_or(&"60").to_string(),
@@ -317,6 +464,42 @@ pub fn launch(
         ),
     ] {
         environment.insert(name.into(), value);
+    }
+    if let Some(rate) = mode.get(2) {
+        let rate = if rate.contains('.') {
+            butterpollo_core::framegen::Rate::parse(rate)?
+        } else {
+            butterpollo_core::framegen::Rate::from_client(rate.parse()?)
+        };
+        environment.insert(
+            "SUNSHINE_CLIENT_FPS".into(),
+            if h.config
+                .read()
+                .unwrap()
+                .boolean("envvar_compatibility_mode", false)
+            {
+                rate.rounded().to_string()
+            } else {
+                rate.to_string()
+            },
+        );
+    }
+    for (key, value) in args {
+        let name = match key.as_str() {
+            "clientName" => Some("NAME"),
+            "clientUuid" => Some("UUID"),
+            "surroundParams" => Some("AUDIO_SURROUND_PARAMS"),
+            "surroundAudioInfo" => Some("AUDIO_CONFIGURATION"),
+            _ => None,
+        };
+        if let Some(name) = name {
+            environment.insert(format!("SUNSHINE_CLIENT_{name}"), value.clone());
+        }
+    }
+    for (key, value) in environment.clone() {
+        if let Some(suffix) = key.strip_prefix("SUNSHINE_") {
+            environment.insert(format!("APOLLO_{suffix}"), value);
+        }
     }
     if !app_bool(&app, "exclude-global-prep-cmd", false) {
         let mut global: Vec<PrepCommand> =

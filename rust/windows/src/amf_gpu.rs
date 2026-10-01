@@ -5,7 +5,11 @@ use crate::{
     capture::{Device, GpuImage, Pixel},
 };
 use anyhow::{Context, Result};
-use std::{ptr, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    ptr,
+    sync::{Arc, Mutex},
+};
 use windows::{Win32::Graphics::Direct3D11::ID3D11Texture2D, core::Interface};
 pub(crate) fn boolean(value: bool) -> AMFVariantStruct {
     AMFVariantStruct {
@@ -23,8 +27,42 @@ impl Drop for Surface {
         }
     }
 }
+/// AMF can retain an input after emitting its output PTS. Keep the pool's Arc
+/// until its native release callback, using one stable observer for the whole
+/// encoder lifetime. Duplicate callbacks are harmless.
+#[repr(C)]
+pub(crate) struct Ownership {
+    observer: AMFSurfaceObserver,
+    textures: Mutex<BTreeMap<usize, Arc<ID3D11Texture2D>>>,
+}
+static OBSERVER: AMFSurfaceObserverVtbl = AMFSurfaceObserverVtbl {
+    OnSurfaceDataRelease: Some(released),
+};
+unsafe extern "C" fn released(observer: *mut AMFSurfaceObserver, surface: *mut AMFSurface) {
+    if observer.is_null() {
+        return;
+    }
+    let ownership = unsafe { &*observer.cast::<Ownership>() };
+    if let Ok(mut textures) = ownership.textures.lock() {
+        textures.remove(&(surface as usize));
+    }
+}
+impl Ownership {
+    pub fn new() -> Box<Self> {
+        Box::new(Self {
+            observer: AMFSurfaceObserver { pVtbl: &OBSERVER },
+            textures: Default::default(),
+        })
+    }
+    pub fn retained(&self) -> usize {
+        self.textures.lock().unwrap().len()
+    }
+    fn raw(&mut self) -> *mut AMFSurfaceObserver {
+        &mut self.observer
+    }
+}
 pub(crate) struct Converter {
-    color: crate::gpu_color::Converter,
+    pub color: crate::gpu_color::Converter,
     pub source: (u32, u32, Pixel),
 }
 impl Converter {
@@ -42,6 +80,7 @@ impl Converter {
         &mut self,
         context: *mut AMFContext,
         image: &GpuImage,
+        ownership: &mut Ownership,
     ) -> Result<(Surface, Arc<ID3D11Texture2D>)> {
         let texture = self.color.convert(image)?;
         unsafe {
@@ -50,9 +89,17 @@ impl Converter {
                 context,
                 texture.as_raw(),
                 &mut surface,
-                ptr::null_mut(),
+                ownership.raw(),
             ))
             .context("AMF wrap native YUV texture")?;
+            if surface.is_null() {
+                anyhow::bail!("AMF returned no native surface");
+            }
+            ownership
+                .textures
+                .lock()
+                .unwrap()
+                .insert(surface as usize, texture.clone());
             Ok((Surface(surface), texture))
         }
     }

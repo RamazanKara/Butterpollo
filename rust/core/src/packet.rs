@@ -101,6 +101,16 @@ impl VideoPacketizer {
         timestamp: u32,
         latency_us: u64,
     ) -> Result<Vec<Vec<u8>>> {
+        self.encode_recovery(payload, idr, false, timestamp, latency_us)
+    }
+    pub fn encode_recovery(
+        &mut self,
+        payload: &[u8],
+        idr: bool,
+        after_invalidation: bool,
+        timestamp: u32,
+        latency_us: u64,
+    ) -> Result<Vec<Vec<u8>>> {
         if !(256..=1400).contains(&self.packet_size) || self.fec_percent > 100 {
             bail!("invalid packetizer parameters");
         }
@@ -115,7 +125,13 @@ impl VideoPacketizer {
         header[1..3].copy_from_slice(
             &((latency_us.saturating_add(50) / 100).min(65535) as u16).to_le_bytes(),
         );
-        header[3] = if idr { 2 } else { 1 };
+        header[3] = if idr {
+            2
+        } else if after_invalidation {
+            5
+        } else {
+            1
+        };
         let last = total % slice;
         header[4..6]
             .copy_from_slice(&((if last == 0 { slice } else { last }) as u16).to_le_bytes());
@@ -551,6 +567,10 @@ mod tests {
         assert_eq!(packets[1][24], 3);
         assert_eq!(&packets[0][32..40], &[1, 2, 0, 2, 100, 0, 0, 0]);
         assert_eq!(&packets[1][2..4], &[0, 0]);
+        let recovered = p.encode_recovery(&[3; 16], false, true, 1000, 300).unwrap();
+        assert_eq!(recovered[0][35], 5); // Moonlight recovery marker
+        let keyframe = p.encode_recovery(&[3; 16], true, true, 1100, 300).unwrap();
+        assert_eq!(keyframe[0][35], 2); // IDR takes precedence
     }
     #[test]
     fn encrypted_video_nonce_is_unique_and_authenticated() {
