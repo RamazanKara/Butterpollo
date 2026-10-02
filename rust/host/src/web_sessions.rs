@@ -38,6 +38,20 @@ pub fn now() -> u64 {
 pub fn hash(secret: &str) -> String {
     hex::encode(crypto::hash(secret.as_bytes()))
 }
+pub fn resolve_hash(sessions: &HashMap<String, WebSession>, secret: &str) -> Option<String> {
+    if secret.is_empty() {
+        return None;
+    }
+    let current = hash(secret);
+    if sessions.contains_key(&current) {
+        return Some(current);
+    }
+    let previous = crypto::legacy_hash(secret.as_bytes()).to_ascii_lowercase();
+    sessions.contains_key(&previous).then_some(previous)
+}
+pub fn find<'a>(sessions: &'a HashMap<String, WebSession>, secret: &str) -> Option<&'a WebSession> {
+    sessions.get(&resolve_hash(sessions, secret)?)
+}
 pub fn device_label(user_agent: &str, remote_address: &str) -> String {
     if user_agent.is_empty() {
         return if remote_address.is_empty() {
@@ -175,19 +189,35 @@ mod tests {
         let access = "old-browser-access";
         let refresh = "old-browser-refresh";
         let expires = now() + 100;
-        let doc = json!({"root":{"session_tokens":[{"hash":hash(access).to_uppercase(),"username":"test",
+        for previous in [false, true] {
+            let encode = |secret: &str| {
+                if previous {
+                    crypto::legacy_hash(secret.as_bytes())
+                } else {
+                    hash(secret).to_uppercase()
+                }
+            };
+            let doc = json!({"root":{"session_tokens":[{"hash":encode(access),"username":"test",
             "created_at":"17","expires_at":expires.to_string(),"refresh_expires_at":(expires+1000).to_string(),
-            "refresh_token_hash":hash(refresh),"remember_me":"true","custom-field":9,"refresh_token":refresh}]}});
-        let loaded = load(&doc, "test");
-        let s = &loaded[&hash(access)];
-        assert!(s.expires > Instant::now());
-        assert!(s.remember_me);
-        assert_eq!(s.created, 17);
-        let row = record(&hash(access), s);
-        assert_eq!(row["custom-field"], 9);
-        assert!(row.get("refresh_token").is_none());
-        let restored = load(&json!({"root":{"session_tokens":[row]}}), "test");
-        assert_eq!(restored[&hash(access)].refresh_deadline, expires + 1000);
-        assert!(load(&doc, "other").is_empty());
+            "refresh_token_hash":encode(refresh),"remember_me":"true","custom-field":9,"refresh_token":refresh}]}});
+            let loaded = load(&doc, "test");
+            let key = resolve_hash(&loaded, access).unwrap();
+            let s = find(&loaded, access).unwrap();
+            assert!(crypto::matches_hash(refresh.as_bytes(), &s.refresh));
+            assert!(find(&loaded, "forged").is_none());
+            assert!(find(&loaded, "").is_none());
+            assert!(s.expires > Instant::now());
+            assert!(s.remember_me);
+            assert_eq!(s.created, 17);
+            let row = record(&key, s);
+            assert_eq!(row["custom-field"], 9);
+            assert!(row.get("refresh_token").is_none());
+            let restored = load(&json!({"root":{"session_tokens":[row]}}), "test");
+            assert_eq!(
+                find(&restored, access).unwrap().refresh_deadline,
+                expires + 1000
+            );
+            assert!(load(&doc, "other").is_empty());
+        }
     }
 }

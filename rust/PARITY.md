@@ -6,7 +6,7 @@ The host, service supervisor, console, protocol, display recovery process, Vulka
 
 | Previous behavior | Rust implementation | Evidence and remaining validation |
 | --- | --- | --- |
-| Existing configuration, certificates, credentials, app/client identity, permissions and unknown fields | Atomic migration and state writes; legacy client normalization; stable app aliases after artwork changes | Configuration/state vectors, actual pairing and administration fixtures pass |
+| Existing configuration, certificates, credentials, app/client identity, permissions and unknown fields | Atomic migration and state writes; previous C++ and early Rust digest byte orders; legacy client normalization; stable app aliases after artwork changes | Independent previous-password vector, real remembered-session/API-key migration, restart/CSRF/logout/rotation/scope checks, actual pairing and administration fixtures pass |
 | PIN pairing and authenticated Moonlight endpoints | RSA/AES pairing, TLS identities, certificate authorization and permission checks | Independent Moonlight-common-c client passes real pairing and denied actions |
 | RTSP, SDP, encrypted control, video and audio | Fractional negotiation, legacy CBC/GCM, replay window, ENet control, RTP, Cauchy FEC and codec capability advertisement | Wire vectors and independent encrypted streaming/decode pass |
 | H.264, HEVC, AV1, HDR, 10-bit SDR and NVIDIA 4:4:4 | Direct AMF and NVENC, reviewed NVIDIA API 11.0–13.0 compatibility, D3D11 4:2:0/8-bit 4:4:4, GPU-only CUDA ten-bit 4:4:4, native QSV imports and compatibility/software encoders | AMD streams and GPU 4:2:0/4:4:4 math tests pass; seven NVENC mock-driver tests pass; NVIDIA/Intel encoding awaits hardware |

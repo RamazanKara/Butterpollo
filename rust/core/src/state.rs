@@ -235,15 +235,15 @@ impl Credentials {
         let salt = hex::encode(crypto::random::<8>());
         Ok(Self {
             username,
-            password: hex::encode(crypto::hash(format!("{password}{salt}").as_bytes())),
+            password: crypto::legacy_hash(format!("{password}{salt}").as_bytes()),
             salt,
         })
     }
     pub fn verifies(&self, username: &str, password: &str) -> bool {
         self.username.eq_ignore_ascii_case(username)
-            && crypto::equal(
-                self.password.to_ascii_lowercase().as_bytes(),
-                hex::encode(crypto::hash(format!("{password}{}", self.salt).as_bytes())).as_bytes(),
+            && crypto::matches_hash(
+                format!("{password}{}", self.salt).as_bytes(),
+                &self.password,
             )
     }
 }
@@ -331,5 +331,19 @@ mod tests {
         assert!(c.verifies("User", "password"));
         assert!(!c.verifies("other", "password"));
         assert!(!c.verifies("user", "wrong"));
+        // Independent SHA-256/password+salt vector in C++ util::hex byte order.
+        let previous = Credentials {
+            password: "F88D961F52F30D505CC0CBB98D01B38D0D789C075812B3C38748CEEAFFB73367".into(),
+            ..c
+        };
+        assert!(previous.verifies("USER", "password"));
+        assert!(!previous.verifies("user", "wrong"));
+        assert!(!previous.verifies("other", "password"));
+        let current = Credentials::new("user".into(), "new-password").unwrap();
+        assert_eq!(
+            current.password,
+            crypto::legacy_hash(format!("new-password{}", current.salt).as_bytes())
+        );
+        assert!(current.verifies("user", "new-password"));
     }
 }

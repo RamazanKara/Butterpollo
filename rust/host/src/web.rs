@@ -45,7 +45,9 @@ pub(crate) fn access(headers: &HeaderMap) -> Option<String> {
 pub(crate) fn authenticated(h: &Shared, headers: &HeaderMap) -> bool {
     if let Some(token) = access(headers) {
         let mut sessions = h.web_sessions.lock().unwrap();
-        let key = crate::web_sessions::hash(&token);
+        let Some(key) = crate::web_sessions::resolve_hash(&sessions, &token) else {
+            return false;
+        };
         let Some(session) = sessions
             .get_mut(&key)
             .filter(|s| s.expires > Instant::now())
@@ -280,9 +282,7 @@ async fn guard(State(h): State<Shared>, mut request: Request, next: Next) -> Res
             && let Some(token) = access(request.headers())
         {
             let sessions = h.web_sessions.lock().unwrap();
-            let expected = sessions
-                .get(&crate::web_sessions::hash(&token))
-                .map(|s| s.csrf.as_str());
+            let expected = crate::web_sessions::find(&sessions, &token).map(|s| s.csrf.as_str());
             let got = request
                 .headers()
                 .get("X-CSRF-Token")
@@ -379,15 +379,13 @@ pub(crate) fn refresh_browser(
     connection: &Connection,
 ) -> Option<Response> {
     let token = cookie(headers, "__Host-apollo_refresh")?;
-    let hash = crate::web_sessions::hash(&token);
     let previous = h
         .web_sessions
         .lock()
         .unwrap()
         .values()
         .find(|s| {
-            crypto::equal(s.refresh.as_bytes(), hash.as_bytes())
-                && s.refresh_expires > Instant::now()
+            crypto::matches_hash(token.as_bytes(), &s.refresh) && s.refresh_expires > Instant::now()
         })
         .cloned()?;
     Some(issued(
@@ -606,11 +604,10 @@ pub(crate) async fn api(
             .unwrap_or_else(|| text("refresh_token").into());
         let previous = {
             let sessions = h.web_sessions.lock().unwrap();
-            let hash = crate::web_sessions::hash(&token);
             sessions
                 .iter()
                 .find(|(_, s)| {
-                    crypto::equal(s.refresh.as_bytes(), hash.as_bytes())
+                    crypto::matches_hash(token.as_bytes(), &s.refresh)
                         && s.refresh_expires > Instant::now()
                 })
                 .map(|(_, s)| s.clone())
@@ -631,7 +628,9 @@ pub(crate) async fn api(
         if let Some(token) = access(&headers) {
             let mut sessions = h.web_sessions.lock().unwrap();
             let mut next = sessions.clone();
-            next.remove(&crate::web_sessions::hash(&token));
+            if let Some(key) = crate::web_sessions::resolve_hash(&next, &token) {
+                next.remove(&key);
+            }
             if let Err(e) = h.save_web_sessions(&next) {
                 return error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
             }
@@ -655,10 +654,7 @@ pub(crate) async fn api(
         let token = access(&headers);
         let csrf = token
             .and_then(|t| {
-                h.web_sessions
-                    .lock()
-                    .unwrap()
-                    .get(&crate::web_sessions::hash(&t))
+                crate::web_sessions::find(&h.web_sessions.lock().unwrap(), &t)
                     .map(|s| s.csrf.clone())
             })
             .unwrap_or_default();
@@ -735,11 +731,9 @@ pub(crate) async fn api(
                 )
             }
             ("GET", "/api/auth/sessions") => {
-                let current = crate::web_sessions::hash(&access(&headers).unwrap_or_default());
-                let sessions: Vec<_> = h
-                    .web_sessions
-                    .lock()
-                    .unwrap()
+                let sessions = h.web_sessions.lock().unwrap();
+                let current = crate::web_sessions::resolve_hash(&sessions, &access(&headers).unwrap_or_default());
+                let sessions: Vec<_> = sessions
                     .iter()
                     .filter(|(_, s)| s.refresh_expires > Instant::now())
                     .map(|(token, s)| {
@@ -751,7 +745,7 @@ pub(crate) async fn api(
                         object.insert("id".into(), json!(token));
                         object.insert(
                             "current".into(),
-                            json!(crypto::equal(token.as_bytes(), current.as_bytes())),
+                            json!(current.as_ref().is_some_and(|current| crypto::equal(token.as_bytes(), current.as_bytes()))),
                         );
                         row
                     })

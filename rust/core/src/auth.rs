@@ -34,9 +34,8 @@ pub fn permits(tokens: &[Token], secret: &str, username: &str, path: &str, metho
     if secret.len() > 256 || secret.is_empty() {
         return false;
     }
-    let hash = hex::encode(crate::crypto::hash(secret.as_bytes()));
     tokens.iter().any(|t| {
-        crate::crypto::equal(hash.as_bytes(), t.hash.to_ascii_lowercase().as_bytes())
+        crate::crypto::matches_hash(secret.as_bytes(), &t.hash)
             && t.username.eq_ignore_ascii_case(username)
             && t.scopes.iter().any(|s| {
                 s.methods.iter().any(|m| m.eq_ignore_ascii_case(method))
@@ -103,6 +102,11 @@ mod tests {
         ));
         assert!(!permits(&tokens, &secret, "other", "/api/apps", "GET"));
         assert!(!permits(&tokens, "forged", "test", "/api/apps", "GET"));
+        let mut previous = tokens.clone();
+        previous[0].hash = crate::crypto::legacy_hash(secret.as_bytes());
+        assert!(permits(&previous, &secret, "TEST", "/api/apps", "GET"));
+        assert!(!permits(&previous, &secret, "test", "/api/apps", "POST"));
+        assert!(!permits(&previous, "forged", "test", "/api/apps", "GET"));
         let re = Scope {
             path: "/api/apps/[^/]+/cover".into(),
             methods: vec!["GET".into()],

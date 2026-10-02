@@ -5,6 +5,7 @@ This candidate brings the Windows streaming features of Vibepollo 2.0 into the R
 ## What players experience
 
 - A first-run import for existing Vibepollo/Apollo settings, paired devices, certificates, library and covers. The original profile is retained. Missing configured identity files stop the import with an error instead of silently requiring everyone to pair again.
+- Imported passwords, browser access/refresh sessions and API keys recognize the previous C++ digest byte order as well as earlier Rust profiles. Saved login data stays intact; API permissions, expiry, rotation, CSRF checks and logout remain enforced.
 - A connection checklist explaining video, display and audio readiness, followed by the steps to pair Moonlight and start Desktop. Manual Add PC shows the physical LAN address and includes a custom Moonlight port. GPU checks show progress. Device names, commands and JSON remain data when changing language.
 - Live session rates, encode p95 and two minutes of bounded performance history. Optional five-second refresh works without JavaScript.
 - Capture and encoder waits use an interruptible high-resolution timer. A 250 µs wait measured 0.615 ms instead of 15.293 ms on the validation machine. Unchanged desktop images preserve the waiting encode slot, avoiding another full frame interval when fresh content arrives. Host processing and encode latency are measured separately; this is a scheduling improvement, not a measured whole-host advantage over C++.

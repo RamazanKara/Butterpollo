@@ -68,12 +68,15 @@ def bearer(secret):
     return client
 
 def digest(secret): return hashlib.sha256(secret.encode()).hexdigest()
+def previous_digest(secret): return hashlib.sha256(secret.encode()).digest()[::-1].hex().upper()
 
 try:
     start()
     anon = call(browser, 'GET', '/api/csrf-token').json()['csrf_token']
     call(browser, 'POST', '/api/password', headers={'X-CSRF-Token':anon}, json={
         'newUsername':'test', 'newPassword':password, 'confirmNewPassword':password})
+    credentials=json.loads((directory/'sunshine_state.json').read_text())
+    assert credentials['password']==previous_digest(password+credentials['salt'])
     response = call(browser, 'POST', '/api/auth/login', headers={'X-CSRF-Token':anon},
         json={'username':'TEST', 'password':password, 'remember_me':True})
     login = response.json()
@@ -98,11 +101,29 @@ try:
     call(replay, 'POST', '/api/auth/refresh', 401, headers={'Authorization':'Refresh '+rotated['refresh_token']})
     stop()
     legacy_access = 'previous-access-fixture'; legacy_refresh = 'previous-refresh-fixture'
+    legacy_api = 'previous-api-fixture'
     doc = document()
-    doc['root']['session_tokens'] = [{'hash':digest(legacy_access), 'username':'test',
-        'refresh_token_hash':digest(legacy_refresh), 'created_at':'17', 'expires_at':str(int(time.time())-10),
+    doc['root']['api_tokens'] = [{'hash':previous_digest(legacy_api), 'username':'test',
+        'created_at':'17','scopes':[{'path':'/api/metadata','methods':['GET']}]}]
+    doc['root']['session_tokens'] = [{'hash':previous_digest(legacy_access), 'username':'test',
+        'refresh_token_hash':previous_digest(legacy_refresh), 'created_at':'17', 'expires_at':str(int(time.time())+60),
         'refresh_expires_at':str(int(time.time())+300), 'remember_me':'true', 'device_label':'Previous browser',
         'migration-field':9}]
+    (directory / 'vibeshine_state.json').write_text(json.dumps(doc))
+    start()
+    old_api=bearer(legacy_api)
+    call(old_api,'GET','/api/metadata')
+    call(old_api,'GET','/api/config',401)
+    previous_browser=bearer(legacy_access)
+    assert call(previous_browser,'GET','/api/auth/status').json()['authenticated']
+    previous_browser.headers['X-CSRF-Token']=call(previous_browser,'GET','/api/csrf-token').json()['csrf_token']
+    call(previous_browser,'PATCH','/api/config',json={})
+    sessions=call(previous_browser,'GET','/api/auth/sessions').json()['sessions']
+    assert len(sessions)==1 and sessions[0]['current']
+    call(previous_browser,'POST','/api/auth/logout')
+    assert not call(previous_browser,'GET','/api/auth/status').json()['authenticated']
+    stop()
+    doc['root']['session_tokens'][0]['expires_at']=str(int(time.time())-10)
     (directory / 'vibeshine_state.json').write_text(json.dumps(doc))
     start()
     migrated = requests.Session(); migrated.verify = False
@@ -119,6 +140,8 @@ try:
         'remembered login survives restart', 'only hashes saved', 'canonical username',
         'refresh rotation rejects old access and refresh tokens', 'absolute refresh lifetime',
         'revocation survives restart', 'previous string-valued session records import',
+        'previous C++ password hash encoding', 'previous API token scopes preserved',
+        'previous browser access, CSRF, current-session identity and logout',
         'expired access automatically renews through Rust HTML console', 'unknown fields preserved'],
         'fixture':str(directory)}
     (root / 'auth-session-restart.json').write_text(json.dumps(report, indent=2))

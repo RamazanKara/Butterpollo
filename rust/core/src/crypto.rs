@@ -27,6 +27,21 @@ pub fn random<const N: usize>() -> [u8; N] {
 pub fn hash(b: &[u8]) -> [u8; 32] {
     Sha256::digest(b).into()
 }
+/// Sunshine's util::hex(array) serializes the digest in reverse byte order.
+pub fn legacy_hash(input: &[u8]) -> String {
+    let mut digest = hash(input);
+    digest.reverse();
+    hex::encode_upper(digest)
+}
+/// Accept previous C++ state and credentials written by early Rust candidates.
+pub fn matches_hash(input: &[u8], stored: &str) -> bool {
+    let mut digest = hash(input);
+    let forward = hex::encode(digest);
+    digest.reverse();
+    let legacy = hex::encode(digest);
+    let stored = stored.to_ascii_lowercase();
+    equal(stored.as_bytes(), forward.as_bytes()) | equal(stored.as_bytes(), legacy.as_bytes())
+}
 pub fn equal(a: &[u8], b: &[u8]) -> bool {
     bool::from(a.ct_eq(b))
 }
