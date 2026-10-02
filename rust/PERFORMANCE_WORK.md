@@ -1,48 +1,91 @@
 # Windows performance work — October 2, 2026
 
 User objective: make the Rust host smoother and lower latency than Vibepollo,
-without reducing features or picture quality. At 17:42 UTC on October 2 the
-user explicitly requested a finish and handoff to Opus 5.5. This supersedes the
-earlier minimum-day continuation. The existing heartbeat
-`butterpollo-latency-and-smoothness` is PAUSED; do not resume it automatically.
-Performance acceptance remains unfulfilled.
+without reducing features or picture quality. Opus took over from Codex in the
+evening of October 2. Performance acceptance on the customer's own sessions is
+still open; the measured fixture results below are local loopback evidence.
 
 ## Current state
 
-Installed revision: `36bff835aa635068d21e6cbe142b306e1ebca61c`.
-The final handoff source on `codex/butterpollo-rust` includes the subsequent
-changes recorded below. Those changes are not installed or packaged. Use
-`git log -1` for the source checkpoint; do not confuse it with installed bytes.
-Push only to the owned `butterpollo` remote, not upstream `origin`.
-Draft PR: https://github.com/RamazanKara/Butterpollo/pull/1.
-Workspace: `/home/rambo/git/butterpollo-rust`, branch `codex/butterpollo-rust`.
-The original `vibepollo` checkout contains unrelated work.
+Installed revision: `36bff835a` (Codex). It still has the signed launch-ID bug
+behind the intermittent `invalid digit found in string` / 503: the customer's
+tablet hit it twice at 19:42 UTC before connecting. Source on
+`codex/butterpollo-rust` adds the Codex fixes after `36bff835a` and the
+scheduling work below; install it while the host is idle.
+Push only to the owned `butterpollo` remote. Draft PR:
+https://github.com/RamazanKara/Butterpollo/pull/1.
 
-The latest customer disconnect observed before the handoff was 16:51:32 UTC.
-Native 1968 × 2184/120 HDR sessions on the installed revision show AV1 means
-around 6.0–6.6 ms and HEVC means around 7.1–7.4 ms, with tails above 10 ms.
-One HEVC send interval was 32.969 ms. These are rolling diagnostic windows,
-not whole-session percentiles. The customer reports all three codecs worse
-than Vibepollo; acceptance has not been achieved. A display arrangement restore
-was still pending at 17:05:50 UTC with Windows error 31.
+### Why the customer saw higher host latency than Vibepollo
 
-Raw session and video configuration are saved in
-`C:\Users\ramaz\.codex\artifacts\butterpollo-rust-20260930\day-work-20261002`.
-No actual console credentials were copied or reset.
+1. Different counters. The C++ host sends Moonlight
+   `frame_processing_latency = send - host_processing_timestamp`, taken when it
+   picks the frame up (`src/stream.cpp:2037-2046`, `display_wgc.cpp:384`). The
+   Rust host sent `send - presentation`, which adds the 2-3 ms a frame waits
+   after Windows presents it. The Rust host now reports claim to packet, as the
+   C++ host did, and logs the waiting separately (`frame_age`, split into
+   `detect` and `claim_wait`), so it stays visible.
+2. Real waiting. The encoder claimed frames on a fixed 120 Hz grid unrelated
+   to presentation, so frames aged 2-3 ms before encoding (phase lottery: the
+   value was fixed per session). Frames are now claimed on arrival
+   (`frame_pacing = arrival`, default; `grid` keeps the old scheduler).
+3. Coarse waits. Waitable timers on this PC wake 0.3-0.5 ms late for short
+   waits (`windows/examples/timer_probe.rs`), so the 100 us AMF output poll was
+   really ~0.5 ms and deadline claims were late. AMF now waits in the driver
+   (`QueryTimeout = 1`, only while a frame is in flight); streams raise the
+   timer resolution, opt out of power throttling and use high priority, as
+   the C++ host did.
+
+### Measured (October 2 evening, same binary, A/B)
+
+Fixture: `day-work-20261002/run-motion.py av1 <label> rust physical-strip-motion`
+with `BUTTERPOLLO_TEST_STREAM_SCALE=0.5` (physical 5120x1440 at 240 Hz
+streamed at 2560x720/120 so the local software decoder is not the bottleneck),
+`BUTTERPOLLO_TEST_DECODER_THREADS=4`, `BUTTERPOLLO_TEST_FRAME_PACING`.
+`received_age.py` reports picture age minus client decode time (renderer to
+fully received frame), which excludes the loopback decoder's CPU contention.
+
+| Run (v6, final) | Picture age mean / p99 | Received age mean / p99 | Present to send | Frame age |
+| --- | --- | --- | --- | --- |
+| grid | 12.55 / 13.66 ms | 9.37 / 9.86 ms | 4.8 ms | 2.9 ms |
+| arrival a | 10.40 / 11.74 ms | 7.10 / 7.85 ms | 2.5-2.6 ms | 0.40 ms |
+| arrival b | 10.29 / 11.51 ms | 7.08 / 7.84 ms | 2.55-2.6 ms | 0.41 ms |
+| arrival c (stopped when the customer connected) | - | 7.10 / 7.88 ms | 2.5 ms | 0.41 ms |
+
+Zero late intervals and 120.0 unique fps in every run. Arrival pacing is
+2.3 ms faster end to end than the grid on the same binary. The 1 ms timer also
+helps the local renderer and client, so do not compare these absolute values
+with runs before `d9a04bbb0`.
+
+Three pacer defects were found with per-claim traces
+(`BUTTERPOLLO_TEST_RUST_LOG=info,pacing=trace`, `claims.py`) and are covered
+by tests: the session-sampled cadence estimate drifted (now the capture
+worker's median interval); a fresh frame presented just before the claim slot
+but detected after it lost to the older one; and a credit deficit from startup
+persisted for a whole session at exactly the stream rate (credit now refills
+1 % faster, claims need 7/8 of a frame of credit).
+
+### Build loop warning
+
+The WSL clock ran 43 s behind Windows, so cargo on Windows skipped rebuilding
+files edited in WSL within that window. `systemd-timesyncd` in WSL was stopped
+and the WSL clock set from Windows. If edits seem to have no effect, compare
+`wsl date` with Windows time and touch the sources.
 
 ## Next work
 
-1. Reproduce movement at the customer's native HDR resolution and frame rate.
-   Static repeated-frame benchmarks cannot establish smoothness improvement.
-2. Separate capture age, submission/completion delay, send pacing and frame
-   intervals. Keep genuine capture timestamps and existing quality settings.
-3. Measure changes to frame scheduling, native GPU conversion and queues before
-   accepting them. Investigate the remaining AV1 padded-resolution failure.
-4. Establish a same-content, same-settings full-stream Vibepollo comparison.
-   Explain any difference in how the two hosts report processing time.
-5. Run relevant unit/native checks, package, update the draft PR, and install
-   tested improvements while the installed host is idle. Validate actual
-   customer sessions; keep remaining release gates visible.
+1. Install the current source while the host is idle (package with
+   `build.ps1 -Dependencies <artifact>\bootstrap-sdk -TargetDirectory
+   <artifact>\target -NvidiaRoot <artifact>\ngx-sdk -MsvcSdk
+   <artifact>\msvc-sdk -Package` after dot-sourcing
+   `performance-probe/rust-env.ps1`). Check the customer's next 1968x2184 HDR
+   sessions: `frame_age`, `host_mean` (now claim to packet) and the Artemis
+   HDR10 warning after a host restart.
+2. Repeat the A/B against the pinned Vibepollo baseline with the scaled
+   fixture (picture and received age), now that the counters agree.
+3. Encode is 0.2-0.3 ms slower when claiming right after composition (the
+   conversion waits for the capture copy). Investigate converting directly from
+   the duplicated surface.
+4. AMD AV1 padded decoded size remains open (see below).
 
 ## Operating rules
 
