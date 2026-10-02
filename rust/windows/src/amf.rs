@@ -500,6 +500,19 @@ impl Encoder {
         Ok(plan)
     }
     pub fn poll(&mut self) -> Result<Vec<Encoded>> {
+        // A submission the driver never answers would otherwise keep every
+        // later query waiting for its timeout.
+        while self
+            .in_flight
+            .front()
+            .is_some_and(|s| s.started.elapsed() > Duration::from_secs(2))
+        {
+            let stale = self.in_flight.pop_front();
+            tracing::warn!(
+                pts = stale.map(|s| s.pts),
+                "AMF returned no output for a frame"
+            );
+        }
         unsafe {
             let mut output = vec![];
             // With a query timeout, asking again after the last frame in flight
