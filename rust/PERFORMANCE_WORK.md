@@ -64,6 +64,27 @@ but detected after it lost to the older one; and a credit deficit from startup
 persisted for a whole session at exactly the stream rate (credit now refills
 1 % faster, claims need 7/8 of a frame of credit).
 
+### Against Vibepollo 2.0 (pinned C++ baseline)
+
+Same fixture, same scaled 2560x720 AV1 stream and client, run alternately
+after the Rust build above was installed (22:32 local). The C++ baseline's
+first run failed (its virtual display restart was denied, the renderer timed
+out) and its display recovery re-enabled the HISENSE monitor and set the
+Odyssey from 240 Hz to 120 Hz; the second pair therefore ran on a 120 Hz
+source. The displays were put back afterwards (Odyssey 5120x1440 at 240 Hz,
+HISENSE detached, as before the test). Do not run the C++ baseline fixture
+on this machine again without isolating its display recovery.
+
+| 120 Hz source | Rust | Vibepollo 2.0 |
+| --- | --- | --- |
+| Moonlight host latency (claim to send, both) | 2.05 ms | 2.47 ms |
+| Picture age mean / p99 | 15.6 / 18.7 ms | 18.2 / 29.9 ms |
+| Received age mean / p99 | 11.6 / 12.5 ms | 13.2 / 22.6 ms |
+| Intervals over 1.5 periods in 30 s | 1 | 17 |
+
+One pair only; repeat on the customer's real sessions before claiming it in
+release notes.
+
 ### Build loop warning
 
 The WSL clock ran 43 s behind Windows, so cargo on Windows skipped rebuilding
