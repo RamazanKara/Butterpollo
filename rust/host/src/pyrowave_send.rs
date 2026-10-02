@@ -166,7 +166,7 @@ impl Sender {
                                 return Ok(());
                             }
                             if due > Instant::now() {
-                                timer.until(due);
+                                timer.until_precise(due);
                             }
                             let budget =
                                 (bps / 4000).clamp(remaining[0].len() as u64, 64 * 1024) as usize;

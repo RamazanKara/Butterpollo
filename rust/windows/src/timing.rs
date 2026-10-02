@@ -74,6 +74,20 @@ impl Timer {
             std::hint::spin_loop();
         }
     }
+    /// Like `until`, accurate to a few microseconds at the cost of yielding the
+    /// last 600 us. Waitable timers here wake 0.3-0.5 ms late for short waits,
+    /// even at a 1 ms system timer resolution (`examples/timer_probe.rs`), so a
+    /// paced packet burst would otherwise leave its last packet that much later.
+    pub fn until_precise(&self, deadline: Instant) {
+        const SPIN: Duration = Duration::from_micros(600);
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining > SPIN + Duration::from_micros(100) {
+            self.until(deadline - SPIN);
+        }
+        while Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+    }
     /// Wait for capture or the precise encoder/static-frame deadline, without
     /// a coarse condition-variable timeout or a polling/spinning thread.
     pub fn until_or_signal(&self, deadline: Instant, signal: &Signal) -> Result<bool> {

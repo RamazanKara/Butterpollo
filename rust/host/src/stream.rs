@@ -693,7 +693,7 @@ impl Media {
                             while !remaining.is_empty() {
                                 let now = Instant::now();
                                 if send_due > now {
-                                    timer.until(send_due);
+                                    timer.until_precise(send_due);
                                 }
                                 let budget = (bps / 4000)
                                     .clamp(remaining[0].len() as u64, batch_kb * 1024)
