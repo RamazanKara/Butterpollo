@@ -130,6 +130,14 @@ fn authenticated(h: &Shared, connection: &Connection, permission: u32) -> Result
     }
     Ok(c.clone())
 }
+fn stream_key_id(value: &str) -> Result<u32> {
+    // Android sends Java's signed random int; desktop clients can send the
+    // same 32 bits as an unsigned decimal. Both forms describe the same IV.
+    value
+        .parse::<u32>()
+        .or_else(|_| value.parse::<i32>().map(|id| id as u32))
+        .context("stream key ID must be a signed or unsigned 32-bit decimal integer")
+}
 pub fn router(h: Shared, https: bool) -> Router {
     let r = Router::new()
         .route("/serverinfo", get(serverinfo))
@@ -159,6 +167,7 @@ async fn serverinfo(
     State(h): State<Shared>,
     Extension(connection): Extension<Connection>,
 ) -> Response {
+    h.wait_for_video_codecs().await;
     let config = h.config.read().unwrap().clone();
     let ports = config.ports().unwrap();
     let client = authenticated(&h, &connection, 0).ok();
@@ -175,6 +184,19 @@ async fn serverinfo(
         .and_then(Result::ok)
         .unwrap_or_else(|| "00:00:00:00:00:00".into());
     let game = remote_game(&h);
+    // GameStream's public state is scoped to the requesting client. Local
+    // maintenance needs the actual session counts, including queued launches.
+    let local = connection.peer.ip().to_canonical().is_loopback();
+    let (session_count, pending_count) = if local {
+        let mut sessions = h.sessions.lock().unwrap();
+        sessions.expire();
+        (
+            sessions.active.len().to_string(),
+            sessions.pending.len().to_string(),
+        )
+    } else {
+        (String::new(), String::new())
+    };
     let current = game
         .as_ref()
         .filter(|game| {
@@ -220,6 +242,16 @@ async fn serverinfo(
                 (h.codecs.load(std::sync::atomic::Ordering::Acquire) & !0x40000000).to_string(),
             ),
             ("RustHostVersion", env!("CARGO_PKG_VERSION").into()),
+            ("RustHostSessionCount", session_count),
+            ("RustHostPendingSessionCount", pending_count),
+            (
+                "RustHostApplicationActive",
+                if local {
+                    u8::from(game.is_some()).to_string()
+                } else {
+                    String::new()
+                },
+            ),
             (
                 "RustHostProfile",
                 if connection.peer.ip().to_canonical().is_loopback() {
@@ -404,6 +436,7 @@ async fn applist(
         Ok(c) => c,
         Err(e) => return xml(401, &[], Some(e.to_string())),
     };
+    h.wait_for_video_codecs().await;
     use butterpollo_core::remote::{self, Control};
     let configured = h
         .apps
@@ -582,10 +615,7 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
         let key: [u8; 16] = hex::decode(args.get("rikey").context("missing stream key")?)?
             .try_into()
             .map_err(|_| anyhow::anyhow!("invalid stream key length"))?;
-        let key_id = args
-            .get("rikeyid")
-            .context("missing stream key ID")?
-            .parse()?;
+        let key_id = stream_key_id(args.get("rikeyid").context("missing stream key ID")?)?;
         let mut role = match control {
             Some(Control::Monitor) => Role::RemoteMonitor,
             Some(Control::Input) => Role::InputOnly,
@@ -753,8 +783,8 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
                     butterpollo_core::framegen::Rate::from_client(dimensions[2].parse()?)
                 };
                 let mut stream = butterpollo_core::rtsp::Negotiated {
-                    width: dimensions[0].parse()?,
-                    height: dimensions[1].parse()?,
+                    width: dimensions[0].parse().context("invalid launch width")?,
+                    height: dimensions[1].parse().context("invalid launch height")?,
                     fps: rate.rounded(),
                     rate_millihz: rate.0,
                     hdr: args.get("hdrMode").is_some_and(|v| v == "1"),
@@ -1085,4 +1115,27 @@ async fn abr(State(h): State<Shared>, Extension(c): Extension<Connection>) -> Re
     }
     axum::Json(json!({"supported":true,"min_bitrate_kbps":100,"max_bitrate_kbps":2_000_000}))
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stream_key_id;
+
+    #[test]
+    fn android_signed_stream_keys_preserve_the_wire_iv() {
+        for (signed, unsigned) in [
+            ("0", "0"),
+            ("2147483647", "2147483647"),
+            ("-2147483648", "2147483648"),
+            ("-1", "4294967295"),
+        ] {
+            assert_eq!(
+                stream_key_id(signed).unwrap().to_be_bytes(),
+                stream_key_id(unsigned).unwrap().to_be_bytes()
+            );
+        }
+        for invalid in ["", "-2147483649", "4294967296", "1.5", "0x123", "key"] {
+            assert!(stream_key_id(invalid).is_err(), "{invalid}");
+        }
+    }
 }

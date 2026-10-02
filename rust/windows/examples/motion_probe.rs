@@ -124,12 +124,17 @@ float4 picture(float4 p : SV_Position) : SV_Target {
 
     pub fn run() -> Result<()> {
         let mut args = std::env::args().skip(1);
-        let display_name = args
-            .next()
-            .context("usage: motion_probe DISPLAY SECONDS [REPORT.json [SOURCE_HZ]]")?;
+        let display_name = args.next().context(
+            "usage: motion_probe DISPLAY SECONDS [REPORT.json [SOURCE_HZ|current [STRIP_HEIGHT]]]",
+        )?;
         let seconds: u64 = args.next().context("duration is required")?.parse()?;
         let report = args.next();
-        let source_hz: Option<u32> = args.next().map(|s| s.parse()).transpose()?;
+        let source_hz: Option<u32> = args
+            .next()
+            .filter(|s| s != "current")
+            .map(|s| s.parse())
+            .transpose()?;
+        let strip_height: Option<u32> = args.next().map(|s| s.parse()).transpose()?;
         if !(1..=300).contains(&seconds) || args.next().is_some() {
             bail!("duration must be 1..300 seconds");
         }
@@ -142,6 +147,11 @@ float4 picture(float4 p : SV_Position) : SV_Target {
             .into_iter()
             .find(|d| d.display_name.eq_ignore_ascii_case(&display_name))
             .context("explicitly selected display is not active")?;
+        let window_height = strip_height.unwrap_or(display.height);
+        if !(128..=display.height).contains(&window_height) {
+            bail!("window height must be 128..display height");
+        }
+        let window_y = display.y + (display.height - window_height) as i32;
         if let Some(hz) = source_hz {
             butterpollo_windows::display::set_mode(
                 &display.display_name,
@@ -171,9 +181,9 @@ float4 picture(float4 p : SV_Position) : SV_Target {
                 w!("Butterpollo test motion"),
                 WS_POPUP | WS_VISIBLE,
                 display.x,
-                display.y,
+                window_y,
                 display.width as i32,
-                display.height as i32,
+                window_height as i32,
                 None,
                 None,
                 Some(HINSTANCE(module.0)),
@@ -183,9 +193,9 @@ float4 picture(float4 p : SV_Position) : SV_Target {
                 window.0,
                 Some(HWND_TOPMOST),
                 display.x,
-                display.y,
+                window_y,
                 display.width as i32,
-                display.height as i32,
+                window_height as i32,
                 SWP_NOACTIVATE,
             )?;
             println!("MOTION stage=window");
@@ -212,7 +222,7 @@ float4 picture(float4 p : SV_Position) : SV_Target {
                 window.0,
                 &DXGI_SWAP_CHAIN_DESC1 {
                     Width: display.width,
-                    Height: display.height,
+                    Height: window_height,
                     Format: DXGI_FORMAT_R16G16B16A16_FLOAT,
                     SampleDesc: DXGI_SAMPLE_DESC {
                         Count: 1,
@@ -270,7 +280,7 @@ float4 picture(float4 p : SV_Position) : SV_Target {
             context.PSSetConstantBuffers(0, Some(&[Some(constants.clone())]));
             context.RSSetViewports(Some(&[D3D11_VIEWPORT {
                 Width: display.width as f32,
-                Height: display.height as f32,
+                Height: window_height as f32,
                 MinDepth: 0.,
                 MaxDepth: 1.,
                 ..Default::default()
@@ -308,6 +318,7 @@ float4 picture(float4 p : SV_Position) : SV_Target {
             let data = serde_json::json!({
                 "scope":"render timestamp to independent decode; excludes remote display scanout",
                 "display":display,"requested_source_hz":source_hz,"seconds":start.elapsed().as_secs_f64(),
+                "window_height":window_height,"window_y":window_y,
                 "qpc_frequency":frequency,"presented_frames":frames.len(),"frames":frames
             });
             if let Some(path) = report {

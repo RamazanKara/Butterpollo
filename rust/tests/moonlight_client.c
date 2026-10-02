@@ -28,6 +28,7 @@ static uint32_t picture_frames[100000];
 static unsigned measured_frames;
 static FILE *timing_csv;
 static double warmup_seconds=2.0;
+static int barcode_bottom;
 static double clock_ms(void){LARGE_INTEGER n,f;QueryPerformanceCounter(&n);QueryPerformanceFrequency(&f);return (double)n.QuadPart*1000.0/(double)f.QuadPart;}
 static int compare_double(const void*a,const void*b){double x=*(const double*)a,y=*(const double*)b;return(x>y)-(x<y);}
 static unsigned luma_sample(const AVFrame *frame,int x,int y){
@@ -42,7 +43,7 @@ static int picture_timestamp(const AVFrame *frame,uint32_t *sequence,uint64_t *t
     if(frame->width<640||frame->height<128)return 0;
     uint32_t words[4]={0};
     for(int row=0;row<4;row++){
-        int y=20+row*24;
+        int y=(barcode_bottom?frame->height-128:0)+20+row*24;
         unsigned black=luma_sample(frame,12,y),white=luma_sample(frame,36,y);
         if(white<=black+32)return 0;
         unsigned threshold=(black+white)/2;
@@ -131,6 +132,7 @@ int main(int argc,char**argv){
     requested_format=config.supportedVideoFormats;requested_hdr=(requested_format&(VIDEO_FORMAT_H265_MAIN10|VIDEO_FORMAT_AV1_MAIN10))!=0;
     int duration=argc>6?atoi(argv[6]):0;
     if(getenv("BUTTERPOLLO_TEST_WARMUP_SECONDS"))warmup_seconds=atof(getenv("BUTTERPOLLO_TEST_WARMUP_SECONDS"));
+    barcode_bottom=getenv("BUTTERPOLLO_TEST_BARCODE_BOTTOM")&&strcmp(getenv("BUTTERPOLLO_TEST_BARCODE_BOTTOM"),"1")==0;
     if(warmup_seconds<0||warmup_seconds>60)return 2;
     if(getenv("BUTTERPOLLO_TEST_TIMING_CSV")){
         timing_csv=fopen(getenv("BUTTERPOLLO_TEST_TIMING_CSV"),"w");if(!timing_csv){perror("timing CSV");return 2;}
@@ -141,6 +143,7 @@ int main(int argc,char**argv){
     if(config.width<2||config.width>8192||config.height<2||config.height>8192||config.fps<1||config.fps>240||duration<0||duration>300||decoder_threads<1||decoder_threads>16)return 2;
     printf("DECODER threads=%d\n",decoder_threads);
     for(int i=0;i<16;i++)config.remoteInputAesKey[i]=(char)i;config.remoteInputAesIv[3]=123;
+    if(getenv("BUTTERPOLLO_TEST_SIGNED_KEY_ID")&&strcmp(getenv("BUTTERPOLLO_TEST_SIGNED_KEY_ID"),"1")==0)config.remoteInputAesIv[0]=(char)0x80;
     CONNECTION_LISTENER_CALLBACKS listener;LiInitializeConnectionCallbacks(&listener);listener.stageStarting=stage_start;listener.stageFailed=stage_failed;listener.connectionTerminated=terminated;listener.logMessage=log_message;
     DECODER_RENDERER_CALLBACKS video;LiInitializeVideoCallbacks(&video);video.setup=video_setup;video.submitDecodeUnit=video_frame;video.capabilities=CAPABILITY_DIRECT_SUBMIT;
     AUDIO_RENDERER_CALLBACKS audio;LiInitializeAudioCallbacks(&audio);audio.init=audio_init;audio.decodeAndPlaySample=audio_frame;audio.capabilities=CAPABILITY_DIRECT_SUBMIT;

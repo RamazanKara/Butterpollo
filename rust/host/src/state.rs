@@ -42,6 +42,7 @@ pub struct Host {
     pub restart: std::sync::atomic::AtomicBool,
     pub codecs: std::sync::atomic::AtomicU32,
     pub probing_codecs: std::sync::atomic::AtomicBool,
+    video_codecs_ready: tokio::sync::watch::Sender<bool>,
     pub current_app: Mutex<Option<crate::process::RunningApp>>,
     pub live_rtx: Mutex<Option<(String, serde_json::Map<String, Value>)>>,
     pub launch_transition: Mutex<()>,
@@ -162,6 +163,7 @@ impl Host {
             restart: std::sync::atomic::AtomicBool::new(false),
             codecs: std::sync::atomic::AtomicU32::new(0),
             probing_codecs: std::sync::atomic::AtomicBool::new(true),
+            video_codecs_ready: tokio::sync::watch::channel(false).0,
             current_app: Mutex::new(None),
             live_rtx: Default::default(),
             launch_transition: Mutex::new(()),
@@ -213,10 +215,15 @@ impl Host {
         *live = next;
         Ok(changed)
     }
+    pub async fn wait_for_video_codecs(&self) {
+        let mut ready = self.video_codecs_ready.subscribe();
+        let _ = ready.wait_for(|ready| *ready).await;
+    }
     pub fn probe_codecs(self: &Arc<Self>) {
         let h = self.clone();
         std::thread::spawn(move || {
             let Ok(_com) = butterpollo_windows::capture::ComGuard::new() else {
+                h.video_codecs_ready.send_replace(true);
                 h.probing_codecs
                     .store(false, std::sync::atomic::Ordering::Release);
                 h.metadata.lock().unwrap().take();
@@ -245,6 +252,12 @@ impl Host {
                 (3, true, false, 0x2000000),
                 (3, true, true, 0x4000000),
             ] {
+                if codec == 3 {
+                    // Publish standard codecs as a complete set before the
+                    // optional PyroWave checks. A partial set can make clients
+                    // permanently disable HDR in their cached app list.
+                    h.video_codecs_ready.send_replace(true);
+                }
                 let mode = config.integer(if codec == 1 { "hevc_mode" } else { "av1_mode" }, 0);
                 if matches!(codec, 1 | 2) && (mode == 1 || (hdr && mode == 2)) {
                     continue;
@@ -296,6 +309,7 @@ impl Host {
                 }
             }
             h.codecs.store(flags, std::sync::atomic::Ordering::Release);
+            h.video_codecs_ready.send_replace(true);
             h.probing_codecs
                 .store(false, std::sync::atomic::Ordering::Release);
             h.metadata.lock().unwrap().take();

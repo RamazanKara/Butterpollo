@@ -1,4 +1,6 @@
 use std::{env, path::PathBuf};
+#[path = "build_shaders.rs"]
+mod shaders;
 fn main() {
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
@@ -7,6 +9,7 @@ fn main() {
     let root=PathBuf::from(env::var("BUTTERPOLLO_FFMPEG_ROOT").expect("set BUTTERPOLLO_FFMPEG_ROOT to the pinned FFmpeg SDK (include/ and lib/); see rust/README.md"));
     let include = root.join("include");
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
+    shaders::compile(&out);
     let ff=bindgen::Builder::default().header_contents("ffmpeg.h","#include <libavcodec/avcodec.h>\n#include <libavutil/opt.h>\n#include <libavutil/imgutils.h>\n#include <libavutil/hwcontext.h>\n#include <libavutil/hwcontext_d3d11va.h>\n#include <libswscale/swscale.h>\n")
         .clang_arg(format!("-I{}",include.display())).allowlist_type("AV.*|SwsContext")
         .allowlist_function("avcodec_.*|av_frame_.*|av_packet_.*|av_new_packet|av_hwdevice_.*|av_hwframe_.*|av_buffer_.*|av_opt_set.*|av_dict_.*|av_strerror|sws_.*")

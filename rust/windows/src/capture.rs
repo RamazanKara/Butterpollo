@@ -312,6 +312,7 @@ pub struct Duplication {
     owned: GpuPool,
     last_desktop: Option<GpuImage>,
     cursor: crate::cursor::State,
+    frame_owned: bool,
 }
 impl Duplication {
     pub fn new(name: &str) -> Result<Self> {
@@ -350,61 +351,85 @@ impl Duplication {
             owned: GpuPool::default(),
             last_desktop: None,
             cursor: Default::default(),
+            frame_owned: false,
         })
     }
     pub fn next(&mut self, timeout: Duration) -> Result<Option<Image>> {
-        unsafe {
-            let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
-            let mut resource = None;
-            match self.duplicate.AcquireNextFrame(
-                timeout.as_millis().min(100) as u32,
-                &mut info,
-                &mut resource,
-            ) {
-                Ok(()) => {}
-                Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(None),
-                Err(e) => return Err(e.into()),
-            }
-            let result = (|| -> Result<Image> {
-                let texture: ID3D11Texture2D =
-                    resource.context("empty captured texture")?.cast()?;
-                read_texture(&self.gpu, &texture, &mut self.staging)
-            })();
-            let _ = self.duplicate.ReleaseFrame();
-            result.map(Some)
+        let Some((_, resource)) = self.acquire_frame(timeout.as_millis().min(100) as u32)? else {
+            return Ok(None);
+        };
+        // CPU and GPU callers may alternate on the same duplication object.
+        // A CPU acquisition cannot leave an older GPU desktop cache reusable.
+        self.last_desktop = None;
+        let result = (|| -> Result<Image> {
+            let texture: ID3D11Texture2D = resource.context("empty captured texture")?.cast()?;
+            read_texture(&self.gpu, &texture, &mut self.staging)
+        })();
+        if result.is_err() {
+            let _ = self.release_frame();
         }
+        result.map(Some)
     }
     pub fn next_gpu(&mut self) -> Result<Option<GpuImage>> {
-        unsafe {
-            let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
-            let mut resource = None;
-            // The capture worker owns a precise timer. Never hold a DXGI wait
-            // across a coarse scheduler timeout when no new desktop is ready.
-            match self.duplicate.AcquireNextFrame(0, &mut info, &mut resource) {
-                Ok(()) => {}
-                Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(None),
-                Err(e) => return Err(e.into()),
+        // Keep acquisition nonblocking: even a 1 ms DXGI wait can sleep for
+        // a coarse scheduler tick and hold the shared device lock meanwhile.
+        let Some((info, resource)) = self.acquire_frame(0)? else {
+            return Ok(None);
+        };
+        let result = (|| {
+            self.cursor.update(&self.gpu, &self.duplicate, &info)?;
+            let texture: ID3D11Texture2D = resource.context("empty captured texture")?.cast()?;
+            let mut image = self.owned.desktop_snapshot(
+                &self.gpu,
+                &texture,
+                &mut self.last_desktop,
+                info.LastPresentTime != 0,
+            )?;
+            if let Some(image) = image.as_mut() {
+                image.captured = qpc_instant(info.LastPresentTime.max(info.LastMouseUpdateTime));
+                image.cursor = self.cursor.snapshot();
             }
-            let result = (|| {
-                self.cursor.update(&self.gpu, &self.duplicate, &info)?;
-                let texture: ID3D11Texture2D =
-                    resource.context("empty captured texture")?.cast()?;
-                let mut image = self.owned.desktop_snapshot(
-                    &self.gpu,
-                    &texture,
-                    &mut self.last_desktop,
-                    info.LastPresentTime != 0,
-                )?;
-                if let Some(image) = image.as_mut() {
-                    image.captured =
-                        qpc_instant(info.LastPresentTime.max(info.LastMouseUpdateTime));
-                    image.cursor = self.cursor.snapshot();
-                }
-                Ok(image)
-            })();
-            let _ = self.duplicate.ReleaseFrame();
-            result
+            Ok(image)
+        })();
+        if result.is_err() {
+            let _ = self.release_frame();
         }
+        result
+    }
+    fn release_frame(&mut self) -> Result<()> {
+        if std::mem::replace(&mut self.frame_owned, false) {
+            unsafe {
+                self.duplicate.ReleaseFrame()?;
+            }
+        }
+        Ok(())
+    }
+    fn acquire_frame(
+        &mut self,
+        timeout_ms: u32,
+    ) -> Result<Option<(DXGI_OUTDUPL_FRAME_INFO, Option<IDXGIResource>)>> {
+        // Release immediately before acquisition, as recommended by DXGI.
+        // Between polls, Windows tracks dirty regions instead of repeatedly
+        // copying desktop updates into a surface we have already snapshotted.
+        self.release_frame()?;
+        let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
+        let mut resource = None;
+        match unsafe {
+            self.duplicate
+                .AcquireNextFrame(timeout_ms, &mut info, &mut resource)
+        } {
+            Ok(()) => {
+                self.frame_owned = true;
+                Ok(Some((info, resource)))
+            }
+            Err(error) if error.code() == DXGI_ERROR_WAIT_TIMEOUT => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+impl Drop for Duplication {
+    fn drop(&mut self) {
+        let _ = self.release_frame();
     }
 }
 
@@ -946,6 +971,38 @@ impl Capture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires an interactive Desktop Duplication output"]
+    fn ddx_snapshots_survive_reacquisition_and_duplication_teardown() -> Result<()> {
+        let _com = ComGuard::new()?;
+        let timer = crate::timing::Timer::new()?;
+        for _ in 0..3 {
+            let mut capture = Duplication::new("")?;
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let image = loop {
+                if let Some(image) = capture.next_gpu()? {
+                    break image;
+                }
+                anyhow::ensure!(
+                    Instant::now() < deadline,
+                    "DDX produced no initial snapshot"
+                );
+                timer.until(Instant::now() + Duration::from_millis(1));
+            };
+            let original = image.readback(&mut None)?;
+            // Keep the original owned snapshot through new acquisitions and a
+            // CPU/GPU transition. Nothing is written to disk or the display.
+            capture.next(Duration::ZERO)?;
+            for _ in 0..24 {
+                capture.next_gpu()?;
+                timer.until(Instant::now() + Duration::from_millis(1));
+            }
+            drop(capture);
+            assert_eq!(image.readback(&mut None)?.bytes, original.bytes);
+        }
+        Ok(())
+    }
 
     #[test]
     #[ignore = "requires native D3D11 texture copies and readback"]

@@ -9,6 +9,8 @@ use std::{
 struct State<T> {
     image: Option<Arc<T>>,
     error: Option<String>,
+    captured: Option<Instant>,
+    cadence: butterpollo_core::capture_policy::Freshness,
 }
 impl<T> State<T> {
     fn check(&self) -> Result<()> {
@@ -21,6 +23,7 @@ impl<T> State<T> {
 pub(super) struct Latest<T> {
     state: Mutex<State<T>>,
     changed: Mutex<Vec<Weak<Signal>>>,
+    origin: Instant,
 }
 impl<T> Latest<T> {
     pub(super) fn new() -> Self {
@@ -28,8 +31,11 @@ impl<T> Latest<T> {
             state: Mutex::new(State {
                 image: None,
                 error: None,
+                captured: None,
+                cadence: Default::default(),
             }),
             changed: Mutex::new(Vec::new()),
+            origin: Instant::now(),
         }
     }
     pub(super) fn subscribe(&self) -> Result<Arc<Signal>> {
@@ -51,9 +57,59 @@ impl<T> Latest<T> {
         let mut state = self.state.lock().unwrap();
         state.check()?;
         state.image = image;
+        state.captured = None;
+        state.cadence = Default::default();
         // Reset, predicate checks and both frame/error notifications share this
         // lock. A notification cannot be lost immediately before a wait.
         self.notify()
+    }
+    pub(super) fn publish_captured(&self, image: Arc<T>, captured: Instant) -> Result<()> {
+        let now = Instant::now();
+        let nanos =
+            |duration: std::time::Duration| duration.as_nanos().min(u128::from(u64::MAX)) as u64;
+        let mut state = self.state.lock().unwrap();
+        state.check()?;
+        state.cadence.observe(
+            nanos(captured.saturating_duration_since(self.origin)),
+            nanos(now.saturating_duration_since(captured)),
+        );
+        state.captured = Some(captured);
+        state.image = Some(image);
+        self.notify()
+    }
+    pub(super) fn freshness_budget(
+        &self,
+        image: &Arc<T>,
+        period: std::time::Duration,
+    ) -> Option<std::time::Duration> {
+        let state = self.state.lock().unwrap();
+        if !state
+            .image
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, image))
+        {
+            return None;
+        }
+        let captured = state.captured?;
+        let nanos =
+            |duration: std::time::Duration| duration.as_nanos().min(u128::from(u64::MAX)) as u64;
+        state
+            .cadence
+            .wait(nanos(captured.elapsed()), nanos(period))
+            .map(std::time::Duration::from_nanos)
+    }
+    pub(super) fn poll_interval(&self, normal: std::time::Duration) -> std::time::Duration {
+        let state = self.state.lock().unwrap();
+        let Some(captured) = state.captured else {
+            return normal;
+        };
+        let nanos =
+            |duration: std::time::Duration| duration.as_nanos().min(u128::from(u64::MAX)) as u64;
+        std::time::Duration::from_nanos(
+            state
+                .cadence
+                .poll_wait(nanos(captured.elapsed()), nanos(normal)),
+        )
     }
     pub(super) fn fail(&self, error: String) -> Result<()> {
         let mut state = self.state.lock().unwrap();

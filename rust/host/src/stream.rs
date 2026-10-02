@@ -391,6 +391,9 @@ impl Media {
                     tracing::info!(requested=%kind, backend=capture.backend(), output=%target.0, "capture backend opened");
                     let _ = started_tx.send(Ok(()));
                     let mut check_target = Instant::now();
+                    let poll_interval = Duration::from_micros(
+                        capture_config.integer("capture_poll_interval_us", 1000).clamp(100, 1000) as u64,
+                    );
                     while !worker_stop.load(Ordering::Acquire) {
                         if Instant::now() >= check_target {
                             check_target = Instant::now() + Duration::from_millis(100);
@@ -405,14 +408,17 @@ impl Media {
                         }
                         match capture.next_gpu() {
                             Ok(Some(image)) => {
-                                worker.publish(Some(Arc::new(image)))?;
+                                let captured = image.captured;
+                                worker.publish_captured(Arc::new(image), captured)?;
                             }
-                            Ok(None) => timer.until(
-                                capture
-                                    .publication_deadline()
-                                    .unwrap_or(Instant::now() + Duration::from_millis(1))
-                                    .min(Instant::now() + Duration::from_millis(1)),
-                            ),
+                            Ok(None) => {
+                                let interval = if capture_config.boolean("capture_predictive_poll", false)
+                                    && capture.backend() == "ddx" {
+                                    worker.poll_interval(poll_interval)
+                                } else { poll_interval };
+                                let deadline = Instant::now() + interval;
+                                timer.until(capture.publication_deadline().unwrap_or(deadline).min(deadline));
+                            }
                             Err(e) => {
                                 tracing::warn!(error=%e,"capture restarting");
                                 thread::sleep(Duration::from_millis(100));
@@ -632,6 +638,7 @@ impl Media {
                     let static_period = Duration::from_secs_f64(1. / minimum_fps);
                     let limit_static_rate = minimum_fps < f64::from(s.config.fps_millihz()) / 1000.;
                     let mut last_image: Option<Arc<GpuImage>> = None;
+                    let mut source_anchor = false;
                     let mut encoded_at = Instant::now();
                     let mut batch = butterpollo_windows::net::Batch::default();
                     let batch_kb = match c.integer("video_max_batch_size_kb", 64) {
@@ -773,9 +780,9 @@ impl Media {
                                 && !s.config.vrr_low_latency
                                 && !s.idr.load(Ordering::Acquire)
                                 && last_image.as_ref().is_some_and(|previous| !Arc::ptr_eq(previous, &image))
-                                && image.captured.elapsed() > period / 4
+                                && let Some(wait) = latest.freshness_budget(&image, period)
                             {
-                                let fresh_until = Instant::now() + (period / 2).min(Duration::from_millis(4));
+                                let fresh_until = Instant::now() + wait;
                                 while !s.stopping() && Instant::now() < fresh_until && image.captured.elapsed() > period / 4 {
                                     if encoder.pending() {
                                         send_frames(encoder.poll()?, peer, Duration::ZERO)?;
@@ -831,9 +838,18 @@ impl Media {
                                 };
                                 truehdr_staging = None;
                                 s.request_idr();
+                                source_anchor = false;
                                 rebuild_encoder = false;
                             }
                             let begin = Instant::now();
+                            if c.boolean("capture_freshness_wait", false)
+                                && !s.config.vrr_low_latency
+                                && (!source_anchor || encoded_at.elapsed() > period * 2)
+                                && last_image.as_ref().is_none_or(|previous| !Arc::ptr_eq(previous, &image))
+                            {
+                                cadence = butterpollo_core::stream_policy::Cadence::new(image.captured.min(begin), period, c.boolean("wgc_pacing_smoothing", true));
+                                source_anchor = true;
+                            }
                             if Instant::now() >= metadata_due {
                                 let metadata = image.gpu.hdr_metadata();
                                 *s.hdr_metadata.write().unwrap() = metadata;

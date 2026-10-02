@@ -72,7 +72,8 @@ if codec.startswith('pyrowave'):
     assert denied.status_code==401
     print('PYROWAVE paired bandwidth calibration and access control verified',flush=True)
 apps=ET.fromstring(client.get(https+'/applist',timeout=10).text);app=apps.find('App');assert app is not None
-launch_args={'appid':app.findtext('ID'),'rikey':bytes(range(16)).hex(),'rikeyid':'123','corever':'1'}
+key_id = '-2147483525' if os.environ.get('BUTTERPOLLO_TEST_SIGNED_KEY_ID') == '1' else '123'
+launch_args={'appid':app.findtext('ID'),'rikey':bytes(range(16)).hex(),'rikeyid':key_id,'corever':'1'}
 if os.environ.get('BUTTERPOLLO_TEST_MATCH_DISPLAY')=='1':
     launch_args.update(mode='x'.join(sys.argv[3:6]),hdrMode='1' if codec.endswith('-hdr') else '0')
 launch=ET.fromstring(client.get(https+'/launch',params=launch_args,timeout=10).text);assert launch.attrib['status_code']=='200',ET.tostring(launch)

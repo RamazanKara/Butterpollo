@@ -40,5 +40,8 @@ windows = { version = "0.62.2", features = [
 [build-dependencies]
 bindgen = "0.72"
 
+[target.'cfg(windows)'.build-dependencies]
+windows = { version = "0.62.2", features = ["Win32_Graphics_Direct3D_Fxc"] }
+
 [dev-dependencies]
 tempfile = "3.23"
