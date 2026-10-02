@@ -102,6 +102,60 @@ impl Drop for Timer {
         }
     }
 }
+/// Process-wide scheduling for the lifetime of at least one stream: a 1 ms
+/// system timer, high priority class, and no power throttling. Without these,
+/// driver waits (an AMF output query, a DXGI acquire) and Windows 11 timer
+/// coalescing can add a scheduler tick to a frame. Restored after the last stream.
+pub struct StreamingScope(());
+static STREAMS: std::sync::Mutex<(usize, u32)> = std::sync::Mutex::new((0, 0));
+impl StreamingScope {
+    pub fn enter() -> Self {
+        let mut streams = STREAMS.lock().unwrap();
+        if streams.0 == 0 {
+            unsafe {
+                let process = GetCurrentProcess();
+                // Windows 11 otherwise ignores timer requests from a process
+                // without a visible window, and may run it on efficiency cores.
+                let state = PROCESS_POWER_THROTTLING_STATE {
+                    Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+                    ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+                        | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+                    StateMask: 0,
+                };
+                if let Err(error) = SetProcessInformation(
+                    process,
+                    ProcessPowerThrottling,
+                    (&state as *const PROCESS_POWER_THROTTLING_STATE).cast(),
+                    std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+                ) {
+                    tracing::debug!(%error, "power throttling opt-out unavailable");
+                }
+                let _ = windows::Win32::Media::timeBeginPeriod(1);
+                streams.1 = GetPriorityClass(process);
+                if let Err(error) = SetPriorityClass(process, HIGH_PRIORITY_CLASS) {
+                    tracing::debug!(%error, "high process priority unavailable");
+                }
+            }
+        }
+        streams.0 += 1;
+        Self(())
+    }
+}
+impl Drop for StreamingScope {
+    fn drop(&mut self) {
+        let mut streams = STREAMS.lock().unwrap();
+        streams.0 -= 1;
+        if streams.0 == 0 {
+            unsafe {
+                let process = GetCurrentProcess();
+                if streams.1 != 0 {
+                    let _ = SetPriorityClass(process, PROCESS_CREATION_FLAGS(streams.1));
+                }
+                let _ = windows::Win32::Media::timeEndPeriod(1);
+            }
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

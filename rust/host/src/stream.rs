@@ -15,6 +15,8 @@ pub(crate) const RTX_KEYS: &[&str] = &[
     "rtx_hdr_middle_gray",
     "rtx_hdr_peak_brightness",
 ];
+/// How often completed encoder output is collected while a frame is in flight.
+const OUTPUT_POLL: Duration = Duration::from_micros(100);
 fn rtx_parameters(config: &Config) -> [u32; 4] {
     let peak = config
         .integer("rtx_hdr_peak_brightness", 1000)
@@ -392,7 +394,7 @@ impl Media {
                     let _ = started_tx.send(Ok(()));
                     let mut check_target = Instant::now();
                     let poll_interval = Duration::from_micros(
-                        capture_config.integer("capture_poll_interval_us", 1000).clamp(100, 1000) as u64,
+                        capture_config.integer("capture_poll_interval_us", 500).clamp(100, 1000) as u64,
                     );
                     while !worker_stop.load(Ordering::Acquire) {
                         if Instant::now() >= check_target {
@@ -495,6 +497,7 @@ impl Media {
                 let result = (|| -> Result<()> {
                     let _com = ComGuard::new()?;
                     let _priority = Priority::new();
+                    let _streaming = butterpollo_windows::timing::StreamingScope::enter();
                     let mut c = effective_config(&h, &s.launch)?;
                     if s.config.vrr_low_latency {
                         c.values.insert("wgc_slot_aligned_publish".into(), "false".into());
@@ -613,6 +616,9 @@ impl Media {
                     let pyrowave_sender = if s.config.codec == 3 { Some(crate::pyrowave_send::Sender::new(m.video.clone(),s.clone(),c.clone(),h.clone(),start,prepared.capture() == "wgc")?) } else { None };
                     let period = butterpollo_core::framegen::Rate(s.config.fps_millihz()).period();
                     let mut cadence = butterpollo_core::stream_policy::Cadence::new(Instant::now(), period, c.boolean("wgc_pacing_smoothing", true));
+                    let arrival_pacing = !s.config.vrr_low_latency
+                        && butterpollo_core::stream_policy::Pacing::from_config(&c) == butterpollo_core::stream_policy::Pacing::Arrival;
+                    let mut pacer = butterpollo_core::stream_policy::Pacer::new(Instant::now(), period);
                     let due = cadence.deadline();
                     let mut send_due = due;
                     let mut last_stamp = start;
@@ -638,8 +644,13 @@ impl Media {
                     let static_period = Duration::from_secs_f64(1. / minimum_fps);
                     let limit_static_rate = minimum_fps < f64::from(s.config.fps_millihz()) / 1000.;
                     let mut last_image: Option<Arc<GpuImage>> = None;
-                    let mut source_anchor = false;
                     let mut encoded_at = Instant::now();
+                    // Where a new frame's age comes from: Windows to the capture
+                    // worker, then the capture worker to the encoder's claim.
+                    let mut claim_ages: Vec<(u64, u64)> = Vec::with_capacity(1024);
+                    // The first pacing decision for the newest fresh frame, kept
+                    // for the per-claim trace.
+                    let mut first_seen: Option<(usize, Instant, Option<Duration>, Option<Instant>)> = None;
                     let mut batch = butterpollo_windows::net::Batch::default();
                     let batch_kb = match c.integer("video_max_batch_size_kb", 64) {
                         16 => 16,
@@ -651,11 +662,19 @@ impl Media {
                                            call_latency: Duration|
                      -> Result<()> {
                         if let Some(sender) = &pyrowave_sender { return sender.submit(output,peer,call_latency); }
+                        let polled = Instant::now();
+                        let micros = |d: Duration| d.as_micros().min(u128::from(u64::MAX)) as u64;
                         for frame in output {
-                            let latency = frame.latency.unwrap_or(call_latency).as_micros() as u64;
+                            let encode = frame.latency.unwrap_or(call_latency);
+                            let latency = micros(encode);
                             s.stats.latency_us.store(latency, Ordering::Relaxed);
-                            let captured = frame.presentation.unwrap_or_else(Instant::now);
-                            let processing = Instant::now().saturating_duration_since(captured).as_micros().max(u128::from(latency)).min(u128::from(u64::MAX)) as u64;
+                            // Moonlight's host latency runs from the claim to the
+                            // packet, as the previous host measured it. Waiting
+                            // before the claim is recorded as frame age.
+                            let claimed = polled.checked_sub(encode).unwrap_or(polled);
+                            let captured = frame.presentation.unwrap_or(claimed);
+                            let age = micros(claimed.saturating_duration_since(captured));
+                            let processing = micros(Instant::now().saturating_duration_since(claimed));
                             let stamp = present_stamper.as_mut().map_or(captured, |stamper| stamper.stamp(captured, &prepared.output())).max(last_stamp + Duration::from_nanos(11_112));
                             last_stamp = stamp;
                             let timestamp = (stamp.saturating_duration_since(start).as_secs_f64() * 90000.) as u32;
@@ -688,12 +707,12 @@ impl Media {
                                 s.stats.bytes.fetch_add(bytes as u64, Ordering::Relaxed);
                             }
                             s.stats.frames.fetch_add(1, Ordering::Relaxed);
-                            s.stats.performance.lock().unwrap().record_timing(Instant::now(),latency,processing,frame_bytes);
+                            s.stats.performance.lock().unwrap().record_timing(Instant::now(),butterpollo_core::performance::Timing{encode:latency,host:processing,age},frame_bytes);
                         }
                         Ok(())
                     };
                     let result = (|| -> Result<()> {
-                        'frames: while !s.stopping() && !h.stop.load(Ordering::Acquire) {
+                        while !s.stopping() && !h.stop.load(Ordering::Acquire) {
                             if Instant::now() >= live_at {
                                 live_at = Instant::now() + Duration::from_millis(250);
                                 runtime_config = effective_config(&h, &s.launch)?;
@@ -723,15 +742,36 @@ impl Media {
                                 if Instant::now() >= timing_due {
                                     timing_due = Instant::now() + Duration::from_secs(5);
                                     let timing = s.stats.performance.lock().unwrap().snapshot(Instant::now());
+                                    let ms = |key: &str| timing[key].as_f64().unwrap_or(0.);
+                                    let split = |pick: fn(&(u64, u64)) -> u64| {
+                                        let mut values: Vec<u64> = claim_ages.iter().map(pick).collect();
+                                        values.sort_unstable();
+                                        let mean = values.iter().sum::<u64>() as f64 / values.len().max(1) as f64 / 1000.;
+                                        let p95 = values.get(values.len().saturating_sub(1) * 95 / 100).copied().unwrap_or(0) as f64 / 1000.;
+                                        (mean, p95)
+                                    };
+                                    let (detect_mean_ms, detect_p95_ms) = split(|age| age.0);
+                                    let (claim_wait_mean_ms, claim_wait_p95_ms) = split(|age| age.1);
+                                    claim_ages.clear();
+
                                     tracing::info!(
-                                        fps=timing["fps"].as_f64().unwrap_or(0.),
-                                        host_mean_ms=timing["host_processing_mean_ms"].as_f64().unwrap_or(0.),
-                                        host_p95_ms=timing["host_processing_p95_ms"].as_f64().unwrap_or(0.),
-                                        host_p99_ms=timing["host_processing_p99_ms"].as_f64().unwrap_or(0.),
-                                        host_max_ms=timing["host_processing_max_ms"].as_f64().unwrap_or(0.),
-                                        encode_p95_ms=timing["encode_p95_ms"].as_f64().unwrap_or(0.),
-                                        encode_p99_ms=timing["encode_p99_ms"].as_f64().unwrap_or(0.),
-                                        capture_age_estimate_p95_ms=timing["capture_age_estimate_p95_ms"].as_f64().unwrap_or(0.),
+                                        fps=ms("fps"),
+                                        host_mean_ms=ms("host_processing_mean_ms"),
+                                        host_p95_ms=ms("host_processing_p95_ms"),
+                                        host_p99_ms=ms("host_processing_p99_ms"),
+                                        host_max_ms=ms("host_processing_max_ms"),
+                                        encode_mean_ms=ms("encode_mean_ms"),
+                                        encode_p95_ms=ms("encode_p95_ms"),
+                                        encode_p99_ms=ms("encode_p99_ms"),
+                                        frame_age_mean_ms=ms("frame_age_mean_ms"),
+                                        frame_age_p95_ms=ms("frame_age_p95_ms"),
+                                        present_to_send_mean_ms=ms("present_to_send_mean_ms"),
+                                        present_to_send_p99_ms=ms("present_to_send_p99_ms"),
+                                        detect_mean_ms,
+                                        detect_p95_ms,
+                                        claim_wait_mean_ms,
+                                        claim_wait_p95_ms,
+
                                         send_interval_p95_ms=timing["send_interval_p95_ms"].as_f64().unwrap_or(0.),
                                         send_interval_p99_ms=timing["send_interval_p99_ms"].as_f64().unwrap_or(0.),
                                         send_interval_max_ms=timing["send_interval_max_ms"].as_f64().unwrap_or(0.),
@@ -755,13 +795,13 @@ impl Media {
                             };
                             let now = Instant::now();
                             let due = cadence.deadline();
-                            if !s.config.vrr_low_latency && now < due {
+                            if !s.config.vrr_low_latency && !arrival_pacing && now < due {
                                 while Instant::now() < due {
                                     if encoder.pending() {
                                         send_frames(encoder.poll()?, peer, Duration::ZERO)?;
                                         if encoder.pending() {
                                             timer.until(
-                                                (Instant::now() + Duration::from_micros(250))
+                                                (Instant::now() + OUTPUT_POLL)
                                                     .min(due),
                                             );
                                         }
@@ -771,34 +811,36 @@ impl Media {
                                 }
                             }
                             let image = latest.wait_for_frame(&timer, &capture_wake, Instant::now() + period.min(Duration::from_millis(50)))?;
-                            let Some(mut image) = image else { continue };
-                            // Experimental measurement switch. A fixed encoder
-                            // slot can land immediately before the capture worker
-                            // publishes a new desktop. Bound the wait and keep
-                            // draining completed output while looking for it.
-                            if c.boolean("capture_freshness_wait", false)
-                                && !s.config.vrr_low_latency
-                                && !s.idr.load(Ordering::Acquire)
-                                && last_image.as_ref().is_some_and(|previous| !Arc::ptr_eq(previous, &image))
-                                && let Some(wait) = latest.freshness_budget(&image, period)
-                            {
-                                let fresh_until = Instant::now() + wait;
-                                while !s.stopping() && Instant::now() < fresh_until && image.captured.elapsed() > period / 4 {
-                                    if encoder.pending() {
-                                        send_frames(encoder.poll()?, peer, Duration::ZERO)?;
-                                    }
-                                    let wait_until = if encoder.pending() {
-                                        fresh_until.min(Instant::now() + Duration::from_micros(250))
-                                    } else { fresh_until };
-                                    latest.wait_if_current(&timer, &capture_wake, &image, wait_until)?;
-                                    let Some(current) = latest.current()? else { continue 'frames };
-                                    image = current;
-                                }
-                            }
+                            let Some(image) = image else { continue };
                             // Resolution changes or DXGI loss can recreate the capture device.
                             rebuild_encoder |= !encoder.accepts_gpu_device(&image);
+                            let fresh = last_image.as_ref().is_none_or(|previous| !Arc::ptr_eq(previous, &image));
+                            if arrival_pacing
+                                && fresh
+                                && !rebuild_encoder
+                                && !s.idr.load(Ordering::Acquire)
+                                && s.invalidation.lock().unwrap().is_none()
+                                && let interval = latest.source_interval()
+                                && let butterpollo_core::stream_policy::Pace::WaitUntil(deadline) =
+                                    pacer.decide(Instant::now(), image.captured, interval)
+                            {
+                                let key = Arc::as_ptr(&image) as usize;
+                                if first_seen.is_none_or(|(seen, ..)| seen != key) {
+                                    first_seen = Some((key, Instant::now(), interval, Some(deadline)));
+                                }
+                                if encoder.pending() {
+                                    send_frames(encoder.poll()?, peer, Duration::ZERO)?;
+                                }
+                                let until = if encoder.pending() {
+                                    deadline.min(Instant::now() + OUTPUT_POLL)
+                                } else {
+                                    deadline
+                                };
+                                latest.wait_if_current(&timer, &capture_wake, &image, until)?;
+                                continue;
+                            }
                             if !rebuild_encoder
-                                && (s.config.vrr_low_latency || limit_static_rate)
+                                && (s.config.vrr_low_latency || limit_static_rate || arrival_pacing)
                                 && !s.idr.load(Ordering::Acquire)
                                 && s.invalidation.lock().unwrap().is_none()
                                 && last_image
@@ -807,7 +849,7 @@ impl Media {
                                 && encoded_at.elapsed() < static_period
                             {
                                 if encoder.pending() { send_frames(encoder.poll()?,peer,Duration::ZERO)?; }
-                                let wait = if encoder.pending() { Duration::from_micros(250) } else { period };
+                                let wait = if encoder.pending() { OUTPUT_POLL } else { period };
                                 latest.wait_if_current(&timer, &capture_wake, &image, Instant::now() + wait.min(static_period.saturating_sub(encoded_at.elapsed())))?;
                                 continue;
                             }
@@ -838,17 +880,33 @@ impl Media {
                                 };
                                 truehdr_staging = None;
                                 s.request_idr();
-                                source_anchor = false;
                                 rebuild_encoder = false;
                             }
                             let begin = Instant::now();
-                            if c.boolean("capture_freshness_wait", false)
-                                && !s.config.vrr_low_latency
-                                && (!source_anchor || encoded_at.elapsed() > period * 2)
-                                && last_image.as_ref().is_none_or(|previous| !Arc::ptr_eq(previous, &image))
-                            {
-                                cadence = butterpollo_core::stream_policy::Cadence::new(image.captured.min(begin), period, c.boolean("wgc_pacing_smoothing", true));
-                                source_anchor = true;
+                            if fresh && tracing::enabled!(target: "pacing", tracing::Level::TRACE) {
+                                let us = |at: Instant| at.saturating_duration_since(start).as_micros() as u64;
+                                let key = Arc::as_ptr(&image) as usize;
+                                let (seen, interval, deadline) = match first_seen {
+                                    Some((k, seen, interval, deadline)) if k == key => (seen, interval, deadline),
+                                    _ => (begin, latest.source_interval(), None),
+                                };
+                                tracing::trace!(
+                                    target: "pacing",
+                                    presented = us(image.captured),
+                                    acquired = us(image.acquired),
+                                    seen = us(seen),
+                                    claim = us(begin),
+                                    interval = interval.map_or(0, |i| i.as_micros() as u64),
+                                    deadline = deadline.map_or(0, us),
+                                    "claim"
+                                );
+                            }
+                            if fresh && claim_ages.len() < 4096 {
+                                let micros = |d: Duration| d.as_micros().min(u128::from(u64::MAX)) as u64;
+                                claim_ages.push((
+                                    micros(image.acquired.saturating_duration_since(image.captured)),
+                                    micros(begin.saturating_duration_since(image.acquired)),
+                                ));
                             }
                             if Instant::now() >= metadata_due {
                                 let metadata = image.gpu.hdr_metadata();
@@ -903,8 +961,13 @@ impl Media {
                             // Repeat deadlines start at submission, so encoder work
                             // does not extend the interval between static frames.
                             encoded_at = begin;
-                            cadence.submitted(begin);
-                            latest.grid.lock().unwrap().anchor = cadence.deadline();
+                            if arrival_pacing {
+                                pacer.claimed(begin);
+                                latest.grid.lock().unwrap().anchor = pacer.allowed_at(begin);
+                            } else {
+                                cadence.submitted(begin);
+                                latest.grid.lock().unwrap().anchor = cadence.deadline();
+                            }
                             last_image = Some(image);
                             send_frames(output, peer, call_latency)?;
                         }

@@ -77,25 +77,13 @@ impl<T> Latest<T> {
         state.image = Some(image);
         self.notify()
     }
-    pub(super) fn freshness_budget(
-        &self,
-        image: &Arc<T>,
-        period: std::time::Duration,
-    ) -> Option<std::time::Duration> {
-        let state = self.state.lock().unwrap();
-        if !state
-            .image
-            .as_ref()
-            .is_some_and(|current| Arc::ptr_eq(current, image))
-        {
-            return None;
-        }
-        let captured = state.captured?;
-        let nanos =
-            |duration: std::time::Duration| duration.as_nanos().min(u128::from(u64::MAX)) as u64;
-        state
+    /// The source's recent frame interval, as observed by the capture worker.
+    pub(super) fn source_interval(&self) -> Option<std::time::Duration> {
+        self.state
+            .lock()
+            .unwrap()
             .cadence
-            .wait(nanos(captured.elapsed()), nanos(period))
+            .median_interval()
             .map(std::time::Duration::from_nanos)
     }
     pub(super) fn poll_interval(&self, normal: std::time::Duration) -> std::time::Duration {

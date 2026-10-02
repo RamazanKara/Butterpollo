@@ -241,8 +241,10 @@ impl Encoder {
                 e.property("AlignmentMode", int(av1_alignment))?;
                 e.property("GOPSize", int(0))?;
             }
-            // A blocking query can inherit Windows' 15.6 ms scheduler tick.
-            let _ = e.property("QueryTimeout", int(0));
+            // QueryOutput waits in the driver and returns the moment a frame is
+            // encoded; no host timer is involved. `poll` only queries while a
+            // frame is in flight, so an expired wait never stalls an idle loop.
+            let _ = e.property("QueryTimeout", int(1));
             if config.ten_bit() {
                 e.property("ColorBitDepth", int(10))?;
                 if config.codec == 1 {
@@ -500,7 +502,9 @@ impl Encoder {
     pub fn poll(&mut self) -> Result<Vec<Encoded>> {
         unsafe {
             let mut output = vec![];
-            loop {
+            // With a query timeout, asking again after the last frame in flight
+            // has been returned would only wait for the timeout.
+            while !self.in_flight.is_empty() {
                 let mut data = ptr::null_mut();
                 let code =
                     ((*(*self.component).pVtbl).QueryOutput.unwrap())(self.component, &mut data);

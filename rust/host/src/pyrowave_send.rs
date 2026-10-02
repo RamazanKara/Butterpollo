@@ -17,7 +17,8 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-type Frame = (Encoded, SocketAddr, Duration);
+/// The frame, its destination and when the encoder claimed its capture.
+type Frame = (Encoded, SocketAddr, Instant);
 struct Slot {
     pending: Mutex<Option<Frame>>,
     changed: Condvar,
@@ -87,15 +88,16 @@ impl Sender {
                             }
                             guard.take()
                         };
-                        let Some((frame, peer, call_latency)) = frame else {
+                        let Some((frame, peer, claimed)) = frame else {
                             continue;
                         };
                         let now = Instant::now();
-                        let processing = frame
-                            .presentation
-                            .map(|captured| now.saturating_duration_since(captured))
-                            .unwrap_or_else(|| frame.latency.unwrap_or(call_latency));
-                        let captured = frame.presentation.unwrap_or(now);
+                        // Moonlight's host latency starts at the claim, as the
+                        // previous host measured it; waiting before the claim
+                        // is recorded separately as frame age.
+                        let processing = now.saturating_duration_since(claimed);
+                        let captured = frame.presentation.unwrap_or(claimed);
+                        let age = claimed.saturating_duration_since(captured);
                         let stamp = stamper
                             .as_mut()
                             .map_or(captured, |stamper| {
@@ -108,7 +110,7 @@ impl Sender {
                             (stamp.saturating_duration_since(start).as_secs_f64() * 90000.) as u32;
                         let latency = frame
                             .latency
-                            .unwrap_or(call_latency)
+                            .unwrap_or(processing)
                             .as_micros()
                             .min(u128::from(u64::MAX)) as u64;
                         let critical_percentage = config
@@ -186,10 +188,14 @@ impl Sender {
                         }
                         current.stats.latency_us.store(latency, Ordering::Relaxed);
                         current.stats.frames.fetch_add(1, Ordering::Relaxed);
+                        let micros = |d: Duration| d.as_micros().min(u128::from(u64::MAX)) as u64;
                         current.stats.performance.lock().unwrap().record_timing(
                             Instant::now(),
-                            latency,
-                            processing.as_micros().min(u128::from(u64::MAX)) as u64,
+                            butterpollo_core::performance::Timing {
+                                encode: latency,
+                                host: micros(processing),
+                                age: micros(age),
+                            },
                             sent as u64,
                         );
                     }
@@ -213,9 +219,13 @@ impl Sender {
         if frames.is_empty() {
             return Ok(());
         }
+        let polled = Instant::now();
         let mut pending = self.slot.pending.lock().unwrap();
         for frame in frames {
-            if pending.replace((frame, peer, latency)).is_some() {
+            let claimed = polled
+                .checked_sub(frame.latency.unwrap_or(latency))
+                .unwrap_or(polled);
+            if pending.replace((frame, peer, claimed)).is_some() {
                 self.session
                     .stats
                     .frames_replaced

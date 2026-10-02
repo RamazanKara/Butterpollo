@@ -387,6 +387,7 @@ impl Duplication {
             )?;
             if let Some(image) = image.as_mut() {
                 image.captured = qpc_instant(info.LastPresentTime.max(info.LastMouseUpdateTime));
+                image.acquired = Instant::now();
                 image.cursor = self.cursor.snapshot();
             }
             Ok(image)
@@ -441,7 +442,10 @@ pub struct GpuImage {
     pub width: u32,
     pub height: u32,
     pub pixel: Pixel,
+    /// When Windows presented this desktop image.
     pub captured: Instant,
+    /// When the capture worker took it from Windows.
+    pub acquired: Instant,
     pub gpu: Device,
     pub texture: std::sync::Arc<ID3D11Texture2D>,
 }
@@ -497,6 +501,7 @@ impl GpuImage {
                 height: image.height,
                 pixel: image.pixel,
                 captured: image.captured,
+                acquired: Instant::now(),
                 gpu: gpu.clone(),
                 texture: std::sync::Arc::new(texture.unwrap()),
             })
@@ -577,6 +582,7 @@ impl GpuPool {
                 height: desc.Height,
                 pixel,
                 captured: Instant::now(),
+                acquired: Instant::now(),
                 gpu: gpu.clone(),
                 texture,
             }))
