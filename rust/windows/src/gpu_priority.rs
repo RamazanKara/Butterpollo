@@ -2,7 +2,10 @@
 use anyhow::{Context, Result, bail};
 use libloading::Library;
 use windows::Win32::{Foundation::LUID, System::Threading::GetCurrentProcess};
-use windows::{Win32::Graphics::Dxgi::IDXGIDevice, core::Interface};
+use windows::{
+    Win32::Graphics::Dxgi::{IDXGIDevice, IDXGIDevice1},
+    core::Interface,
+};
 #[repr(C)]
 struct Open {
     luid: LUID,
@@ -31,7 +34,16 @@ pub fn configure(
     config: &butterpollo_core::config::Config,
 ) -> Result<()> {
     unsafe {
-        let desc = gpu.device.cast::<IDXGIDevice>()?.GetAdapter()?.GetDesc()?;
+        let device = gpu.device.cast::<IDXGIDevice>()?;
+        // These device settings are independent of the privileged process
+        // scheduling class. Preserve them even if that later request is denied.
+        if let Err(error) = device.SetGPUThreadPriority(7) {
+            tracing::debug!(%error, "capture GPU thread priority remains at its default");
+        }
+        if let Err(error) = gpu.device.cast::<IDXGIDevice1>()?.SetMaximumFrameLatency(1) {
+            tracing::debug!(%error, "capture GPU frame latency remains at its default");
+        }
+        let desc = device.GetAdapter()?.GetDesc()?;
         let directory = std::env::var_os("SystemRoot").context("Windows directory missing")?;
         let library = Library::new(std::path::PathBuf::from(directory).join("System32/gdi32.dll"))?;
         let open = library

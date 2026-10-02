@@ -83,11 +83,16 @@ float3 load(int2 p) {
     return rgb;
 }
 float3 nonlinear(float2 target) {
-    float2 p = (target + 0.5) * float2(sourceSize) / float2(targetSize) - 0.5;
-    int2 at = int2(floor(p));
-    float2 f = frac(p);
-    float3 rgb = lerp(lerp(load(at), load(at + int2(1, 0)), f.x),
-                      lerp(load(at + int2(0, 1)), load(at + int2(1, 1)), f.x), f.y);
+    float3 rgb;
+    if (all(sourceSize == targetSize)) {
+        rgb = load(int2(target));
+    } else {
+        float2 p = (target + 0.5) * float2(sourceSize) / float2(targetSize) - 0.5;
+        int2 at = int2(floor(p));
+        float2 f = frac(p);
+        rgb = lerp(lerp(load(at), load(at + int2(1, 0)), f.x),
+                   lerp(load(at + int2(0, 1)), load(at + int2(1, 1)), f.x), f.y);
+    }
     if (hdr == 0 || pixel == 2) return rgb;
     return pq(gamut2020(rgb) / 125.0);
 }
@@ -613,6 +618,124 @@ mod tests {
     use super::*;
     use crate::capture::{ComGuard, Image};
     use std::time::Instant;
+
+    #[test]
+    #[ignore = "requires D3D11 native P010 views and GPU timestamp queries"]
+    fn gpu_conversion_timing() -> Result<()> {
+        let _com = ComGuard::new()?;
+        let gpu = Device::new("")?;
+        let image = make_image(&[[0.; 3], [1.; 3], [12.5; 3], [125.; 3]], 492, 2184);
+        let source = GpuImage::upload(&gpu, &image)?;
+        let timer = crate::timing::Timer::new()?;
+        let query = |kind| -> Result<ID3D11Query> {
+            let mut query = None;
+            unsafe {
+                gpu.device.CreateQuery(
+                    &D3D11_QUERY_DESC {
+                        Query: kind,
+                        MiscFlags: 0,
+                    },
+                    Some(&mut query),
+                )?;
+            }
+            query.context("no timestamp query")
+        };
+        let mut reports = vec![];
+        for (width, height) in [(1968, 2184), (3840, 2160)] {
+            let config = butterpollo_core::rtsp::Negotiated {
+                width,
+                height,
+                codec: 1,
+                hdr: true,
+                ..Default::default()
+            };
+            let mut converter =
+                Converter::new(&gpu, &config, (image.width, image.height, image.pixel))?;
+            for _ in 0..16 {
+                converter.convert(&source)?;
+            }
+            let disjoint = query(D3D11_QUERY_TIMESTAMP_DISJOINT)?;
+            let queries: Vec<_> = (0..64)
+                .map(|_| Ok((query(D3D11_QUERY_TIMESTAMP)?, query(D3D11_QUERY_TIMESTAMP)?)))
+                .collect::<Result<_>>()?;
+            let mut calls = vec![];
+            unsafe {
+                gpu.context.Begin(&disjoint);
+            }
+            for (start, end) in &queries {
+                unsafe {
+                    gpu.context.End(start);
+                }
+                let begin = Instant::now();
+                converter.convert(&source)?;
+                calls.push(begin.elapsed().as_secs_f64() * 1000.);
+                unsafe {
+                    gpu.context.End(end);
+                }
+            }
+            unsafe {
+                gpu.context.End(&disjoint);
+                gpu.context.Flush();
+            }
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            let mut clock = D3D11_QUERY_DATA_TIMESTAMP_DISJOINT::default();
+            loop {
+                unsafe {
+                    gpu.context.GetData(
+                        &disjoint,
+                        Some((&mut clock as *mut D3D11_QUERY_DATA_TIMESTAMP_DISJOINT).cast()),
+                        std::mem::size_of_val(&clock) as u32,
+                        D3D11_ASYNC_GETDATA_DONOTFLUSH.0 as u32,
+                    )?;
+                }
+                if clock.Frequency != 0 {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    bail!("GPU timestamp clock timed out");
+                }
+                timer.until(Instant::now() + std::time::Duration::from_micros(250));
+            }
+            if clock.Disjoint.as_bool() {
+                bail!("GPU clock changed during conversion benchmark");
+            }
+            let mut durations = vec![];
+            for (start, end) in queries {
+                let mut ticks = [0u64; 2];
+                for (query, value) in [start, end].iter().zip(ticks.iter_mut()) {
+                    loop {
+                        unsafe {
+                            gpu.context.GetData(
+                                query,
+                                Some((value as *mut u64).cast()),
+                                std::mem::size_of::<u64>() as u32,
+                                D3D11_ASYNC_GETDATA_DONOTFLUSH.0 as u32,
+                            )?;
+                        }
+                        if *value != 0 {
+                            break;
+                        }
+                        if Instant::now() >= deadline {
+                            bail!("GPU timestamp result timed out");
+                        }
+                        timer.until(Instant::now() + std::time::Duration::from_micros(250));
+                    }
+                }
+                durations.push((ticks[1] - ticks[0]) as f64 * 1000. / clock.Frequency as f64);
+            }
+            let stats = |mut values: Vec<f64>| {
+                values.sort_by(f64::total_cmp);
+                serde_json::json!({"samples":values.len(),"mean_ms":values.iter().sum::<f64>() / values.len() as f64,"p95_ms":values[(values.len()-1)*95/100],"p99_ms":values[(values.len()-1)*99/100],"max_ms":values.last()})
+            };
+            reports.push(serde_json::json!({"width":width,"height":height,"gpu":stats(durations),"cpu_call":stats(calls)}));
+        }
+        let report = serde_json::json!({"scope":"isolated FP16-to-P010 conversion, excludes capture, encoder, network and decoder", "source_width":image.width,"source_height":image.height,"adapter":gpu.display.adapter,"cases":reports});
+        eprintln!("{report}");
+        if let Some(path) = std::env::var_os("BUTTERPOLLO_TEST_GPU_REPORT") {
+            std::fs::write(path, serde_json::to_vec_pretty(&report)?)?;
+        }
+        Ok(())
+    }
 
     fn make_image(colors: &[[f32; 3]], patch: usize, height: usize) -> Image {
         let width = colors.len() * patch;

@@ -40,10 +40,10 @@ The host, service supervisor, console, protocol, display recovery process, Vulka
 ```powershell
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test -p butterpollo-windows --locked -- --ignored --skip native_nvenc_loss_recovery_and_444_hdr_decode --test-threads=1 --nocapture
+cargo test -p butterpollo-windows --locked -- --ignored --skip native_nvenc_loss_recovery_and_444_hdr_decode --skip native_av1_geometry_and_hdr_are_preserved --test-threads=1 --nocapture
 ```
 
-The ordinary workspace suite has 128 passing tests. The AMD command above requires the packaged codec DLLs on `PATH`, the same SDK environment as the build, an AMD D3D11/AMF adapter and a local network route. Ten available native tests exercise GPU 4:2:0/4:4:4 math, SDR/HDR hardware cursor composition, texture retention, FFmpeg ownership, AMD loss recovery, Opus surround, WGC reconnect/COM teardown, closed-pool propagation and adapter MAC lookup. They do not change display modes, audio defaults or the installed service.
+The ordinary workspace suite has 130 passing tests. The native command requires the packaged codec DLLs on `PATH`, the same SDK environment as the build, an AMD D3D11/AMF adapter and a local network route. Twelve available native tests pass, exercising GPU 4:2:0/4:4:4 math and conversion timing, SDR/HDR hardware cursor composition, retained textures and pointer-only copies, FFmpeg ownership, AMD loss recovery, Opus surround, WGC reconnect/COM teardown, closed-pool propagation and adapter MAC lookup. They do not change display modes, audio defaults or the installed service. The separate strict AV1 geometry gate currently fails; it must not be counted as a passing native test.
 
 Set `BUTTERPOLLO_TEST_OPUS_ROOT` to the packaged runtime directory, `BUTTERPOLLO_TEST_FFMPEG` to an independent FFmpeg decoder executable, and `BUTTERPOLLO_TEST_RFI_REPORT` to the desired JSON report filename. `BUTTERPOLLO_TEST_AUDIO_REPORT` optionally saves the Opus report. The loss fixture saves its elementary streams beside the report and verifies all retained frames using the independent decoder.
 

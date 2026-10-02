@@ -686,7 +686,7 @@ impl Media {
                         Ok(())
                     };
                     let result = (|| -> Result<()> {
-                        while !s.stopping() && !h.stop.load(Ordering::Acquire) {
+                        'frames: while !s.stopping() && !h.stop.load(Ordering::Acquire) {
                             if Instant::now() >= live_at {
                                 live_at = Instant::now() + Duration::from_millis(250);
                                 runtime_config = effective_config(&h, &s.launch)?;
@@ -716,7 +716,20 @@ impl Media {
                                 if Instant::now() >= timing_due {
                                     timing_due = Instant::now() + Duration::from_secs(5);
                                     let timing = s.stats.performance.lock().unwrap().snapshot(Instant::now());
-                                    tracing::info!(fps=timing["fps"].as_f64().unwrap_or(0.),host_mean_ms=timing["host_processing_mean_ms"].as_f64().unwrap_or(0.),host_p95_ms=timing["host_processing_p95_ms"].as_f64().unwrap_or(0.),host_max_ms=timing["host_processing_max_ms"].as_f64().unwrap_or(0.),encode_p95_ms=timing["encode_p95_ms"].as_f64().unwrap_or(0.),"stream timings");
+                                    tracing::info!(
+                                        fps=timing["fps"].as_f64().unwrap_or(0.),
+                                        host_mean_ms=timing["host_processing_mean_ms"].as_f64().unwrap_or(0.),
+                                        host_p95_ms=timing["host_processing_p95_ms"].as_f64().unwrap_or(0.),
+                                        host_p99_ms=timing["host_processing_p99_ms"].as_f64().unwrap_or(0.),
+                                        host_max_ms=timing["host_processing_max_ms"].as_f64().unwrap_or(0.),
+                                        encode_p95_ms=timing["encode_p95_ms"].as_f64().unwrap_or(0.),
+                                        encode_p99_ms=timing["encode_p99_ms"].as_f64().unwrap_or(0.),
+                                        capture_age_estimate_p95_ms=timing["capture_age_estimate_p95_ms"].as_f64().unwrap_or(0.),
+                                        send_interval_p95_ms=timing["send_interval_p95_ms"].as_f64().unwrap_or(0.),
+                                        send_interval_p99_ms=timing["send_interval_p99_ms"].as_f64().unwrap_or(0.),
+                                        send_interval_max_ms=timing["send_interval_max_ms"].as_f64().unwrap_or(0.),
+                                        "stream timings"
+                                    );
                                 }
                             }
                             latest.check()?;
@@ -751,7 +764,30 @@ impl Media {
                                 }
                             }
                             let image = latest.wait_for_frame(&timer, &capture_wake, Instant::now() + period.min(Duration::from_millis(50)))?;
-                            let Some(image) = image else { continue };
+                            let Some(mut image) = image else { continue };
+                            // Experimental measurement switch. A fixed encoder
+                            // slot can land immediately before the capture worker
+                            // publishes a new desktop. Bound the wait and keep
+                            // draining completed output while looking for it.
+                            if c.boolean("capture_freshness_wait", false)
+                                && !s.config.vrr_low_latency
+                                && !s.idr.load(Ordering::Acquire)
+                                && last_image.as_ref().is_some_and(|previous| !Arc::ptr_eq(previous, &image))
+                                && image.captured.elapsed() > period / 4
+                            {
+                                let fresh_until = Instant::now() + (period / 2).min(Duration::from_millis(4));
+                                while !s.stopping() && Instant::now() < fresh_until && image.captured.elapsed() > period / 4 {
+                                    if encoder.pending() {
+                                        send_frames(encoder.poll()?, peer, Duration::ZERO)?;
+                                    }
+                                    let wait_until = if encoder.pending() {
+                                        fresh_until.min(Instant::now() + Duration::from_micros(250))
+                                    } else { fresh_until };
+                                    latest.wait_if_current(&timer, &capture_wake, &image, wait_until)?;
+                                    let Some(current) = latest.current()? else { continue 'frames };
+                                    image = current;
+                                }
+                            }
                             // Resolution changes or DXGI loss can recreate the capture device.
                             rebuild_encoder |= !encoder.accepts_gpu_device(&image);
                             if !rebuild_encoder

@@ -310,6 +310,7 @@ pub struct Duplication {
     duplicate: IDXGIOutputDuplication,
     staging: Option<ID3D11Texture2D>,
     owned: GpuPool,
+    last_desktop: Option<GpuImage>,
     cursor: crate::cursor::State,
 }
 impl Duplication {
@@ -347,6 +348,7 @@ impl Duplication {
             duplicate,
             staging: None,
             owned: GpuPool::default(),
+            last_desktop: None,
             cursor: Default::default(),
         })
     }
@@ -387,7 +389,12 @@ impl Duplication {
                 self.cursor.update(&self.gpu, &self.duplicate, &info)?;
                 let texture: ID3D11Texture2D =
                     resource.context("empty captured texture")?.cast()?;
-                let mut image = self.owned.copy(&self.gpu, &texture)?;
+                let mut image = self.owned.desktop_snapshot(
+                    &self.gpu,
+                    &texture,
+                    &mut self.last_desktop,
+                    info.LastPresentTime != 0,
+                )?;
                 if let Some(image) = image.as_mut() {
                     image.captured =
                         qpc_instant(info.LastPresentTime.max(info.LastMouseUpdateTime));
@@ -477,6 +484,25 @@ pub(crate) struct GpuPool {
     textures: Vec<std::sync::Arc<ID3D11Texture2D>>,
 }
 impl GpuPool {
+    fn desktop_snapshot(
+        &mut self,
+        gpu: &Device,
+        source: &ID3D11Texture2D,
+        cached: &mut Option<GpuImage>,
+        desktop_updated: bool,
+    ) -> Result<Option<GpuImage>> {
+        // DXGI supplies a zero LastPresentTime for pointer-only updates. The
+        // owned bitmap is still valid; only the detached cursor snapshot changes.
+        if !desktop_updated && let Some(image) = cached.as_ref() {
+            return Ok(Some(image.clone()));
+        }
+        // A missed desktop copy must invalidate the cache. Otherwise a later
+        // pointer-only frame could publish pixels from before the missed update.
+        *cached = None;
+        let image = self.copy(gpu, source)?;
+        *cached = image.clone();
+        Ok(image)
+    }
     pub(crate) fn copy(
         &mut self,
         gpu: &Device,
@@ -920,6 +946,63 @@ impl Capture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires native D3D11 texture copies and readback"]
+    fn pointer_only_snapshots_reuse_pixels_and_missed_desktop_updates_invalidate_them() -> Result<()>
+    {
+        let _com = ComGuard::new()?;
+        let gpu = Device::new("")?;
+        let upload = |value| {
+            GpuImage::upload(
+                &gpu,
+                &Image {
+                    width: 4,
+                    height: 4,
+                    stride: 16,
+                    bytes: vec![value; 64],
+                    captured: Instant::now(),
+                    pixel: Pixel::Bgra8,
+                },
+            )
+        };
+        let first_source = upload(32)?;
+        let second_source = upload(128)?;
+        let third_source = upload(224)?;
+        let mut pool = GpuPool::default();
+        let mut cached = None;
+        let first = pool
+            .desktop_snapshot(&gpu, &first_source.texture, &mut cached, true)?
+            .unwrap();
+        let pointer = pool
+            .desktop_snapshot(&gpu, &second_source.texture, &mut cached, false)?
+            .unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first.texture, &pointer.texture));
+        let second = pool
+            .desktop_snapshot(&gpu, &second_source.texture, &mut cached, true)?
+            .unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&first.texture, &second.texture));
+        assert_eq!(first.readback(&mut None)?.bytes, vec![32; 64]);
+        assert_eq!(second.readback(&mut None)?.bytes, vec![128; 64]);
+        let mut held = vec![first, pointer, second];
+        for _ in 0..6 {
+            held.push(
+                pool.desktop_snapshot(&gpu, &second_source.texture, &mut cached, true)?
+                    .unwrap(),
+            );
+        }
+        assert!(
+            pool.desktop_snapshot(&gpu, &third_source.texture, &mut cached, true)?
+                .is_none()
+        );
+        assert!(cached.is_none());
+        held.clear();
+        let recovered = pool
+            .desktop_snapshot(&gpu, &third_source.texture, &mut cached, false)?
+            .unwrap();
+        assert_eq!(recovered.readback(&mut None)?.bytes, vec![224; 64]);
+        Ok(())
+    }
 
     #[test]
     #[ignore = "requires an interactive Windows desktop with WGC support"]

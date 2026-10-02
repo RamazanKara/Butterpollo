@@ -21,51 +21,84 @@ use std::time::Duration;
 /// A game may keep its display across transport disconnects. The heartbeat
 /// owns the resources, not the Ready Arc, so final teardown cannot form a cycle.
 pub struct Ready {
-    state: Arc<Mutex<Prepared>>,
+    // Retain the leases until after the worker has joined. Streaming readers
+    // use the published target, never the lock held over native display I/O.
+    _state: Arc<Mutex<Prepared>>,
+    target: CaptureTarget,
+    mode: (u32, u32, u32, bool),
+    capture: String,
     stop: Arc<AtomicBool>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 impl Ready {
     pub fn new(prepared: Prepared) -> Result<Arc<Self>> {
+        let target = CaptureTarget::new(prepared.capture_target());
+        let mode = prepared.mode;
+        let capture = prepared.framegen.capture.clone();
         let state = Arc::new(Mutex::new(prepared));
         let stop = Arc::new(AtomicBool::new(false));
         let worker_state = state.clone();
+        let worker_target = target.clone();
         let worker_stop = stop.clone();
         let worker = std::thread::Builder::new()
             .name("game-display-lease".into())
             .spawn(move || {
                 while !worker_stop.load(Ordering::Acquire) {
-                    if let Err(error) = worker_state.lock().unwrap().feed() {
+                    let mut prepared = worker_state.lock().unwrap();
+                    let result = prepared.feed();
+                    let current = prepared.capture_target();
+                    drop(prepared);
+                    // Publish a recreated target even when a later restoration
+                    // step needs a retry. Output and generation change together.
+                    worker_target.publish(current);
+                    if let Err(error) = result {
                         tracing::warn!(%error, "game display heartbeat failed");
                     }
                     std::thread::sleep(Duration::from_millis(100));
                 }
             })?;
         Ok(Arc::new(Self {
-            state,
+            _state: state,
+            target,
+            mode,
+            capture,
             stop,
             worker: Some(worker),
         }))
     }
     pub fn matches(&self, stream: &Negotiated) -> bool {
-        self.state.lock().unwrap().matches(stream)
+        self.mode
+            == (
+                stream.width,
+                stream.height,
+                stream.fps_millihz(),
+                stream.hdr,
+            )
     }
     pub fn output(&self) -> String {
-        let state = self.state.lock().unwrap();
-        state
-            ._retained
-            .as_ref()
-            .map_or_else(|| state.output.clone(), |d| d.current_output())
+        self.target.current().0
     }
     pub fn capture_target(&self) -> (String, u64) {
-        let state = self.state.lock().unwrap();
-        state._retained.as_ref().map_or_else(
-            || (state.output.clone(), state.revision),
-            |d| (d.current_output(), d.current_generation()),
-        )
+        self.target.current()
     }
     pub fn capture(&self) -> String {
-        self.state.lock().unwrap().framegen.capture.clone()
+        self.capture.clone()
+    }
+}
+
+/// Only copies and publication hold this lock. Lease renewal, topology queries
+/// and restoration must finish before publishing a new capture identity.
+#[derive(Clone)]
+struct CaptureTarget(Arc<Mutex<(String, u64)>>);
+impl CaptureTarget {
+    fn new(target: (String, u64)) -> Self {
+        Self(Arc::new(Mutex::new(target)))
+    }
+    fn current(&self) -> (String, u64) {
+        self.0.lock().unwrap().clone()
+    }
+    fn publish(&self, target: (String, u64)) {
+        *self.0.lock().unwrap() = target;
     }
 }
 impl Drop for Ready {
@@ -99,6 +132,12 @@ pub struct Prepared {
     host: std::sync::Weak<crate::state::Host>,
 }
 impl Prepared {
+    fn capture_target(&self) -> (String, u64) {
+        self._retained.as_ref().map_or_else(
+            || (self.output.clone(), self.revision),
+            |display| display.capture_target(),
+        )
+    }
     fn feed(&mut self) -> Result<()> {
         if let Some(display) = self.display.as_mut()
             && display.feed()?
@@ -138,15 +177,6 @@ impl Prepared {
             self.recovery_pending = false;
         }
         Ok(())
-    }
-    pub fn matches(&self, stream: &Negotiated) -> bool {
-        self.mode
-            == (
-                stream.width,
-                stream.height,
-                stream.fps_millihz(),
-                stream.hdr,
-            )
     }
     pub fn create(
         h: &Shared,
@@ -561,5 +591,51 @@ impl Drop for GoldenLease {
         } else {
             let _ = butterpollo_windows::display_recovery::baseline(None);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    #[test]
+    fn capture_target_stays_readable_during_refresh_and_publishes_identity_together() {
+        let target = CaptureTarget::new(("old-output".into(), 0));
+        let publisher = target.clone();
+        let (entered, waiting) = mpsc::channel();
+        let (release, resume) = mpsc::channel();
+        let refresh = std::thread::spawn(move || {
+            // Stand in for a slow driver call: publication happens only after
+            // maintenance returns, while current capture must remain usable.
+            entered.send(()).unwrap();
+            resume.recv().unwrap();
+            publisher.publish(("new-output".into(), 1));
+        });
+        waiting.recv_timeout(Duration::from_secs(1)).unwrap();
+        let reader = target.clone();
+        let (read, result) = mpsc::channel();
+        let read_thread = std::thread::spawn(move || read.send(reader.current()).unwrap());
+        let current = result.recv_timeout(Duration::from_millis(100));
+        release.send(()).unwrap();
+        refresh.join().unwrap();
+        read_thread.join().unwrap();
+        assert_eq!(current.unwrap(), ("old-output".into(), 0));
+        assert_eq!(target.current(), ("new-output".into(), 1));
+
+        let publisher = target.clone();
+        let refresh = std::thread::spawn(move || {
+            for generation in 2..10000 {
+                publisher.publish((format!("output-{generation}"), generation));
+            }
+        });
+        while !refresh.is_finished() {
+            let (output, generation) = target.current();
+            if generation > 1 {
+                assert_eq!(output, format!("output-{generation}"));
+            }
+        }
+        refresh.join().unwrap();
+        assert_eq!(target.current(), ("output-9999".into(), 9999));
     }
 }

@@ -66,6 +66,65 @@ Each case uses seven 250 ms rounds on the same Ryzen/Rust release environment, w
 
 The package includes `butterpollo-video-packet-performance.exe`. Run it without arguments to print the workloads, timing samples and packet fingerprints. The source is `core/examples/video_packet_performance.rs`; use that same harness in the previous checkout when reproducing the comparison.
 
+## October 2 latency work
+
+The candidate removes synchronous display renewal and monitor enumeration from
+the lock used by the capture and encoder workers. Those workers now read a
+published output/generation pair; maintenance publishes a new identity after
+native work finishes. A twenty-sample, read-only probe on the physical display
+measured monitor enumeration at 1.558 ms mean, 2.605 ms p95 and 4.333 ms maximum.
+This establishes a potentially expensive dependency in the old frame path,
+not a measured full-stream improvement from removing it. HDR metadata reads
+were negligible in this probe and remain on their existing polling schedule.
+
+Same-size GPU color conversion now loads each source pixel once, preserving
+the existing resize, HDR transfer, chroma and cursor behavior. At 1968×2184
+FP16-to-P010, 64 D3D11 timestamp samples after 16 warmups measured 0.335 ms mean
+and 0.337 ms p95 before, versus 0.170 ms mean and 0.175 ms p95 after. This is an
+approximately 49% reduction in this GPU component's elapsed time. It excludes
+capture, encoding, transport and decoding. The opt-in
+`gpu_color::tests::gpu_conversion_timing` test reproduces the measurement.
+
+Pointer-only Desktop Duplication updates reuse immutable owned desktop pixels
+and update the detached cursor snapshot. A missed new desktop copy invalidates
+the cache, preventing stale pixels after texture-pool exhaustion. Native
+readback checks cover retained images, the full bounded pool and recovery.
+Per-device GPU priority and maximum-frame-latency hints now match the previous
+host, independently of whether privileged process scheduling is available.
+
+Diagnostics add p99, an explicitly labelled capture-age estimate, and frame
+send-completion intervals. The original source timestamps and Moonlight
+processing durations remain intact. A bounded freshness-wait experiment is
+disabled by default; it has not established a latency benefit.
+
+A normal-user isolated HEVC Main10 stream passed encrypted pairing/permissions,
+exact 1968×2184 output, BT.2020/PQ, and independent Opus decoding of a quiet
+known tone. It requested 120 fps and 80 Mbps. After a five-second warmup, 900
+frames delivered at 119.993 fps with no intervals above 1.5 frame periods.
+Host processing mean/p95/p99/max was 5.517/5.9/6.3/6.4 ms. Arrival intervals had
+9.198 ms p99 and 9.375 ms maximum. This test captured an unchanged 2560×1440
+SDR desktop and converted/scaled it; it excludes native HDR motion acceptance
+and is not a whole-host comparison with Vibepollo.
+
+The independent AV1 geometry gate still fails on this RX 7900 XT. Requested
+1920×1080, 1968×2184 and 2184×1968 decode as 1920×1082, 1984×2186 and 2240×1968,
+respectively, in both SDR/HDR and both supported unrestricted alignment modes
+tested. Requested component dimensions and alignment read back correctly, but
+bitstream traces contain enlarged dimensions without a render-size correction.
+The same customer-size failure occurs in the current C++ baseline. Do not
+count these as exact-resolution passes or change the strict decoder gate.
+[AMD's corresponding bug report](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/issues/423).
+
+Dynamic loopback tests additionally render a changing barcode containing source
+sequence/QPC values, then timestamp independent low-delay decoding. This
+picture-age measurement includes rendering, DWM, capture, encoding, loopback
+and software decode; it excludes remote display scanout. Source refresh must
+be measured and matched, not inferred from a requested virtual-display mode.
+The attempted 240 Hz C++ fixture actually presented at 120 Hz; comparisons with
+the 240 Hz Rust fixture are therefore not accepted. The next elevated matched
+benchmark launch was rejected by automatic approval review. Work continues
+with non-elevated probes; native motion comparison remains pending.
+
 ## Controlled comparison with the original C++ FEC
 
 The benchmark loads the original C++ host's Reed–Solomon wrapper from baseline commit `f23ee0c9e7857887be7f774de6ac5153500a7e53`, with its pinned nanors implementation at `19f07b513e924e471cadd141943c1ec4adc8d0e0`. The source verification script checks every compiled reference file against its pinned SHA-256. GCC 16.1.0 builds the reference with `-O3 -ftree-vectorize -funroll-loops`; Rust uses the release profile. Both select AVX2 on this Ryzen 7 5800X3D. The original runtime ISA dispatch is retained.

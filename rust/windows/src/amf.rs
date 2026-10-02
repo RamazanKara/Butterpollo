@@ -62,6 +62,19 @@ impl Encoder {
         device: Device,
         options: &butterpollo_core::config::Config,
     ) -> Result<Self> {
+        Self::new_device_alignment_options(
+            config,
+            device,
+            options,
+            AMF_VIDEO_ENCODER_AV1_ALIGNMENT_MODE_ENUM_AMF_VIDEO_ENCODER_AV1_ALIGNMENT_MODE_NO_RESTRICTIONS as i64,
+        )
+    }
+    fn new_device_alignment_options(
+        config: &butterpollo_core::rtsp::Negotiated,
+        device: Device,
+        options: &butterpollo_core::config::Config,
+        av1_alignment: i64,
+    ) -> Result<Self> {
         if config.yuv444 {
             bail!("AMF does not expose 4:4:4 for this encoder; select NVENC or software");
         }
@@ -225,13 +238,7 @@ impl Encoder {
                 e.property("GOPSize", int(0))?;
             }
             if config.codec == 2 {
-                // AMF defaults to 64x16 alignment, which rejects 1080-line
-                // input. RDNA3 still pads that AV1 output to 1082 lines; exact
-                // 1080-line streams require HEVC on that hardware.
-                e.property(
-                    "AlignmentMode",
-                    int(AMF_VIDEO_ENCODER_AV1_ALIGNMENT_MODE_ENUM_AMF_VIDEO_ENCODER_AV1_ALIGNMENT_MODE_NO_RESTRICTIONS as i64),
-                )?;
+                e.property("AlignmentMode", int(av1_alignment))?;
                 e.property("GOPSize", int(0))?;
             }
             // A blocking query can inherit Windows' 15.6 ms scheduler tick.
@@ -590,6 +597,14 @@ impl Encoder {
             .context("AMF host surface allocation")?;
             let v = &*(*surface).pVtbl;
             let prepared = (|| -> Result<()> {
+                check((v.SetCrop.unwrap())(
+                    surface,
+                    0,
+                    0,
+                    self.config.width as i32,
+                    self.config.height as i32,
+                ))
+                .context("AMF host surface crop")?;
                 (v.SetPts.unwrap())(surface, self.index);
                 (v.SetDuration.unwrap())(
                     surface,
@@ -775,6 +790,14 @@ impl Encoder {
         self.set_bitrate(bitrate)?;
         unsafe {
             let v = &*(*surface.0).pVtbl;
+            check((v.SetCrop.unwrap())(
+                surface.0,
+                0,
+                0,
+                self.config.width as i32,
+                self.config.height as i32,
+            ))
+            .context("AMF native surface crop")?;
             (v.SetPts.unwrap())(surface.0, self.index);
             (v.SetDuration.unwrap())(
                 surface.0,

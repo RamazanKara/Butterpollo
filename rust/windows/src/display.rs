@@ -1885,6 +1885,12 @@ pub struct Retained {
     worker: Option<std::thread::JoinHandle<()>>,
 }
 impl Retained {
+    pub fn capture_target(&self) -> (String, u64) {
+        self.guard.lock().unwrap().as_ref().map_or_else(
+            || (self.output.clone(), 0),
+            |guard| (guard.output.clone(), guard.generation),
+        )
+    }
     pub fn current_output(&self) -> String {
         self.guard
             .lock()
