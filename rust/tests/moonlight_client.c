@@ -29,6 +29,8 @@ static unsigned measured_frames;
 static FILE *timing_csv;
 static double warmup_seconds=2.0;
 static int barcode_bottom;
+/* The host may scale the source; the barcode is drawn at source pixels. */
+static double barcode_scale=1.0;
 static double clock_ms(void){LARGE_INTEGER n,f;QueryPerformanceCounter(&n);QueryPerformanceFrequency(&f);return (double)n.QuadPart*1000.0/(double)f.QuadPart;}
 static int compare_double(const void*a,const void*b){double x=*(const double*)a,y=*(const double*)b;return(x>y)-(x<y);}
 static unsigned luma_sample(const AVFrame *frame,int x,int y){
@@ -40,14 +42,15 @@ static unsigned luma_sample(const AVFrame *frame,int x,int y){
     return(value>>component->shift)&((1u<<component->depth)-1u);
 }
 static int picture_timestamp(const AVFrame *frame,uint32_t *sequence,uint64_t *ticks){
-    if(frame->width<640||frame->height<128)return 0;
+    const double s=barcode_scale;
+    if(frame->width<640*s||frame->height<128*s)return 0;
     uint32_t words[4]={0};
     for(int row=0;row<4;row++){
-        int y=(barcode_bottom?frame->height-128:0)+20+row*24;
-        unsigned black=luma_sample(frame,12,y),white=luma_sample(frame,36,y);
+        int y=barcode_bottom?frame->height-(int)((128-20-row*24)*s):(int)((20+row*24)*s);
+        unsigned black=luma_sample(frame,(int)(12*s),y),white=luma_sample(frame,(int)(36*s),y);
         if(white<=black+32)return 0;
         unsigned threshold=(black+white)/2;
-        for(int bit=0;bit<32;bit++)if(luma_sample(frame,72+bit*16,y)>threshold)words[row]|=1u<<bit;
+        for(int bit=0;bit<32;bit++)if(luma_sample(frame,(int)((72+bit*16)*s),y)>threshold)words[row]|=1u<<bit;
     }
     if(words[3]!=0xB17E2212||words[0]==0)return 0;
     *sequence=words[0];*ticks=((uint64_t)words[2]<<32)|words[1];return 1;
@@ -133,6 +136,8 @@ int main(int argc,char**argv){
     int duration=argc>6?atoi(argv[6]):0;
     if(getenv("BUTTERPOLLO_TEST_WARMUP_SECONDS"))warmup_seconds=atof(getenv("BUTTERPOLLO_TEST_WARMUP_SECONDS"));
     barcode_bottom=getenv("BUTTERPOLLO_TEST_BARCODE_BOTTOM")&&strcmp(getenv("BUTTERPOLLO_TEST_BARCODE_BOTTOM"),"1")==0;
+    if(getenv("BUTTERPOLLO_TEST_BARCODE_SCALE"))barcode_scale=atof(getenv("BUTTERPOLLO_TEST_BARCODE_SCALE"));
+    if(!(barcode_scale>0.0&&barcode_scale<=1.0))barcode_scale=1.0;
     if(warmup_seconds<0||warmup_seconds>60)return 2;
     if(getenv("BUTTERPOLLO_TEST_TIMING_CSV")){
         timing_csv=fopen(getenv("BUTTERPOLLO_TEST_TIMING_CSV"),"w");if(!timing_csv){perror("timing CSV");return 2;}
