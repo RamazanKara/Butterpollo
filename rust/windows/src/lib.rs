@@ -16,6 +16,8 @@ pub mod color;
 #[cfg(windows)]
 pub mod crash;
 #[cfg(windows)]
+mod cursor;
+#[cfg(windows)]
 pub mod display;
 #[cfg(windows)]
 pub mod display_arrangement;

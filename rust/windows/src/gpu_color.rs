@@ -17,19 +17,66 @@ use windows::{
 // upper ten bits. Chroma covers four output pixels, including during scaling.
 const SHADER: &str = r#"
 Texture2D<float4> source : register(t0);
+Texture2D<float4> pointer : register(t1);
 cbuffer Config : register(b0) {
     uint2 sourceSize; uint2 targetSize;
     uint pixel; uint hdr; uint colorMatrix; uint fullRange;
     uint tenBit; float sdrWhiteScale; float hdrScale; uint padding;
+    int2 pointerPosition; uint2 pointerSize;
+    uint pointerMode; uint3 pointerPadding;
 };
 float4 vertex(uint id : SV_VertexID) : SV_Position {
     float2 p = float2((id << 1) & 2, id & 2);
     return float4(p * float2(2, -2) + float2(-1, 1), 0, 1);
 }
+float3 srgb_linear(float3 rgb) { return lerp(pow((rgb + 0.055) / 1.055, 2.4), rgb / 12.92, step(rgb, 0.04045)); }
+float3 gamma(float3 rgb) { return lerp(1.055 * pow(max(rgb, 0), 1.0 / 2.4) - 0.055, rgb * 12.92, step(rgb, 0.0031308)); }
+float3 gamut2020(float3 rgb) {
+    return float3(dot(rgb, float3(0.627404, 0.329283, 0.043313)),
+                  dot(rgb, float3(0.069097, 0.919540, 0.011362)),
+                  dot(rgb, float3(0.016391, 0.088013, 0.895595)));
+}
+float3 pq(float3 luminance) {
+    float3 power = pow(clamp(luminance, 0, 1), 2610.0 / 16384.0);
+    return pow((3424.0 / 4096.0 + 2413.0 / 128.0 * power) /
+               (1.0 + 2392.0 / 128.0 * power), 2523.0 / 32.0);
+}
+float3 depq(float3 rgb) {
+    float3 p = pow(clamp(rgb, 0, 1), 32.0 / 2523.0);
+    return pow(max(p - 3424.0 / 4096.0, 0) / max(2413.0 / 128.0 - 2392.0 / 128.0 * p, 0.000001), 16384.0 / 2610.0);
+}
+float3 pointer_srgb(float3 rgb) {
+    if (pixel == 1) return saturate(gamma(rgb / sdrWhiteScale));
+    if (pixel == 2) {
+        float3 r = depq(rgb) * 125.0 / sdrWhiteScale;
+        return saturate(gamma(float3(dot(r, float3(1.660491,-0.587641,-0.072850)),
+                                     dot(r, float3(-0.124550,1.132900,-0.008349)),
+                                     dot(r, float3(-0.018151,-0.100579,1.118730)))));
+    }
+    return rgb;
+}
+float3 pointer_source(float3 rgb) {
+    if (pixel == 1) return srgb_linear(rgb) * sdrWhiteScale;
+    if (pixel == 2) return pq(gamut2020(srgb_linear(rgb)) * sdrWhiteScale / 125.0);
+    return rgb;
+}
 float3 load(int2 p) {
-    float3 rgb = source.Load(int3(clamp(p, int2(0, 0), int2(sourceSize) - 1), 0)).rgb;
+    p = clamp(p, int2(0, 0), int2(sourceSize) - 1);
+    float3 rgb = source.Load(int3(p, 0)).rgb;
+    int2 at = p - pointerPosition;
+    if (pointerMode != 0 && all(at >= 0) && all(at < int2(pointerSize))) {
+        float4 c = pointer.Load(int3(at, 0));
+        if (pointerMode == 2 && c.a > 0.25 && c.a < 0.75) {
+            uint3 bits = uint3(round(saturate(pointer_srgb(rgb)) * 255)) ^ uint3(round(c.rgb * 255));
+            rgb = pointer_source(float3(bits) / 255);
+        } else if (pixel == 2) {
+            rgb = pq(lerp(depq(rgb), gamut2020(srgb_linear(c.rgb)) * sdrWhiteScale / 125.0, c.a));
+        } else {
+            rgb = lerp(rgb, pointer_source(c.rgb), c.a);
+        }
+    }
     if (hdr != 0 && pixel == 0) {
-        rgb = lerp(pow((rgb + 0.055) / 1.055, 2.4), rgb / 12.92, step(rgb, 0.04045));
+        rgb = srgb_linear(rgb);
         rgb *= sdrWhiteScale;
     }
     if (hdr != 0 && pixel == 1) rgb *= hdrScale;
@@ -42,13 +89,7 @@ float3 nonlinear(float2 target) {
     float3 rgb = lerp(lerp(load(at), load(at + int2(1, 0)), f.x),
                       lerp(load(at + int2(0, 1)), load(at + int2(1, 1)), f.x), f.y);
     if (hdr == 0 || pixel == 2) return rgb;
-    rgb = float3(dot(rgb, float3(0.627404, 0.329283, 0.043313)),
-                 dot(rgb, float3(0.069097, 0.919540, 0.011362)),
-                 dot(rgb, float3(0.016391, 0.088013, 0.895595)));
-    float3 luminance = clamp(rgb / 125.0, 0.0, 1.0);
-    float3 power = pow(luminance, 2610.0 / 16384.0);
-    return pow((3424.0 / 4096.0 + 2413.0 / 128.0 * power) /
-               (1.0 + 2392.0 / 128.0 * power), 2523.0 / 32.0);
+    return pq(gamut2020(rgb) / 125.0);
 }
 float3 weights() { return colorMatrix == 2 ? float3(0.2627, 0.6780, 0.0593) : colorMatrix == 0 ? float3(0.299, 0.587, 0.114) : float3(0.2126, 0.7152, 0.0722); }
 float4 luma(float4 p : SV_Position) : SV_Target {
@@ -169,7 +210,7 @@ pub(crate) struct Converter {
     luma: ID3D11PixelShader,
     chroma: ID3D11PixelShader,
     constants: ID3D11Buffer,
-    values: [u32; 12],
+    values: [u32; 20],
     dirty: bool,
     width: u32,
     height: u32,
@@ -241,11 +282,19 @@ impl Converter {
                 1.25f32.to_bits(),
                 1.0f32.to_bits(),
                 0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
             ];
             let mut constants = None;
             gpu.device.CreateBuffer(
                 &D3D11_BUFFER_DESC {
-                    ByteWidth: 48,
+                    ByteWidth: 80,
                     Usage: D3D11_USAGE_DEFAULT,
                     BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32,
                     ..Default::default()
@@ -359,15 +408,38 @@ impl Converter {
             Ok(self.targets.len() - 1)
         }
     }
-    pub fn convert(&mut self, image: &GpuImage) -> Result<Arc<ID3D11Texture2D>> {
-        let index = self.target()?;
+    fn source_views(&mut self, image: &GpuImage) -> Result<[Option<ID3D11ShaderResourceView>; 2]> {
+        let pointer = image.cursor.as_ref();
+        let values = pointer.map_or([0; 8], |c| {
+            [
+                c.position[0] as u32,
+                c.position[1] as u32,
+                c.width,
+                c.height,
+                if c.logic { 2 } else { 1 },
+                0,
+                0,
+                0,
+            ]
+        });
+        if self.values[12..] != values {
+            self.values[12..].copy_from_slice(&values);
+            self.dirty = true;
+        }
+        let mut source = None;
         unsafe {
-            let mut source = None;
             self.gpu.device.CreateShaderResourceView(
                 image.texture.as_ref(),
                 None,
                 Some(&mut source),
             )?;
+        }
+        Ok([source, pointer.map(|c| c.view.clone())])
+    }
+    pub fn convert(&mut self, image: &GpuImage) -> Result<Arc<ID3D11Texture2D>> {
+        let index = self.target()?;
+        let source = self.source_views(image)?;
+        unsafe {
             let context = &self.gpu.context;
             // Capture and the codec share this device. Keep the complete draw
             // together rather than merely protecting individual context calls.
@@ -387,7 +459,7 @@ impl Converter {
             context.IASetInputLayout(None);
             context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             context.VSSetShader(&self.vertex, None);
-            context.PSSetShaderResources(0, Some(&[source]));
+            context.PSSetShaderResources(0, Some(&source));
             context.PSSetConstantBuffers(0, Some(&[Some(self.constants.clone())]));
             context.RSSetState(None);
             context.OMSetBlendState(None, None, u32::MAX);
@@ -411,7 +483,7 @@ impl Converter {
                 context.PSSetShader(shader, None);
                 context.Draw(3, 0);
             }
-            context.PSSetShaderResources(0, Some(&[None]));
+            context.PSSetShaderResources(0, Some(&[None, None]));
             context.OMSetRenderTargets(None, None);
             context.Flush();
             lock.Leave();
@@ -493,13 +565,8 @@ impl PlanarConverter {
     }
     pub fn convert(&mut self, image: &GpuImage, luminance: [f32; 2]) -> Result<()> {
         self.base.set_luminance(luminance);
+        let source = self.base.source_views(image)?;
         unsafe {
-            let mut source = None;
-            self.base.gpu.device.CreateShaderResourceView(
-                image.texture.as_ref(),
-                None,
-                Some(&mut source),
-            )?;
             let context = &self.base.gpu.context;
             let lock: ID3D11Multithread = windows::core::Interface::cast(context)?;
             lock.Enter();
@@ -517,7 +584,7 @@ impl PlanarConverter {
             context.IASetInputLayout(None);
             context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             context.VSSetShader(&self.base.vertex, None);
-            context.PSSetShaderResources(0, Some(&[source]));
+            context.PSSetShaderResources(0, Some(&source));
             context.PSSetConstantBuffers(0, Some(&[Some(self.base.constants.clone())]));
             context.RSSetState(None);
             context.OMSetBlendState(None, None, u32::MAX);
@@ -534,7 +601,7 @@ impl PlanarConverter {
                 context.PSSetShader(&self.shaders[plane], None);
                 context.Draw(3, 0);
             }
-            context.PSSetShaderResources(0, Some(&[None]));
+            context.PSSetShaderResources(0, Some(&[None, None]));
             context.OMSetRenderTargets(None, None);
             lock.Leave();
         }
@@ -603,6 +670,73 @@ mod tests {
             gpu.context.Unmap(&staging, 0);
             Ok(values)
         }
+    }
+    #[test]
+    #[ignore = "requires native D3D11 P010 conversion"]
+    fn gpu_desktop_pointer_matches_cpu_composition_for_sdr_and_hdr() -> Result<()> {
+        use windows::Win32::Graphics::Dxgi::{
+            DXGI_OUTDUPL_POINTER_SHAPE_INFO, DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME,
+        };
+        let _com = ComGuard::new()?;
+        let gpu = Device::new("")?;
+        let shape = DXGI_OUTDUPL_POINTER_SHAPE_INFO {
+            Type: DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME.0 as u32,
+            Width: 4,
+            Height: 2,
+            Pitch: 1,
+            ..Default::default()
+        };
+        let pointer = crate::cursor::Cursor::new(&gpu, &shape, &[0b00110000, 0b01010000])?;
+        for pixel in [Pixel::Bgra8, Pixel::RgbaF16, Pixel::Rgba10Pq] {
+            let mut source = if pixel == Pixel::RgbaF16 {
+                make_image(&[[0.; 3]], 64, 64)
+            } else {
+                Image {
+                    width: 64,
+                    height: 64,
+                    stride: 256,
+                    bytes: vec![0; 64 * 256],
+                    pixel,
+                    captured: Instant::now(),
+                }
+            };
+            let mut image = GpuImage::upload(&gpu, &source)?;
+            image.cursor = Some(pointer.clone());
+            pointer.blend(&mut source);
+            let cpu_composited = GpuImage::upload(&gpu, &source)?;
+            let config = butterpollo_core::rtsp::Negotiated {
+                width: 64,
+                height: 64,
+                codec: 1,
+                hdr: pixel != Pixel::Bgra8,
+                sdr_10bit: pixel == Pixel::Bgra8,
+                ..Default::default()
+            };
+            let mut converter = Converter::new(&gpu, &config, (64, 64, pixel))?;
+            let actual = readback(&gpu, converter.convert(&image)?.as_ref())?;
+            let expected = readback(&gpu, converter.convert(&cpu_composited)?.as_ref())?;
+            for (a, e) in actual.iter().zip(&expected) {
+                assert!(a.abs_diff(*e) <= 2, "pointer {pixel:?}: {a} versus {e}");
+            }
+            assert!(
+                actual[1] > actual[0] + 300,
+                "white replacement was not rendered"
+            );
+            assert!(actual[3] > actual[2] + 300, "XOR pointer was not rendered");
+            // Removing or moving a cursor must not retain the previous constants.
+            image.cursor.as_mut().unwrap().position = [-1, 1];
+            let shifted = readback(&gpu, converter.convert(&image)?.as_ref())?;
+            assert!(shifted[64] > shifted[0] + 300);
+            image.cursor = None;
+            let absent = readback(&gpu, converter.convert(&image)?.as_ref())?;
+            assert!(
+                absent
+                    .iter()
+                    .take(4096)
+                    .all(|value| value.abs_diff(64) <= 1)
+            );
+        }
+        Ok(())
     }
     #[test]
     #[ignore = "requires a D3D11 GPU with native P010 render views"]

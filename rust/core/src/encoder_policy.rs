@@ -3,6 +3,16 @@
 use crate::{config::Config, rtsp::Negotiated};
 use anyhow::{Result, bail};
 
+/// Retired names in existing Apollo/Vibepollo profiles select their current
+/// native backend. Keep the saved setting intact while resolving it at use.
+pub fn canonical_name(name: &str) -> &str {
+    match name {
+        "amdvce" | "amdvce_experimental" | "amdvce_ffmpeg" | "amdvce_legacy" => "amf",
+        "nvenc_experimental" => "nvenc",
+        _ => name,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Value {
     Integer(i64),
@@ -383,6 +393,33 @@ pub fn ffmpeg(config: &Config, stream: &Negotiated, name: &str) -> Result<Vec<(S
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn imported_encoder_names_keep_the_selected_vendor_and_legacy_backend() {
+        for name in [
+            "amdvce",
+            "amdvce_experimental",
+            "amdvce_ffmpeg",
+            "amdvce_legacy",
+            "amf",
+        ] {
+            let config = Config::parse(&format!("encoder={name}\n")).unwrap();
+            assert_eq!(canonical_name(config.get("encoder", "auto")), "amf");
+            assert_eq!(config.get("encoder", "auto"), name);
+        }
+        assert_eq!(canonical_name("nvenc_experimental"), "nvenc");
+        for name in [
+            "",
+            "auto",
+            "nvenc",
+            "nvenc_legacy",
+            "quicksync",
+            "qsv",
+            "software",
+            "unknown",
+        ] {
+            assert_eq!(canonical_name(name), name);
+        }
+    }
     #[test]
     fn legacy_codec_specific_settings_and_auto_are_preserved() {
         let config = Config::parse("amd_usage=lowlatency\namd_quality=balanced\namd_rc=qvbr\namd_qvbr_quality_level=20\namd_vbaq=disabled\namd_av1_latency_mode=lowest\n").unwrap();

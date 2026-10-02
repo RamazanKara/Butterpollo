@@ -1,4 +1,5 @@
 use crate::state::Shared;
+mod capture;
 use anyhow::{Context, Result};
 use butterpollo_core::{
     config::Config,
@@ -76,22 +77,19 @@ pub(crate) fn effective_config(
         );
     }
     let inherited = config.clone();
-    let app_uuid = h
+    let app = h
         .apps
         .read()
         .unwrap()
         .iter()
         .find(|app| app.id() == launch.app_id || app.aliases.contains(&launch.app_id))
+        .cloned();
+    let app_uuid = app
+        .as_ref()
         .and_then(|app| app.extra.get("uuid"))
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned);
-    if let Some(app) = h
-        .apps
-        .read()
-        .unwrap()
-        .iter()
-        .find(|a| a.id() == launch.app_id || a.aliases.contains(&launch.app_id))
-    {
+    if let Some(app) = &app {
         for (source, target) in [
             ("gamepad", "gamepad"),
             ("dd-configuration-option", "dd_configuration_option"),
@@ -123,12 +121,8 @@ pub(crate) fn effective_config(
             }
         }
     }
-    if let Some(overrides) = h
-        .apps
-        .read()
-        .unwrap()
-        .iter()
-        .find(|a| a.id() == launch.app_id || a.aliases.contains(&launch.app_id))
+    if let Some(overrides) = app
+        .as_ref()
         .and_then(|app| app.extra.get("config-overrides"))
         .and_then(serde_json::Value::as_object)
     {
@@ -220,7 +214,6 @@ use butterpollo_windows::{
     capture::{Capture, ComGuard, GpuImage, Priority},
     encoder::Encoder,
     input::Injector,
-    timing::Signal,
 };
 use rusty_enet::{Event, Host, HostSettings, Packet, PacketKind, PeerID};
 use std::{
@@ -234,35 +227,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-struct Latest {
-    image: Mutex<Option<Arc<GpuImage>>>,
-    changed: Mutex<Vec<Weak<Signal>>>,
-    error: Mutex<Option<String>>,
-}
-impl Latest {
-    fn subscribe(&self) -> Result<Arc<Signal>> {
-        let signal = Arc::new(Signal::new()?);
-        let mut waiters = self.changed.lock().unwrap();
-        waiters.retain(|waiter| waiter.strong_count() > 0);
-        waiters.push(Arc::downgrade(&signal));
-        Ok(signal)
-    }
-    fn notify(&self) -> Result<()> {
-        let mut waiters = self.changed.lock().unwrap();
-        waiters.retain(|waiter| waiter.strong_count() > 0);
-        for waiter in waiters.iter().filter_map(Weak::upgrade) {
-            waiter.set()?;
-        }
-        Ok(())
-    }
-    fn publish(&self, image: Option<Arc<GpuImage>>) -> Result<()> {
-        let mut current = self.image.lock().unwrap();
-        *current = image;
-        // Hold the image lock through notification so a consumer's reset and
-        // predicate check cannot lose a publication before entering the wait.
-        self.notify()
-    }
-}
+type Latest = capture::Latest<GpuImage>;
 struct Source {
     latest: Arc<Latest>,
     grid: Arc<Mutex<butterpollo_windows::capture::ClaimGrid>>,
@@ -388,14 +353,13 @@ impl Media {
             if aligned { phase } else { "" },
         );
         let mut captures = self.captures.lock().unwrap();
-        if let Some(existing) = captures.get(&key).and_then(Weak::upgrade) {
+        captures.retain(|_, source| source.strong_count() > 0);
+        if let Some(existing) = captures.get(&key).and_then(Weak::upgrade)
+            && existing.check().is_ok()
+        {
             return Ok(existing);
         }
-        let latest = Arc::new(Latest {
-            image: Mutex::new(None),
-            changed: Mutex::new(Vec::new()),
-            error: Mutex::new(None),
-        });
+        let latest = Arc::new(Latest::new());
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = stop.clone();
         let worker = latest.clone();
@@ -424,6 +388,7 @@ impl Media {
                             }
                         };
                     capture.set_claim_grid(worker_grid.clone(), aligned);
+                    tracing::info!(requested=%kind, backend=capture.backend(), output=%target.0, "capture backend opened");
                     let _ = started_tx.send(Ok(()));
                     let mut check_target = Instant::now();
                     while !worker_stop.load(Ordering::Acquire) {
@@ -478,8 +443,7 @@ impl Media {
                     Ok(())
                 })();
                 if let Err(e) = result {
-                    *worker.error.lock().unwrap() = Some(e.to_string());
-                    let _ = worker.notify();
+                    let _ = worker.fail(e.to_string());
                     tracing::error!(error=%e,"capture worker stopped");
                 }
             })?;
@@ -591,27 +555,20 @@ impl Media {
                     let mut capture_wake = latest.subscribe()?;
                     let first = {
                         let deadline = Instant::now() + Duration::from_secs(10);
-                        let mut image = latest.image.lock().unwrap();
-                        while image.is_none() {
-                            if let Some(error) = &*latest.error.lock().unwrap() {
-                                anyhow::bail!("capture stopped: {error}");
-                            }
+                        loop {
+                            if let Some(image) = latest.current()? { break image; }
                             if s.stopping() || h.stop.load(Ordering::Acquire) {
                                 return Ok(());
                             }
                             if Instant::now() >= deadline {
                                 anyhow::bail!("capture produced no GPU frame");
                             }
-                            capture_wake.reset()?;
-                            drop(image);
-                            timer.until_or_signal((Instant::now() + Duration::from_millis(50)).min(deadline), &capture_wake)?;
-                            image = latest.image.lock().unwrap();
+                            if let Some(image) = latest.wait_for_frame(&timer, &capture_wake, (Instant::now() + Duration::from_millis(50)).min(deadline))? { break image; }
                         }
-                        image.as_ref().unwrap().clone()
                     };
                     let mut encoder =
                         Encoder::new_gpu_options(&s.config, c.get("encoder", "auto"), &first, &c)?;
-                    tracing::info!(width=s.config.width,height=s.config.height,fps=f64::from(s.config.fps_millihz())/1000.,codec=s.config.codec,hdr=s.config.hdr,vrr=s.config.vrr_low_latency,capture=%prepared.capture(),encoder=c.get("encoder","auto"),"stream configured");
+                    tracing::info!(width=s.config.width,height=s.config.height,fps=f64::from(s.config.fps_millihz())/1000.,codec=s.config.codec,hdr=s.config.hdr,vrr=s.config.vrr_low_latency,capture=%prepared.capture(),encoder=c.get("encoder","auto"),source_width=first.width,source_height=first.height,source_pixel=?first.pixel,"stream configured");
                     let metadata = first.gpu.hdr_metadata();
                     *s.hdr_metadata.write().unwrap() = metadata;
                     encoder.set_hdr_metadata(metadata);
@@ -762,9 +719,7 @@ impl Media {
                                     tracing::info!(fps=timing["fps"].as_f64().unwrap_or(0.),host_mean_ms=timing["host_processing_mean_ms"].as_f64().unwrap_or(0.),host_p95_ms=timing["host_processing_p95_ms"].as_f64().unwrap_or(0.),host_max_ms=timing["host_processing_max_ms"].as_f64().unwrap_or(0.),encode_p95_ms=timing["encode_p95_ms"].as_f64().unwrap_or(0.),"stream timings");
                                 }
                             }
-                            if let Some(error) = &*latest.error.lock().unwrap() {
-                                anyhow::bail!("capture stopped: {error}");
-                            }
+                            latest.check()?;
                             let peer = m
                                 .peers
                                 .lock()
@@ -795,16 +750,7 @@ impl Media {
                                     }
                                 }
                             }
-                            let image = {
-                                let mut current = latest.image.lock().unwrap();
-                                if current.is_none() {
-                                    capture_wake.reset()?;
-                                    drop(current);
-                                    timer.until_or_signal(Instant::now() + period.min(Duration::from_millis(50)), &capture_wake)?;
-                                    current = latest.image.lock().unwrap();
-                                }
-                                current.clone()
-                            };
+                            let image = latest.wait_for_frame(&timer, &capture_wake, Instant::now() + period.min(Duration::from_millis(50)))?;
                             let Some(image) = image else { continue };
                             // Resolution changes or DXGI loss can recreate the capture device.
                             rebuild_encoder |= !encoder.accepts_gpu_device(&image);
@@ -818,13 +764,8 @@ impl Media {
                                 && encoded_at.elapsed() < static_period
                             {
                                 if encoder.pending() { send_frames(encoder.poll()?,peer,Duration::ZERO)?; }
-                                let guard = latest.image.lock().unwrap();
-                                if guard.as_ref().is_some_and(|current| Arc::ptr_eq(current,&image)) {
-                                    capture_wake.reset()?;
-                                    drop(guard);
-                                    let wait = if encoder.pending() { Duration::from_micros(250) } else { period };
-                                    timer.until_or_signal(Instant::now() + wait.min(static_period.saturating_sub(encoded_at.elapsed())), &capture_wake)?;
-                                }
+                                let wait = if encoder.pending() { Duration::from_micros(250) } else { period };
+                                latest.wait_if_current(&timer, &capture_wake, &image, Instant::now() + wait.min(static_period.saturating_sub(encoded_at.elapsed())))?;
                                 continue;
                             }
                             if use_truehdr && Instant::now() >= profile_due {
@@ -963,6 +904,7 @@ impl Media {
         let mut sink = String::new();
         let mut audio_check = Instant::now();
         let mut capture_failed = false;
+        let mut audio_error: Option<String> = None;
         let directory = std::env::current_exe()?.parent().unwrap().to_owned();
         let layout = butterpollo_core::audio::OpusLayout::select(
             s.config.audio_channels as usize,
@@ -1003,7 +945,11 @@ impl Media {
                             route = Some(value);
                         }
                         Err(error) => {
-                            tracing::debug!(%error, "audio endpoint is unavailable; retrying")
+                            let detail = format!("{error:#}");
+                            if audio_error.as_ref() != Some(&detail) {
+                                tracing::warn!(error=%detail, "audio routing failed; retrying");
+                                audio_error = Some(detail);
+                            }
                         }
                     }
                 }
@@ -1029,10 +975,19 @@ impl Media {
                             Ok(value) => {
                                 capture = Some(value);
                                 capture_failed = false;
+                                audio_error = None;
+                                tracing::info!(
+                                    channels = s.config.audio_channels,
+                                    "WASAPI audio capture started"
+                                );
                             }
                             Err(error) => {
                                 capture_failed = true;
-                                tracing::debug!(%error, "WASAPI capture is unavailable; retrying");
+                                let detail = format!("{error:#}");
+                                if audio_error.as_ref() != Some(&detail) {
+                                    tracing::warn!(error=%detail, "WASAPI audio capture failed; retrying");
+                                    audio_error = Some(detail);
+                                }
                             }
                         }
                     }
@@ -1082,6 +1037,7 @@ impl Media {
         let _com = ComGuard::new()?;
         let _priority = Priority::new();
         let mut peers: HashMap<PeerID, ControlPeer> = HashMap::new();
+        let input_timer = butterpollo_windows::timing::Timer::new()?;
         let mut feedback_at = Instant::now();
         while !h.stop.load(Ordering::Acquire) {
             let ping_timeout = crate::network::ping_timeout(&h.config.read().unwrap());
@@ -1400,7 +1356,8 @@ impl Media {
                 peers.remove(&peer);
             }
             host.flush();
-            thread::sleep(Duration::from_millis(1));
+            // Sleep(1) can defer input until the next coarse Windows tick.
+            input_timer.until(Instant::now() + Duration::from_millis(1));
         }
         for (peer, p) in peers {
             host.peer_mut(peer).disconnect_now(0);

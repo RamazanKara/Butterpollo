@@ -12,8 +12,13 @@ fn main() -> Result<()> {
     let signal = Signal::new()?;
     let lock = Mutex::new(());
     let condition = Condvar::new();
-    for micros in [250, 500, 16_667] {
-        for method in ["condition_variable", "capture_event_and_timer"] {
+    for micros in [250, 500, 1000, 16_667] {
+        for method in [
+            "condition_variable",
+            "thread_sleep",
+            "capture_event_and_timer",
+            "input_timer",
+        ] {
             let mut samples = Vec::with_capacity(40);
             for _ in 0..40 {
                 let duration = Duration::from_micros(micros);
@@ -22,6 +27,10 @@ fn main() -> Result<()> {
                     let _guard = condition
                         .wait_timeout(lock.lock().unwrap(), duration)
                         .unwrap();
+                } else if method == "thread_sleep" {
+                    std::thread::sleep(duration);
+                } else if method == "input_timer" {
+                    timer.until(start + duration);
                 } else {
                     timer.until_or_signal(start + duration, &signal)?;
                 }

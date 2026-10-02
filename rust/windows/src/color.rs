@@ -8,6 +8,55 @@ fn pq(nits: f32) -> f32 {
     let y = (nits.max(0.) / 10000.).powf(2610. / 16384.);
     ((3424. / 4096. + 2413. / 128. * y) / (1. + 2392. / 128. * y)).powf(2523. / 32.)
 }
+pub(crate) fn pointer_linear(value: u8) -> f32 {
+    srgb_table()[value as usize] * 1.25
+}
+pub(crate) fn pointer_srgb(linear: f32) -> f32 {
+    let value = (linear / 1.25).clamp(0., 1.);
+    if value <= 0.0031308 {
+        value * 12.92
+    } else {
+        1.055 * value.powf(1. / 2.4) - 0.055
+    }
+}
+pub(crate) fn pointer_read(bytes: &[u8], pixel: Pixel) -> [f32; 3] {
+    if pixel == Pixel::RgbaF16 {
+        std::array::from_fn(|i| {
+            half::f16::from_le_bytes(bytes[i * 2..i * 2 + 2].try_into().unwrap()).to_f32()
+        })
+    } else {
+        let packed = u32::from_le_bytes(bytes.try_into().unwrap());
+        let rgb: [f32; 3] = std::array::from_fn(|i| {
+            let p = (((packed >> (i * 10)) & 1023) as f32 / 1023.).powf(32. / 2523.);
+            ((p - 3424. / 4096.).max(0.) / (2413. / 128. - 2392. / 128. * p).max(0.000001))
+                .powf(16384. / 2610.)
+                * 125.
+        });
+        [
+            1.660491 * rgb[0] - 0.587641 * rgb[1] - 0.072850 * rgb[2],
+            -0.124550 * rgb[0] + 1.1329 * rgb[1] - 0.008349 * rgb[2],
+            -0.018151 * rgb[0] - 0.100579 * rgb[1] + 1.11873 * rgb[2],
+        ]
+    }
+}
+pub(crate) fn pointer_write(bytes: &mut [u8], pixel: Pixel, rgb: [f32; 3]) {
+    if pixel == Pixel::RgbaF16 {
+        for i in 0..3 {
+            bytes[i * 2..i * 2 + 2].copy_from_slice(&half::f16::from_f32(rgb[i]).to_le_bytes());
+        }
+    } else {
+        let rgb = [
+            0.627404 * rgb[0] + 0.329283 * rgb[1] + 0.043313 * rgb[2],
+            0.069097 * rgb[0] + 0.919540 * rgb[1] + 0.011362 * rgb[2],
+            0.016391 * rgb[0] + 0.088013 * rgb[1] + 0.895595 * rgb[2],
+        ];
+        let mut packed = u32::from_le_bytes(bytes.try_into().unwrap()) & 0xc0000000;
+        for (i, value) in rgb.into_iter().enumerate() {
+            packed |= ((pq(value * 80.).clamp(0., 1.) * 1023.).round() as u32) << (i * 10);
+        }
+        bytes.copy_from_slice(&packed.to_le_bytes());
+    }
+}
 fn pq_table() -> &'static [u16] {
     static TABLE: OnceLock<Vec<u16>> = OnceLock::new();
     TABLE.get_or_init(|| {

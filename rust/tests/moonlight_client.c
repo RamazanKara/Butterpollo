@@ -7,6 +7,7 @@
 #include <stdatomic.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/pixdesc.h>
 #include <opus/opus_multistream.h>
@@ -18,6 +19,8 @@ static int requested_format;
 static int requested_hdr;
 static int decoder_threads=1;
 static int requested_width,requested_height;
+static double audio_energy,audio_peak;
+static unsigned long long audio_samples;
 static double host_latency[100000], decode_time_ms[100000];
 static unsigned measured_frames;
 static double clock_ms(void){LARGE_INTEGER n,f;QueryPerformanceCounter(&n);QueryPerformanceFrequency(&f);return (double)n.QuadPart*1000.0/(double)f.QuadPart;}
@@ -51,7 +54,11 @@ static int audio_init(int config,const POPUS_MULTISTREAM_CONFIGURATION opus,void
     int error;audio_channels=opus->channelCount;opus_decoder=opus_multistream_decoder_create(48000,audio_channels,opus->streams,opus->coupledStreams,opus->mapping,&error);return error;
 }
 static void audio_frame(char*data,int size){
-    float samples[5760*8];if(opus_multistream_decode_float(opus_decoder,(unsigned char*)data,size,samples,5760,0)>0)atomic_fetch_add(&audio_packets,1);else atomic_fetch_add(&failures,1);
+    float samples[5760*8];int count=opus_multistream_decode_float(opus_decoder,(unsigned char*)data,size,samples,5760,0);
+    if(count>0){
+        atomic_fetch_add(&audio_packets,1);
+        for(int i=0;i<count*audio_channels;i++){double v=samples[i];audio_energy+=v*v;if(fabs(v)>audio_peak)audio_peak=fabs(v);audio_samples++;}
+    }else atomic_fetch_add(&failures,1);
 }
 static void stage_start(int stage){printf("STAGE %s\n",LiGetStageName(stage));}
 static void stage_failed(int stage,int error){printf("FAILED %s error=%d\n",LiGetStageName(stage),error);}
@@ -81,11 +88,12 @@ int main(int argc,char**argv){
     double seconds=(clock_ms()-started)/1000.0;
     int premature=atomic_load(&ended)||(duration&&seconds<duration*0.98);
     LiStopConnection();printf("RESULT frames=%d decoded_frames=%d audio_packets=%d failures=%d\n",atomic_load(&frames),atomic_load(&decoded_frames),atomic_load(&audio_packets),atomic_load(&failures));
+    printf("AUDIO_SIGNAL samples=%llu peak=%.6f rms=%.6f\n",audio_samples,audio_peak,audio_samples?sqrt(audio_energy/audio_samples):0.0);
     if(duration&&measured_frames){
         double host_sum=0,decode_sum=0;for(unsigned i=0;i<measured_frames;i++){host_sum+=host_latency[i];decode_sum+=decode_time_ms[i];}
         qsort(host_latency,measured_frames,sizeof(double),compare_double);
         printf("PERFORMANCE seconds=%.3f received_fps=%.2f decoded_fps=%.2f host_mean_ms=%.3f host_p50_ms=%.3f host_p95_ms=%.3f decoder_mean_ms=%.3f\n",seconds,atomic_load(&frames)/seconds,atomic_load(&decoded_frames)/seconds,host_sum/measured_frames,host_latency[(measured_frames-1)/2],host_latency[(measured_frames-1)*95/100],decode_sum/measured_frames);
     }
     avcodec_free_context(&decoder);if(opus_decoder)opus_multistream_decoder_destroy(opus_decoder);
-    return !premature&&atomic_load(&decoded_frames)>=30&&atomic_load(&audio_packets)>0&&atomic_load(&failures)==0?0:1;
+    return !premature&&atomic_load(&decoded_frames)>=30&&atomic_load(&audio_packets)>0&&atomic_load(&failures)==0&&(!getenv("BUTTERPOLLO_TEST_AUDIO_TONE")||audio_peak>0.01)?0:1;
 }

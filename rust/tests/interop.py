@@ -72,7 +72,10 @@ if codec.startswith('pyrowave'):
     assert denied.status_code==401
     print('PYROWAVE paired bandwidth calibration and access control verified',flush=True)
 apps=ET.fromstring(client.get(https+'/applist',timeout=10).text);app=apps.find('App');assert app is not None
-launch=ET.fromstring(client.get(https+'/launch',params={'appid':app.findtext('ID'),'rikey':bytes(range(16)).hex(),'rikeyid':'123','corever':'1'},timeout=10).text);assert launch.attrib['status_code']=='200',ET.tostring(launch)
+launch_args={'appid':app.findtext('ID'),'rikey':bytes(range(16)).hex(),'rikeyid':'123','corever':'1'}
+if os.environ.get('BUTTERPOLLO_TEST_MATCH_DISPLAY')=='1':
+    launch_args.update(mode='x'.join(sys.argv[3:6]),hdrMode='1' if codec.endswith('-hdr') else '0')
+launch=ET.fromstring(client.get(https+'/launch',params=launch_args,timeout=10).text);assert launch.attrib['status_code']=='200',ET.tostring(launch)
 url=launch.findtext('sessionUrl0');print('LAUNCH',url,flush=True)
 env=os.environ.copy();env['PATH']=str(artifact/'target/debug')+';C:\\msys64\\ucrt64\\bin;'+env['PATH']
 try:

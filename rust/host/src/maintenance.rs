@@ -221,7 +221,11 @@ pub fn bundle(h: &Shared) -> Result<PathBuf> {
     let path = directory.join(format!("{}.zip", uuid::Uuid::new_v4()));
     let mut writer = ZipWriter::new(std::fs::File::create(&path)?);
     let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-    for relative in ["logs/butterpollo.log", "crashes/panic.txt"] {
+    for relative in [
+        "logs/butterpollo.log",
+        "logs/service.log",
+        "crashes/panic.txt",
+    ] {
         if let Ok(mut file) = std::fs::File::open(h.directory.join(relative)) {
             let length = file.metadata()?.len();
             file.seek(SeekFrom::Start(length.saturating_sub(8 * 1024 * 1024)))?;

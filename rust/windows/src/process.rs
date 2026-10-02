@@ -179,6 +179,7 @@ impl Drop for Environment {
 pub struct Process {
     handle: OwnedHandle,
     job: OwnedHandle,
+    host_stop: Option<HostStop>,
     pub pid: u32,
 }
 pub fn user_environment() -> Result<BTreeMap<String, String>> {
@@ -215,6 +216,22 @@ pub fn user_environment() -> Result<BTreeMap<String, String>> {
     }
 }
 impl Process {
+    /// Keep the supervisor's unnamed stop event alive for the entire child.
+    /// The child duplicates a wait-only handle; handle inheritance cannot cross
+    /// Windows sessions, and session-local object names cannot reach the service.
+    pub fn spawn_host(
+        program: &Path,
+        args: &[OsString],
+        directory: Option<&Path>,
+        target: Target,
+    ) -> Result<Self> {
+        let stop = HostStop::new()?;
+        let mut args = args.to_vec();
+        args.extend(["--service-stop-source".into(), stop.source().into()]);
+        let mut process = Self::spawn(program, &args, directory, target, &BTreeMap::new(), true)?;
+        process.host_stop = Some(stop);
+        Ok(process)
+    }
     pub fn spawn(
         program: &Path,
         args: &[OsString],
@@ -437,6 +454,7 @@ impl Process {
             let process = Self {
                 handle: owned(info.hProcess),
                 job,
+                host_stop: None,
                 pid: info.dwProcessId,
             };
             let thread = owned(info.hThread);
@@ -499,12 +517,13 @@ impl Process {
     }
     pub fn wait(&self, timeout: Duration) -> Result<u32> {
         unsafe {
-            if WaitForSingleObject(
+            match WaitForSingleObject(
                 raw(&self.handle),
                 timeout.as_millis().min(u32::MAX as u128) as u32,
-            ) == WAIT_TIMEOUT
-            {
-                bail!("process timed out");
+            ) {
+                WAIT_OBJECT_0 => {}
+                WAIT_TIMEOUT => bail!("process timed out"),
+                _ => return Err(windows::core::Error::from_thread().into()),
             }
         }
         self.exit_code()?.context("process still running")
@@ -570,41 +589,162 @@ impl Process {
         }
         self.stop()
     }
-    pub fn shutdown_host(&self) -> Result<()> {
-        let name: Vec<u16> = format!("Local\\Butterpollo.Stop.{}\0", self.pid)
-            .encode_utf16()
-            .collect();
-        unsafe {
-            if let Ok(event) = OpenEventW(EVENT_MODIFY_STATE, false, PCWSTR(name.as_ptr())) {
-                let event = owned(event);
-                let _ = SetEvent(raw(&event));
+    pub fn shutdown_host(&self) -> Result<HostShutdown> {
+        if let Some(code) = self.exit_code()? {
+            return Ok(HostShutdown::Graceful(code));
+        }
+        self.host_stop
+            .as_ref()
+            .context("host has no supervisor stop channel")?
+            .request()?;
+        match self.wait(Duration::from_secs(20)) {
+            Ok(code) => Ok(HostShutdown::Graceful(code)),
+            Err(error) => {
+                tracing::warn!(pid=self.pid, %error, "host shutdown timed out; terminating its owned job");
+                self.stop()?;
+                Ok(HostShutdown::Forced)
             }
         }
-        if self.wait(Duration::from_secs(20)).is_err() {
-            self.stop()?;
+    }
+}
+#[derive(Debug, PartialEq, Eq)]
+pub enum HostShutdown {
+    Graceful(u32),
+    Forced,
+}
+struct HostStop(OwnedHandle);
+impl HostStop {
+    fn new() -> Result<Self> {
+        Ok(Self(owned(unsafe {
+            CreateEventW(None, true, false, PCWSTR::null())?
+        })))
+    }
+    fn source(&self) -> String {
+        format!(
+            "{}:{:x}",
+            unsafe { GetCurrentProcessId() },
+            self.0.as_raw_handle() as usize
+        )
+    }
+    fn request(&self) -> Result<()> {
+        unsafe {
+            SetEvent(raw(&self.0))?;
         }
         Ok(())
     }
 }
-pub struct StopSignal(OwnedHandle);
+fn parse_stop_source(source: &str) -> Result<(u32, usize)> {
+    let (pid, handle) = source
+        .split_once(':')
+        .context("invalid supervisor stop source")?;
+    if pid.is_empty()
+        || !pid.bytes().all(|b| b.is_ascii_digit())
+        || handle.is_empty()
+        || !handle.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        bail!("invalid supervisor stop source");
+    }
+    let pid: u32 = pid.parse()?;
+    let handle = usize::from_str_radix(handle, 16)?;
+    if pid == 0 || handle == 0 || handle == usize::MAX {
+        bail!("invalid supervisor stop source");
+    }
+    Ok((pid, handle))
+}
+fn parent_pid() -> Result<u32> {
+    use windows::Win32::System::Diagnostics::ToolHelp::*;
+    unsafe {
+        let snapshot = owned(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)?);
+        let mut entry = PROCESSENTRY32W {
+            dwSize: size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        Process32FirstW(raw(&snapshot), &mut entry)?;
+        loop {
+            if entry.th32ProcessID == GetCurrentProcessId() {
+                return Ok(entry.th32ParentProcessID);
+            }
+            Process32NextW(raw(&snapshot), &mut entry)
+                .context("host parent process unavailable")?;
+        }
+    }
+}
+fn duplicate_stop_event(pid: u32, handle: usize) -> Result<OwnedHandle> {
+    unsafe {
+        let parent = owned(OpenProcess(PROCESS_DUP_HANDLE, false, pid)?);
+        let mut duplicate = HANDLE::default();
+        DuplicateHandle(
+            raw(&parent),
+            HANDLE(handle as *mut _),
+            GetCurrentProcess(),
+            &mut duplicate,
+            SYNCHRONIZATION_SYNCHRONIZE.0,
+            false,
+            DUPLICATE_HANDLE_OPTIONS(0),
+        )?;
+        Ok(owned(duplicate))
+    }
+}
+pub struct StopSignal(Option<OwnedHandle>);
 impl StopSignal {
-    pub fn new() -> Result<Self> {
-        let name: Vec<u16> = format!("Local\\Butterpollo.Stop.{}\0", unsafe {
-            GetCurrentProcessId()
-        })
-        .encode_utf16()
-        .collect();
-        Ok(Self(owned(unsafe {
-            CreateEventW(None, true, false, PCWSTR(name.as_ptr()))?
-        })))
+    pub fn new(source: Option<&str>) -> Result<Self> {
+        let Some(source) = source else {
+            return Ok(Self(None));
+        };
+        let (pid, handle) = parse_stop_source(source)?;
+        if pid != parent_pid()? {
+            bail!("stop source is not this host's supervisor");
+        }
+        Ok(Self(Some(
+            duplicate_stop_event(pid, handle).context("connecting supervisor stop event")?,
+        )))
     }
     pub fn requested(&self) -> bool {
-        unsafe { WaitForSingleObject(raw(&self.0), 0) == WAIT_OBJECT_0 }
+        self.0
+            .as_ref()
+            .is_some_and(|event| unsafe { WaitForSingleObject(raw(event), 0) == WAIT_OBJECT_0 })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn supervisor_event_is_wait_only_and_outlives_the_source_handle() -> Result<()> {
+        let source = HostStop::new()?;
+        let (pid, handle) = parse_stop_source(&source.source())?;
+        let signal = StopSignal(Some(duplicate_stop_event(pid, handle)?));
+        assert!(!signal.requested());
+        let event = raw(signal.0.as_ref().unwrap());
+        assert_eq!(
+            unsafe { SetEvent(event) }.unwrap_err().code(),
+            windows::core::HRESULT::from_win32(ERROR_ACCESS_DENIED.0)
+        );
+        source.request()?;
+        drop(source);
+        assert!(signal.requested());
+        assert!(unsafe { ResetEvent(event) }.is_err());
+        Ok(())
+    }
+    #[test]
+    fn shutdown_source_rejects_invalid_handles_and_foreign_parents() -> Result<()> {
+        for source in [
+            "",
+            "1",
+            "0:1",
+            "1:0",
+            "1:-1",
+            "1:1:2",
+            "+1:2",
+            "1:xyz",
+            "4294967296:1",
+            "1:ffffffffffffffffffffffff",
+        ] {
+            assert!(parse_stop_source(source).is_err(), "{source}");
+        }
+        assert!(StopSignal::new(Some(&HostStop::new()?.source())).is_err());
+        assert!(!StopSignal::new(None)?.requested());
+        Ok(())
+    }
     #[test]
     fn shell_runs_grouped_commands_with_quoted_output_paths() {
         let directory = tempfile::tempdir().unwrap();

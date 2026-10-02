@@ -1159,20 +1159,54 @@ fn apply_mode(name: &str, mode: &DEVMODEW) -> Result<()> {
 const NAMESPACE: [u8; 16] = [
     0x84, 0x42, 0x86, 0xa2, 0xfe, 0x77, 0x36, 0x43, 0xa8, 0x28, 0, 0xfe, 0xec, 0x89, 0xeb, 0xac,
 ];
-struct Driver(HANDLE);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DriverProtocol {
+    Legacy35,
+    Secure36,
+}
+impl DriverProtocol {
+    fn parse(version: &[u8]) -> Result<Self> {
+        if version.len() != 24 || version[..16] != NAMESPACE {
+            bail!("invalid virtual display protocol response");
+        }
+        let major = u16::from_le_bytes(version[16..18].try_into().unwrap());
+        let minor = u16::from_le_bytes(version[18..20].try_into().unwrap());
+        if major != 3 || minor < 5 {
+            bail!("unsupported virtual display protocol {major}.{minor}; requires 3.5+");
+        }
+        Ok(if minor == 5 {
+            Self::Legacy35
+        } else {
+            Self::Secure36
+        })
+    }
+    fn create_function(self) -> u32 {
+        match self {
+            Self::Legacy35 => 0x901,
+            Self::Secure36 => 0x90c,
+        }
+    }
+    fn name(self) -> &'static str {
+        match self {
+            Self::Legacy35 => "3.5",
+            Self::Secure36 => "3.6+",
+        }
+    }
+}
+struct Driver {
+    handle: HANDLE,
+    protocol: DriverProtocol,
+}
 impl Driver {
     fn open() -> Result<Self> {
-        let driver = Self(crate::input::open_interface(GUID::from_u128(
-            0x5f894d6c_3a69_48a2_86ef_e4c671932d63,
-        ))?);
+        let mut driver = Self {
+            handle: crate::input::open_interface(GUID::from_u128(
+                0x5f894d6c_3a69_48a2_86ef_e4c671932d63,
+            ))?,
+            protocol: DriverProtocol::Legacy35,
+        };
         let version = driver.ioctl(0x900, 0, &[], 24)?;
-        if version.len() != 24
-            || version[..16] != NAMESPACE
-            || u16::from_le_bytes(version[16..18].try_into().unwrap()) != 3
-            || u16::from_le_bytes(version[18..20].try_into().unwrap()) < 6
-        {
-            bail!("incompatible virtual display driver protocol");
-        }
+        driver.protocol = DriverProtocol::parse(&version)?;
         Ok(driver)
     }
     fn ioctl(&self, function: u32, access: u32, input: &[u8], size: usize) -> Result<Vec<u8>> {
@@ -1180,7 +1214,7 @@ impl Driver {
             let mut output = vec![0; size];
             let mut bytes = 0;
             DeviceIoControl(
-                self.0,
+                self.handle,
                 (0x22 << 16) | (access << 14) | (function << 2),
                 if input.is_empty() {
                     None
@@ -1208,7 +1242,7 @@ impl Driver {
 impl Drop for Driver {
     fn drop(&mut self) {
         unsafe {
-            let _ = CloseHandle(self.0);
+            let _ = CloseHandle(self.handle);
         }
     }
 }
@@ -1217,9 +1251,11 @@ pub fn virtual_display_available() -> bool {
 }
 pub fn virtual_display_status() -> serde_json::Value {
     match Driver::open() {
-        Ok(_) => serde_json::json!({"capable":true,"ready":true,"reason":"","protocol":"3.6+"}),
+        Ok(driver) => {
+            serde_json::json!({"capable":true,"ready":true,"reason":"","protocol":driver.protocol.name()})
+        }
         Err(error) => {
-            serde_json::json!({"capable":false,"ready":false,"reason":format!("{error:#}"),"protocol":"3.6+"})
+            serde_json::json!({"capable":false,"ready":false,"reason":format!("{error:#}"),"protocol":"3.5+"})
         }
     }
 }
@@ -1256,6 +1292,8 @@ fn temporary_request(
     id: u64,
     mode: (u32, u32, u32),
     options: &VirtualOptions,
+    protocol: DriverProtocol,
+    capability: &[u8; 32],
 ) -> Vec<u8> {
     let mut request = NAMESPACE.to_vec();
     request.extend_from_slice(&lease.to_le_bytes());
@@ -1265,8 +1303,12 @@ fn temporary_request(
     }
     request.extend_from_slice(&display_label(&options.label));
     request.extend_from_slice(&0u32.to_le_bytes()); // Retain Windows identity across sessions.
-    request.extend_from_slice(&options.peak_nits.clamp(400, 2000).to_le_bytes());
-    request.extend_from_slice(&butterpollo_core::crypto::random::<32>());
+    if protocol == DriverProtocol::Secure36 {
+        request.extend_from_slice(&options.peak_nits.clamp(400, 2000).to_le_bytes());
+        request.extend_from_slice(capability);
+    } else {
+        request.extend_from_slice(&0u32.to_le_bytes()); // Legacy reserved field.
+    }
     request
 }
 fn permanent_request(count: u32) -> Result<Vec<u8>> {
@@ -1332,6 +1374,7 @@ pub struct VirtualDisplay {
     mode: (u32, u32, u32),
     options: VirtualOptions,
     generation: u64,
+    capability: [u8; 32],
 }
 // Driver IOCTLs use a thread-safe Windows device handle; shared access is
 // serialized by the enclosing mutex, including feed and final teardown.
@@ -1395,8 +1438,16 @@ impl VirtualDisplay {
             & 0x1fff_ffff_ffff_ffff)
             | 0x6000_0000_0000_0000;
         let id = butterpollo_core::display_policy::virtual_display_id(stable_id);
-        let request = temporary_request(lease, id, (width, height, fps), &options);
-        let result = driver.ioctl(0x90c, 3, &request, 56)?;
+        let capability = butterpollo_core::crypto::random::<32>();
+        let request = temporary_request(
+            lease,
+            id,
+            (width, height, fps),
+            &options,
+            driver.protocol,
+            &capability,
+        );
+        let result = driver.ioctl(driver.protocol.create_function(), 3, &request, 56)?;
         let mut display = Self {
             driver,
             name: String::new(),
@@ -1406,6 +1457,7 @@ impl VirtualDisplay {
             mode: (width, height, fps),
             options,
             generation: 0,
+            capability,
         };
         display.resolve(&result)?;
         Ok(display)
@@ -1462,8 +1514,17 @@ impl VirtualDisplay {
             // driver can renew an existing owned monitor or recover an expired
             // one, without adopting an unrelated display with the same name.
             self.driver = Driver::open()?;
-            let request = temporary_request(self.lease, self.id, self.mode, &self.options);
-            let response = self.driver.ioctl(0x90c, 3, &request, 56)?;
+            let request = temporary_request(
+                self.lease,
+                self.id,
+                self.mode,
+                &self.options,
+                self.driver.protocol,
+                &self.capability,
+            );
+            let response =
+                self.driver
+                    .ioctl(self.driver.protocol.create_function(), 3, &request, 56)?;
             self.resolve(&response)?;
             self.generation = self.generation.wrapping_add(1);
             tracing::info!(output=%self.name, "owned virtual display recovered");
@@ -1952,7 +2013,14 @@ mod tests {
             label: "Living Room\0\n😀   ".into(),
             peak_nits: 1500,
         };
-        let request = temporary_request(17, 23, (1920, 1080, 59940), &options);
+        let request = temporary_request(
+            17,
+            23,
+            (1920, 1080, 59940),
+            &options,
+            DriverProtocol::Secure36,
+            &[42; 32],
+        );
         assert_eq!(request.len(), 128);
         assert_eq!(&request[16..24], &17u64.to_le_bytes());
         assert_eq!(&request[24..32], &23u64.to_le_bytes());
@@ -1999,6 +2067,50 @@ mod tests {
         malformed["modes"]["a"]["den"] = 0.into();
         assert!(Snapshot::decode(&malformed).is_err());
         assert!(Snapshot::decode(&serde_json::json!({"version":2,"nodes":[],"hdr":{}})).is_err());
+    }
+    #[test]
+    fn legacy_and_secure_driver_requests_keep_identity_and_capability() -> Result<()> {
+        let mut version = NAMESPACE.to_vec();
+        version.extend_from_slice(&[3, 0, 5, 0, 0, 0, 0, 0]);
+        assert_eq!(DriverProtocol::parse(&version)?, DriverProtocol::Legacy35);
+        let options = VirtualOptions::default();
+        let legacy = temporary_request(
+            17,
+            23,
+            (1968, 2184, 120000),
+            &options,
+            DriverProtocol::Legacy35,
+            &[42; 32],
+        );
+        assert_eq!(legacy.len(), 96);
+        assert_eq!(&legacy[88..96], &[0; 8]);
+        assert_eq!(DriverProtocol::Legacy35.create_function(), 0x901);
+        version[18] = 6;
+        assert_eq!(DriverProtocol::parse(&version)?, DriverProtocol::Secure36);
+        let first = temporary_request(
+            17,
+            23,
+            (1968, 2184, 120000),
+            &options,
+            DriverProtocol::Secure36,
+            &[42; 32],
+        );
+        let recovered = temporary_request(
+            17,
+            23,
+            (1968, 2184, 120000),
+            &options,
+            DriverProtocol::Secure36,
+            &[42; 32],
+        );
+        assert_eq!(&first[..88], &legacy[..88]);
+        assert_eq!(&first[96..], &[42; 32]);
+        assert_eq!(first, recovered);
+        version[18] = 4;
+        assert!(DriverProtocol::parse(&version).is_err());
+        version[16] = 4;
+        assert!(DriverProtocol::parse(&version).is_err());
+        Ok(())
     }
     #[test]
     fn permanent_monitor_payload_matches_driver_v3_contract() {

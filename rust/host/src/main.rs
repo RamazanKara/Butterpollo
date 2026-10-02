@@ -7,6 +7,7 @@ mod process;
 mod pyrowave_send;
 mod remote_display;
 mod rtsp_server;
+mod runtime;
 mod state;
 mod stream;
 mod tls;
@@ -55,6 +56,8 @@ struct Args {
     #[arg(long)]
     no_tray: bool,
     #[arg(long, hide = true)]
+    service_stop_source: Option<String>,
+    #[arg(long, hide = true)]
     display_watch: Option<u32>,
     #[arg(long, hide = true)]
     rtss_worker: Option<PathBuf>,
@@ -87,7 +90,7 @@ async fn main() -> Result<()> {
         println!(
             "{}",
             serde_json::to_string_pretty(
-                &serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"displays":butterpollo_windows::capture::displays()?,"monitors":butterpollo_windows::display::monitors()?,"virtual_display_driver":butterpollo_windows::display::virtual_display_available()})
+                &serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"displays":butterpollo_windows::capture::displays()?,"monitors":butterpollo_windows::display::monitors()?,"virtual_display_driver":butterpollo_windows::display::virtual_display_available(),"virtual_display_status":butterpollo_windows::display::virtual_display_status()})
             )?
         );
         return Ok(());
@@ -108,6 +111,9 @@ async fn main() -> Result<()> {
     if args.capture_smoke || args.encoder_smoke.is_some() {
         return smoke(&args);
     }
+    let supervised = args.service_stop_source.is_some();
+    let stop_signal =
+        butterpollo_windows::process::StopSignal::new(args.service_stop_source.as_deref())?;
     let directory = args.config_dir.unwrap_or_else(|| {
         PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default())
             .join("ButterpolloRust/config")
@@ -166,7 +172,6 @@ async fn main() -> Result<()> {
     {
         tracing::warn!(%error, "configured permanent virtual displays could not be applied");
     }
-    let stop_signal = butterpollo_windows::process::StopSignal::new()?;
     let (tray, actions) = if args.no_tray || !h.config.read().unwrap().boolean("system_tray", true)
     {
         (None, None)
@@ -223,7 +228,6 @@ async fn main() -> Result<()> {
         web_port = ports.web,
         "Butterpollo Rust host started"
     );
-    let stop = h.clone();
     let outcome: Result<()> = tokio::select! {
         signal=tokio::signal::ctrl_c()=>signal.context("waiting for shutdown"),
         task=tasks.join_next()=>{
@@ -233,35 +237,7 @@ async fn main() -> Result<()> {
                 _ => Err(anyhow::anyhow!("host listener stopped unexpectedly")),
             }
         },
-        _=async move{
-            let mut update_at = Instant::now();
-            while !stop.stop.load(Ordering::Acquire) {
-                stop.sessions.lock().unwrap().expire();
-                stop.reap_paused_display();
-                if Instant::now() >= update_at {
-                    let interval = stop.config.read().unwrap().integer("update_check_interval",86400);
-                    if interval > 0 { maintenance::trigger_update(&stop); }
-                    update_at = Instant::now() + Duration::from_secs(if interval > 0 { interval as u64 } else { 60 });
-                }
-                if stop_signal.requested(){stop.stop.store(true,Ordering::Release);}
-                let connected=stop.sessions.lock().unwrap().active.values().any(|session|session.launch.role==butterpollo_core::session::Role::Stream && !session.stopping());
-                let finished={let mut app=stop.current_app.lock().unwrap();app.as_mut().is_some_and(|app|app.connection_state(connected) || match app.exited(){Ok(finished)=>finished,Err(error)=>{tracing::warn!(%error,"application exit check failed");false}})};
-                if finished {
-                    stop.sessions.lock().unwrap().stop_role(butterpollo_core::session::Role::Stream,None);
-                    stop.stop_app();
-                }
-                if let Some(actions)=&actions {while let Ok(action)=actions.try_recv(){
-                    use butterpollo_windows::tray::Action;
-                    match action {
-                        Action::Open=>{let _=butterpollo_windows::tray::open_web(ports.web);},
-                        Action::StopSessions=>stop.sessions.lock().unwrap().request_stop(None),
-                        Action::Restart=>{stop.restart.store(true,Ordering::Release);stop.stop.store(true,Ordering::Release);},
-                        Action::Quit=>stop.stop.store(true,Ordering::Release),
-                    }
-                }}
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        }=>Ok(())
+        _=runtime::maintain(h.clone(), stop_signal, actions, ports.web)=>Ok(())
     };
     h.stop.store(true, Ordering::Release);
     h.sessions.lock().unwrap().request_stop(None);
@@ -283,8 +259,9 @@ async fn main() -> Result<()> {
     }
     drop(tray);
     if h.restart.load(Ordering::Acquire) {
-        if butterpollo_windows::process::is_system() {
-            std::process::exit(75);
+        if supervised {
+            drop(_log_guard);
+            std::process::exit(butterpollo_windows::service::RESTART_EXIT_CODE as i32);
         } else {
             use std::os::windows::process::CommandExt;
             std::process::Command::new(std::env::current_exe()?)

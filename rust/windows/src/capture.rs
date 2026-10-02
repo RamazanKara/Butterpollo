@@ -310,6 +310,7 @@ pub struct Duplication {
     duplicate: IDXGIOutputDuplication,
     staging: Option<ID3D11Texture2D>,
     owned: GpuPool,
+    cursor: crate::cursor::State,
 }
 impl Duplication {
     pub fn new(name: &str) -> Result<Self> {
@@ -319,18 +320,26 @@ impl Duplication {
         Self::new_device(Device::new(name)?, hdr)
     }
     fn new_device(gpu: Device, hdr: bool) -> Result<Self> {
+        let native_hdr = hdr
+            && gpu
+                .output
+                .cast::<IDXGIOutput6>()
+                .and_then(|output| unsafe { output.GetDesc1() })
+                .is_ok_and(|desc| desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020);
         let duplicate = unsafe {
-            if hdr {
-                gpu.output.cast::<IDXGIOutput5>()?.DuplicateOutput1(
-                    &gpu.device,
-                    0,
-                    &[
-                        DXGI_FORMAT_R16G16B16A16_FLOAT,
-                        DXGI_FORMAT_R10G10B10A2_UNORM,
-                    ],
-                )?
+            if native_hdr {
+                gpu.output
+                    .cast::<IDXGIOutput5>()?
+                    .DuplicateOutput1(
+                        &gpu.device,
+                        0,
+                        &[DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_B8G8R8A8_UNORM],
+                    )
+                    .context("opening HDR Desktop Duplication")?
             } else {
-                gpu.output.DuplicateOutput(&gpu.device)?
+                gpu.output
+                    .DuplicateOutput(&gpu.device)
+                    .context("opening Desktop Duplication")?
             }
         };
         Ok(Self {
@@ -338,6 +347,7 @@ impl Duplication {
             duplicate,
             staging: None,
             owned: GpuPool::default(),
+            cursor: Default::default(),
         })
     }
     pub fn next(&mut self, timeout: Duration) -> Result<Option<Image>> {
@@ -366,17 +376,22 @@ impl Duplication {
         unsafe {
             let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
             let mut resource = None;
-            match self.duplicate.AcquireNextFrame(1, &mut info, &mut resource) {
+            // The capture worker owns a precise timer. Never hold a DXGI wait
+            // across a coarse scheduler timeout when no new desktop is ready.
+            match self.duplicate.AcquireNextFrame(0, &mut info, &mut resource) {
                 Ok(()) => {}
                 Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(None),
                 Err(e) => return Err(e.into()),
             }
             let result = (|| {
+                self.cursor.update(&self.gpu, &self.duplicate, &info)?;
                 let texture: ID3D11Texture2D =
                     resource.context("empty captured texture")?.cast()?;
                 let mut image = self.owned.copy(&self.gpu, &texture)?;
                 if let Some(image) = image.as_mut() {
-                    image.captured = qpc_instant(info.LastPresentTime);
+                    image.captured =
+                        qpc_instant(info.LastPresentTime.max(info.LastMouseUpdateTime));
+                    image.cursor = self.cursor.snapshot();
                 }
                 Ok(image)
             })();
@@ -390,6 +405,7 @@ impl Duplication {
 /// texture until the latest-frame slot and every encoder have released it.
 #[derive(Clone)]
 pub struct GpuImage {
+    pub(crate) cursor: Option<crate::cursor::Cursor>,
     pub width: u32,
     pub height: u32,
     pub pixel: Pixel,
@@ -401,6 +417,9 @@ impl GpuImage {
     pub fn readback(&self, staging: &mut Option<ID3D11Texture2D>) -> Result<Image> {
         let mut image = read_texture(&self.gpu, &self.texture, staging)?;
         image.captured = self.captured;
+        if let Some(cursor) = &self.cursor {
+            cursor.blend(&mut image);
+        }
         Ok(image)
     }
     pub fn upload(gpu: &Device, image: &Image) -> Result<Self> {
@@ -441,6 +460,7 @@ impl GpuImage {
             gpu.device
                 .CreateTexture2D(&desc, Some(&data), Some(&mut texture))?;
             Ok(Self {
+                cursor: None,
                 width: image.width,
                 height: image.height,
                 pixel: image.pixel,
@@ -501,6 +521,7 @@ impl GpuPool {
             };
             gpu.context.CopyResource(texture.as_ref(), source);
             Ok(Some(GpuImage {
+                cursor: None,
                 width: desc.Width,
                 height: desc.Height,
                 pixel,
@@ -830,9 +851,15 @@ impl Drop for Wgc {
 }
 pub enum Capture {
     Wgc(Box<Wgc>),
-    Dxgi(Duplication),
+    Dxgi(Box<Duplication>),
 }
 impl Capture {
+    pub fn backend(&self) -> &'static str {
+        match self {
+            Self::Wgc(_) => "wgc",
+            Self::Dxgi(_) => "ddx",
+        }
+    }
     pub fn set_claim_grid(
         &mut self,
         grid: std::sync::Arc<std::sync::Mutex<ClaimGrid>>,
@@ -870,10 +897,10 @@ impl Capture {
         }
         match kind {
             "wgc" => Ok(Self::Wgc(Box::new(Wgc::new_device(gpu, hdr)?))),
-            "dxgi" => Ok(Self::Dxgi(Duplication::new_device(gpu, hdr)?)),
+            "ddx" | "dxgi" => Ok(Self::Dxgi(Box::new(Duplication::new_device(gpu, hdr)?))),
             _ => Wgc::new_device(gpu.clone(), hdr)
                 .map(|capture| Self::Wgc(Box::new(capture)))
-                .or_else(|_| Duplication::new_device(gpu, hdr).map(Self::Dxgi)),
+                .or_else(|_| Duplication::new_device(gpu, hdr).map(|d| Self::Dxgi(Box::new(d)))),
         }
     }
     pub fn next_frame(&mut self) -> Result<Option<Image>> {

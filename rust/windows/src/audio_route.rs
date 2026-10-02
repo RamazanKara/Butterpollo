@@ -273,12 +273,26 @@ fn install_steam(config: &Config, endpoints: &[Endpoint]) -> Result<bool> {
     }
     Ok(true)
 }
-fn virtual_format(channels: usize, bits: u16, side: bool) -> Vec<u8> {
-    let bits = if matches!(bits, 16 | 24 | 32) {
-        bits
-    } else {
-        32
-    };
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Sample {
+    Float32,
+    Pcm32,
+    Pcm24In32,
+    Pcm24,
+    Pcm16,
+}
+impl Sample {
+    fn bits(self) -> (u16, u16) {
+        match self {
+            Self::Float32 | Self::Pcm32 => (32, 32),
+            Self::Pcm24In32 => (32, 24),
+            Self::Pcm24 => (24, 24),
+            Self::Pcm16 => (16, 16),
+        }
+    }
+}
+fn virtual_format(channels: usize, sample: Sample, side: bool) -> Vec<u8> {
+    let (bits, valid_bits) = sample.bits();
     let format = WAVEFORMATEXTENSIBLE {
         Format: WAVEFORMATEX {
             wFormatTag: 65534,
@@ -290,7 +304,7 @@ fn virtual_format(channels: usize, bits: u16, side: bool) -> Vec<u8> {
             cbSize: 22,
         },
         Samples: WAVEFORMATEXTENSIBLE_0 {
-            wValidBitsPerSample: bits,
+            wValidBitsPerSample: valid_bits,
         },
         dwChannelMask: match channels {
             6 if side => 0x60f,
@@ -298,7 +312,7 @@ fn virtual_format(channels: usize, bits: u16, side: bool) -> Vec<u8> {
             8 => 0x63f,
             _ => 3,
         },
-        SubFormat: GUID::from_u128(if bits == 32 {
+        SubFormat: GUID::from_u128(if sample == Sample::Float32 {
             0x00000003_0000_0010_8000_00aa00389b71
         } else {
             0x00000001_0000_0010_8000_00aa00389b71
@@ -311,6 +325,86 @@ fn virtual_format(channels: usize, bits: u16, side: bool) -> Vec<u8> {
         )
         .to_vec()
     }
+}
+fn valid_bits(bytes: &[u8]) -> u16 {
+    // Policy::format has already checked the native format's allocation size.
+    let format = unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast::<WAVEFORMATEX>()) };
+    if format.wFormatTag == 65534 && bytes.len() >= size_of::<WAVEFORMATEXTENSIBLE>() {
+        let extended =
+            unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast::<WAVEFORMATEXTENSIBLE>()) };
+        let bits = unsafe { extended.Samples.wValidBitsPerSample };
+        if bits > 0 && bits <= format.wBitsPerSample {
+            return bits;
+        }
+    }
+    format.wBitsPerSample
+}
+fn virtual_formats(channels: usize, preferred_bits: u16) -> Result<Vec<Vec<u8>>> {
+    if !matches!(channels, 2 | 6 | 8) {
+        bail!("virtual audio requires stereo, 5.1 or 7.1");
+    }
+    let samples = if channels == 2 {
+        // Retain the old host's stereo preference, including spatial audio.
+        [
+            Sample::Pcm24In32,
+            Sample::Pcm24,
+            Sample::Pcm16,
+            Sample::Float32,
+            Sample::Pcm32,
+        ]
+    } else {
+        [
+            Sample::Float32,
+            Sample::Pcm32,
+            Sample::Pcm24In32,
+            Sample::Pcm24,
+            Sample::Pcm16,
+        ]
+    };
+    let mut output = Vec::new();
+    // Match the playback device's valid depth first. A rejected format must
+    // not prevent capturing an otherwise usable virtual speaker endpoint.
+    for preferred in [true, false] {
+        for sample in samples {
+            if (sample.bits().1 == preferred_bits) != preferred {
+                continue;
+            }
+            output.push(virtual_format(channels, sample, false));
+            if channels == 6 {
+                output.push(virtual_format(channels, sample, true));
+            }
+        }
+    }
+    Ok(output)
+}
+fn apply_virtual_format(
+    policy: &Policy,
+    id: &str,
+    channels: usize,
+    bits: u16,
+    directory: &Path,
+    journal: &mut Journal,
+) -> Result<()> {
+    let mut last_error = None;
+    for desired in virtual_formats(channels, bits)? {
+        journal
+            .format
+            .as_mut()
+            .context("virtual audio format is not owned")?
+            .applied = desired.clone();
+        save(directory, journal)?;
+        crate::display_recovery::audio(true)?;
+        match policy.set_format(id, &desired) {
+            Ok(()) => {
+                journal.format.as_mut().unwrap().applied = policy.format(id)?;
+                save(directory, journal)?;
+                return Ok(());
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.context("no usable virtual audio format")?)
+        .with_context(|| format!("setting {channels}-channel virtual speaker format"))
 }
 impl Route {
     pub fn acquire(
@@ -390,25 +484,20 @@ impl Route {
                 let policy = policy.as_ref().unwrap();
                 let before = policy.format(&selected.id)?;
                 let default_format = policy.format(&default.id)?;
-                let bits = unsafe {
-                    std::ptr::read_unaligned(default_format.as_ptr().cast::<WAVEFORMATEX>())
-                        .wBitsPerSample
-                };
-                let desired = virtual_format(channels, bits, false);
+                let bits = valid_bits(&default_format);
                 journal.format = Some(FormatChange {
                     id: selected.id.clone(),
                     before,
-                    applied: desired.clone(),
+                    applied: Vec::new(),
                 });
-                save(directory, &journal)?;
-                crate::display_recovery::audio(true)?;
-                if policy.set_format(&selected.id, &desired).is_err() {
-                    let desired = virtual_format(channels, bits, true);
-                    journal.format.as_mut().unwrap().applied = desired.clone();
-                    save(directory, &journal)?;
-                    policy.set_format(&selected.id, &desired)?;
-                }
-                journal.format.as_mut().unwrap().applied = policy.format(&selected.id)?;
+                apply_virtual_format(
+                    policy,
+                    &selected.id,
+                    channels,
+                    bits,
+                    directory,
+                    &mut journal,
+                )?;
             }
             if !capture_only
                 && journal
@@ -488,15 +577,17 @@ impl Route {
             return Ok(());
         }
         let mut journal: Journal = serde_json::from_slice(&std::fs::read(path(&self.directory))?)?;
-        let desired = virtual_format(channels, format.wBitsPerSample, false);
-        let Some(change) = journal.format.as_mut() else {
+        if journal.format.is_none() {
             bail!("virtual audio format is not owned");
-        };
-        change.applied = desired.clone();
-        save(&self.directory, &journal)?;
-        policy.set_format(&self.sink, &desired)?;
-        journal.format.as_mut().unwrap().applied = policy.format(&self.sink)?;
-        save(&self.directory, &journal)
+        }
+        apply_virtual_format(
+            &policy,
+            &self.sink,
+            channels,
+            valid_bits(&current),
+            &self.directory,
+            &mut journal,
+        )
     }
 }
 impl Drop for Route {
@@ -522,13 +613,42 @@ impl Drop for Route {
 mod tests {
     use super::*;
     #[test]
+    fn virtual_speakers_preserve_valid_depth_and_offer_pcm_fallbacks() -> Result<()> {
+        let formats = virtual_formats(2, 24)?;
+        let first =
+            unsafe { std::ptr::read_unaligned(formats[0].as_ptr().cast::<WAVEFORMATEXTENSIBLE>()) };
+        let container_bits = first.Format.wBitsPerSample;
+        let alignment = first.Format.nBlockAlign;
+        assert_eq!(container_bits, 32);
+        assert_eq!(valid_bits(&formats[0]), 24);
+        assert_eq!(alignment, 8);
+        let subformat = first.SubFormat;
+        assert_eq!(
+            subformat,
+            GUID::from_u128(0x00000001_0000_0010_8000_00aa00389b71)
+        );
+        let formats = virtual_formats(2, 32)?;
+        assert_eq!(formats.len(), 5);
+        let pcm =
+            unsafe { std::ptr::read_unaligned(formats[1].as_ptr().cast::<WAVEFORMATEXTENSIBLE>()) };
+        let subformat = pcm.SubFormat;
+        assert_eq!(
+            subformat,
+            GUID::from_u128(0x00000001_0000_0010_8000_00aa00389b71)
+        );
+        assert!(virtual_formats(4, 24).is_err());
+        assert_eq!(virtual_formats(6, 16)?.len(), 10);
+        assert_eq!(virtual_formats(8, 16)?.len(), 5);
+        Ok(())
+    }
+    #[test]
     fn policy_config_abi_and_surround_formats_match_windows_contract() {
         assert_eq!(
             std::mem::offset_of!(PolicyVtbl, default),
             13 * size_of::<usize>()
         );
         for (channels, mask) in [(2, 3), (6, 0x3f), (8, 0x63f)] {
-            let bytes = virtual_format(channels, 24, false);
+            let bytes = virtual_format(channels, Sample::Pcm24, false);
             let format =
                 unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast::<WAVEFORMATEXTENSIBLE>()) };
             let actual_mask = format.dwChannelMask;

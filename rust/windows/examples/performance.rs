@@ -26,13 +26,19 @@ fn main() -> anyhow::Result<()> {
 Repeat-frame throughput excludes capture, network, decoding and display latency.\n\
 --width 1920 --height 1080 --fps 120 --seconds 8 --bitrate 20000\n\
 --codec hevc (h264/hevc/av1/pyrowave) --encoder auto --capture wgc --display NAME\n\
---hdr: HDR10 output; --sdr-10bit; --yuv444; --records: PyroWave record framing; --cpu: CPU conversion/readback path; --paced: requested frame cadence"
+--hdr: HDR10 output; --sdr-10bit; --yuv444; --records: PyroWave record framing; --cpu: CPU conversion/readback path; --paced: requested frame cadence; --live-capture: keep the shared capture device active"
             );
             return Ok(());
         }
         if matches!(
             key.as_str(),
-            "--hdr" | "--sdr-10bit" | "--yuv444" | "--records" | "--cpu" | "--paced"
+            "--hdr"
+                | "--sdr-10bit"
+                | "--yuv444"
+                | "--records"
+                | "--cpu"
+                | "--paced"
+                | "--live-capture"
         ) {
             fields.insert(key, "1".into());
         } else if matches!(
@@ -101,6 +107,7 @@ Repeat-frame throughput excludes capture, network, decoding and display latency.
         config.hdr,
         &tuning,
     )?;
+    let capture_backend = capture.backend();
     let timeout = Instant::now() + Duration::from_secs(10);
     let image = loop {
         if let Some(image) = capture.next_gpu()? {
@@ -113,6 +120,27 @@ Repeat-frame throughput excludes capture, network, decoding and display latency.
     };
     let cpu = fields.contains_key("--cpu");
     let paced = fields.contains_key("--paced");
+    let latest = std::sync::Arc::new(std::sync::Mutex::new(image.clone()));
+    let capture_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let live_capture = if fields.contains_key("--live-capture") {
+        let latest = latest.clone();
+        let stop = capture_stop.clone();
+        Some(std::thread::spawn(move || -> anyhow::Result<()> {
+            let _com = ComGuard::new()?;
+            let _priority = Priority::new();
+            let timer = Timer::new()?;
+            while !stop.load(std::sync::atomic::Ordering::Acquire) {
+                if let Some(image) = capture.next_gpu()? {
+                    *latest.lock().unwrap() = image;
+                } else {
+                    timer.until(Instant::now() + Duration::from_millis(1));
+                }
+            }
+            Ok(())
+        }))
+    } else {
+        None
+    };
     let mut staging = None;
     let readback = if cpu {
         Some(image.readback(&mut staging)?)
@@ -134,6 +162,7 @@ Repeat-frame throughput excludes capture, network, decoding and display latency.
         if let Some(image) = readback.as_ref() {
             encoder.encode(image, idr, config.bitrate_kbps)
         } else {
+            let image = latest.lock().unwrap().clone();
             encoder.encode_gpu(&image, idr, config.bitrate_kbps)
         }
     };
@@ -185,6 +214,12 @@ Repeat-frame throughput excludes capture, network, decoding and display latency.
         submits += 1;
     }
     let elapsed = start.elapsed().as_secs_f64();
+    capture_stop.store(true, std::sync::atomic::Ordering::Release);
+    if let Some(worker) = live_capture {
+        worker
+            .join()
+            .map_err(|_| anyhow::anyhow!("capture probe panicked"))??;
+    }
     fn stats(mut values: Vec<f64>) -> serde_json::Value {
         if values.is_empty() {
             return serde_json::Value::Null;
@@ -194,7 +229,7 @@ Repeat-frame throughput excludes capture, network, decoding and display latency.
     }
     println!(
         "{}",
-        json!({"scope":"repeat-frame encoder throughput; excludes capture, network, decode and display latency", "capture_width":image.width,"capture_height":image.height,"adapter":image.gpu.display.adapter,"width":config.width,"height":config.height,"fps":config.fps,"codec":config.codec,"hdr":config.hdr,"cpu":cpu,"paced":paced,"seconds":elapsed,"submits":submits,"completed_frames":frames,"encoded_fps":frames as f64 / elapsed,"bytes":bytes,"encode_call":stats(calls),"submission_to_observed_output":stats(latencies)})
+        json!({"scope":if fields.contains_key("--live-capture") { "live capture encoder probe; timing begins at encoder submission, excludes capture age, network, decode and display latency" } else { "repeat-frame encoder throughput; excludes capture, network, decode and display latency" }, "capture_backend":capture_backend,"live_capture":fields.contains_key("--live-capture"),"capture_width":image.width,"capture_height":image.height,"adapter":image.gpu.display.adapter,"width":config.width,"height":config.height,"fps":config.fps,"codec":config.codec,"hdr":config.hdr,"cpu":cpu,"paced":paced,"seconds":elapsed,"submits":submits,"completed_frames":frames,"encoded_fps":frames as f64 / elapsed,"bytes":bytes,"encode_call":stats(calls),"submission_to_observed_output":stats(latencies)})
     );
     Ok(())
 }

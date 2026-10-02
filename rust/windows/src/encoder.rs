@@ -576,6 +576,7 @@ impl Encoder {
         image: &GpuImage,
         tuning: &butterpollo_core::config::Config,
     ) -> Result<Self> {
+        let preference = butterpollo_core::encoder_policy::canonical_name(preference);
         if config.codec == 3 {
             return Ok(Self::Pyrowave(Box::new(
                 crate::pyrowave::Encoder::new_device(config, image.gpu.clone(), tuning)?,
@@ -722,6 +723,7 @@ impl Encoder {
         display: &str,
         tuning: &butterpollo_core::config::Config,
     ) -> Result<Self> {
+        let preference = butterpollo_core::encoder_policy::canonical_name(preference);
         if config.codec == 3 {
             return Ok(Self::Pyrowave(Box::new(
                 crate::pyrowave::Encoder::new_device(

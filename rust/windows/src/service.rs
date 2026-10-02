@@ -18,6 +18,45 @@ use windows_service::{
     service_dispatcher,
 };
 pub const NAME: &str = "ApolloService";
+pub const RESTART_EXIT_CODE: u32 = 75;
+
+#[derive(Default)]
+struct RestartPolicy {
+    failures: std::collections::VecDeque<Instant>,
+}
+impl RestartPolicy {
+    fn exited(&mut self, code: u32, now: Instant) -> Option<Duration> {
+        match code {
+            0 => None,
+            RESTART_EXIT_CODE => Some(Duration::ZERO),
+            _ => {
+                self.failures
+                    .retain(|failure| now.duration_since(*failure) < Duration::from_secs(60));
+                self.failures.push_back(now);
+                Some(if self.failures.len() >= 3 {
+                    Duration::from_secs(30)
+                } else {
+                    Duration::from_secs(1)
+                })
+            }
+        }
+    }
+}
+
+fn shutdown_child(process: crate::process::Process) {
+    let started = Instant::now();
+    match process.shutdown_host() {
+        Ok(outcome) => tracing::info!(
+            pid = process.pid,
+            elapsed_ms = started.elapsed().as_millis(),
+            ?outcome,
+            "service host stopped"
+        ),
+        Err(error) => {
+            tracing::error!(pid=process.pid, %error, "service host shutdown failed; closing its owned job")
+        }
+    }
+}
 define_windows_service!(ffi_main, service_main);
 pub fn run() -> Result<()> {
     service_dispatcher::start(NAME, ffi_main)?;
@@ -51,18 +90,14 @@ fn status(state: ServiceState, checkpoint: u32) -> ServiceStatus {
 }
 fn supervise() -> Result<()> {
     let stop = Arc::new(AtomicBool::new(false));
-    let changed = Arc::new(AtomicBool::new(false));
     let event_stop = stop.clone();
-    let event_changed = changed.clone();
     let reporter = service_control_handler::register(NAME, move |control| match control {
         ServiceControl::Stop | ServiceControl::Shutdown => {
             event_stop.store(true, Ordering::Release);
             ServiceControlHandlerResult::NoError
         }
-        ServiceControl::SessionChange(_) => {
-            event_changed.store(true, Ordering::Release);
-            ServiceControlHandlerResult::NoError
-        }
+        // The supervisor checks the active console session every 100 ms.
+        ServiceControl::SessionChange(_) => ServiceControlHandlerResult::NoError,
         ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
         _ => ServiceControlHandlerResult::NotImplemented,
     })?;
@@ -98,51 +133,50 @@ fn supervise() -> Result<()> {
     reporter.set_service_status(status(ServiceState::Running, 0))?;
     let mut child: Option<crate::process::Process> = None;
     let mut session = u32::MAX;
-    let mut failures = std::collections::VecDeque::new();
+    let mut restart = RestartPolicy::default();
     let mut retry_at = Instant::now();
     while !stop.load(Ordering::Acquire) {
         let current =
             unsafe { windows::Win32::System::RemoteDesktop::WTSGetActiveConsoleSessionId() };
-        if (changed.swap(false, Ordering::AcqRel) || current != session) && current != session {
+        if current != session {
             if let Some(process) = child.take() {
-                let _ = process.shutdown_host();
+                shutdown_child(process);
             }
             session = current;
+            restart = RestartPolicy::default();
             retry_at = Instant::now();
         }
         if let Some(process) = &child
             && let Some(code) = process.exit_code()?
         {
             child = None;
-            if code == 0 {
+            let now = Instant::now();
+            let Some(delay) = restart.exited(code, now) else {
                 stop.store(true, Ordering::Release);
                 break;
+            };
+            if code == RESTART_EXIT_CODE {
+                tracing::info!("host requested a restart");
+            } else {
+                tracing::warn!(
+                    code,
+                    retry_seconds = delay.as_secs(),
+                    "host exited unexpectedly"
+                );
             }
-            let now = Instant::now();
-            failures.push_back(now);
-            while failures
-                .front()
-                .is_some_and(|t| now.duration_since(*t) > Duration::from_secs(60))
-            {
-                failures.pop_front();
-            }
-            retry_at = now
-                + if failures.len() >= 3 {
-                    Duration::from_secs(30)
-                } else {
-                    Duration::from_secs(1)
-                };
+            retry_at = now + delay;
         }
         if child.is_none() && session != u32::MAX && Instant::now() >= retry_at {
-            match crate::process::Process::spawn(
+            match crate::process::Process::spawn_host(
                 &executable,
                 &args,
                 executable.parent(),
                 crate::process::Target::SystemSession(session),
-                &Default::default(),
-                true,
             ) {
-                Ok(process) => child = Some(process),
+                Ok(process) => {
+                    tracing::info!(pid = process.pid, session, "service host launched");
+                    child = Some(process);
+                }
                 Err(e) => {
                     tracing::warn!(error=%e,"service host launch failed");
                     retry_at = Instant::now() + Duration::from_secs(5);
@@ -153,11 +187,54 @@ fn supervise() -> Result<()> {
     }
     reporter.set_service_status(status(ServiceState::StopPending, 1))?;
     if let Some(process) = child.take() {
-        let _ = process.shutdown_host();
-        drop(process);
+        shutdown_child(process);
     }
     // All process and job handles are released before SCM observes STOPPED.
     reporter.set_service_status(status(ServiceState::Stopped, 0))?;
     cleanup.1 = true;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn requested_restarts_do_not_trigger_crash_backoff_or_stop_the_service() {
+        let mut policy = RestartPolicy::default();
+        let now = Instant::now();
+        for second in 0..10 {
+            assert_eq!(
+                policy.exited(RESTART_EXIT_CODE, now + Duration::from_secs(second)),
+                Some(Duration::ZERO)
+            );
+        }
+        assert!(policy.failures.is_empty());
+        assert_eq!(
+            policy.exited(1, now + Duration::from_secs(10)),
+            Some(Duration::from_secs(1))
+        );
+        assert_eq!(policy.exited(0, now + Duration::from_secs(11)), None);
+    }
+    #[test]
+    fn repeated_crashes_back_off_and_old_failures_expire() {
+        let mut policy = RestartPolicy::default();
+        let now = Instant::now();
+        for second in 0..3 {
+            let expected = if second == 2 { 30 } else { 1 };
+            assert_eq!(
+                policy.exited(1, now + Duration::from_secs(second)),
+                Some(Duration::from_secs(expected))
+            );
+        }
+        assert_eq!(
+            policy.exited(RESTART_EXIT_CODE, now + Duration::from_secs(3)),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(policy.failures.len(), 3);
+        assert_eq!(
+            policy.exited(1, now + Duration::from_secs(62)),
+            Some(Duration::from_secs(1))
+        );
+        assert_eq!(policy.failures.len(), 1);
+    }
 }
