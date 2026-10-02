@@ -1,6 +1,53 @@
 use crate::topology::{Node, Position};
 use anyhow::{Result, bail};
 
+/// The physical display mode to apply for a stream, given the modes the display
+/// supports as (width, height, refresh Hz), the requested resolution and refresh
+/// (millihertz), and the current mode.
+///
+/// Windows substitutes an arbitrary mode for one a display does not support:
+/// a 2560x1600 request on a 32:9 monitor became 3840x1080 at 60 Hz, halving a
+/// 120 fps stream. An unsupported resolution keeps the current one (the stream
+/// is scaled on the GPU), and a refresh is applied only where it exists.
+pub fn physical_mode(
+    supported: &[(u32, u32, u32)],
+    requested: (Option<(u32, u32)>, Option<u32>),
+    current: (u32, u32, u32),
+) -> (u32, u32, u32) {
+    let (current_width, current_height, current_rate) = current;
+    let hz = |millihertz: u32| millihertz.saturating_add(500) / 1000;
+    let (width, height) = requested
+        .0
+        .filter(|(w, h)| supported.iter().any(|m| m.0 == *w && m.1 == *h))
+        .unwrap_or((current_width, current_height));
+    let rate = requested
+        .1
+        .filter(|rate| {
+            supported
+                .iter()
+                .any(|m| m.0 == width && m.1 == height && m.2 == hz(*rate))
+        })
+        .or_else(|| {
+            // Keep the current refresh when it exists at the chosen resolution;
+            // otherwise the highest that does.
+            let at = |rate: u32| {
+                supported
+                    .iter()
+                    .any(|m| m.0 == width && m.1 == height && m.2 == hz(rate))
+            };
+            if at(current_rate) {
+                Some(current_rate)
+            } else {
+                supported
+                    .iter()
+                    .filter(|m| m.0 == width && m.1 == height)
+                    .map(|m| m.2 * 1000)
+                    .max()
+            }
+        })
+        .unwrap_or(current_rate);
+    (width, height, rate)
+}
 /// Preserve libdisplaydevice's UUIDv5 identity, including its UTF-16 byte order
 /// and removal of the unstable parent portion of Windows' instance ID.
 pub fn legacy_device_id(path: &str, instance: Option<&str>, edid: &[u8]) -> String {
@@ -176,6 +223,47 @@ impl Arrangement {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unsupported_physical_resolutions_keep_the_current_mode_and_rate() {
+        let odyssey = [
+            (5120, 1440, 240),
+            (5120, 1440, 120),
+            (5120, 1440, 60),
+            (3840, 1080, 60),
+            (2560, 1440, 120),
+            (2560, 1440, 60),
+        ];
+        let current = (5120, 1440, 240_000);
+        // The tablet case: no 2560x1600 mode; keep 5120x1440, use 120 Hz.
+        assert_eq!(
+            physical_mode(&odyssey, (Some((2560, 1600)), Some(120_000)), current),
+            (5120, 1440, 120_000)
+        );
+        // A supported request is applied as asked.
+        assert_eq!(
+            physical_mode(&odyssey, (Some((2560, 1440)), Some(120_000)), current),
+            (2560, 1440, 120_000)
+        );
+        // A refresh the chosen resolution lacks keeps the current one.
+        assert_eq!(
+            physical_mode(&odyssey, (None, Some(144_000)), current),
+            (5120, 1440, 240_000)
+        );
+        // A fractional request is kept when the nearest whole-hertz mode exists.
+        assert_eq!(
+            physical_mode(&odyssey, (None, Some(119_880)), current),
+            (5120, 1440, 119_880)
+        );
+        // A resolution that only lacks the current refresh takes its highest.
+        assert_eq!(
+            physical_mode(&odyssey, (Some((3840, 1080)), Some(120_000)), current),
+            (3840, 1080, 60_000)
+        );
+        assert_eq!(
+            physical_mode(&[], (Some((1, 1)), Some(60_000)), current),
+            current
+        );
+    }
     use crate::topology::{Kind, Mode};
     #[test]
     fn previous_virtual_driver_identity_vectors_use_windows_guid_bytes() {

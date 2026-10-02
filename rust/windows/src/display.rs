@@ -1562,6 +1562,34 @@ pub struct Guard {
     generation: u64,
     hdr: Option<bool>,
 }
+/// Every mode a display reports as (width, height, refresh Hz).
+fn supported_modes(output: &str) -> Vec<(u32, u32, u32)> {
+    let name: Vec<_> = output.encode_utf16().chain(Some(0)).collect();
+    let mut modes = Vec::new();
+    for index in 0..4096 {
+        let mut candidate = DEVMODEW {
+            dmSize: size_of::<DEVMODEW>() as u16,
+            ..Default::default()
+        };
+        if !unsafe {
+            EnumDisplaySettingsW(
+                PCWSTR(name.as_ptr()),
+                ENUM_DISPLAY_SETTINGS_MODE(index),
+                &mut candidate,
+            )
+        }
+        .as_bool()
+        {
+            break;
+        }
+        modes.push((
+            candidate.dmPelsWidth,
+            candidate.dmPelsHeight,
+            candidate.dmDisplayFrequency,
+        ));
+    }
+    modes
+}
 pub fn highest_refresh(
     output: &str,
     resolution: Option<(u32, u32)>,
@@ -1718,10 +1746,30 @@ impl Guard {
             {
                 let previous = mode(&guard.output)?;
                 let previous_rate = Topology::query()?.refresh(&guard.identity)?;
-                let (width, height) =
-                    physical_resolution.unwrap_or((previous.dmPelsWidth, previous.dmPelsHeight));
-                let fps = physical_refresh.unwrap_or(previous_rate).0;
-                let requested = (width, height, fps);
+                let current = (previous.dmPelsWidth, previous.dmPelsHeight, previous_rate.0);
+                let supported = supported_modes(&guard.output);
+                let requested = if supported.is_empty() {
+                    let (width, height) = physical_resolution
+                        .unwrap_or((previous.dmPelsWidth, previous.dmPelsHeight));
+                    (width, height, physical_refresh.unwrap_or(previous_rate).0)
+                } else {
+                    butterpollo_core::display_policy::physical_mode(
+                        &supported,
+                        (physical_resolution, physical_refresh.map(|rate| rate.0)),
+                        current,
+                    )
+                };
+                if let Some((width, height)) = physical_resolution
+                    && (width, height) != (requested.0, requested.1)
+                {
+                    tracing::info!(
+                        output = %guard.output,
+                        "display has no {width}x{height} mode; keeping {}x{} and scaling the stream",
+                        requested.0,
+                        requested.1
+                    );
+                }
+                let (width, height, fps) = requested;
                 if let Some((_, _, applied)) = &settings.mode {
                     if *applied != requested {
                         bail!("another stream owns a different display mode");
