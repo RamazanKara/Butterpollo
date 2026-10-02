@@ -8,6 +8,39 @@ use windows::{
 /// One high-resolution waitable timer per media worker. Packet pacing must not
 /// pay the coarse scheduler tick for every UDP datagram.
 pub struct Timer(HANDLE);
+/// Each capture consumer owns a separate unnamed event. Resetting it cannot
+/// consume another client's notification, and publishing before a wait is safe.
+pub struct Signal(HANDLE);
+// Windows event operations are thread-safe; ownership keeps the handle alive.
+unsafe impl Send for Signal {}
+unsafe impl Sync for Signal {}
+impl Signal {
+    pub fn new() -> Result<Self> {
+        Ok(Self(unsafe {
+            CreateEventW(None, true, false, PCWSTR::null())?
+        }))
+    }
+    pub fn set(&self) -> Result<()> {
+        unsafe {
+            SetEvent(self.0)?;
+        }
+        Ok(())
+    }
+    /// Reset while holding the protected capture-image lock, before waiting.
+    pub fn reset(&self) -> Result<()> {
+        unsafe {
+            ResetEvent(self.0)?;
+        }
+        Ok(())
+    }
+}
+impl Drop for Signal {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
 impl Timer {
     pub fn new() -> Result<Self> {
         unsafe {
@@ -41,11 +74,68 @@ impl Timer {
             std::hint::spin_loop();
         }
     }
+    /// Wait for capture or the precise encoder/static-frame deadline, without
+    /// a coarse condition-variable timeout or a polling/spinning thread.
+    pub fn until_or_signal(&self, deadline: Instant, signal: &Signal) -> Result<bool> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(false);
+        }
+        let ticks = -((remaining.as_nanos() / 100).clamp(1, i64::MAX as u128) as i64);
+        unsafe {
+            SetWaitableTimer(self.0, &ticks, 0, None, None, false)?;
+            let result = WaitForMultipleObjects(&[self.0, signal.0], false, INFINITE);
+            if result == WAIT_OBJECT_0 {
+                Ok(false)
+            } else if result.0 == WAIT_OBJECT_0.0 + 1 {
+                Ok(true)
+            } else {
+                Err(windows::core::Error::from_thread().into())
+            }
+        }
+    }
 }
 impl Drop for Timer {
     fn drop(&mut self) {
         unsafe {
             let _ = CloseHandle(self.0);
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn capture_before_wait_is_retained_and_each_consumer_has_its_own_wake() -> Result<()> {
+        let timer = Timer::new()?;
+        let first = Signal::new()?;
+        let second = Signal::new()?;
+        first.set()?;
+        second.set()?;
+        first.reset()?;
+        // One consumer resetting its event must leave the other ready.
+        assert!(timer.until_or_signal(Instant::now() + Duration::from_secs(1), &second)?);
+        let due = Instant::now() + Duration::from_millis(2);
+        assert!(!timer.until_or_signal(due, &first)?);
+        assert!(Instant::now() >= due);
+        // Reusing the same timer must not retain its previous expiration.
+        second.reset()?;
+        let due = Instant::now() + Duration::from_millis(2);
+        assert!(!timer.until_or_signal(due, &second)?);
+        assert!(Instant::now() >= due);
+        Ok(())
+    }
+    #[test]
+    fn capture_can_interrupt_a_later_static_repeat_deadline() -> Result<()> {
+        let timer = Timer::new()?;
+        let signal = std::sync::Arc::new(Signal::new()?);
+        let publisher = signal.clone();
+        let worker = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(2));
+            publisher.set().unwrap();
+        });
+        assert!(timer.until_or_signal(Instant::now() + Duration::from_secs(1), &signal)?);
+        worker.join().unwrap();
+        Ok(())
     }
 }

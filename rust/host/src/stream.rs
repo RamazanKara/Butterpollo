@@ -220,13 +220,14 @@ use butterpollo_windows::{
     capture::{Capture, ComGuard, GpuImage, Priority},
     encoder::Encoder,
     input::Injector,
+    timing::Signal,
 };
 use rusty_enet::{Event, Host, HostSettings, Packet, PacketKind, PeerID};
 use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr, UdpSocket},
     sync::{
-        Arc, Condvar, Mutex, Weak,
+        Arc, Mutex, Weak,
         atomic::{AtomicBool, Ordering},
     },
     thread,
@@ -235,8 +236,32 @@ use std::{
 
 struct Latest {
     image: Mutex<Option<Arc<GpuImage>>>,
-    changed: Condvar,
+    changed: Mutex<Vec<Weak<Signal>>>,
     error: Mutex<Option<String>>,
+}
+impl Latest {
+    fn subscribe(&self) -> Result<Arc<Signal>> {
+        let signal = Arc::new(Signal::new()?);
+        let mut waiters = self.changed.lock().unwrap();
+        waiters.retain(|waiter| waiter.strong_count() > 0);
+        waiters.push(Arc::downgrade(&signal));
+        Ok(signal)
+    }
+    fn notify(&self) -> Result<()> {
+        let mut waiters = self.changed.lock().unwrap();
+        waiters.retain(|waiter| waiter.strong_count() > 0);
+        for waiter in waiters.iter().filter_map(Weak::upgrade) {
+            waiter.set()?;
+        }
+        Ok(())
+    }
+    fn publish(&self, image: Option<Arc<GpuImage>>) -> Result<()> {
+        let mut current = self.image.lock().unwrap();
+        *current = image;
+        // Hold the image lock through notification so a consumer's reset and
+        // predicate check cannot lose a publication before entering the wait.
+        self.notify()
+    }
 }
 struct Source {
     latest: Arc<Latest>,
@@ -368,7 +393,7 @@ impl Media {
         }
         let latest = Arc::new(Latest {
             image: Mutex::new(None),
-            changed: Condvar::new(),
+            changed: Mutex::new(Vec::new()),
             error: Mutex::new(None),
         });
         let stop = Arc::new(AtomicBool::new(false));
@@ -406,7 +431,7 @@ impl Media {
                             check_target = Instant::now() + Duration::from_millis(100);
                             let next = prepared.capture_target();
                             if next != target {
-                                *worker.image.lock().unwrap() = None;
+                                worker.publish(None)?;
                                 capture =
                                     Capture::new_options(&next.0, &kind, hdr, &capture_config)?;
                                 capture.set_claim_grid(worker_grid.clone(), aligned);
@@ -415,8 +440,7 @@ impl Media {
                         }
                         match capture.next_gpu() {
                             Ok(Some(image)) => {
-                                *worker.image.lock().unwrap() = Some(Arc::new(image));
-                                worker.changed.notify_all();
+                                worker.publish(Some(Arc::new(image)))?;
                             }
                             Ok(None) => timer.until(
                                 capture
@@ -427,7 +451,7 @@ impl Media {
                             Err(e) => {
                                 tracing::warn!(error=%e,"capture restarting");
                                 thread::sleep(Duration::from_millis(100));
-                                *worker.image.lock().unwrap() = None;
+                                worker.publish(None)?;
                                 let deadline = Instant::now() + Duration::from_secs(30);
                                 loop {
                                     if worker_stop.load(Ordering::Acquire) {
@@ -455,7 +479,7 @@ impl Media {
                 })();
                 if let Err(e) = result {
                     *worker.error.lock().unwrap() = Some(e.to_string());
-                    worker.changed.notify_all();
+                    let _ = worker.notify();
                     tracing::error!(error=%e,"capture worker stopped");
                 }
             })?;
@@ -564,6 +588,7 @@ impl Media {
                         &s.launch.id,
                         prepared.clone(),
                     )?;
+                    let mut capture_wake = latest.subscribe()?;
                     let first = {
                         let deadline = Instant::now() + Duration::from_secs(10);
                         let mut image = latest.image.lock().unwrap();
@@ -577,16 +602,16 @@ impl Media {
                             if Instant::now() >= deadline {
                                 anyhow::bail!("capture produced no GPU frame");
                             }
-                            image = latest
-                                .changed
-                                .wait_timeout(image, Duration::from_millis(50))
-                                .unwrap()
-                                .0;
+                            capture_wake.reset()?;
+                            drop(image);
+                            timer.until_or_signal((Instant::now() + Duration::from_millis(50)).min(deadline), &capture_wake)?;
+                            image = latest.image.lock().unwrap();
                         }
                         image.as_ref().unwrap().clone()
                     };
                     let mut encoder =
                         Encoder::new_gpu_options(&s.config, c.get("encoder", "auto"), &first, &c)?;
+                    tracing::info!(width=s.config.width,height=s.config.height,fps=f64::from(s.config.fps_millihz())/1000.,codec=s.config.codec,hdr=s.config.hdr,vrr=s.config.vrr_low_latency,capture=%prepared.capture(),encoder=c.get("encoder","auto"),"stream configured");
                     let metadata = first.gpu.hdr_metadata();
                     *s.hdr_metadata.write().unwrap() = metadata;
                     encoder.set_hdr_metadata(metadata);
@@ -624,7 +649,8 @@ impl Media {
                     let mut present_stamper = (s.config.codec != 3 && prepared.capture() == "wgc").then(butterpollo_windows::present_timing::Stamper::default);
                     let pyrowave_sender = if s.config.codec == 3 { Some(crate::pyrowave_send::Sender::new(m.video.clone(),s.clone(),c.clone(),h.clone(),start,prepared.capture() == "wgc")?) } else { None };
                     let period = butterpollo_core::framegen::Rate(s.config.fps_millihz()).period();
-                    let mut due = Instant::now();
+                    let mut cadence = butterpollo_core::stream_policy::Cadence::new(Instant::now(), period, c.boolean("wgc_pacing_smoothing", true));
+                    let due = cadence.deadline();
                     let mut send_due = due;
                     let mut last_stamp = start;
                     let mut live_at = due;
@@ -634,6 +660,7 @@ impl Media {
                     let mut foreground = None;
                     let mut profile_due = Instant::now();
                     let mut metadata_due = Instant::now() + Duration::from_secs(1);
+                    let mut timing_due = Instant::now() + Duration::from_secs(5);
                     let minimum_fps = c
                         .get("minimum_fps_target", if s.config.codec == 3 { "0" } else { "20" })
                         .parse::<f64>()
@@ -697,7 +724,7 @@ impl Media {
                                 s.stats.bytes.fetch_add(bytes as u64, Ordering::Relaxed);
                             }
                             s.stats.frames.fetch_add(1, Ordering::Relaxed);
-                            s.stats.performance.lock().unwrap().record(Instant::now(),latency,frame_bytes);
+                            s.stats.performance.lock().unwrap().record_timing(Instant::now(),latency,processing,frame_bytes);
                         }
                         Ok(())
                     };
@@ -722,11 +749,17 @@ impl Media {
                                         &s.launch.id,
                                         prepared.clone(),
                                     )?;
+                                    capture_wake = latest.subscribe()?;
                                     use_truehdr = enabled;
                                     rebuild_encoder = true;
                                 }
                                 if let Some(filter) = truehdr.as_mut() {
                                     filter.set_parameters(rtx_parameters(runtime));
+                                }
+                                if Instant::now() >= timing_due {
+                                    timing_due = Instant::now() + Duration::from_secs(5);
+                                    let timing = s.stats.performance.lock().unwrap().snapshot(Instant::now());
+                                    tracing::info!(fps=timing["fps"].as_f64().unwrap_or(0.),host_mean_ms=timing["host_processing_mean_ms"].as_f64().unwrap_or(0.),host_p95_ms=timing["host_processing_p95_ms"].as_f64().unwrap_or(0.),host_max_ms=timing["host_processing_max_ms"].as_f64().unwrap_or(0.),encode_p95_ms=timing["encode_p95_ms"].as_f64().unwrap_or(0.),"stream timings");
                                 }
                             }
                             if let Some(error) = &*latest.error.lock().unwrap() {
@@ -746,6 +779,7 @@ impl Media {
                                 continue;
                             };
                             let now = Instant::now();
+                            let due = cadence.deadline();
                             if !s.config.vrr_low_latency && now < due {
                                 while Instant::now() < due {
                                     if encoder.pending() {
@@ -761,34 +795,17 @@ impl Media {
                                     }
                                 }
                             }
-                            // Keep the cadence anchored to the previous due time;
-                            // scheduler overshoot must not accumulate each frame.
-                            due = if c.boolean("wgc_pacing_smoothing", true) {
-                                (due + period).max(Instant::now())
-                            } else {
-                                Instant::now() + period
-                            };
-                            latest.grid.lock().unwrap().anchor = due;
                             let image = {
                                 let mut current = latest.image.lock().unwrap();
                                 if current.is_none() {
-                                    current = latest
-                                        .changed
-                                        .wait_timeout(current, period.min(Duration::from_millis(50)))
-                                        .unwrap()
-                                        .0;
+                                    capture_wake.reset()?;
+                                    drop(current);
+                                    timer.until_or_signal(Instant::now() + period.min(Duration::from_millis(50)), &capture_wake)?;
+                                    current = latest.image.lock().unwrap();
                                 }
                                 current.clone()
                             };
                             let Some(image) = image else { continue };
-                            if s.config.vrr_low_latency && last_image.as_ref().is_some_and(|previous| Arc::ptr_eq(previous,&image)) && encoded_at.elapsed() < static_period && !s.idr.load(Ordering::Acquire) && s.invalidation.lock().unwrap().is_none() {
-                                if encoder.pending() { send_frames(encoder.poll()?,peer,Duration::ZERO)?; }
-                                let guard = latest.image.lock().unwrap();
-                                if guard.as_ref().is_some_and(|current| Arc::ptr_eq(current,&image)) {
-                                    let _ = latest.changed.wait_timeout(guard, Duration::from_micros(500).min(static_period.saturating_sub(encoded_at.elapsed()))).unwrap();
-                                }
-                                continue;
-                            }
                             // Resolution changes or DXGI loss can recreate the capture device.
                             rebuild_encoder |= !encoder.accepts_gpu_device(&image);
                             if !rebuild_encoder
@@ -800,6 +817,14 @@ impl Media {
                                     .is_some_and(|previous| Arc::ptr_eq(previous, &image))
                                 && encoded_at.elapsed() < static_period
                             {
+                                if encoder.pending() { send_frames(encoder.poll()?,peer,Duration::ZERO)?; }
+                                let guard = latest.image.lock().unwrap();
+                                if guard.as_ref().is_some_and(|current| Arc::ptr_eq(current,&image)) {
+                                    capture_wake.reset()?;
+                                    drop(guard);
+                                    let wait = if encoder.pending() { Duration::from_micros(250) } else { period };
+                                    timer.until_or_signal(Instant::now() + wait.min(static_period.saturating_sub(encoded_at.elapsed())), &capture_wake)?;
+                                }
                                 continue;
                             }
                             if use_truehdr && Instant::now() >= profile_due {
@@ -885,6 +910,8 @@ impl Media {
                             // Repeat deadlines start at submission, so encoder work
                             // does not extend the interval between static frames.
                             encoded_at = begin;
+                            cadence.submitted(begin);
+                            latest.grid.lock().unwrap().anchor = cadence.deadline();
                             last_image = Some(image);
                             send_frames(output, peer, call_latency)?;
                         }

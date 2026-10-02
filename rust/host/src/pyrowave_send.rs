@@ -186,9 +186,10 @@ impl Sender {
                         }
                         current.stats.latency_us.store(latency, Ordering::Relaxed);
                         current.stats.frames.fetch_add(1, Ordering::Relaxed);
-                        current.stats.performance.lock().unwrap().record(
+                        current.stats.performance.lock().unwrap().record_timing(
                             Instant::now(),
                             latency,
+                            processing.as_micros().min(u128::from(u64::MAX)) as u64,
                             sent as u64,
                         );
                     }

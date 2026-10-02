@@ -1,5 +1,34 @@
 //! Wire budget and encoder cadence used by the previous Moonlight host.
 use crate::{config::Config, rtsp::Negotiated};
+use std::time::{Duration, Instant};
+
+/// A frame slot is consumed by a submission, not by checking an unchanged image.
+pub struct Cadence {
+    due: Instant,
+    period: Duration,
+    smooth: bool,
+}
+impl Cadence {
+    pub fn new(now: Instant, period: Duration, smooth: bool) -> Self {
+        Self {
+            due: now,
+            period,
+            smooth,
+        }
+    }
+    pub fn deadline(&self) -> Instant {
+        self.due
+    }
+    pub fn submitted(&mut self, now: Instant) {
+        let anchored = self.due + self.period;
+        // After a static interval, start a new cadence without a catch-up burst.
+        self.due = if self.smooth && anchored > now {
+            anchored
+        } else {
+            now + self.period
+        };
+    }
+}
 pub fn apply_color(stream: &mut Negotiated, config: &Config) {
     stream.sdr_10bit = stream.hdr && config.boolean("prefer_sdr_10bit", false);
     if stream.sdr_10bit {
@@ -60,6 +89,44 @@ pub fn apply(stream: &mut Negotiated, launch_millihz: u32, config: &Config) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn late_desktop_updates_keep_the_waiting_slot_and_static_resumes_do_not_burst() {
+        let start = Instant::now();
+        let period = Duration::from_millis(16);
+        let mut cadence = Cadence::new(start, period, true);
+        cadence.submitted(start);
+        // No image at the next slot: checking it must not postpone a frame
+        // arriving just afterward until another full refresh interval.
+        assert_eq!(cadence.deadline(), start + period);
+        let update = start + period + Duration::from_micros(250);
+        assert!(cadence.deadline() <= update);
+        cadence.submitted(update);
+        assert_eq!(cadence.deadline(), start + period * 2);
+        let resumed = start + Duration::from_millis(100);
+        assert!(cadence.deadline() <= resumed);
+        cadence.submitted(resumed);
+        assert_eq!(cadence.deadline(), resumed + period);
+    }
+    #[test]
+    fn scheduler_overshoot_does_not_accumulate_or_allow_catch_up_submissions() {
+        let start = Instant::now();
+        let period = Duration::from_millis(8);
+        let mut cadence = Cadence::new(start, period, true);
+        for frame in 0..1000 {
+            let submitted = start + period * frame + Duration::from_micros(300);
+            cadence.submitted(submitted);
+            assert_eq!(cadence.deadline(), start + period * (frame + 1));
+        }
+        let missed = cadence.deadline() + period;
+        cadence.submitted(missed);
+        assert_eq!(cadence.deadline(), missed + period);
+        let mut unsmoothed = Cadence::new(start, period, false);
+        unsmoothed.submitted(start + Duration::from_micros(300));
+        assert_eq!(
+            unsmoothed.deadline(),
+            start + period + Duration::from_micros(300)
+        );
+    }
     #[test]
     fn configured_wire_budget_deducts_fec_and_audio_after_warp_and_ceiling() {
         let mut stream = Negotiated {

@@ -501,7 +501,10 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
     };
     let client = match authenticated(&h, &connection, permission) {
         Ok(c) => c,
-        Err(e) => return xml(401, &[], Some(e.to_string())),
+        Err(error) => {
+            tracing::warn!(%error, app_id = requested, resume, "Moonlight launch authorization failed");
+            return xml(401, &[], Some(error.to_string()));
+        }
     };
     let _transition = h.launch_transition.lock().unwrap();
     match control {
@@ -872,12 +875,21 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
             &[(key.as_str(), "1".into()), ("sessionUrl0", url)],
             None,
         ),
-        Err(e) => xml(
-            e.downcast_ref::<LaunchFailure>()
-                .map_or(503, |failure| failure.0),
-            &[(if resume { "resume" } else { "gamesession" }, "0".into())],
-            Some(e.to_string()),
-        ),
+        Err(error) => {
+            tracing::warn!(
+                error = %format!("{error:#}"),
+                app_id = requested,
+                resume,
+                "Moonlight session launch failed"
+            );
+            xml(
+                error
+                    .downcast_ref::<LaunchFailure>()
+                    .map_or(503, |failure| failure.0),
+                &[(if resume { "resume" } else { "gamesession" }, "0".into())],
+                Some(error.to_string()),
+            )
+        }
     }
 }
 async fn cancel(State(h): State<Shared>, Extension(connection): Extension<Connection>) -> Response {

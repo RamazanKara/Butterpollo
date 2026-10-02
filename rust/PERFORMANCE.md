@@ -4,6 +4,31 @@ Measured locally on 2026-10-01: Ryzen 7 5800X3D (8 cores/16 threads), RX 7900 XT
 
 The measured reason to switch is video FEC generation: the Rust implementation is 1.26–1.40× faster than the original C++ implementation on representative video blocks, using 21–29% less CPU time for identical parity bytes. GPU-resident HDR processing, bounded texture/encoder queues and a Rust-rendered console are additional implementation benefits. Changing language alone does not establish a performance improvement, and the FEC results do not establish a whole-host or end-to-end latency improvement.
 
+## Capture and encoder wakeups on Windows
+
+On 2026-10-02, the installed candidate's short condition-variable timeouts were measured on the same Windows machine. A requested 250 µs encoder poll could sleep for a scheduler tick. Capture consumers now wait on their own unnamed event together with the worker's high-resolution timer. A capture arriving before the wait remains signaled; one client resetting its event cannot consume another client's notification. The wait does not spin or change the system timer resolution. Windows documents this combination in [waitable timers](https://learn.microsoft.com/en-us/windows/win32/sync/waitable-timer-objects) and [wait functions](https://learn.microsoft.com/en-us/windows/win32/sync/wait-functions).
+
+| Requested wait | Condition-variable mean / p95 | Capture event + timer mean / p95 |
+| --- | ---: | ---: |
+| 250 µs | 15.293 / 16.309 ms | 0.615 / 1.010 ms |
+| 500 µs | 15.206 / 16.289 ms | 0.971 / 1.052 ms |
+| 16.667 ms | 30.775 / 32.101 ms | 16.798 / 17.010 ms |
+
+Each case uses 40 actual waits in the same release process. These measurements establish lower timeout overshoot on this Windows installation, not a 25× whole-stream speedup. Reproduce with `cargo run -p butterpollo-windows --example wait_performance --release --locked` from `rust` in the SDK environment used for the build.
+
+An unchanged desktop image also no longer consumes the next encode slot. Fresh content arriving after a waiting deadline can be submitted immediately, while encoding submissions retain the configured cadence. Resuming after a longer static interval starts a new cadence without a catch-up burst. Tests cover scheduler overshoot, static resumes, capture arriving before a wait, independent capture consumers and timer reuse.
+
+The session API and five-second host log samples now report capture-to-packetization host processing separately from encoder latency. This uses the same duration written into Moonlight's frame header, without resetting fresh capture timestamps or reducing resolution, refresh rate, HDR or bitrate. Full-stream idle-desktop comparisons are recorded below; a dynamic game and the customer's client remain separate acceptance checks.
+
+Independent encrypted Moonlight decoding captured the existing native 1968×2184 HDR display, with HEVC Main10, a requested 40 Mbps, 20-second requested runs and the default 20 FPS static repeat target. The actual negotiated encoder bitrate was 30,988 kbps. Display changes were disabled in the isolated loopback profiles; the installed service stayed running without a client during these comparisons. Both builds decoded all four runs without a reported failure.
+
+| Requested stream rate | Installed candidate host mean / p95 | Revised host mean / p95 |
+| --- | ---: | ---: |
+| 60 FPS | 4.548 / 4.700 ms | 4.183 / 4.200 ms |
+| 120 FPS | 4.187 / 4.200 ms | 4.120 / 4.200 ms |
+
+Measured host steady rates rose from 16.83/18.15 FPS to approximately 20 FPS for the static desktop. This restores the configured repeat cadence; it does not demonstrate a 60/120 FPS motion rate or a large improvement in idle encoder processing. The customer's reported 12 ms average / 30 ms maximum was not reproduced in these idle loopback runs, so that workload still needs a client retest.
+
 ## Video packet processing after the first 2.0 candidate
 
 Compared with Rust candidate `118d0ef133ae2d63898fb61512d25b6253d9c79b`, the revised packet path uses **11–16% less CPU time for encrypted frames** in these workloads. It reserves the encryption envelope in the final shard allocation, excludes that envelope from FEC, reuses AES-GCM setup within each frame and encrypts the shard in place. Source data goes directly into its shards, avoiding a full packed-frame copy. Windows UDP batches also use a bounded stack buffer for their descriptors.
