@@ -15,6 +15,7 @@ pub mod hotkey;
 pub mod input;
 pub mod input_policy;
 pub mod logfile;
+pub mod lossless;
 pub mod ltr;
 pub mod migration;
 pub mod nvenc;
