@@ -101,6 +101,14 @@ impl Client {
     pub fn allows(&self, permission: u32) -> bool {
         self.enabled && self.perm & permission == permission
     }
+    /// Whether this device may run its connect and disconnect commands
+    /// (on unless the administrator turned it off, as in Vibepollo).
+    pub fn allows_commands(&self) -> bool {
+        !self
+            .extra
+            .get("allow_client_commands")
+            .is_some_and(|v| v == false || v == "false")
+    }
     pub fn der(&self) -> Result<Vec<u8>> {
         crypto::certificate_der(&self.cert)
     }

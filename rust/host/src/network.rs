@@ -16,11 +16,40 @@ use std::{
 mod fixtures;
 mod ipv6;
 
+/// Where a peer is, by address, as Vibepollo classifies it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Reach {
+    /// This computer.
+    Pc,
+    /// Private, link-local and carrier-grade NAT (Tailscale) addresses.
+    Lan,
+    Wan,
+}
+pub fn reach(address: IpAddr) -> Reach {
+    match address.to_canonical() {
+        IpAddr::V4(ip) if ip.is_loopback() => Reach::Pc,
+        IpAddr::V4(ip)
+            if ip.is_private()
+                || ip.is_link_local()
+                || (ip.octets()[0] == 100 && ip.octets()[1] & 0xc0 == 64) =>
+        {
+            Reach::Lan
+        }
+        IpAddr::V6(ip) if ip.is_loopback() => Reach::Pc,
+        IpAddr::V6(ip) if ip.is_unique_local() || ip.is_unicast_link_local() => Reach::Lan,
+        _ => Reach::Wan,
+    }
+}
+/// The farthest peers allowed to use the web console and API.
+pub fn web_reach(config: &Config) -> Reach {
+    match config.get("origin_web_ui_allowed", "lan") {
+        "wan" => Reach::Wan,
+        "lan" => Reach::Lan,
+        _ => Reach::Pc,
+    }
+}
 pub fn encryption_mode(config: &Config, address: IpAddr) -> u32 {
-    let lan = match address.to_canonical() {
-        IpAddr::V4(ip) => ip.is_private() || ip.is_loopback() || ip.is_link_local(),
-        IpAddr::V6(ip) => ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local(),
-    };
+    let lan = reach(address) <= Reach::Lan;
     config
         .integer(
             if lan {
@@ -364,6 +393,31 @@ pub fn port_forward(h: Shared, bind: IpAddr) -> Option<tokio::task::JoinHandle<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn peers_are_classified_like_vibepollo() {
+        for (address, expected) in [
+            ("127.0.0.1", Reach::Pc),
+            ("::1", Reach::Pc),
+            ("192.168.4.20", Reach::Lan),
+            ("10.1.2.3", Reach::Lan),
+            ("172.20.0.1", Reach::Lan),
+            ("169.254.10.1", Reach::Lan),
+            ("100.101.102.103", Reach::Lan),
+            ("100.128.0.1", Reach::Wan),
+            ("fd12::1", Reach::Lan),
+            ("fe80::1", Reach::Lan),
+            ("::ffff:192.168.1.5", Reach::Lan),
+            ("8.8.8.8", Reach::Wan),
+            ("2001:db8::1", Reach::Wan),
+        ] {
+            assert_eq!(reach(address.parse().unwrap()), expected, "{address}");
+        }
+        assert_eq!(web_reach(&Config::default()), Reach::Lan);
+        assert_eq!(
+            web_reach(&Config::parse("origin_web_ui_allowed = pc\n").unwrap()),
+            Reach::Pc
+        );
+    }
     #[test]
     fn lan_defaults_and_explicit_binding_keep_legacy_semantics() {
         assert_eq!(

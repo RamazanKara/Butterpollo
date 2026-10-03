@@ -214,6 +214,7 @@ pub const CLIENT: &[Setting] = settings! {
         "virtual_display_layout", "Virtual display layout", Choice(&["exclusive","extended","extended_primary","extended_isolated","extended_primary_isolated"]);
         "prefer_10bit_sdr", "Prefer ten-bit SDR", Bool;
         "hdr_profile", "HDR ICC profile filename", Text;
+        "allow_client_commands", "Run this device's connection commands", Bool;
         "do", "Connection commands", Json;
         "undo", "Disconnect commands", Json;
     ]

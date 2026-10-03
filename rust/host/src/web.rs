@@ -170,6 +170,14 @@ pub fn router(h: Shared) -> Router {
         .with_state(h)
 }
 async fn guard(State(h): State<Shared>, mut request: Request, next: Next) -> Response {
+    // origin_web_ui_allowed: pc, lan (default) or wan, as in Vibepollo.
+    if let Some(connection) = request.extensions().get::<Connection>()
+        && crate::network::reach(connection.peer.ip())
+            > crate::network::web_reach(&h.config.read().unwrap())
+    {
+        tracing::info!(peer = %connection.peer, "web interface request from outside the allowed network refused");
+        return error(StatusCode::FORBIDDEN, "Forbidden");
+    }
     let console_form = request.uri().path() == "/console/action";
     let (method, path) = if console_form {
         if request.method() != Method::POST {
