@@ -141,6 +141,8 @@ fn token_catalog() -> Vec<auth::Scope> {
         ("/api/logs/export_crash/manifest", &["GET"][..]),
         ("/api/pin", &["POST"][..]),
         ("/api/otp", &["POST"][..]),
+        ("/api/clients/pending", &["GET"][..]),
+        ("/api/logs/tail", &["GET"][..]),
         ("/api/restart", &["POST"][..]),
         ("/api/quit", &["POST"][..]),
         ("/api/password", &["POST"][..]),
@@ -164,10 +166,77 @@ pub fn router(h: Shared) -> Router {
         )
         .route("/console.css", get(crate::console::stylesheet))
         .route("/favicon.svg", get(crate::console::favicon))
-        .fallback(crate::console::page)
-        .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
+        .fallback(site)
+        // Uploaded cover images are the largest requests.
+        .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(h.clone(), guard))
         .with_state(h)
+}
+/// Allowed sources for the web app: covers come from IGDB and the cover
+/// search reads LizardByte's game database.
+const APP_POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://images.igdb.com; connect-src 'self' https://raw.githubusercontent.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+/// The console: the web app when it is installed, else the server-rendered
+/// pages.
+async fn site(
+    state: State<Shared>,
+    connection: Extension<Connection>,
+    method: Method,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+) -> Response {
+    let root = state.0.assets.clone();
+    if root.join("index.html").is_file() {
+        return app_file(&root, &method, uri.path());
+    }
+    crate::console::page(state, connection, method, uri, headers).await
+}
+/// A file of the web app; the app's own page paths get index.html.
+fn app_file(root: &std::path::Path, method: &Method, path: &str) -> Response {
+    if !matches!(*method, Method::GET | Method::HEAD) {
+        return StatusCode::METHOD_NOT_ALLOWED.into_response();
+    }
+    let relative = path.trim_start_matches('/');
+    let safe = !relative.is_empty()
+        && relative.split('/').all(|part| {
+            !part.is_empty() && part != "." && part != ".." && !part.contains(['\\', ':'])
+        });
+    let found = safe
+        .then(|| root.join(relative))
+        .filter(|file| file.is_file());
+    let asset = relative.starts_with("assets/");
+    if asset && found.is_none() {
+        // A page built before an upgrade asks for files that are gone; HTML
+        // in their place would fail as a script.
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let file = found.unwrap_or_else(|| root.join("index.html"));
+    let Ok(bytes) = std::fs::read(&file) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let kind = match file.extension().and_then(|e| e.to_str()) {
+        Some("html") => "text/html; charset=utf-8",
+        Some("js") => "text/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("ico") => "image/x-icon",
+        Some("json") => "application/json",
+        Some("woff2") => "font/woff2",
+        _ => "application/octet-stream",
+    };
+    let mut response = ([(header::CONTENT_TYPE, kind)], bytes).into_response();
+    let headers = response.headers_mut();
+    if asset {
+        // Built files carry a content hash in their names.
+        headers.insert(
+            header::CACHE_CONTROL,
+            "public, max-age=31536000, immutable".parse().unwrap(),
+        );
+    }
+    if kind.starts_with("text/html") {
+        headers.insert(header::CONTENT_SECURITY_POLICY, APP_POLICY.parse().unwrap());
+    }
+    response
 }
 async fn guard(State(h): State<Shared>, mut request: Request, next: Next) -> Response {
     // origin_web_ui_allowed: pc, lan (default) or wan, as in Vibepollo.
@@ -312,7 +381,9 @@ async fn guard(State(h): State<Shared>, mut request: Request, next: Next) -> Res
     let headers = response.headers_mut();
     headers.insert("X-Content-Type-Options", "nosniff".parse().unwrap());
     headers.insert("X-Frame-Options", "DENY".parse().unwrap());
-    headers.insert("Cache-Control", "no-store".parse().unwrap());
+    headers
+        .entry(header::CACHE_CONTROL)
+        .or_insert("no-store".parse().unwrap());
     response
 }
 fn issued(
@@ -439,6 +510,16 @@ pub(crate) async fn api(
             {
                 anyhow::bail!("invalid cover key");
             }
+            if let Some(data) = data.get("data").and_then(Value::as_str) {
+                // The request body limit bounds the size.
+                let bytes = base64::engine::general_purpose::STANDARD.decode(data)?;
+                if bytes.len() < 24 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+                    anyhow::bail!("cover must be PNG");
+                }
+                let path = h.directory.join("covers").join(format!("{key}.png"));
+                state::atomic_write(&path, &bytes)?;
+                return Ok(json!({"status":true,"path":path}));
+            }
             let url = url::Url::parse(text("url"))?;
             if url.scheme() != "https"
                 || url.host_str() != Some("images.igdb.com")
@@ -503,6 +584,62 @@ pub(crate) async fn api(
                 .into_response(),
             Ok(Err(err)) => error(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
             Err(err) => error(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
+        };
+    }
+    if method == Method::GET && path == "/api/logs/tail" {
+        use std::io::{Read, Seek};
+        let query: std::collections::HashMap<String, String> =
+            url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes())
+                .into_owned()
+                .collect();
+        let offset: i64 = query
+            .get("offset")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(-1);
+        let max: u64 = query
+            .get("max")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(256 * 1024)
+            .clamp(1024, 4 * 1024 * 1024);
+        let result = (|| -> std::io::Result<Value> {
+            let mut file = match std::fs::File::open(crate::maintenance::log_path(&h)) {
+                Ok(file) => file,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(
+                        json!({"status":true,"offset":0,"size":0,"reset":offset != 0,"text":""}),
+                    );
+                }
+                Err(e) => return Err(e),
+            };
+            let size = file.metadata()?.len();
+            // A negative offset asks for the tail; an offset past the end
+            // means the log was rotated.
+            let reset = offset < 0 || offset as u64 > size;
+            let start = if reset {
+                size.saturating_sub(max)
+            } else {
+                offset as u64
+            };
+            file.seek(std::io::SeekFrom::Start(start))?;
+            let mut bytes = vec![];
+            file.take(max).read_to_end(&mut bytes)?;
+            // End on a line break so no line is split between two reads.
+            if start + (bytes.len() as u64) < size
+                && let Some(end) = bytes.iter().rposition(|b| *b == b'\n')
+            {
+                bytes.truncate(end + 1);
+            }
+            Ok(json!({
+                "status": true,
+                "offset": start + bytes.len() as u64,
+                "size": size,
+                "reset": reset,
+                "text": String::from_utf8_lossy(&bytes),
+            }))
+        })();
+        return match result {
+            Ok(value) => axum::Json(value).into_response(),
+            Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
         };
     }
     if method == Method::GET && matches!(path, "/api/logs" | "/api/logs/export") {
@@ -821,12 +958,16 @@ pub(crate) async fn api(
                 v
             }
             ("POST" | "PATCH", "/api/config") => {
-                let object = data
+                let mut object = data
                     .as_object()
-                    .ok_or_else(|| anyhow::anyhow!("configuration must be an object"))?;
+                    .ok_or_else(|| anyhow::anyhow!("configuration must be an object"))?
+                    .clone();
+                for key in ["status", "platform", "version"] {
+                    object.remove(key);
+                }
                 let mut config = h.config.write().unwrap();
                 let mut next = config.clone();
-                next.update(object)?;
+                next.update(&object)?;
                 state::atomic_write(&h.config_path, next.text().as_bytes())?;
                 let warning =
                     butterpollo_windows::vulkan::reconcile(next.boolean("vulkan_hdr_layer", true))
@@ -1029,6 +1170,7 @@ pub(crate) async fn api(
                     .iter_mut()
                     .find(|c| c.uuid == text("uuid"))
                     .ok_or_else(|| anyhow::anyhow!("client not found"))?;
+                let previous_perm = c.perm;
                 if let Some(n) = data.get("name").and_then(Value::as_str) {
                     c.name = n.into();
                 }
@@ -1046,12 +1188,29 @@ pub(crate) async fn api(
                         c.extra.insert(k.clone(), v.clone());
                     }
                 }
+                let revoked = data.get("enabled").and_then(Value::as_bool) == Some(false)
+                    || data
+                        .get("perm")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|p| previous_perm & !(p as u32) != 0);
                 next.save(&h.paired_path)?;
                 *state = next;
                 drop(state);
-                h.sessions.lock().unwrap().request_stop(Some(text("uuid")));
-                crate::remote_display::disconnect(&h, Some(text("uuid")));
-                json!({"status":true})
+                // Other changes apply from the device's next stream; disabling
+                // it or removing permissions ends what it is doing now.
+                if revoked {
+                    h.sessions.lock().unwrap().request_stop(Some(text("uuid")));
+                    crate::remote_display::disconnect(&h, Some(text("uuid")));
+                }
+                json!({"status":true,"disconnected":revoked})
+            }
+            ("GET", "/api/clients/pending") => {
+                let pins = h.pins.lock().unwrap();
+                json!({"status":true,"requests":pins
+                    .iter()
+                    .filter(|(_, p)| p.created.elapsed() < Duration::from_secs(300))
+                    .map(|(id, p)| json!({"uniqueid":id,"name":p.name,"age_seconds":p.created.elapsed().as_secs()}))
+                    .collect::<Vec<_>>()})
             }
             ("GET", "/api/rtsp/sessions") => {
                 json!({"status":true,"sessions":h.sessions.lock().unwrap().active.values().map(|s|s.info()).collect::<Vec<_>>()})
@@ -1059,7 +1218,17 @@ pub(crate) async fn api(
             ("GET", "/api/session/status") => {
                 let current = h.current_app.lock().unwrap();
                 let sessions = h.sessions.lock().unwrap();
-                json!({"status":true,"activeSessions":sessions.active.len(),"appRunning":current.is_some(),"appName":current.as_ref().map(|a|a.name.as_str()).unwrap_or(""),"paused":current.is_some()&&sessions.active.is_empty(),"lastEncoderProbeFailed":false,"running":!sessions.active.is_empty(),"app":current.as_ref().map(|a|json!({"name":a.name,"id":a.id}))})
+                let uuid = current.as_ref().and_then(|running| {
+                    h.apps
+                        .read()
+                        .unwrap()
+                        .iter()
+                        .find(|app| app.id() == running.id)
+                        .and_then(|app| app.extra.get("uuid"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                });
+                json!({"status":true,"activeSessions":sessions.active.len(),"appRunning":current.is_some(),"appName":current.as_ref().map(|a|a.name.as_str()).unwrap_or(""),"paused":current.is_some()&&sessions.active.is_empty(),"lastEncoderProbeFailed":false,"running":!sessions.active.is_empty(),"app":current.as_ref().map(|a|json!({"name":a.name,"id":a.id,"uuid":uuid}))})
             }
             ("GET", "/api/display-devices") => {
                 serde_json::to_value(butterpollo_windows::display::monitors()?)?
@@ -1200,4 +1369,66 @@ fn delete_app(h: &Shared, id: &str) -> anyhow::Result<()> {
     *apps = next;
     *h.app_document.write().unwrap() = doc;
     Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn web_app_files_stay_in_their_folder() {
+        let base = std::env::temp_dir().join(format!("butterpollo-web-{}", uuid::Uuid::new_v4()));
+        let root = base.join("web");
+        std::fs::create_dir_all(root.join("assets")).unwrap();
+        std::fs::write(root.join("index.html"), "<html></html>").unwrap();
+        std::fs::write(root.join("assets/index-1.js"), "export {}").unwrap();
+        std::fs::write(base.join("outside.txt"), "x").unwrap();
+        let get = |path: &str| app_file(&root, &Method::GET, path);
+        let header = |response: &Response, name: header::HeaderName| {
+            response
+                .headers()
+                .get(name)
+                .map(|v| v.to_str().unwrap().to_owned())
+        };
+
+        let script = get("/assets/index-1.js");
+        assert_eq!(script.status(), StatusCode::OK);
+        assert!(
+            header(&script, header::CACHE_CONTROL)
+                .unwrap()
+                .contains("immutable")
+        );
+        assert!(header(&script, header::CONTENT_SECURITY_POLICY).is_none());
+
+        let page = get("/devices");
+        assert_eq!(page.status(), StatusCode::OK);
+        assert!(
+            header(&page, header::CONTENT_TYPE)
+                .unwrap()
+                .starts_with("text/html")
+        );
+        assert!(header(&page, header::CACHE_CONTROL).is_none());
+        assert_eq!(
+            header(&page, header::CONTENT_SECURITY_POLICY).as_deref(),
+            Some(APP_POLICY)
+        );
+
+        for escape in [
+            "/../outside.txt",
+            "/assets/../../outside.txt",
+            "/C:/Windows/win.ini",
+        ] {
+            let response = get(escape);
+            assert_ne!(
+                header(&response, header::CONTENT_TYPE).as_deref(),
+                Some("application/octet-stream"),
+                "{escape}"
+            );
+        }
+        assert_eq!(get("/assets/index-0.js").status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            app_file(&root, &Method::POST, "/devices").status(),
+            StatusCode::METHOD_NOT_ALLOWED
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
 }

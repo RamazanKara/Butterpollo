@@ -143,6 +143,23 @@ impl Host {
                  "detached":["steam://open/bigpicture"],"image-path":"steam.png"}
             ]}),
         )?;
+        let mut app_document = app_document;
+        let mut assigned = false;
+        if let Some(list) = app_document.get_mut("apps").and_then(Value::as_array_mut) {
+            for app in list.iter_mut().filter_map(Value::as_object_mut) {
+                if app
+                    .get("uuid")
+                    .and_then(Value::as_str)
+                    .is_none_or(|uuid| uuid.trim().is_empty())
+                {
+                    app.insert("uuid".into(), json!(uuid::Uuid::new_v4().to_string()));
+                    assigned = true;
+                }
+            }
+        }
+        if assigned {
+            butterpollo_core::state::write_json(&apps_path, &app_document)?;
+        }
         let mut apps: Vec<App> =
             serde_json::from_value(app_document.get("apps").cloned().unwrap_or(json!([])))?;
         butterpollo_core::catalog::assign(

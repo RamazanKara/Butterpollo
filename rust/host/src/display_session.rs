@@ -240,7 +240,8 @@ impl Prepared {
             .extra
             .get("virtual_display_mode")
             .and_then(serde_json::Value::as_str)
-            .filter(|s| !s.is_empty())
+            // The old console stored "global" for the host setting.
+            .filter(|s| !s.is_empty() && *s != "global")
             .or_else(|| option("virtual-display-mode"))
             .unwrap_or(config.virtual_display_mode(butterpollo_windows::display::windows_11()));
         let client_virtual = launch
@@ -469,7 +470,7 @@ impl Prepared {
                 .extra
                 .get("virtual_display_layout")
                 .and_then(serde_json::Value::as_str)
-                .filter(|s| !s.is_empty())
+                .filter(|s| !s.is_empty() && *s != "global")
                 .or_else(|| option("virtual-display-layout"))
                 .unwrap_or(config.get("virtual_display_layout", "exclusive"))
         } else {
