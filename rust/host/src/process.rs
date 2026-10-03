@@ -41,7 +41,16 @@ impl ClientCommands {
             .map(|app| app.environment.clone());
         let mut environment = match environment {
             Some(environment) => environment,
-            None => butterpollo_windows::process::user_environment()?,
+            None => match butterpollo_windows::process::user_environment() {
+                Ok(environment) => environment,
+                Err(error) => {
+                    tracing::info!(%error, "no signed-in user; client commands skipped");
+                    return Ok(Self {
+                        undo: vec![],
+                        environment: BTreeMap::new(),
+                    });
+                }
+            },
         };
         environment.insert("SUNSHINE_CLIENT_NAME".into(), s.launch.client.name.clone());
         environment.insert("SUNSHINE_CLIENT_UUID".into(), s.launch.client.uuid.clone());
@@ -130,6 +139,9 @@ pub struct RunningApp {
     connected: bool,
     state_events: Option<std::sync::mpsc::Sender<bool>>,
     exit_timeout: Duration,
+    /// An app launched before anyone signed in, started once a user does.
+    pub deferred: Option<(App, HashMap<String, String>)>,
+    deferred_check: std::time::Instant,
 }
 /// The folder of the program an app starts, as Vibepollo uses when the app
 /// has no working directory: games often load files relative to it.
@@ -185,6 +197,8 @@ impl RunningApp {
             terminate_on_pause: app_bool(app, "terminate-on-pause", false),
             connected: false,
             state_events: None,
+            deferred: None,
+            deferred_check: std::time::Instant::now(),
             exit_timeout: Duration::from_secs(
                 app.extra
                     .get("exit-timeout")
@@ -330,6 +344,16 @@ impl RunningApp {
             }
         }
     }
+    /// The deferred app, once a user has signed in (checked once a second).
+    pub fn take_ready_deferred(&mut self) -> Option<(App, HashMap<String, String>)> {
+        if self.deferred.is_none() || self.deferred_check.elapsed() < Duration::from_secs(1) {
+            return None;
+        }
+        self.deferred_check = std::time::Instant::now();
+        butterpollo_windows::process::user_signed_in()
+            .then(|| self.deferred.take())
+            .flatten()
+    }
     pub fn exited(&mut self) -> Result<bool> {
         if self.detached {
             return Ok(false);
@@ -396,13 +420,60 @@ fn expand(value: &str, environment: &BTreeMap<String, String>) -> Result<String>
     output.push_str(rest);
     Ok(output)
 }
+/// Whether starting the app runs any command, which needs the user's
+/// environment and token.
+fn runs_commands(h: &crate::state::Shared, app: &App) -> bool {
+    !app.cmd.trim().is_empty()
+        || !app.prep.is_empty()
+        || app
+            .extra
+            .get("detached")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|commands| !commands.is_empty())
+        || (!app_bool(app, "exclude-global-prep-cmd", false)
+            && h.config.read().unwrap().get("global_prep_cmd", "[]").trim() != "[]")
+}
 pub fn launch(
     h: &crate::state::Shared,
     app: &App,
     args: &HashMap<String, String>,
 ) -> Result<RunningApp> {
+    let mut environment = match butterpollo_windows::process::user_environment() {
+        Ok(environment) => environment,
+        Err(error) => {
+            // Before anyone signs in (a service after a reboot) the sign-in
+            // screen can still be streamed. As in Vibepollo, the app's
+            // commands wait until a user signs in.
+            let mut placeholder = app.clone();
+            placeholder.cmd.clear();
+            placeholder.prep.clear();
+            placeholder.extra.remove("detached");
+            placeholder.extra.remove("state-cmd");
+            placeholder
+                .extra
+                .insert("exclude-global-prep-cmd".into(), true.into());
+            placeholder
+                .extra
+                .insert("exclude-global-state-cmd".into(), true.into());
+            let mut system: BTreeMap<String, String> = std::env::vars()
+                .map(|(key, value)| (key.to_uppercase(), value))
+                .collect();
+            // The launching client owns the session, as with a started app.
+            for (arg, name) in [("clientUuid", "UUID"), ("clientName", "NAME")] {
+                if let Some(value) = args.get(arg) {
+                    system.insert(format!("SUNSHINE_CLIENT_{name}"), value.clone());
+                    system.insert(format!("APOLLO_CLIENT_{name}"), value.clone());
+                }
+            }
+            let mut running = RunningApp::with_environment(&placeholder, system)?;
+            if runs_commands(h, app) {
+                tracing::info!(app = %app.name, %error, "no signed-in user; the application starts after sign-in");
+                running.deferred = Some((app.clone(), args.clone()));
+            }
+            return Ok(running);
+        }
+    };
     let mut app = app.clone();
-    let mut environment = butterpollo_windows::process::user_environment()?;
     let document = h.app_document.read().unwrap();
     if let Some(values) = document.get("env").and_then(serde_json::Value::as_object) {
         for (key, value) in values {

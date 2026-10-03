@@ -26,6 +26,39 @@ fn application_finished(h: &Shared) -> bool {
             }
     })
 }
+/// Start an app that was launched before anyone signed in, keeping its
+/// session identity. It replaces the placeholder only if that still runs.
+fn start_deferred(h: &Shared) {
+    let pending = h.current_app.lock().unwrap().as_mut().and_then(|app| {
+        app.take_ready_deferred()
+            .map(|(app_config, args)| (app_config, args, app.generation.clone(), app.owner.clone()))
+    });
+    let Some((app, args, generation, owner)) = pending else {
+        return;
+    };
+    let h = h.clone();
+    tokio::task::spawn_blocking(move || {
+        tracing::info!(app = %app.name, "user signed in; starting the deferred application");
+        match crate::process::launch(&h, &app, &args) {
+            Ok(mut started) => {
+                let mut current = h.current_app.lock().unwrap();
+                if current
+                    .as_ref()
+                    .is_some_and(|placeholder| placeholder.generation == generation)
+                {
+                    started.generation = generation;
+                    started.owner = owner;
+                    *current = Some(started);
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, app = %app.name, "deferred application failed to start");
+                h.sessions.lock().unwrap().stop_role(Role::Stream, None);
+                h.stop_app();
+            }
+        }
+    });
+}
 fn user_action(h: &Shared, action: Action, web_port: u16) {
     match action {
         Action::Open => {
@@ -68,6 +101,7 @@ pub async fn maintain(
             update_at = Instant::now()
                 + Duration::from_secs(if interval > 0 { interval as u64 } else { 60 });
         }
+        start_deferred(&h);
         if application_finished(&h) {
             h.sessions.lock().unwrap().stop_role(Role::Stream, None);
             h.stop_app();

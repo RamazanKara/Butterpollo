@@ -182,6 +182,22 @@ pub struct Process {
     host_stop: Option<HostStop>,
     pub pid: u32,
 }
+/// Whether a user is signed in to this process's session. Only a host
+/// running as SYSTEM can tell; a portable host runs as the user.
+pub fn user_signed_in() -> bool {
+    unsafe {
+        let mut session = 0;
+        if ProcessIdToSessionId(GetCurrentProcessId(), &mut session).is_err() {
+            return false;
+        }
+        let mut token = HANDLE::default();
+        if WTSQueryUserToken(session, &mut token).is_err() {
+            return false;
+        }
+        let _ = CloseHandle(token);
+        true
+    }
+}
 pub fn user_environment() -> Result<BTreeMap<String, String>> {
     let token = target_token(&Target::User { elevated: false })?;
     unsafe {
