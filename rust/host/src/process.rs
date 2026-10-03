@@ -142,6 +142,9 @@ pub struct RunningApp {
     /// An app launched before anyone signed in, started once a user does.
     pub deferred: Option<(App, HashMap<String, String>)>,
     deferred_check: std::time::Instant,
+    /// A game Steam starts, followed through its install folder.
+    steam: Option<butterpollo_core::steam::Tracker>,
+    steam_check: std::time::Instant,
 }
 /// The folder of the program an app starts, as Vibepollo uses when the app
 /// has no working directory: games often load files relative to it.
@@ -199,6 +202,8 @@ impl RunningApp {
             state_events: None,
             deferred: None,
             deferred_check: std::time::Instant::now(),
+            steam: None,
+            steam_check: std::time::Instant::now(),
             exit_timeout: Duration::from_secs(
                 app.extra
                     .get("exit-timeout")
@@ -271,6 +276,30 @@ impl RunningApp {
             }
             running.undo.push(prep.clone());
         }
+        // Steam starts the game itself, outside the app's process group; the
+        // processes that appear in its install folder are the game.
+        if let Some(folder) = app
+            .extra
+            .get("steam-install-dir")
+            .and_then(serde_json::Value::as_str)
+            .filter(|folder| !folder.trim().is_empty())
+            .filter(|_| {
+                app.extra
+                    .get("steam-id")
+                    .is_some_and(serde_json::Value::is_string)
+            })
+        {
+            match butterpollo_windows::process::processes() {
+                Ok(before) => {
+                    running.steam = Some(butterpollo_core::steam::Tracker::new(
+                        &before,
+                        folder,
+                        Duration::from_secs(15),
+                    ))
+                }
+                Err(error) => tracing::warn!(%error, "Steam game tracking unavailable"),
+            }
+        }
         if let Some(commands) = app
             .extra
             .get("detached")
@@ -321,6 +350,9 @@ impl RunningApp {
     }
     pub fn stop(&mut self) {
         self.state_events.take();
+        if let Some(tracker) = self.steam.take() {
+            butterpollo_windows::process::stop_processes(&tracker.tracked, self.exit_timeout);
+        }
         if let Some(child) = self.child.take()
             && let Err(error) = child.stop_graceful(self.exit_timeout)
         {
@@ -355,6 +387,26 @@ impl RunningApp {
             .flatten()
     }
     pub fn exited(&mut self) -> Result<bool> {
+        if let Some(tracker) = &mut self.steam {
+            use butterpollo_core::steam::Tracked;
+            if self.steam_check.elapsed() < Duration::from_secs(1) {
+                return Ok(false);
+            }
+            self.steam_check = std::time::Instant::now();
+            let processes = butterpollo_windows::process::processes()?;
+            match tracker.update(&processes, butterpollo_windows::process::image_path) {
+                Tracked::Waiting | Tracked::Running => return Ok(false),
+                Tracked::Exited => {
+                    tracing::info!(app = %self.name, "the Steam game exited");
+                    return Ok(true);
+                }
+                Tracked::Unknown => {
+                    tracing::info!(app = %self.name, "no game process appeared in the Steam install folder; the stream stays until it is ended");
+                    self.steam = None;
+                    self.detached = true;
+                }
+            }
+        }
         if self.detached {
             return Ok(false);
         }

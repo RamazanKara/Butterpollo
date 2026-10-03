@@ -9,6 +9,7 @@ mod remote_display;
 mod rtsp_server;
 mod runtime;
 mod state;
+mod steam;
 mod stream;
 mod tls;
 mod web;

@@ -143,6 +143,10 @@ fn token_catalog() -> Vec<auth::Scope> {
         ("/api/otp", &["POST"][..]),
         ("/api/clients/pending", &["GET"][..]),
         ("/api/logs/tail", &["GET"][..]),
+        ("/api/steam/status", &["GET"][..]),
+        ("/api/steam/games", &["GET"][..]),
+        ("/api/steam/force_sync", &["POST"][..]),
+        ("/api/steam/launch", &["POST"][..]),
         ("/api/restart", &["POST"][..]),
         ("/api/quit", &["POST"][..]),
         ("/api/password", &["POST"][..]),
@@ -554,6 +558,51 @@ pub(crate) async fn api(
         return match result {
             Ok(value) => Json(value).into_response(),
             Err(err) => error(StatusCode::BAD_REQUEST, &err.to_string()),
+        };
+    }
+    if let Some(action) = path.strip_prefix("/api/steam/") {
+        // Reading the libraries and converting covers waits on the disk.
+        let h = h.clone();
+        let appid = |value: Option<&Value>| -> Option<u32> {
+            match value? {
+                Value::Number(n) => n.as_u64().and_then(|n| u32::try_from(n).ok()),
+                Value::String(s) => s.trim().parse().ok(),
+                _ => None,
+            }
+        };
+        let query: std::collections::HashMap<String, String> =
+            url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes())
+                .into_owned()
+                .collect();
+        let task = match (method.as_str(), action) {
+            ("GET", "status") => {
+                tokio::task::spawn_blocking(move || Ok(crate::steam::status(&h))).await
+            }
+            ("GET", "games") => {
+                let id = query.get("appid").and_then(|v| v.parse().ok());
+                tokio::task::spawn_blocking(move || crate::steam::games(&h, id)).await
+            }
+            ("POST", "force_sync") => {
+                tokio::task::spawn_blocking(move || {
+                    crate::steam::sync(&h).map(|outcome| {
+                        json!({"status":true,"changed":outcome.changed,"game_count":outcome.games,"importable_game_count":outcome.importable})
+                    })
+                })
+                .await
+            }
+            ("POST", "launch") => {
+                let Some(id) = appid(data.get("appid")).or_else(|| appid(data.get("steam_id")))
+                else {
+                    return error(StatusCode::BAD_REQUEST, "appid required");
+                };
+                tokio::task::spawn_blocking(move || crate::steam::launch(&h, id)).await
+            }
+            _ => return error(StatusCode::BAD_REQUEST, "unknown API endpoint"),
+        };
+        return match task {
+            Ok(Ok(value)) => Json(value).into_response(),
+            Ok(Err(err)) => error(StatusCode::BAD_REQUEST, &format!("{err:#}")),
+            Err(err) => error(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
         };
     }
     if method == Method::GET && path == "/api/logs/export_crash" {

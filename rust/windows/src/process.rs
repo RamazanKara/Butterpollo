@@ -814,8 +814,138 @@ pub fn shell_command(command: &str) -> String {
     };
     format!("start \"\" /wait \"{target}\"{rest}")
 }
+/// A process's creation time (100 ns since 1601), 0 when it cannot be read.
+fn creation_time(pid: u32) -> u64 {
+    unsafe {
+        let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return 0;
+        };
+        let process = owned(process);
+        let mut created = FILETIME::default();
+        let (mut exited, mut kernel, mut user) = (created, created, created);
+        if GetProcessTimes(
+            raw(&process),
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+        .is_err()
+        {
+            return 0;
+        }
+        u64::from(created.dwHighDateTime) << 32 | u64::from(created.dwLowDateTime)
+    }
+}
+/// Every running process with its parent, creation time and program name.
+pub fn processes() -> Result<Vec<butterpollo_core::steam::Process>> {
+    use windows::Win32::System::Diagnostics::ToolHelp::*;
+    let mut list = vec![];
+    unsafe {
+        let snapshot = owned(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)?);
+        let mut entry = PROCESSENTRY32W {
+            dwSize: size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        let mut more = Process32FirstW(raw(&snapshot), &mut entry).is_ok();
+        while more {
+            let length = entry
+                .szExeFile
+                .iter()
+                .position(|c| *c == 0)
+                .unwrap_or(entry.szExeFile.len());
+            if entry.th32ProcessID != 0 {
+                list.push(butterpollo_core::steam::Process {
+                    pid: entry.th32ProcessID,
+                    parent: entry.th32ParentProcessID,
+                    started: creation_time(entry.th32ProcessID),
+                    name: String::from_utf16_lossy(&entry.szExeFile[..length]),
+                });
+            }
+            more = Process32NextW(raw(&snapshot), &mut entry).is_ok();
+        }
+    }
+    Ok(list)
+}
+/// A process's full program path.
+pub fn image_path(pid: u32) -> Option<String> {
+    unsafe {
+        let process = owned(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?);
+        let mut buffer = [0u16; 32768];
+        let mut size = buffer.len() as u32;
+        QueryFullProcessImageNameW(
+            raw(&process),
+            PROCESS_NAME_WIN32,
+            PWSTR(buffer.as_mut_ptr()),
+            &mut size,
+        )
+        .ok()?;
+        Some(String::from_utf16_lossy(&buffer[..size as usize]))
+    }
+}
+/// Ask the windows of `processes` (pid → creation time) to close, wait up to
+/// `timeout` for them to exit, then end the rest. An id that now belongs to
+/// another process is left alone.
+pub fn stop_processes(processes: &BTreeMap<u32, u64>, timeout: Duration) {
+    use windows::Win32::UI::WindowsAndMessaging::*;
+    let alive = |processes: &BTreeMap<u32, u64>| -> Vec<u32> {
+        processes
+            .iter()
+            .filter(|(pid, started)| creation_time(**pid) == **started && **started != 0)
+            .map(|(pid, _)| *pid)
+            .collect()
+    };
+    unsafe extern "system" fn close_window(window: HWND, data: LPARAM) -> BOOL {
+        unsafe {
+            let ids = &*(data.0 as *const Vec<u32>);
+            let mut pid = 0;
+            GetWindowThreadProcessId(window, Some(&mut pid));
+            if ids.contains(&pid) {
+                let _ = PostMessageW(Some(window), WM_CLOSE, WPARAM(0), LPARAM(0));
+            }
+            BOOL(1)
+        }
+    }
+    let ids = alive(processes);
+    if ids.is_empty() {
+        return;
+    }
+    unsafe {
+        let _ = EnumWindows(
+            Some(close_window),
+            LPARAM((&ids as *const Vec<u32>) as isize),
+        );
+    }
+    let deadline = std::time::Instant::now() + timeout;
+    while !alive(processes).is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    for pid in alive(processes) {
+        unsafe {
+            if let Ok(process) = OpenProcess(PROCESS_TERMINATE, false, pid) {
+                let process = owned(process);
+                let _ = TerminateProcess(raw(&process), 1);
+            }
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_process_list_names_this_test_and_its_program() {
+        let me = std::process::id();
+        let list = super::processes().unwrap();
+        let this = list.iter().find(|p| p.pid == me).unwrap();
+        assert!(this.started > 0);
+        assert!(this.name.to_ascii_lowercase().ends_with(".exe"));
+        let image = super::image_path(me).unwrap();
+        assert!(image.ends_with(&this.name), "{image}");
+        // Stopping a process list whose start times do not match leaves it alone.
+        super::stop_processes(
+            &std::collections::BTreeMap::from([(me, this.started + 1)]),
+            std::time::Duration::ZERO,
+        );
+    }
     #[test]
     fn urls_and_documents_open_through_their_association() {
         use super::{command_target, shell_command};

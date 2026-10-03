@@ -38,6 +38,8 @@ pub mod hdr_profile;
 #[cfg(windows)]
 pub mod hotkey;
 #[cfg(windows)]
+pub mod image;
+#[cfg(windows)]
 pub mod input;
 #[cfg(windows)]
 mod keylayout;
@@ -65,6 +67,8 @@ pub mod rtss;
 pub mod rtx_profiles;
 #[cfg(windows)]
 pub mod service;
+#[cfg(windows)]
+pub mod steam;
 #[cfg(windows)]
 pub mod timing;
 #[cfg(windows)]

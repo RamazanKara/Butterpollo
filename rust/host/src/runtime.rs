@@ -140,6 +140,7 @@ pub async fn maintain(
     web_port: u16,
 ) {
     let mut update_at = Instant::now();
+    let mut steam_at = Instant::now() + Duration::from_secs(5);
     let mut hotkey = RestoreHotkey::default();
     while !h.stop.load(Ordering::Acquire) {
         if stop_signal.requested() {
@@ -150,6 +151,11 @@ pub async fn maintain(
         h.sessions.lock().unwrap().expire();
         h.reap_paused_display();
         hotkey.poll(&h);
+        if Instant::now() >= steam_at {
+            steam_at = Instant::now() + Duration::from_secs(30);
+            let h = h.clone();
+            tokio::task::spawn_blocking(move || crate::steam::watch(&h));
+        }
         if Instant::now() >= update_at {
             let interval = h
                 .config
