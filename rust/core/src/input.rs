@@ -146,8 +146,9 @@ pub fn decode(b: &[u8]) -> Result<Input> {
         bail!("invalid battery report");
     }
     Ok(match magic {
+        // Moonlight sets 0x8000 on every key code; only the low byte is the VK.
         3 | 4 => Input::Keyboard {
-            key: le16(b, 9),
+            key: le16(b, 9) & 0x00ff,
             modifiers: b[11],
             flags: b[8],
             down: magic == 3,
@@ -511,6 +512,20 @@ mod tests {
                 let _ = decode(&b);
             }
         }
+    }
+    #[test]
+    fn keyboard_codes_drop_moonlights_high_byte() {
+        // Left arrow (VK 0x25) with Shift, as moonlight-qt and Artemis send it.
+        let p = hex::decode("0000000a03000000002580010000").unwrap();
+        assert_eq!(
+            decode(&p).unwrap(),
+            Input::Keyboard {
+                key: 0x25,
+                modifiers: 1,
+                flags: 0,
+                down: true
+            }
+        );
     }
     #[test]
     fn actual_moonlight_mouse_packet() {

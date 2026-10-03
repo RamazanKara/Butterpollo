@@ -398,7 +398,8 @@ pub struct Injector {
     rect: RECT,
     policy: butterpollo_core::input_policy::Policy,
     key_flags: BTreeMap<u16, u8>,
-    repeat: Option<(u16, u8, std::time::Instant)>,
+    /// Repeating key, its flags, the modifiers it adds and when it repeats.
+    repeat: Option<(u16, u8, u8, std::time::Instant)>,
     scroll: [i32; 2],
     haptics: bool,
 }
@@ -747,13 +748,14 @@ impl Injector {
         if let Some(gamepads) = &mut self.gamepads {
             gamepads.refresh()?;
         }
-        if let Some((key, flags, due)) = self.repeat
+        if let Some((key, flags, modifiers, due)) = self.repeat
             && std::time::Instant::now() >= due
         {
-            Self::send(&[self.key_scan(key, true, flags)])?;
+            Self::send(&self.with_modifiers(self.key_scan(key, true, flags), modifiers))?;
             self.repeat = Some((
                 key,
                 flags,
+                modifiers,
                 std::time::Instant::now() + self.policy.repeat_period,
             ));
         }
@@ -851,7 +853,10 @@ impl Injector {
                 )])?;
             }
             Keyboard {
-                key, down, flags, ..
+                key,
+                down,
+                flags,
+                modifiers,
             } => {
                 let key = self.policy.key(*key);
                 let owned = self.keys.contains(&key);
@@ -860,24 +865,40 @@ impl Injector {
                 } else {
                     self.key_flags.get(&key).copied().unwrap_or(*flags)
                 };
-                Self::held(true, key, *down, owned, self.key_scan(key, *down, flags))?;
+                let modifiers = if *down && !owned {
+                    self.synthetic_modifiers(key, *modifiers)
+                } else {
+                    0
+                };
+                if modifiers == 0 {
+                    Self::held(true, key, *down, owned, self.key_scan(key, *down, flags))?;
+                } else {
+                    // The client reported a modifier it never pressed as a
+                    // key: press it around this key only, as Vibepollo does.
+                    let mut held = HELD.lock().unwrap();
+                    let count = held.get(&(true, key)).copied().unwrap_or(0);
+                    if count == 0 {
+                        Self::send(
+                            &self.with_modifiers(self.key_scan(key, true, flags), modifiers),
+                        )?;
+                    }
+                    held.insert((true, key), count + 1);
+                }
                 if *down {
                     self.keys.insert(key);
                     self.key_flags.insert(key, flags);
-                    if !owned && !matches!(key,0x10..=0x12|0xa0..=0xa5|0x5b|0x5c) {
+                    if !owned && !is_modifier(key) {
                         self.repeat = Some((
                             key,
                             flags,
+                            modifiers,
                             std::time::Instant::now() + self.policy.repeat_delay,
                         ));
                     }
                 } else {
                     self.keys.remove(&key);
                     self.key_flags.remove(&key);
-                    if self
-                        .repeat
-                        .is_some_and(|(repeating, _, _)| repeating == key)
-                    {
+                    if self.repeat.is_some_and(|(repeating, ..)| repeating == key) {
                         self.repeat = None;
                     }
                 }
@@ -918,6 +939,50 @@ impl Injector {
         }
         Ok(())
     }
+    /// Modifiers in a key-down packet that neither this client nor another
+    /// holds as keys (Moonlight reports Shift/Ctrl/Alt both ways).
+    fn synthetic_modifiers(&self, key: u16, reported: u8) -> u8 {
+        if is_modifier(key) {
+            return 0;
+        }
+        let held = HELD.lock().unwrap();
+        let pressed = |keys: [u16; 3]| {
+            keys.iter()
+                .any(|k| self.keys.contains(k) || held.contains_key(&(true, *k)))
+        };
+        let mut synthetic = 0;
+        for (mask, keys) in [
+            (MODIFIER_SHIFT, [0x10, 0xa0, 0xa1]),
+            (MODIFIER_CTRL, [0x11, 0xa2, 0xa3]),
+            (MODIFIER_ALT, [0x12, 0xa4, 0xa5]),
+        ] {
+            if reported & mask != 0 && !pressed(keys) {
+                synthetic |= mask;
+            }
+        }
+        synthetic
+    }
+    /// The key's input surrounded by temporary presses of `modifiers`.
+    fn with_modifiers(&self, key: INPUT, modifiers: u8) -> Vec<INPUT> {
+        let generic = [
+            (MODIFIER_SHIFT, 0x10),
+            (MODIFIER_CTRL, 0x11),
+            (MODIFIER_ALT, 0x12),
+        ];
+        let mut inputs = Vec::with_capacity(7);
+        for (mask, vk) in generic {
+            if modifiers & mask != 0 {
+                inputs.push(self.key_scan(vk, true, 0));
+            }
+        }
+        inputs.push(key);
+        for (mask, vk) in generic.iter().rev() {
+            if modifiers & mask != 0 {
+                inputs.push(self.key_scan(*vk, false, 0));
+            }
+        }
+        inputs
+    }
     fn held(keyboard: bool, id: u16, down: bool, owned: bool, input: INPUT) -> Result<()> {
         let mut held = HELD.lock().unwrap();
         let count = held.get(&(keyboard, id)).copied().unwrap_or(0);
@@ -941,6 +1006,12 @@ impl Injector {
     pub fn feedback_allowed(&self, kind: u16) -> bool {
         !matches!(kind, 0x010b | 0x5500 | 0x5503) || (self.policy.forward_rumble && self.haptics)
     }
+}
+const MODIFIER_SHIFT: u8 = 0x01;
+const MODIFIER_CTRL: u8 = 0x02;
+const MODIFIER_ALT: u8 = 0x04;
+fn is_modifier(key: u16) -> bool {
+    matches!(key, 0x10..=0x12 | 0xa0..=0xa5 | 0x5b | 0x5c)
 }
 impl Drop for Injector {
     fn drop(&mut self) {
