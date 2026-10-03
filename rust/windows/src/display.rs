@@ -903,6 +903,15 @@ impl Snapshot {
     pub fn restore(&self) -> Result<()> {
         self.restore_excluding(&[])
     }
+    /// Whether every display this layout turns on is connected now.
+    pub fn displays_connected(&self) -> bool {
+        let Ok(available) = Topology::query_all().map(|t| t.monitors()) else {
+            return false;
+        };
+        let mut active = self.nodes.iter().filter(|n| n.active).peekable();
+        active.peek().is_some()
+            && active.all(|n| available.iter().any(|m| m.device_id == n.device_id))
+    }
     pub fn restore_excluding(&self, excluded: &[String]) -> Result<()> {
         if self.version != 1 {
             bail!("unsupported Rust display snapshot version");

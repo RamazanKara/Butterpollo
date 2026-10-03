@@ -214,6 +214,16 @@ impl Prepared {
             && config.boolean("dd_always_restore_from_golden", true)
         {
             crate::maintenance::baseline(h)?
+                // A saved layout naming displays that are gone (an old
+                // monitor) would switch off the ones in use; keep the
+                // layout from before the stream instead.
+                .filter(|snapshot| {
+                    let connected = snapshot.displays_connected();
+                    if !connected {
+                        tracing::info!("saved display baseline names displays that are not connected; restoring the layout from before the stream");
+                    }
+                    connected
+                })
                 .map(|snapshot| GoldenLease::new(h, snapshot, config))
                 .transpose()?
         } else {
