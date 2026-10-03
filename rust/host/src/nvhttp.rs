@@ -718,6 +718,25 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
             "rtsp"
         };
         let id = launch.id.clone();
+        // This client abandoned any earlier launch or stream in this role. Let
+        // a stream finish its teardown first, so its display, audio and client
+        // commands are released before the new launch prepares them again.
+        let superseded = h
+            .sessions
+            .lock()
+            .unwrap()
+            .supersede(&launch.client.uuid, role);
+        if !superseded.is_empty() {
+            tracing::info!(client = %launch.client.name, "replacing this client's previous stream");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline
+                && superseded
+                    .iter()
+                    .any(|s| h.sessions.lock().unwrap().active.contains_key(&s.launch.id))
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
         let mut current = h.current_app.lock().unwrap();
         if role == Role::Stream && !resume && current.as_ref().is_some_and(|a| a.id != app_id) {
             if owner != remote::Owner::None {

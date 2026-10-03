@@ -59,11 +59,12 @@ mod tests {
             .queue(launch("monitor", Role::RemoteMonitor))
             .unwrap();
         sessions.queue(launch("input", Role::InputOnly)).unwrap();
-        assert!(
-            sessions
-                .queue(launch("duplicate", Role::RemoteMonitor))
-                .is_err()
-        );
+        // A client launching again replaces its own earlier launch in that role.
+        sessions
+            .queue(launch("duplicate", Role::RemoteMonitor))
+            .unwrap();
+        assert!(!sessions.pending.contains_key("monitor"));
+        assert!(sessions.pending.contains_key("duplicate"));
         let game = sessions
             .start(launch("game", Role::Stream), Negotiated::default())
             .unwrap();
@@ -79,6 +80,28 @@ mod tests {
         assert!(!input.stopping());
         sessions.request_stop(Some("client"));
         assert!(input.stopping());
+    }
+    #[test]
+    fn a_new_launch_replaces_an_unconnected_launch_and_stops_an_abandoned_stream() {
+        let mut sessions = Sessions::default();
+        // A launch whose RTSP never arrived must not block the next attempt.
+        sessions.queue(launch("first", Role::Stream)).unwrap();
+        sessions.queue(launch("retry", Role::Stream)).unwrap();
+        assert_eq!(sessions.pending.keys().collect::<Vec<_>>(), ["retry"]);
+        // A stream the client abandoned is stopped when it launches again.
+        let old = sessions
+            .start(launch("retry", Role::Stream), Negotiated::default())
+            .unwrap();
+        sessions.queue(launch("resume", Role::Stream)).unwrap();
+        assert!(old.stopping());
+        assert!(sessions.pending.contains_key("resume"));
+        // Another client's stream is untouched.
+        let mut other = launch("other", Role::Stream);
+        other.client.uuid = "other-client".into();
+        sessions.queue(other.clone()).unwrap();
+        let other = sessions.start(other, Negotiated::default()).unwrap();
+        sessions.queue(launch("again", Role::Stream)).unwrap();
+        assert!(!other.stopping());
     }
 }
 #[derive(Clone)]
@@ -176,21 +199,31 @@ impl Sessions {
         self.pending
             .retain(|_, p| p.created.elapsed() < Duration::from_secs(30));
     }
+    /// Withdraw a client's launches and streams in one role. Moonlight starts a
+    /// stream only after abandoning its previous one, which may never have
+    /// connected or may not have timed out yet; either would otherwise block
+    /// the new attempt. Returns the streams asked to stop.
+    pub fn supersede(&mut self, client: &str, role: Role) -> Vec<Arc<Session>> {
+        self.pending
+            .retain(|_, p| p.client.uuid != client || p.role != role);
+        let stopped: Vec<_> = self
+            .active
+            .values()
+            .filter(|s| s.launch.client.uuid == client && s.launch.role == role)
+            .cloned()
+            .collect();
+        for session in &stopped {
+            session.stop();
+        }
+        stopped
+    }
+    /// Queue a launch, replacing the same client's earlier launch in its role.
     pub fn queue(&mut self, launch: Launch) -> Result<()> {
         self.expire();
-        if self.pending.len() + self.active.len() >= 16 {
+        self.supersede(&launch.client.uuid, launch.role);
+        let streaming = self.active.values().filter(|s| !s.stopping()).count();
+        if self.pending.len() + streaming >= 16 {
             bail!("session limit reached");
-        }
-        if self
-            .pending
-            .values()
-            .any(|p| p.client.uuid == launch.client.uuid && p.role == launch.role)
-            || self
-                .active
-                .values()
-                .any(|p| p.launch.client.uuid == launch.client.uuid && p.launch.role == launch.role)
-        {
-            bail!("client already has a session");
         }
         self.pending.insert(launch.id.clone(), launch);
         Ok(())
