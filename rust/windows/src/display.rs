@@ -369,6 +369,7 @@ impl Topology {
         positions: &std::collections::BTreeMap<String, butterpollo_core::topology::Position>,
     ) -> Result<()> {
         let monitors = self.monitors();
+        let mut moved = false;
         for monitor in monitors {
             let Some(position) = positions.get(&monitor.device_id) else {
                 continue;
@@ -385,12 +386,22 @@ impl Topology {
                     if source.infoType != DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE {
                         bail!("invalid display source mode");
                     }
-                    source.Anonymous.sourceMode.position = POINTL {
+                    let next = POINTL {
                         x: position.x,
                         y: position.y,
                     };
+                    let current = unsafe { source.Anonymous.sourceMode.position };
+                    if (current.x, current.y) != (next.x, next.y) {
+                        source.Anonymous.sourceMode.position = next;
+                        moved = true;
+                    }
                 }
             }
+        }
+        // Re-applying even an unchanged configuration lets Windows renegotiate
+        // display timings: a TV at 1080p120 HDR came back at 60 Hz.
+        if !moved {
+            return Ok(());
         }
         self.restore()
     }
@@ -477,6 +488,19 @@ impl Topology {
             .into_iter()
             .find(|m| m.matches(name))
             .context("display unavailable")?;
+        // Windows chooses the target timing itself, even for the mode a display
+        // already has, so a display already in this mode is left alone.
+        let applied = || -> Result<bool> {
+            let current = mode(&monitor.display_name)?;
+            let actual = Self::query()?.refresh(&monitor.device_id)?;
+            Ok(
+                (current.dmPelsWidth, current.dmPelsHeight) == (width, height)
+                    && actual.0.abs_diff(rate.0) <= 500,
+            )
+        };
+        if applied()? {
+            return Ok(());
+        }
         let (num, den) = rate.rational();
         for path in &mut topology.paths {
             if path.targetInfo.adapterId == monitor.adapter && path.targetInfo.id == monitor.target
@@ -498,7 +522,32 @@ impl Topology {
                 path.targetInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
             }
         }
-        topology.restore()
+        topology.restore()?;
+        if applied()? {
+            return Ok(());
+        }
+        // Windows reported success with another refresh rate: a TV whose native
+        // timing is 4K60 turns 1080p120 into 60 Hz, and a 240 Hz monitor can
+        // fall back to its 120 Hz default. The mode list applies the rate.
+        let hz = rate.0.saturating_add(500) / 1000;
+        tracing::debug!(output = %monitor.display_name, hz, "display rate applied through the mode list");
+        let mut next = mode(&monitor.display_name)?;
+        next.dmPelsWidth = width;
+        next.dmPelsHeight = height;
+        next.dmDisplayFrequency = hz;
+        next.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
+        apply_mode_with(&monitor.display_name, &next, CDS_TYPE(0))?;
+        if !applied()? {
+            let current = mode(&monitor.display_name)?;
+            bail!(
+                "display kept {}x{}@{} instead of {width}x{height}@{:.3}",
+                current.dmPelsWidth,
+                current.dmPelsHeight,
+                current.dmDisplayFrequency,
+                f64::from(rate.0) / 1000.
+            );
+        }
+        Ok(())
     }
     pub fn set_active(ids: &[String]) -> Result<()> {
         if ids.is_empty() {
@@ -878,53 +927,107 @@ impl Snapshot {
                 .filter(|m| preserve(&m.device_id))
                 .map(|m| m.device_id.clone()),
         );
-        Topology::set_active(&ids)?;
-        Topology::query()?.set_rotations(
-            &self
-                .rotation
-                .iter()
-                .filter(|(id, _)| !preserve(id))
-                .map(|(id, r)| (id.clone(), *r))
-                .collect(),
-        )?;
+        Topology::set_active(&ids).context("cannot activate the saved displays")?;
+        // A display that cannot take back its old setting must not leave the
+        // rest of the layout unrestored; report every such failure at the end.
+        let mut failures = Vec::new();
+        if let Err(error) = Topology::query().and_then(|mut t| {
+            t.set_rotations(
+                &self
+                    .rotation
+                    .iter()
+                    .filter(|(id, _)| !preserve(id))
+                    .map(|(id, r)| (id.clone(), *r))
+                    .collect(),
+            )
+        }) {
+            failures.push(format!("rotation: {error:#}"));
+        }
         let monitors = monitors()?;
         for n in &self.nodes {
             if preserve(&n.device_id) {
                 continue;
             }
-            if let Some(m) = monitors.iter().find(|m| m.device_id == n.device_id) {
+            let Some(m) = monitors.iter().find(|m| m.device_id == n.device_id) else {
+                continue;
+            };
+            let mut step = |what: &str, result: Result<()>| {
+                if let Err(error) = result {
+                    failures.push(format!(
+                        "{} ({}) {what}: {error:#}",
+                        n.label, m.display_name
+                    ));
+                }
+            };
+            step(
+                &format!(
+                    "mode {}x{}@{:.3}",
+                    n.mode.width, n.mode.height, n.mode.refresh_hz
+                ),
                 Topology::set_mode_rate(
                     &m.display_name,
                     n.mode.width,
                     n.mode.height,
                     butterpollo_core::framegen::Rate((n.mode.refresh_hz * 1000.0).round() as u32),
-                )?;
-                if let Some(enabled) = self.hdr.get(&n.device_id) {
-                    set_hdr(m, *enabled)?;
-                }
-                if let Some(percent) = self.scale.get(&n.device_id) {
-                    set_dpi_scale(m, *percent)?;
-                }
+                ),
+            );
+            if let Some(enabled) = self.hdr.get(&n.device_id) {
+                step(&format!("HDR {enabled}"), set_hdr(m, *enabled));
+            }
+            if let Some(percent) = self.scale.get(&n.device_id) {
+                step(&format!("scale {percent}%"), set_dpi_scale(m, *percent));
             }
         }
         let mut topology = Topology::query()?;
-        topology.set_positions(
-            &self
-                .nodes
-                .iter()
-                .filter(|n| !preserve(&n.device_id))
-                .map(|n| (n.device_id.clone(), n.desired_position))
-                .collect(),
-        )?;
+        topology
+            .set_positions(
+                &self
+                    .nodes
+                    .iter()
+                    .filter(|n| !preserve(&n.device_id))
+                    .map(|n| (n.device_id.clone(), n.desired_position))
+                    .collect(),
+            )
+            .context("cannot restore the display positions")?;
         topology = Topology::query()?;
-        topology.restore_clone_groups(
-            &self
-                .clone_groups
+        topology
+            .restore_clone_groups(
+                &self
+                    .clone_groups
+                    .iter()
+                    .filter(|group| group.iter().all(|id| !preserve(id)))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
+            .context("cannot restore the cloned displays")?;
+        // Moving displays can renegotiate a display's timing (a TV at 120 Hz
+        // came back at 60 Hz), so check every rate again.
+        for n in self.nodes.iter().filter(|n| !preserve(&n.device_id)) {
+            let Some(m) = monitors.iter().find(|m| m.device_id == n.device_id) else {
+                continue;
+            };
+            if failures
                 .iter()
-                .filter(|group| group.iter().all(|id| !preserve(id)))
-                .cloned()
-                .collect::<Vec<_>>(),
-        )
+                .any(|f| f.contains(&format!("({})", m.display_name)))
+            {
+                continue;
+            }
+            if let Err(error) = Topology::set_mode_rate(
+                &m.display_name,
+                n.mode.width,
+                n.mode.height,
+                butterpollo_core::framegen::Rate((n.mode.refresh_hz * 1000.0).round() as u32),
+            ) {
+                failures.push(format!(
+                    "{} ({}) mode after layout: {error:#}",
+                    n.label, m.display_name
+                ));
+            }
+        }
+        if !failures.is_empty() {
+            bail!("display layout restored except {}", failures.join("; "));
+        }
+        Ok(())
     }
 }
 
@@ -1141,15 +1244,12 @@ pub fn set_mode(name: &str, width: u32, height: u32, fps: u32) -> Result<()> {
     apply_mode(name, &next)
 }
 fn apply_mode(name: &str, mode: &DEVMODEW) -> Result<()> {
+    apply_mode_with(name, mode, CDS_FULLSCREEN)
+}
+fn apply_mode_with(name: &str, mode: &DEVMODEW, flags: CDS_TYPE) -> Result<()> {
     unsafe {
         let name: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
-        let result = ChangeDisplaySettingsExW(
-            PCWSTR(name.as_ptr()),
-            Some(mode),
-            None,
-            CDS_FULLSCREEN,
-            None,
-        );
+        let result = ChangeDisplaySettingsExW(PCWSTR(name.as_ptr()), Some(mode), None, flags, None);
         if result != DISP_CHANGE_SUCCESSFUL {
             bail!("Windows refused the requested display mode ({})", result.0);
         }
