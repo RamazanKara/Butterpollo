@@ -30,6 +30,10 @@ pub fn run(program: &str, args: &[&str], timeout: Duration) -> Result<i32> {
     line(format!("> {program} {}", args.join(" ")));
     let mut child = Command::new(program)
         .args(args)
+        // A PowerShell 7 parent (a script running setup) leaves its module
+        // path behind, and Windows PowerShell 5.1 then fails to load its own
+        // modules: the driver scripts could not check signatures.
+        .env_remove("PSModulePath")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -82,44 +86,88 @@ pub fn run(program: &str, args: &[&str], timeout: Duration) -> Result<i32> {
     line(format!("  exit code {code}"));
     Ok(code)
 }
-/// Run a program and also return what it printed (for driver scripts that
-/// report a needed restart).
-pub fn run_output(program: &str, args: &[&str], timeout: Duration) -> Result<(i32, String)> {
-    line(format!("> {program} {}", args.join(" ")));
-    let child = Command::new(program)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .with_context(|| format!("starting {program}"))?;
-    let pid = child.id();
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = sender.send(child.wait_with_output());
-    });
-    let output = match receiver.recv_timeout(timeout) {
-        Ok(output) => output?,
-        Err(_) => {
-            let _ = run(
-                "taskkill.exe",
-                &["/F", "/T", "/PID", &pid.to_string()],
-                Duration::from_secs(10),
-            );
-            bail!("{program} did not finish within {} s", timeout.as_secs());
-        }
-    };
-    let text = String::from_utf8_lossy(&output.stdout).into_owned()
-        + &String::from_utf8_lossy(&output.stderr);
-    if !text.trim().is_empty() {
-        line(text.trim_end());
+/// Run a program as LocalSystem through a one-time scheduled task and return
+/// its exit code and output. Vibepollo's driver scripts run as SYSTEM under
+/// Windows Installer: as an administrator, the display driver's health
+/// check cannot open the driver and needlessly reinstalls it.
+pub fn run_as_system(program: &str, args: &[&str], timeout: Duration) -> Result<(i32, String)> {
+    static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let work = program_data().join("Butterpollo").join("setup-tasks");
+    std::fs::create_dir_all(&work)?;
+    let id = format!(
+        "ButterpolloSetup-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let log = work.join(format!("{id}.log"));
+    let script = work.join(format!("{id}.cmd"));
+    let command = std::iter::once(program)
+        .chain(args.iter().copied())
+        .map(|a| {
+            if a.is_empty() || a.contains([' ', '\t']) {
+                format!("\"{a}\"")
+            } else {
+                a.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let _ = std::fs::remove_file(&log);
+    std::fs::write(
+        &script,
+        format!(
+            // The redirection comes first: "...=0>> file" would redirect handle 0.
+            "@echo off\r\n{command} > \"{log}\" 2>&1\r\n>> \"{log}\" echo BUTTERPOLLO-EXIT=%ERRORLEVEL%\r\n",
+            log = log.display()
+        ),
+    )?;
+    line(format!("as SYSTEM> {command}"));
+    let schtasks = system32("schtasks.exe");
+    let task = format!("\"{}\"", script.display());
+    let created = run(
+        &schtasks,
+        &[
+            "/Create", "/TN", &id, "/TR", &task, "/SC", "ONCE", "/ST", "23:59", "/RU", "SYSTEM",
+            "/RL", "HIGHEST", "/F",
+        ],
+        Duration::from_secs(60),
+    )?;
+    if created != 0 {
+        bail!("creating the setup task failed ({created})");
     }
-    let code = output.status.code().unwrap_or(-1);
-    line(format!("  exit code {code}"));
-    Ok((code, text))
+    let result = (|| -> Result<(i32, String)> {
+        if run(&schtasks, &["/Run", "/TN", &id], Duration::from_secs(60))? != 0 {
+            bail!("starting the setup task failed");
+        }
+        let deadline = Instant::now() + timeout;
+        loop {
+            let text = std::fs::read(&log)
+                .map(|b| String::from_utf8_lossy(&b).into_owned())
+                .unwrap_or_default();
+            if let Some(index) = text.rfind("BUTTERPOLLO-EXIT=") {
+                let code = text[index + 17..].trim().parse().unwrap_or(-1);
+                let output = text[..index].to_owned();
+                if !output.trim().is_empty() {
+                    line(output.trim_end());
+                }
+                line(format!("  exit code {code}"));
+                return Ok((code, output));
+            }
+            if Instant::now() >= deadline {
+                bail!("{program} did not finish within {} s", timeout.as_secs());
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    })();
+    let _ = run(
+        &schtasks,
+        &["/Delete", "/TN", &id, "/F"],
+        Duration::from_secs(60),
+    );
+    let _ = std::fs::remove_file(&script);
+    let _ = std::fs::remove_file(&log);
+    result
 }
-
 pub fn elevated() -> bool {
     unsafe { IsUserAnAdmin().as_bool() }
 }

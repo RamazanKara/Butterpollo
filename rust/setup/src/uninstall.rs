@@ -77,7 +77,7 @@ pub fn uninstall(options: &Options, progress: &Progress) -> Result<()> {
                     path.as_str(),
                 ];
                 arguments.extend(args);
-                let _ = system::run(&powershell, &arguments, Duration::from_secs(600));
+                let _ = system::run_as_system(&powershell, &arguments, Duration::from_secs(600));
             }
         }
     }

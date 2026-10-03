@@ -232,10 +232,10 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
             &["-InstallerBestEffort"],
             &mut notes,
             "virtual display",
-        )?;
+        );
         // The host registers its own HDR Vulkan layer; Vibepollo's must not
         // be active at the same time.
-        let _ = run_driver_script(
+        run_driver_script(
             &script,
             &["-UnregisterVulkanLayerOnly"],
             &mut Vec::new(),
@@ -249,7 +249,7 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
             &["-InstallerBestEffort", "-AllowLocalTestCertificate:0"],
             &mut notes,
             "virtual gamepad",
-        )?;
+        );
     }
 
     progress.set("Adding Butterpollo to Start and Apps…");
@@ -358,14 +358,10 @@ fn copy_tree(source: &Path, target: &Path) -> Result<()> {
     }
     Ok(())
 }
-/// Run a Vibepollo driver script. Its best-effort mode never fails; its
-/// output says when Windows needs a restart.
-fn run_driver_script(
-    script: &Path,
-    args: &[&str],
-    notes: &mut Vec<String>,
-    name: &str,
-) -> Result<bool> {
+/// Run a Vibepollo driver script as SYSTEM. A failure is reported, not
+/// fatal: the host still starts without the driver. Returns whether Windows
+/// needs a restart.
+fn run_driver_script(script: &Path, args: &[&str], notes: &mut Vec<String>, name: &str) -> bool {
     let script = script.display().to_string();
     let mut arguments = vec![
         "-NoLogo",
@@ -377,20 +373,28 @@ fn run_driver_script(
         script.as_str(),
     ];
     arguments.extend_from_slice(args);
-    let (code, output) = system::run_output(
+    let result = system::run_as_system(
         &format!(
             "{}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
             std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into())
         ),
         &arguments,
         Duration::from_secs(600),
-    )?;
+    );
+    let (code, output) = match result {
+        Ok(result) => result,
+        Err(error) => {
+            line(format!("warning: {error:#}"));
+            notes.push(format!("The {name} driver could not be set up: {error:#}"));
+            return false;
+        }
+    };
     if output.contains("DRIVER_WARNING") || code != 0 {
         notes.push(format!(
             "The {name} driver reported a problem; see the setup log."
         ));
     }
-    Ok(output.contains("RESTART_REQUIRED") || output.contains("A reboot is required"))
+    output.contains("RESTART_REQUIRED") || output.contains("A reboot is required")
 }
 fn remove_legacy(product: &crate::detect::Product) -> Result<()> {
     let command = product
