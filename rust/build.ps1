@@ -173,6 +173,19 @@ try {
         Copy-Item -LiteralPath (Join-Path $repo 'rust\vulkan-layer\VkLayer_butterpollo_hdr.json') -Destination "$distribution\vulkan-layer"
         Get-ChildItem -LiteralPath (Join-Path $repo 'src_assets\common\assets') -File | Where-Object { $_.Extension -in '.png','.ico' } | Copy-Item -Destination "$distribution\assets"
         Copy-Item -LiteralPath (Join-Path $repo 'src_assets\common\assets\remote-session') -Destination "$distribution\assets\remote-session" -Recurse -Force
+        # The web console, built in a copy: node_modules made by a WSL checkout
+        # holds Linux binaries.
+        $webBuild = Join-Path $TargetDirectory 'web-build'
+        & robocopy (Join-Path $repo 'rust\web') $webBuild /MIR /XD node_modules dist /NFL /NDL /NJH /NJS /NP | Out-Null
+        if ($LASTEXITCODE -ge 8) { throw "Copying the web console failed with $LASTEXITCODE" }
+        Push-Location -LiteralPath $webBuild
+        try {
+            & npm ci --no-audit --no-fund
+            Assert-NativeExit 'Web console dependencies'
+            & npm run build
+            Assert-NativeExit 'Web console build'
+        } finally { Pop-Location }
+        Copy-Item -Path (Join-Path $webBuild 'dist\*') -Destination "$distribution\assets\web" -Recurse -Force
         Copy-Item -LiteralPath (Join-Path $repo 'LICENSE') -Destination "$distribution\licenses\Butterpollo.txt"
         Copy-Item -LiteralPath (Join-Path $repo 'rust\README.md') -Destination $distribution
         Copy-Item -LiteralPath (Join-Path $repo 'rust\RELEASE_NOTES.md') -Destination $distribution
