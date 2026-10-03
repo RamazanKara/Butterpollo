@@ -55,6 +55,10 @@ struct Args {
     virtual_display_smoke: bool,
     #[arg(long)]
     no_tray: bool,
+    /// Set the web console's username and password, then exit. Without
+    /// --config-dir this changes the installed host's profile.
+    #[arg(long, num_args = 2, value_names = ["USERNAME", "PASSWORD"])]
+    creds: Option<Vec<String>>,
     #[arg(long, hide = true)]
     service_stop_source: Option<String>,
     #[arg(long, hide = true)]
@@ -111,20 +115,41 @@ async fn main() -> Result<()> {
     if args.capture_smoke || args.encoder_smoke.is_some() {
         return smoke(&args);
     }
-    let supervised = args.service_stop_source.is_some();
-    let stop_signal =
-        butterpollo_windows::process::StopSignal::new(args.service_stop_source.as_deref())?;
-    let directory = args.config_dir.unwrap_or_else(|| {
-        PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default())
-            .join("ButterpolloRust/config")
-    });
-    let assets = args.assets.unwrap_or_else(|| {
+    let assets = args.assets.clone().unwrap_or_else(|| {
         std::env::current_exe()
             .unwrap()
             .parent()
             .unwrap()
             .join("assets/web")
     });
+    if let Some(creds) = &args.creds {
+        // The service's profile, unless another one is named.
+        let directory = args.config_dir.clone().unwrap_or_else(|| {
+            let installed = PathBuf::from(std::env::var_os("PROGRAMDATA").unwrap_or_default())
+                .join("Butterpollo/config");
+            if installed.join("sunshine.conf").is_file() {
+                installed
+            } else {
+                default_directory()
+            }
+        });
+        let h = state::Host::load(directory, assets, args.port)?;
+        let credentials = butterpollo_core::state::Credentials::new(creds[0].clone(), &creds[1])?;
+        // As with a password change in the console, signed-in browsers sign
+        // in again.
+        h.save_web_sessions(&Default::default())?;
+        h.save_credentials(&credentials)
+            .context("saving the credentials (an installed host needs an administrator)")?;
+        println!(
+            "Saved the web console credentials in {}. Restart Butterpollo if it is running.",
+            h.directory.display()
+        );
+        return Ok(());
+    }
+    let supervised = args.service_stop_source.is_some();
+    let stop_signal =
+        butterpollo_windows::process::StopSignal::new(args.service_stop_source.as_deref())?;
+    let directory = args.config_dir.unwrap_or_else(default_directory);
     let h = state::Host::load(directory, assets, args.port)?;
     butterpollo_windows::crash::initialize(&h.directory)?;
     butterpollo_windows::display_recovery::initialize(&h.directory)?;
@@ -150,6 +175,15 @@ async fn main() -> Result<()> {
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
+    // The service's keys: SYSTEM and Administrators only, also after a
+    // profile was copied in or restored from a backup.
+    let credentials = h.directory.join("credentials");
+    if butterpollo_windows::process::is_system()
+        && credentials.is_dir()
+        && let Err(error) = butterpollo_windows::process::restrict_to_administrators(&credentials)
+    {
+        tracing::warn!(%error, "the credentials folder permissions could not be repaired");
+    }
     let ports = h.config.read().unwrap().ports()?;
     if let Err(error) = butterpollo_windows::vulkan::reconcile(
         h.config.read().unwrap().boolean("vulkan_hdr_layer", true),
@@ -268,6 +302,11 @@ async fn main() -> Result<()> {
         }
     }
     outcome
+}
+/// A portable host's profile.
+fn default_directory() -> PathBuf {
+    PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default())
+        .join("ButterpolloRust/config")
 }
 fn smoke(args: &Args) -> Result<()> {
     let _com = butterpollo_windows::capture::ComGuard::new()?;

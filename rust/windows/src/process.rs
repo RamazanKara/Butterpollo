@@ -88,6 +88,51 @@ pub fn is_system() -> bool {
         IsWellKnownSid(user.User.Sid, WinLocalSystemSid).as_bool()
     }
 }
+/// Give only SYSTEM and Administrators access to `folder` and the files in
+/// it, replacing inherited permissions, as Vibepollo does for the service's
+/// credentials.
+pub fn restrict_to_administrators(folder: &Path) -> Result<()> {
+    use windows::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SE_FILE_OBJECT, SetNamedSecurityInfoW,
+    };
+    let sddl = wide(std::ffi::OsStr::new("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"))?;
+    let path = wide(folder.as_os_str())?;
+    let mut descriptor = PSECURITY_DESCRIPTOR::default();
+    unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            PCWSTR(sddl.as_ptr()),
+            1,
+            &mut descriptor,
+            None,
+        )?;
+        let result = (|| -> Result<()> {
+            let mut present = BOOL(0);
+            let mut defaulted = BOOL(0);
+            let mut dacl: *mut ACL = std::ptr::null_mut();
+            GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted)?;
+            // Inheritable entries reach the files already in the folder.
+            let status = SetNamedSecurityInfoW(
+                PCWSTR(path.as_ptr()),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                None,
+                None,
+                Some(dacl),
+                None,
+            );
+            if status != ERROR_SUCCESS {
+                bail!(
+                    "setting permissions on {} failed: {:?}",
+                    folder.display(),
+                    status
+                );
+            }
+            Ok(())
+        })();
+        let _ = LocalFree(Some(HLOCAL(descriptor.0)));
+        result
+    }
+}
 pub enum Target {
     User { elevated: bool },
     SystemSession(u32),
