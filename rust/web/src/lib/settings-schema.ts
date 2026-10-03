@@ -4,6 +4,7 @@ import type { Category, Schema } from './settings-types';
 import { settings as basics } from './schema/basics';
 import { settings as video } from './schema/video';
 import { settings as display } from './schema/display';
+import { settings as library } from './schema/library';
 
 const categories: Category[] = [
   { id: 'general', label: 'General', description: 'Host name, language, tray icon, updates and logging.' },
@@ -16,10 +17,11 @@ const categories: Category[] = [
   { id: 'audio', label: 'Audio', description: 'Which device is captured and where the host plays sound.' },
   { id: 'input', label: 'Input', description: 'Keyboard, mouse, touch, pen and controllers.' },
   { id: 'commands', label: 'Commands', description: 'Commands run around every app and commands clients may run.' },
+  { id: 'library', label: 'Game library', description: 'Games added from Steam and other launchers.' },
   { id: 'advanced', label: 'Advanced', description: 'Rarely needed options and settings this console does not describe.' },
 ];
 
 export const schema: Schema = {
   categories,
-  settings: [...basics, ...video, ...display],
+  settings: [...basics, ...video, ...display, ...library],
 };

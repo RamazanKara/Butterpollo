@@ -241,6 +241,19 @@ export interface PendingPairing {
   age_seconds: number;
 }
 
+export interface SteamStatus {
+  status: true;
+  enabled: boolean;
+  /** Whether Steam is installed on the host. */
+  available: boolean;
+  game_count: number;
+  importable_game_count: number;
+  selected_game_count: number;
+  auto_sync: boolean;
+  sync_all_installed: boolean;
+  recent_games: number;
+}
+
 export interface PerfSample {
   fps: number;
   bitrate_mbps: number;
@@ -410,6 +423,14 @@ export const api = {
       post<{ status: true; path: string }>('/api/covers/upload', { key, ...source }),
     rtxLive: (uuid: string, overrides: Record<string, string | number | boolean>) =>
       post<{ status: true; applied: boolean }>('/api/apps/rtx_hdr/live', { uuid, 'config-overrides': overrides }),
+  },
+  steam: {
+    status: () => get<SteamStatus>('/api/steam/status'),
+    sync: () =>
+      post<{ status: true; changed: boolean; game_count: number; importable_game_count: number }>(
+        '/api/steam/force_sync',
+        {},
+      ),
   },
   clients: {
     list: () => get<{ status: true; clients: Client[] }>('/api/clients/list'),

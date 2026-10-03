@@ -6,6 +6,7 @@
   import Panel from '../components/Panel.svelte';
   import AppEditor from '../components/library/AppEditor.svelte';
   import LibraryGrid from '../components/library/LibraryGrid.svelte';
+  import SteamSource from '../components/library/SteamSource.svelte';
   import { api, type App, type SessionStatus } from '../lib/api';
   import { failed } from '../lib/feedback.svelte';
   import { poll } from '../lib/format';
@@ -100,6 +101,8 @@
       <Button size="sm" onclick={load}>Retry</Button>
     </div>
   {/if}
+
+  <SteamSource onsynced={load} />
 
   {#if apps === null}
     {#if !loadError}<p class="muted placeholder">Loading apps…</p>{/if}

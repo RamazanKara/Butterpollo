@@ -206,6 +206,13 @@
     {/snippet}
   </PageHeader>
 
+  {#if app?.['steam-managed'] === 'auto'}
+    <p class="notice">
+      The Steam sync keeps this app in step with Steam and replaces its name, command and cover at each sync; other
+      settings stay. To keep your own name or command, add the game as a new app: the sync leaves apps you add alone.
+    </p>
+  {/if}
+
   <form class="sections" onsubmit={save} aria-label={isNew ? 'New app' : `Edit ${savedName}`}>
     <div class="top">
       <Panel title="General">

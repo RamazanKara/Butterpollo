@@ -12,6 +12,7 @@ export type CategoryId =
   | 'audio'
   | 'input'
   | 'commands'
+  | 'library'
   | 'advanced';
 
 export interface Category {
