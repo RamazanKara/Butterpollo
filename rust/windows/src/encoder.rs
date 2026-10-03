@@ -680,6 +680,24 @@ impl Encoder {
             _ => false,
         }
     }
+    /// A GPU encoder, rather than FFmpeg's software codecs.
+    pub fn hardware(&self) -> bool {
+        match self {
+            Self::Ffmpeg(e) => e.name.ends_with("_nvenc") || e.name.ends_with("_qsv"),
+            _ => true,
+        }
+    }
+    /// The encoder family, as the encoder setting names it.
+    pub fn backend(&self) -> &'static str {
+        match self {
+            Self::Amf(_) => "amf",
+            Self::Nvenc(_) => "nvenc",
+            Self::Pyrowave(_) => "pyrowave",
+            Self::Ffmpeg(e) if e.name.ends_with("_nvenc") => "nvenc_legacy",
+            Self::Ffmpeg(e) if e.name.ends_with("_qsv") => "qsv",
+            Self::Ffmpeg(_) => "software",
+        }
+    }
     pub fn supports_invalidation(&self) -> bool {
         match self {
             Self::Amf(e) => e.supports_invalidation(),

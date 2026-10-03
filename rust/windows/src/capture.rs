@@ -211,25 +211,36 @@ pub struct Image {
 pub struct Device {
     pub device: ID3D11Device,
     pub context: ID3D11DeviceContext,
-    pub output: IDXGIOutput1,
+    /// The monitor the device was opened for; absent on a host without one,
+    /// where the device can still encode.
+    pub output: Option<IDXGIOutput1>,
     pub display: Display,
 }
 impl Device {
+    /// The monitor this device captures.
+    pub fn output(&self) -> Result<&IDXGIOutput1> {
+        self.output
+            .as_ref()
+            .context("no monitor is attached to this GPU")
+    }
     /// Read the selected output's luminance; conversion produces Rec.2020/D65.
     pub fn hdr_metadata(&self) -> butterpollo_core::hdr::Metadata {
-        unsafe {
-            self.output
-                .cast::<IDXGIOutput6>()
-                .and_then(|output| output.GetDesc1())
-        }
-        .map(|desc| {
-            butterpollo_core::hdr::Metadata::display(
-                desc.MaxLuminance,
-                desc.MinLuminance,
-                desc.MaxFullFrameLuminance,
-            )
-        })
-        .unwrap_or_default()
+        self.output
+            .as_ref()
+            .and_then(|output| unsafe {
+                output
+                    .cast::<IDXGIOutput6>()
+                    .and_then(|output| output.GetDesc1())
+                    .ok()
+            })
+            .map(|desc| {
+                butterpollo_core::hdr::Metadata::display(
+                    desc.MaxLuminance,
+                    desc.MinLuminance,
+                    desc.MaxFullFrameLuminance,
+                )
+            })
+            .unwrap_or_default()
     }
     pub fn new(name: &str) -> Result<Self> {
         Self::new_adapter(name, "", "")
@@ -237,16 +248,18 @@ impl Device {
     pub fn new_adapter(name: &str, adapter_name: &str, pnp_id: &str) -> Result<Self> {
         unsafe {
             let choices = displays()?;
-            let mut display = choices
+            let Some(display) = choices
                 .iter()
                 .find(|d| d.display_name == name || d.device_id == name)
                 .or_else(|| choices.iter().find(|d| d.primary))
                 .or_else(|| choices.first())
-                .context("no desktop display")?
-                .clone();
+            else {
+                return Self::without_display(adapter_name, pnp_id);
+            };
+            let mut display = display.clone();
             let factory: IDXGIFactory1 = CreateDXGIFactory1()?;
             let adapter = factory.EnumAdapters1(display.adapter_index)?;
-            let output = adapter.EnumOutputs(display.output_index)?.cast()?;
+            let output = Some(adapter.EnumOutputs(display.output_index)?.cast()?);
             let adapter = if adapter_name.is_empty() && pnp_id.is_empty() {
                 adapter
             } else {
@@ -280,10 +293,59 @@ impl Device {
                 matches.remove(0)
             };
             display.adapter = wide(&adapter.GetDesc1()?.Description);
+            Self::create(&adapter, output, display)
+        }
+    }
+    /// A device on the configured GPU, or the first hardware GPU, when no
+    /// monitor is connected: the host can still probe its encoders, as
+    /// Vibepollo does on headless hosts.
+    fn without_display(adapter_name: &str, pnp_id: &str) -> Result<Self> {
+        unsafe {
+            let factory: IDXGIFactory1 = CreateDXGIFactory1()?;
+            for index in 0..32 {
+                let Ok(adapter) = factory.EnumAdapters1(index) else {
+                    break;
+                };
+                let desc = adapter.GetDesc1()?;
+                let description = wide(&desc.Description);
+                if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0
+                    || (!pnp_id.is_empty()
+                        && !adapter_pnp_id(desc.AdapterLuid)
+                            .is_some_and(|id| id.eq_ignore_ascii_case(pnp_id)))
+                    || (pnp_id.is_empty()
+                        && !adapter_name.is_empty()
+                        && description != adapter_name)
+                {
+                    continue;
+                }
+                let display = Display {
+                    device_id: String::new(),
+                    display_name: String::new(),
+                    friendly_name: String::new(),
+                    width: 0,
+                    height: 0,
+                    x: 0,
+                    y: 0,
+                    primary: false,
+                    adapter: description,
+                    adapter_index: index,
+                    output_index: 0,
+                };
+                return Self::create(&adapter, None, display);
+            }
+            bail!("no desktop display or hardware GPU")
+        }
+    }
+    fn create(
+        adapter: &IDXGIAdapter1,
+        output: Option<IDXGIOutput1>,
+        display: Display,
+    ) -> Result<Self> {
+        unsafe {
             let mut device = None;
             let mut context = None;
             D3D11CreateDevice(
-                &adapter,
+                adapter,
                 D3D_DRIVER_TYPE_UNKNOWN,
                 HMODULE::default(),
                 D3D11_CREATE_DEVICE_BGRA_SUPPORT,
@@ -326,9 +388,9 @@ impl Duplication {
         Self::new_device(gpu, hdr)
     }
     fn new_device(gpu: Device, hdr: bool) -> Result<Self> {
+        let output = gpu.output()?.clone();
         let native_hdr = hdr
-            && gpu
-                .output
+            && output
                 .cast::<IDXGIOutput6>()
                 .and_then(|output| unsafe { output.GetDesc1() })
                 .is_ok_and(|desc| desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020);
@@ -343,14 +405,12 @@ impl Duplication {
         let duplicate = unsafe {
             // DuplicateOutput1 needs a per-monitor DPI-aware process; fall back
             // to the legacy call rather than fail where it is refused.
-            match gpu
-                .output
+            match output
                 .cast::<IDXGIOutput5>()
                 .and_then(|output| output.DuplicateOutput1(&gpu.device, 0, formats))
             {
                 Ok(duplicate) => duplicate,
-                Err(_) => gpu
-                    .output
+                Err(_) => output
                     .DuplicateOutput(&gpu.device)
                     .context("opening Desktop Duplication")?,
             }
@@ -746,9 +806,9 @@ impl Wgc {
     }
     fn new_device(gpu: Device, hdr: bool) -> Result<Self> {
         unsafe {
-            let d = gpu.output.GetDesc()?;
-            let color_space = gpu
-                .output
+            let output = gpu.output()?.clone();
+            let d = output.GetDesc()?;
+            let color_space = output
                 .cast::<IDXGIOutput6>()
                 .and_then(|output| output.GetDesc1())
                 .map(|desc| desc.ColorSpace)
@@ -895,8 +955,9 @@ impl Wgc {
         self.color_check = Instant::now() + Duration::from_secs(1);
         let current = unsafe {
             self.gpu
-                .output
-                .cast::<IDXGIOutput6>()
+                .output()
+                .map_err(|_| windows::core::Error::from(windows::Win32::Foundation::E_FAIL))
+                .and_then(|output| output.cast::<IDXGIOutput6>())
                 .and_then(|output| output.GetDesc1())
         }
         .map(|desc| desc.ColorSpace)

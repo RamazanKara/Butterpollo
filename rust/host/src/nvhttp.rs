@@ -276,7 +276,15 @@ async fn serverinfo(
         ),
         ("LocalIP", local_ip),
         ("mac", mac),
-        ("MaxLumaPixelsHEVC", "1869449984".into()),
+        (
+            "MaxLumaPixelsHEVC",
+            if h.codecs.load(std::sync::atomic::Ordering::Acquire) & 0x100 != 0 {
+                "1869449984"
+            } else {
+                "0"
+            }
+            .into(),
+        ),
         (
             "ServerCodecModeSupport",
             (h.codecs.load(std::sync::atomic::Ordering::Acquire) & !0x40000000).to_string(),

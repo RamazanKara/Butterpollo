@@ -148,9 +148,12 @@ async fn connection(
                     flags & 0x800000 != 0,
                 )
                 .into_bytes();
+                // NVENC recovers lost references whenever the driver can, as
+                // in Vibepollo; AMF only with long-term references enabled.
+                let backend = *h.probed_encoder.lock().unwrap();
                 if flags & 0x40000000 != 0
-                    && config.integer("amd_ltr_frames", 0) > 0
-                    && matches!(config.get("encoder", "auto"), "amf" | "auto" | "")
+                    && (backend == "nvenc"
+                        || (backend == "amf" && config.integer("amd_ltr_frames", 0) > 0))
                 {
                     body.extend_from_slice(b"a=x-nv-video[0].refPicInvalidation:1\r\n");
                 }

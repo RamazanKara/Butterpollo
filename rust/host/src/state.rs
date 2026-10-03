@@ -63,6 +63,8 @@ pub struct Host {
     pub monitors: Mutex<BTreeMap<String, Arc<butterpollo_windows::display::Retained>>>,
     pub updates: Mutex<Value>,
     pub metadata: Mutex<Option<(Instant, Value)>>,
+    /// The encoder family the capability probe selected for H.264.
+    pub probed_encoder: Mutex<&'static str>,
     pub assets: PathBuf,
 }
 impl Host {
@@ -187,6 +189,7 @@ impl Host {
             ),
             assets,
             metadata: Mutex::new(None),
+            probed_encoder: Mutex::new(""),
         }))
     }
     pub fn assign_apps(&self, apps: &mut [App]) -> Result<()> {
@@ -252,12 +255,20 @@ impl Host {
                 pixel: butterpollo_windows::capture::Pixel::Bgra8,
             };
             let mut flags = 0u32;
+            let software = config.get("encoder", "auto") == "software";
+            // Bits follow moonlight-common-c's SCM_* values; each 4:4:4 mode
+            // is probed only after its 4:2:0 mode works.
             for (codec, hdr, yuv444, bit) in [
                 (0, false, false, 1),
                 (1, false, false, 0x100),
                 (1, true, false, 0x200),
                 (2, false, false, 0x10000),
                 (2, true, false, 0x20000),
+                (0, false, true, 0x40000),
+                (1, false, true, 0x80000),
+                (1, true, true, 0x100000),
+                (2, false, true, 0x200000),
+                (2, true, true, 0x400000),
                 (3, false, false, 0x800000),
                 (3, false, true, 0x1000000),
                 (3, true, false, 0x2000000),
@@ -274,6 +285,16 @@ impl Host {
                     continue;
                 }
                 if codec == 3 && !config.boolean("pyrowave", true) {
+                    continue;
+                }
+                let base = match (codec, hdr) {
+                    (0, _) => 1,
+                    (1, false) => 0x100,
+                    (1, true) => 0x200,
+                    (2, false) => 0x10000,
+                    _ => 0x20000,
+                };
+                if codec != 3 && yuv444 && flags & base == 0 {
                     continue;
                 }
                 if h.stop.load(std::sync::atomic::Ordering::Acquire) {
@@ -295,7 +316,19 @@ impl Host {
                     config.get("output_name", ""),
                     &config,
                 ) {
+                    // A 4:4:4 stream must not quietly fall back to software
+                    // encoding; advertise it only from a hardware encoder.
+                    Ok(encoder) if codec != 3 && yuv444 && !software && !encoder.hardware() => {
+                        tracing::debug!(
+                            codec,
+                            hdr,
+                            "4:4:4 needs a hardware encoder; not advertised"
+                        );
+                    }
                     Ok(mut encoder) => {
+                        if codec == 0 && !yuv444 {
+                            *h.probed_encoder.lock().unwrap() = encoder.backend();
+                        }
                         for frame in 0..8 {
                             match encoder.encode(&image, frame == 0, negotiated.bitrate_kbps) {
                                 Ok(packets) if !packets.is_empty() => {
@@ -313,6 +346,10 @@ impl Host {
                                 _ => std::thread::sleep(Duration::from_millis(5)),
                             }
                         }
+                    }
+                    // Most GPUs cannot encode 4:4:4; that is not a fault.
+                    Err(error) if yuv444 => {
+                        tracing::debug!(%error, codec, hdr, "4:4:4 encoding unavailable")
                     }
                     Err(error) => {
                         tracing::warn!(%error, codec, hdr, "encoder capability initialization failed")

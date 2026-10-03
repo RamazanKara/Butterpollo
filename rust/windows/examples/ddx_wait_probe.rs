@@ -12,7 +12,7 @@ fn main() -> anyhow::Result<()> {
 
     let _com = ComGuard::new()?;
     let gpu = Device::new("")?;
-    let duplication = unsafe { gpu.output.DuplicateOutput(&gpu.device)? };
+    let duplication = unsafe { gpu.output()?.DuplicateOutput(&gpu.device)? };
     let timer = butterpollo_windows::timing::Timer::new()?;
     let mut cases = vec![];
     for timeout_ms in [0, 1, 2, 4] {
