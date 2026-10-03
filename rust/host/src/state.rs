@@ -123,7 +123,19 @@ impl Host {
         let apps_path = config.path("file_apps", &directory, "apps.json");
         let aliases_path = config.path("vibeshine_file_state", &directory, "vibeshine_state.json");
         let mut aliases = butterpollo_core::state::load_json(&aliases_path, json!({"root":{}}))?;
-        let paired = PairedState::load(&paired_path)?;
+        let mut paired = PairedState::load(&paired_path)?;
+        // Vibepollo keeps the shared virtual display's GUID in
+        // vibeshine_state.json; reuse it so Windows keeps that display's
+        // settings.
+        if paired.document["root"]["shared_virtual_display_guid"]
+            .as_str()
+            .is_none()
+            && let Some(id) = aliases["root"]["shared_virtual_display_guid"]
+                .as_str()
+                .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+        {
+            paired.document["root"]["shared_virtual_display_guid"] = id.into();
+        }
         paired.save(&paired_path)?;
         let certificate = config.path("cert", &directory, "credentials/cacert.pem");
         let key = config.path("pkey", &directory, "credentials/cakey.pem");
@@ -134,7 +146,7 @@ impl Host {
         } else {
             None
         };
-        let app_document = butterpollo_core::state::load_json(
+        let app_document = load_library(
             &apps_path,
             // Vibepollo's default library.
             json!({"env":{},"apps":[
@@ -500,5 +512,64 @@ impl Host {
         self.save_web_sessions(&next)?;
         *sessions = next;
         Ok((access, refresh, csrf, refresh_deadline.saturating_sub(wall)))
+    }
+}
+/// The app library. One that cannot be read as a library starts the host
+/// with no apps, as in Vibepollo, rather than keeping the host and its web
+/// console down; the file is copied beside it so a later save cannot lose it.
+fn load_library(path: &std::path::Path, default: Value) -> Result<Value> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(default),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let parsed = serde_json::from_slice::<Value>(&bytes)
+        .map_err(anyhow::Error::from)
+        .and_then(|document| {
+            serde_json::from_value::<Vec<App>>(document.get("apps").cloned().unwrap_or(json!([])))?;
+            Ok(document)
+        });
+    match parsed {
+        Ok(document) => Ok(document),
+        Err(error) => {
+            let mut kept = path.as_os_str().to_owned();
+            kept.push(".invalid");
+            let kept = PathBuf::from(kept);
+            butterpollo_core::state::atomic_write(&kept, &bytes)?;
+            tracing::error!(
+                error = %format!("{error:#}"),
+                file = %path.display(),
+                kept = %kept.display(),
+                "the app library is not valid; starting with no apps"
+            );
+            Ok(json!({"env":{},"apps":[]}))
+        }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn an_invalid_library_starts_empty_and_is_kept() {
+        let dir = std::env::temp_dir().join(format!("butterpollo-apps-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("apps.json");
+        let default = json!({"apps":[{"name":"Desktop"}]});
+        assert_eq!(load_library(&path, default.clone()).unwrap(), default);
+        std::fs::write(&path, b"{\"apps\":[{\"name\":\"Game\",}]}").unwrap();
+        assert_eq!(
+            load_library(&path, default.clone()).unwrap()["apps"],
+            json!([])
+        );
+        assert_eq!(
+            std::fs::read(dir.join("apps.json.invalid")).unwrap(),
+            b"{\"apps\":[{\"name\":\"Game\",}]}"
+        );
+        std::fs::write(&path, b"{\"apps\":[{\"name\":\"Game\"}]}").unwrap();
+        assert_eq!(
+            load_library(&path, default).unwrap()["apps"][0]["name"],
+            "Game"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
