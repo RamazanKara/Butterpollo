@@ -27,7 +27,19 @@ pub async fn serve(address: SocketAddr, h: Shared, media: Arc<crate::stream::Med
         let configs = configurations.clone();
         tokio::spawn(async move {
             if let Err(e) = connection(socket, peer, h, media, configs).await {
-                tracing::debug!(%peer,error=%e,"RTSP connection closed");
+                // A client closing a connection early is routine; anything else
+                // prevents a stream from starting and must be visible.
+                let closed = e.downcast_ref::<std::io::Error>().is_some_and(|e| {
+                    matches!(
+                        e.kind(),
+                        std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset
+                    )
+                });
+                if closed {
+                    tracing::debug!(%peer, error = %e, "RTSP connection closed");
+                } else {
+                    tracing::warn!(%peer, error = %format!("{e:#}"), "RTSP request failed");
+                }
             }
         });
     }
@@ -235,6 +247,15 @@ async fn connection(
                 code = 405;
                 reason = "Method Not Allowed";
             }
+        }
+        if code != 200 {
+            tracing::warn!(
+                client = %launch.client.name,
+                method = %req.method,
+                code,
+                reason,
+                "RTSP request refused"
+            );
         }
         let mut response = rtsp::response(req.cseq, code, reason, &headers, &body);
         if launch.rtsp_encrypted {
