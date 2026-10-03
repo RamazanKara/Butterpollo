@@ -236,6 +236,13 @@ pub fn bundle_manifest(h: &Shared) -> Value {
     let dump = newest_dump(h).map_or(0, |d| d.size);
     json!({"status":true,"parts":[{"index":1,"filename":"butterpollo-support.zip","estimated_size_bytes":dump+8*1024*1024}]})
 }
+/// The host log, honouring `log_path`.
+pub fn log_path(h: &Shared) -> PathBuf {
+    h.config
+        .read()
+        .unwrap()
+        .path("log_path", &h.directory, "logs/butterpollo.log")
+}
 pub fn bundle(h: &Shared) -> Result<PathBuf> {
     use zip::{ZipWriter, write::SimpleFileOptions};
     let directory = h.directory.join("support");
@@ -243,15 +250,21 @@ pub fn bundle(h: &Shared) -> Result<PathBuf> {
     let path = directory.join(format!("{}.zip", uuid::Uuid::new_v4()));
     let mut writer = ZipWriter::new(std::fs::File::create(&path)?);
     let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-    for relative in [
-        "logs/butterpollo.log",
-        "logs/service.log",
-        "crashes/panic.txt",
+    let host_log = log_path(h);
+    let service_log = h.directory.join("logs/service.log");
+    for (name, path) in [
+        ("logs/butterpollo.log", host_log.clone()),
+        (
+            "logs/butterpollo.log.1",
+            butterpollo_core::logfile::RotatingFile::rotated(&host_log, 1),
+        ),
+        ("logs/service.log", service_log),
+        ("crashes/panic.txt", h.directory.join("crashes/panic.txt")),
     ] {
-        if let Ok(mut file) = std::fs::File::open(h.directory.join(relative)) {
+        if let Ok(mut file) = std::fs::File::open(path) {
             let length = file.metadata()?.len();
             file.seek(SeekFrom::Start(length.saturating_sub(8 * 1024 * 1024)))?;
-            writer.start_file(relative, options)?;
+            writer.start_file(name, options)?;
             std::io::copy(&mut file.take(8 * 1024 * 1024), &mut writer)?;
         }
     }

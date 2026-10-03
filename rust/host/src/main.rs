@@ -134,10 +134,7 @@ async fn main() -> Result<()> {
         .unwrap()
         .path("log_path", &h.directory, "logs/butterpollo.log");
     std::fs::create_dir_all(log_path.parent().context("log directory missing")?)?;
-    let appender = tracing_appender::rolling::never(
-        log_path.parent().unwrap(),
-        log_path.file_name().context("log filename missing")?,
-    );
+    let appender = butterpollo_core::logfile::RotatingFile::open_default(&log_path)?;
     let log_level = h.config.read().unwrap().log_level();
     let (writer, _log_guard) = tracing_appender::non_blocking(appender);
     use tracing_subscriber::prelude::*;

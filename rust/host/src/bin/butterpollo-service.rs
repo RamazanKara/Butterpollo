@@ -4,8 +4,9 @@ fn main() -> anyhow::Result<()> {
     )
     .join("Butterpollo/config/logs");
     std::fs::create_dir_all(&directory)?;
-    let (writer, _guard) =
-        tracing_appender::non_blocking(tracing_appender::rolling::never(directory, "service.log"));
+    let (writer, _guard) = tracing_appender::non_blocking(
+        butterpollo_core::logfile::RotatingFile::open_default(&directory.join("service.log"))?,
+    );
     tracing_subscriber::fmt()
         .with_writer(writer)
         .with_ansi(false)

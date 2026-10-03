@@ -508,7 +508,7 @@ pub(crate) async fn api(
     if method == Method::GET && matches!(path, "/api/logs" | "/api/logs/export") {
         use std::io::{Read, Seek};
         let result = (|| -> std::io::Result<String> {
-            let mut file = std::fs::File::open(h.directory.join("logs/butterpollo.log"))?;
+            let mut file = std::fs::File::open(crate::maintenance::log_path(&h))?;
             let length = file.metadata()?.len();
             file.seek(std::io::SeekFrom::Start(
                 length.saturating_sub(8 * 1024 * 1024),

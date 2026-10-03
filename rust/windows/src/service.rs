@@ -124,12 +124,8 @@ fn supervise() -> Result<()> {
         std::env::var_os("PROGRAMDATA").unwrap_or_else(|| "C:\\ProgramData".into()),
     )
     .join("Butterpollo/config");
-    let args = vec![
-        OsString::from("--config-dir"),
-        config.into_os_string(),
-        OsString::from("--bind"),
-        OsString::from("0.0.0.0"),
-    ];
+    // Interfaces come from bind_address and address_family (IPv4 by default).
+    let args = vec![OsString::from("--config-dir"), config.into_os_string()];
     reporter.set_service_status(status(ServiceState::Running, 0))?;
     let mut child: Option<crate::process::Process> = None;
     let mut session = u32::MAX;

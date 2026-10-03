@@ -13,6 +13,7 @@ pub mod framegen;
 pub mod hdr;
 pub mod input;
 pub mod input_policy;
+pub mod logfile;
 pub mod ltr;
 pub mod migration;
 pub mod nvenc;
