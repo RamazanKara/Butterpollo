@@ -28,5 +28,6 @@ pub mod rtsp;
 pub mod rtx_policy;
 pub mod session;
 pub mod state;
+pub mod steam;
 pub mod stream_policy;
 pub mod topology;
