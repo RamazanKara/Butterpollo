@@ -428,13 +428,16 @@ impl Injector {
             pen_device: None,
             pen: Default::default(),
             profile: match profile {
-                "auto" | "vhf" => 0,
                 "vhf_xbox" => 4,
                 "vhf_xbox_one" | "x360" => 3,
                 "vhf_ds4" | "ds4" => 5,
                 "vhf_ds5" | "ds5" => 6,
                 "vhf_switch" => 7,
-                _ => bail!("unknown controller profile"),
+                "vhf" => 0,
+                other => {
+                    butterpollo_core::config::fallback("gamepad", other, "auto");
+                    0
+                }
             },
             refreshed: std::time::Instant::now(),
             gamepads: None,

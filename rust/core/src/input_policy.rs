@@ -1,5 +1,5 @@
 use crate::{config::Config, input::Input};
-use anyhow::{Context, Result, bail};
+use anyhow::Result;
 use std::{collections::BTreeMap, time::Duration};
 
 #[derive(Clone)]
@@ -21,22 +21,20 @@ pub struct Policy {
 impl Policy {
     pub fn resolve(config: &Config) -> Result<Self> {
         let mut keybindings = BTreeMap::from([(0x10, 0xa0), (0x11, 0xa2), (0x12, 0xa4)]);
-        if let Some(value) = config.values.get("keybindings") {
-            let value: serde_json::Value =
-                serde_json::from_str(value).context("invalid keyboard mappings")?;
-            let entries = value
-                .as_array()
-                .context("keyboard mappings must be an array")?;
-            if !entries.len().is_multiple_of(2) {
-                bail!("keyboard mappings need pairs of key codes");
+        // Pairs of key codes, decimal or hexadecimal as Vibepollo writes them.
+        // Unusable mappings keep the defaults instead of disabling input.
+        let codes: Option<Vec<u16>> = config
+            .list("keybindings")
+            .iter()
+            .map(|code| crate::config::parse_integer(code).and_then(|n| u16::try_from(n).ok()))
+            .collect();
+        match codes {
+            Some(codes) if codes.len().is_multiple_of(2) => {
+                for pair in codes.as_chunks::<2>().0 {
+                    keybindings.insert(pair[0], pair[1]);
+                }
             }
-            for pair in entries.as_chunks::<2>().0 {
-                let code = |v: &serde_json::Value| -> Result<u16> {
-                    let n = v.as_u64().context("keyboard key code must be an integer")?;
-                    Ok(u16::try_from(n)?)
-                };
-                keybindings.insert(code(&pair[0])?, code(&pair[1])?);
-            }
+            _ => crate::config::invalid("keybindings", config.get("keybindings", "")),
         }
         if config.boolean("key_rightalt_to_key_win", false) {
             keybindings.entry(0xa5).or_insert(0x5b);
@@ -44,10 +42,15 @@ impl Policy {
         let frequency = config
             .get("key_repeat_frequency", "24.9")
             .parse::<f64>()
-            .context("invalid key repeat frequency")?;
-        if !frequency.is_finite() || frequency < 0.0 || frequency > 1000.0 {
-            bail!("key repeat frequency must be 0..1000");
-        }
+            .ok()
+            .filter(|f| f.is_finite() && (0.0..=1000.0).contains(f))
+            .unwrap_or_else(|| {
+                crate::config::invalid(
+                    "key_repeat_frequency",
+                    config.get("key_repeat_frequency", ""),
+                );
+                24.9
+            });
         Ok(Self {
             keyboard: config.boolean("keyboard", true),
             mouse: config.boolean("mouse", true),

@@ -45,9 +45,11 @@ pub fn bind_address(config: &Config, override_address: Option<IpAddr>) -> Result
         return configured.parse().context("invalid bind_address");
     }
     match config.get("address_family", "ipv4") {
-        "ipv4" => Ok(IpAddr::from([0, 0, 0, 0])),
         "both" => Ok(IpAddr::from([0u16; 8])),
-        _ => bail!("address_family must be ipv4 or both"),
+        other => {
+            butterpollo_core::config::fallback("address_family", other, "ipv4");
+            Ok(IpAddr::from([0, 0, 0, 0]))
+        }
     }
 }
 fn socket(address: SocketAddr, kind: Type) -> Result<Socket> {

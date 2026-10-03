@@ -252,7 +252,11 @@ async fn guard(State(h): State<Shared>, mut request: Request, next: Next) -> Res
                 .unwrap()
                 .get("csrf_allowed_origins", "[]")
                 .to_owned();
-            let origins: Vec<String> = serde_json::from_str(&configured).unwrap_or_default();
+            let origins = butterpollo_core::config::Config::parse(&format!(
+                "csrf_allowed_origins = {configured}\n"
+            ))
+            .map(|c| c.list("csrf_allowed_origins"))
+            .unwrap_or_default();
             if allowed.as_deref() != Some(origin)
                 && !origins.iter().any(|allowed| allowed == origin)
             {

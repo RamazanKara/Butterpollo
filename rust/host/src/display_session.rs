@@ -474,8 +474,29 @@ impl Prepared {
         } else {
             selection
         };
-        let arrangement =
-            if launch.role == Role::Stream && !matches!(selection, "disabled" | "verify_only") {
+        // An unknown layout falls back to the default: exclusive for a
+        // virtual display, verify only (no arrangement) for a physical one.
+        let parsed =
+            if launch.role != Role::Stream || matches!(selection, "disabled" | "verify_only") {
+                None
+            } else {
+                butterpollo_core::display_policy::Arrangement::parse(selection)
+                    .inspect_err(|_| {
+                        butterpollo_core::config::invalid(
+                            if virtual_mode {
+                                "virtual_display_layout"
+                            } else {
+                                "dd_configuration_option"
+                            },
+                            selection,
+                        )
+                    })
+                    .ok()
+                    .or(virtual_mode
+                        .then_some(butterpollo_core::display_policy::Arrangement::Exclusive))
+            };
+        let arrangement = match parsed {
+            Some(parsed) => {
                 let retained: Vec<_> = h
                     .monitors
                     .lock()
@@ -485,13 +506,13 @@ impl Prepared {
                     .collect();
                 Some(display_arrangement::Lease::acquire(
                     &output,
-                    butterpollo_core::display_policy::Arrangement::parse(selection)?,
+                    parsed,
                     &retained,
                     virtual_mode && display.is_some(),
                 )?)
-            } else {
-                None
-            };
+            }
+            _ => None,
+        };
         let recovery_profile = if stream.hdr {
             launch
                 .client

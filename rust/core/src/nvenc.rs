@@ -1,6 +1,6 @@
 //! Reviewed NVENC driver versions and bounded reference recovery.
 use crate::{config::Config, rtsp::Negotiated};
-use anyhow::{Result, bail};
+use anyhow::Result;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ApiVersion(pub u8, pub u8);
@@ -117,18 +117,24 @@ impl Tuning {
     pub fn new(config: &Config, stream: &Negotiated) -> Result<Self> {
         let multipass = match config.get("nvenc_twopass", "quarter_res") {
             "disabled" => 0,
-            "quarter_res" => 1,
             "full_res" => 2,
-            _ => bail!("invalid nvenc_twopass"),
+            other => {
+                crate::config::fallback("nvenc_twopass", other, "quarter_res");
+                1
+            }
         };
         let split = match config.get(
             "nvenc_split_encode",
             config.get("nvenc_force_split_encode", "auto"),
         ) {
-            "auto" => 0,
             "disabled" | "false" => 15,
             "forced" | "enabled" | "true" => 1,
-            _ => bail!("invalid nvenc_split_encode"),
+            // Vibepollo's name for automatic split encoding.
+            "driver_decides" => 0,
+            other => {
+                crate::config::fallback("nvenc_split_encode", other, "auto");
+                0
+            }
         };
         let min_qp = config.boolean("nvenc_enable_min_qp", false).then(|| {
             let (key, default) = match stream.codec {

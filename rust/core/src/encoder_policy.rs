@@ -5,11 +5,18 @@ use anyhow::{Result, bail};
 
 /// Retired names in existing Apollo/Vibepollo profiles select their current
 /// native backend. Keep the saved setting intact while resolving it at use.
+/// Names this host cannot use (`mediafoundation`) select automatically.
 pub fn canonical_name(name: &str) -> &str {
     match name {
         "amdvce" | "amdvce_experimental" | "amdvce_ffmpeg" | "amdvce_legacy" => "amf",
         "nvenc_experimental" => "nvenc",
-        _ => name,
+        "" | "auto" | "amf" | "nvenc" | "nvenc_legacy" | "quicksync" | "qsv" | "software" => name,
+        // Chooses PyroWave's own encoder; other codecs select automatically.
+        "pyrowave" => "auto",
+        other => {
+            crate::config::fallback("encoder", other, "auto");
+            "auto"
+        }
     }
 }
 
@@ -59,22 +66,26 @@ pub fn amf(config: &Config, stream: &Negotiated) -> Result<Vec<Property>> {
     let usage = match config.get("amd_usage", "ultralowlatency") {
         "auto" => None,
         "transcoding" => Some(0),
-        "ultralowlatency" => Some(if codec == 2 { 2 } else { 1 }),
         "lowlatency" => Some(if codec == 2 { 1 } else { 2 }),
         "webcam" => Some(3),
         "high_quality" => Some(4),
         "lowlatency_high_quality" => Some(5),
-        _ => bail!("invalid amd_usage"),
+        other => {
+            crate::config::fallback("amd_usage", other, "ultralowlatency");
+            Some(if codec == 2 { 2 } else { 1 })
+        }
     };
     if let Some(value) = usage {
         add(format!("{prefix}Usage"), Value::Integer(value), true);
     }
     let quality = match config.get("amd_quality", "speed") {
         "auto" => None,
-        "speed" => Some([1, 10, 100][codec as usize]),
         "balanced" => Some([0, 5, 70][codec as usize]),
         "quality" => Some([2, 0, 30][codec as usize]),
-        _ => bail!("invalid amd_quality"),
+        other => {
+            crate::config::fallback("amd_quality", other, "speed");
+            Some([1, 10, 100][codec as usize])
+        }
     };
     if let Some(value) = quality {
         add(
@@ -88,11 +99,13 @@ pub fn amf(config: &Config, stream: &Negotiated) -> Result<Vec<Property>> {
         "cqp" => Some(0),
         "cbr" => Some(if codec == 0 { 1 } else { 3 }),
         "vbr_peak" => Some(2),
-        "vbr_latency" => Some(if codec == 0 { 3 } else { 1 }),
         "qvbr" => Some(4),
         "hqvbr" => Some(5),
         "hqcbr" => Some(6),
-        _ => bail!("invalid amd_rc"),
+        other => {
+            crate::config::fallback("amd_rc", other, "vbr_latency");
+            Some(if codec == 0 { 3 } else { 1 })
+        }
     };
     // AMF's PA accepts NV12: retain the previous host's HDR demotion.
     let rc = if stream.hdr && requested_rc.is_some_and(|r| r >= 4) {
@@ -120,11 +133,10 @@ pub fn amf(config: &Config, stream: &Negotiated) -> Result<Vec<Property>> {
     }
     if rc == Some(4) {
         let q = config.integer("amd_qvbr_quality_level", 0);
-        if q != 0 {
-            if !(1..=51).contains(&q) {
-                bail!("amd_qvbr_quality_level must be 1..51 or 0");
-            }
+        if (1..=51).contains(&q) {
             add(format!("{prefix}QvbrQualityLevel"), Value::Integer(q), true);
+        } else if q != 0 {
+            crate::config::invalid("amd_qvbr_quality_level", &q.to_string());
         }
     }
     if let Some(on) = tristate(config, "amd_vbaq", Some(true)) {
@@ -175,10 +187,9 @@ pub fn amf(config: &Config, stream: &Negotiated) -> Result<Vec<Property>> {
     if codec == 0 {
         add("Profile".into(), Value::Integer(100), true);
         match config.get("amd_coder", "auto") {
-            "auto" => {}
             "cabac" | "ac" => add("CABACEnable".into(), Value::Integer(1), true),
             "cavlc" | "vlc" => add("CABACEnable".into(), Value::Integer(2), true),
-            _ => bail!("invalid amd_coder"),
+            other => crate::config::fallback("amd_coder", other, "auto"),
         }
     }
     if codec == 2 {
@@ -186,12 +197,14 @@ pub fn amf(config: &Config, stream: &Negotiated) -> Result<Vec<Property>> {
             add("Av1ScreenContentTools".into(), Value::Boolean(on), true);
         }
         let mode = match config.get("amd_av1_latency_mode", "auto") {
-            "auto" => None,
             "none" => Some(0),
             "power_saving" => Some(1),
             "realtime" => Some(2),
             "lowest" => Some(3),
-            _ => bail!("invalid amd_av1_latency_mode"),
+            other => {
+                crate::config::fallback("amd_av1_latency_mode", other, "auto");
+                None
+            }
         };
         if let Some(mode) = mode {
             add("Av1EncodingLatencyMode".into(), Value::Integer(mode), true);
@@ -292,9 +305,11 @@ pub fn ffmpeg(config: &Config, stream: &Negotiated, name: &str) -> Result<Vec<(S
             "multipass",
             match config.get("nvenc_twopass", "quarter_res") {
                 "disabled" => "disabled",
-                "quarter_res" => "qres",
                 "full_res" => "fullres",
-                _ => bail!("invalid nvenc_twopass"),
+                other => {
+                    crate::config::fallback("nvenc_twopass", other, "quarter_res");
+                    "qres"
+                }
             },
         );
         if stream.codec == 0 {
@@ -317,10 +332,13 @@ pub fn ffmpeg(config: &Config, stream: &Negotiated, name: &str) -> Result<Vec<(S
             add(
                 "split_encode_mode",
                 match mode {
-                    "auto" => "0",
                     "disabled" | "false" => "15",
                     "forced" | "enabled" | "true" => "2",
-                    _ => bail!("invalid nvenc_split_encode"),
+                    "driver_decides" => "0",
+                    other => {
+                        crate::config::fallback("nvenc_split_encode", other, "auto");
+                        "0"
+                    }
                 },
             );
         }
@@ -344,10 +362,9 @@ pub fn ffmpeg(config: &Config, stream: &Negotiated, name: &str) -> Result<Vec<(S
         }
         if stream.codec == 0 {
             match config.get("qsv_coder", "auto") {
-                "auto" => {}
                 "cabac" | "ac" => add("cavlc", "0"),
                 "cavlc" | "vlc" => add("cavlc", "1"),
-                _ => bail!("invalid qsv_coder"),
+                other => crate::config::fallback("qsv_coder", other, "auto"),
             }
         }
         if stream.intra_refresh {
@@ -415,9 +432,11 @@ mod tests {
             "quicksync",
             "qsv",
             "software",
-            "unknown",
         ] {
             assert_eq!(canonical_name(name), name);
+        }
+        for unusable in ["mediafoundation", "unknown", "pyrowave"] {
+            assert_eq!(canonical_name(unusable), "auto");
         }
     }
     #[test]

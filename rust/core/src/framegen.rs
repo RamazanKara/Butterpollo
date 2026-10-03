@@ -156,7 +156,15 @@ impl Policy {
                 _ => 0,
             }
         };
-        let requested_capture = config.get("capture", "").trim().to_ascii_lowercase();
+        let requested_capture = match config.get("capture", "").trim().to_ascii_lowercase() {
+            // Vibepollo's constant-rate WGC variant.
+            wgc if wgc == "wgcc" => "wgc".to_owned(),
+            known if matches!(known.as_str(), "" | "auto" | "wgc" | "ddx" | "dxgi") => known,
+            other => {
+                crate::config::invalid("capture", &other);
+                String::new()
+            }
+        };
         let capture = if requested_capture.is_empty() || requested_capture == "auto" {
             if virtual_display && generation == "game-provided" {
                 "wgc"

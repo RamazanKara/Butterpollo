@@ -182,10 +182,32 @@ pub fn restore_golden(h: &Shared) -> Result<Value> {
     snapshot.restore_excluding(&display_exclusions(&h.config.read().unwrap())?)?;
     Ok(json!({"status":true}))
 }
+/// Displays a baseline restore leaves alone. Vibepollo also accepts
+/// `{"devices": [...]}` and entries naming `device_id` or `id`.
 pub fn display_exclusions(config: &butterpollo_core::config::Config) -> Result<Vec<String>> {
-    Ok(serde_json::from_str(
-        config.get("dd_snapshot_exclude_devices", "[]"),
-    )?)
+    let value = config.get("dd_snapshot_exclude_devices", "");
+    let parsed = serde_json::from_str::<serde_json::Value>(value).ok();
+    let entries = parsed.as_ref().and_then(|v| {
+        v.as_array().or_else(|| {
+            v.get("exclude_devices")
+                .or_else(|| v.get("devices"))
+                .and_then(serde_json::Value::as_array)
+        })
+    });
+    let Some(entries) = entries else {
+        return Ok(config.list("dd_snapshot_exclude_devices"));
+    };
+    Ok(entries
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .as_str()
+                .or_else(|| entry.get("device_id").and_then(serde_json::Value::as_str))
+                .or_else(|| entry.get("id").and_then(serde_json::Value::as_str))
+        })
+        .map(|id| id.trim().to_owned())
+        .filter(|id| !id.is_empty())
+        .collect())
 }
 /// Read previous snapshots without modifying the old installation's files.
 pub fn baseline(h: &Shared) -> Result<Option<butterpollo_windows::display::Snapshot>> {
