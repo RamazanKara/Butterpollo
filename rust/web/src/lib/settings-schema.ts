@@ -17,7 +17,7 @@ const categories: Category[] = [
   { id: 'audio', label: 'Audio', description: 'Which device is captured and where the host plays sound.' },
   { id: 'input', label: 'Input', description: 'Keyboard, mouse, touch, pen and controllers.' },
   { id: 'commands', label: 'Commands', description: 'Commands run around every app and commands clients may run.' },
-  { id: 'library', label: 'Game library', description: 'Games added from Steam and other launchers.' },
+  { id: 'library', label: 'Game library', description: 'Games added from Steam and Playnite, and Lossless Scaling.' },
   { id: 'advanced', label: 'Advanced', description: 'Rarely needed options and settings this console does not describe.' },
 ];
 

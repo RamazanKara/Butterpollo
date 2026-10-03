@@ -14,6 +14,7 @@
   import PrepCommands from './PrepCommands.svelte';
   import RtxSettings from './RtxSettings.svelte';
   import VideoSettings from './VideoSettings.svelte';
+  import LosslessSettings from './LosslessSettings.svelte';
   import { api, type App, type SessionStatus } from '../../lib/api';
   import { confirm, failed, notify } from '../../lib/feedback.svelte';
   import { link, navigate } from '../../lib/router.svelte';
@@ -325,6 +326,10 @@
 
     <Panel title="Video and input">
       <VideoSettings {draft} />
+    </Panel>
+
+    <Panel title="Lossless Scaling" description="Upscaling and frame generation by Lossless Scaling while the app runs.">
+      <LosslessSettings {draft} />
     </Panel>
 
     <Panel title="NVIDIA RTX HDR">

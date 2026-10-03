@@ -36,6 +36,8 @@ export const FLAGS = {
   'gen1-framegen-fix': false,
   'frame-gen-limiter-fix': false,
   'rtx-hdr': false,
+  'lossless-scaling-enabled': false,
+  'lossless-scaling-legacy-auto-detect': false,
 } as const;
 export type FlagKey = keyof typeof FLAGS;
 
@@ -48,6 +50,9 @@ export const NUMBERS: Record<string, { min: number; max?: number }> = {
   'rtx-hdr-saturation': { min: -100, max: 100 },
   'rtx-hdr-middle-gray': { min: 10, max: 100 },
   'rtx-hdr-peak-brightness': { min: 400, max: 2000 },
+  'lossless-scaling-target-fps': { min: 1, max: 480 },
+  'lossless-scaling-rtss-limit': { min: 1, max: 480 },
+  'lossless-scaling-launch-delay': { min: 0, max: 600 },
 };
 export type NumberKey =
   | 'exit-timeout'
@@ -56,7 +61,10 @@ export type NumberKey =
   | 'rtx-hdr-contrast'
   | 'rtx-hdr-saturation'
   | 'rtx-hdr-middle-gray'
-  | 'rtx-hdr-peak-brightness';
+  | 'rtx-hdr-peak-brightness'
+  | 'lossless-scaling-target-fps'
+  | 'lossless-scaling-rtss-limit'
+  | 'lossless-scaling-launch-delay';
 
 /** Choices and free text. An empty value removes the key. */
 export type TextKey =
@@ -65,7 +73,8 @@ export type TextKey =
   | 'display-output'
   | 'dd-configuration-option'
   | 'frame-generation-mode'
-  | 'gamepad';
+  | 'gamepad'
+  | 'lossless-scaling-profile';
 const TEXT_KEYS: TextKey[] = [
   'virtual-display-mode',
   'virtual-display-layout',
@@ -73,6 +82,7 @@ const TEXT_KEYS: TextKey[] = [
   'dd-configuration-option',
   'frame-generation-mode',
   'gamepad',
+  'lossless-scaling-profile',
 ];
 
 /** Keys the editor has a control for (or shows elsewhere). */
@@ -85,6 +95,9 @@ const KNOWN = new Set<string>([
   'image-path',
   'uuid',
   'prefer-10bit-sdr',
+  'lossless-scaling-recommended',
+  'lossless-scaling-custom',
+  'lossless-scaling-framegen',
   ...Object.keys(FLAGS),
   ...Object.keys(NUMBERS),
   ...TEXT_KEYS,
@@ -251,5 +264,26 @@ export class AppDraft {
     return Object.entries(this.app)
       .filter(([key]) => !KNOWN.has(key))
       .sort(([a], [b]) => a.localeCompare(b));
+  }
+
+  /** The Lossless Scaling profile the app uses. */
+  losslessProfile(): 'lossless-scaling-recommended' | 'lossless-scaling-custom' {
+    return this.text('lossless-scaling-profile').toLowerCase() === 'recommended'
+      ? 'lossless-scaling-recommended'
+      : 'lossless-scaling-custom';
+  }
+  /** A value in the app's Lossless Scaling profile. */
+  lossless(field: string): unknown {
+    const profile = this.app[this.losslessProfile()];
+    return profile && typeof profile === 'object' ? (profile as Record<string, unknown>)[field] : undefined;
+  }
+  setLossless(field: string, value: unknown) {
+    const key = this.losslessProfile();
+    const current = this.app[key];
+    const profile = { ...(current && typeof current === 'object' ? (current as Record<string, unknown>) : {}) };
+    if (value === undefined || value === '' || (typeof value === 'number' && Number.isNaN(value))) delete profile[field];
+    else profile[field] = value;
+    if (Object.keys(profile).length) this.app[key] = profile;
+    else delete this.app[key];
   }
 }

@@ -15,6 +15,11 @@
       label: 'NVIDIA Smooth Motion',
       hint: 'The NVIDIA driver adds generated frames.',
     },
+    {
+      value: 'lossless-scaling',
+      label: 'Lossless Scaling',
+      hint: 'Lossless Scaling adds generated frames; the game is limited to half the target. See Lossless Scaling below.',
+    },
   ];
 
   const GAMEPADS: Choice[] = [

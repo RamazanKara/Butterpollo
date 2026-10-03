@@ -253,4 +253,24 @@ export const settings: Setting[] = [
     visibleWhen: steam,
   },
   ...playniteSettings,
+  {
+    key: 'lossless_scaling_path',
+    label: 'Lossless Scaling program',
+    description:
+      'LosslessScaling.exe or its folder, for apps that use Lossless Scaling. Empty finds it in Steam libraries and the usual folders.',
+    category: 'library',
+    group: 'Lossless Scaling',
+    control: { kind: 'text', placeholder: 'Found automatically', mono: true },
+    default: '',
+  },
+  {
+    key: 'lossless_scaling_legacy_auto_detect',
+    label: 'Let Lossless Scaling start by itself',
+    description:
+      'Uses Lossless Scaling’s auto scale for the game instead of pressing its hotkey, and leaves its window open. An app can choose otherwise.',
+    category: 'library',
+    group: 'Lossless Scaling',
+    control: { kind: 'toggle' },
+    default: false,
+  },
 ];
