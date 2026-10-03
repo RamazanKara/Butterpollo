@@ -78,7 +78,7 @@ pub fn configure(
         let priority = priority(
             desc.VendorId,
             hags,
-            config.boolean("nvenc_realtime_hags", false),
+            config.boolean("nvenc_realtime_hags", true),
         );
         let code = set(GetCurrentProcess().0, priority);
         if code < 0 {

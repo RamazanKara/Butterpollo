@@ -539,7 +539,10 @@ pub(super) async fn render(
             let editor = field(
                 "sunshine_name",
                 "Host name",
-                &value("sunshine_name", "Butterpollo Rust"),
+                &value(
+                    "sunshine_name",
+                    &crate::network::host_name(&h.config.read().unwrap()),
+                ),
                 "text",
             ) + &select(
                 "encoder",
@@ -570,7 +573,14 @@ pub(super) async fn render(
             ) + &select(
                 "virtual_display_mode",
                 "Virtual display",
-                &value("virtual_display_mode", "per_client"),
+                &value(
+                    "virtual_display_mode",
+                    if butterpollo_windows::display::windows_11() {
+                        "per_client"
+                    } else {
+                        "disabled"
+                    },
+                ),
                 &[
                     ("disabled", "Disabled"),
                     ("per_client", "One per client"),

@@ -3,6 +3,11 @@ use std::collections::BTreeMap;
 pub fn marker(key: &str) -> String {
     format!("__runtime_override_{key}")
 }
+/// RTX HDR is an app or client opt-in, as in Vibepollo: a global `rtx_hdr`
+/// alone never converts.
+pub fn enabled(config: &Config) -> bool {
+    config.boolean("rtx_hdr", false) && config.boolean(&marker("rtx_hdr"), false)
+}
 /// Driver tuning supplies defaults only. It never activates host conversion.
 pub fn resolve(
     config: &Config,

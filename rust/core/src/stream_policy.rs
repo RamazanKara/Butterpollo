@@ -146,21 +146,15 @@ impl Pacer {
         self.last_claim = Some(now);
     }
 }
+/// An HDR request stays HDR when RTX HDR converts an SDR source for it;
+/// otherwise `prefer_sdr_10bit` streams it as ten-bit SDR. As in Vibepollo
+/// 2.0, RTX HDR needs the client to ask for HDR and the retired
+/// `rtx_hdr_force_sdr` has no effect.
 pub fn apply_color(stream: &mut Negotiated, config: &Config) {
-    stream.sdr_10bit = stream.hdr && config.boolean("prefer_sdr_10bit", false);
+    let truehdr = stream.hdr && stream.codec != 0 && crate::rtx_policy::enabled(config);
+    stream.sdr_10bit = stream.hdr && !truehdr && config.boolean("prefer_sdr_10bit", false);
     if stream.sdr_10bit {
         stream.hdr = false;
-    }
-    if config.boolean("rtx_hdr_force_sdr", false) {
-        stream.hdr = false;
-        stream.sdr_10bit = false;
-    }
-    if config.boolean("rtx_hdr", false)
-        && !config.boolean("rtx_hdr_force_sdr", false)
-        && stream.codec != 0
-    {
-        stream.hdr = true;
-        stream.sdr_10bit = false;
     }
 }
 pub fn apply(stream: &mut Negotiated, launch_millihz: u32, config: &Config) {

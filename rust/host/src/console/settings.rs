@@ -109,7 +109,6 @@ pub const GLOBAL: &[Setting] = settings! {
         "crf", "Constant rate factor", Number;
         "qp", "Constant quantizer", Number;
         "rtx_hdr", "NVIDIA TrueHDR", Bool;
-        "rtx_hdr_force_sdr", "Force SDR output", Bool;
         "rtx_hdr_sdr_brightness", "SDR brightness for TrueHDR", Number;
         "rtx_hdr_contrast", "TrueHDR contrast", Number;
         "rtx_hdr_saturation", "TrueHDR saturation", Number;

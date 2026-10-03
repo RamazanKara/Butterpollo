@@ -211,7 +211,7 @@ impl Prepared {
             "sunshine:virtual_display" | "virtual" | "virtual_display" | "virtual-display"
         );
         let golden = if launch.role == Role::Stream
-            && config.boolean("dd_always_restore_from_golden", false)
+            && config.boolean("dd_always_restore_from_golden", true)
         {
             crate::maintenance::baseline(h)?
                 .map(|snapshot| GoldenLease::new(h, snapshot, config))
@@ -232,7 +232,7 @@ impl Prepared {
             .and_then(serde_json::Value::as_str)
             .filter(|s| !s.is_empty())
             .or_else(|| option("virtual-display-mode"))
-            .unwrap_or(config.get("virtual_display_mode", "per_client"));
+            .unwrap_or(config.virtual_display_mode(butterpollo_windows::display::windows_11()));
         let client_virtual = launch
             .options
             .get("virtualDisplay")

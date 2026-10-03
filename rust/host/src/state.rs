@@ -360,7 +360,7 @@ impl Host {
             .config
             .read()
             .unwrap()
-            .integer("session_token_ttl_seconds", 3600)
+            .integer("session_token_ttl_seconds", 7200)
             .clamp(60, 604800) as u64;
         let access = hex::encode(butterpollo_core::crypto::random::<32>());
         let refresh = hex::encode(butterpollo_core::crypto::random::<32>());

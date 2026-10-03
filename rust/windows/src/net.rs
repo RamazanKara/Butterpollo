@@ -5,6 +5,28 @@ use std::{
     os::windows::io::AsRawSocket,
 };
 use windows::Win32::Networking::WinSock::*;
+/// The PC's DNS host name, which Vibepollo shows to clients by default.
+pub fn host_name() -> Option<String> {
+    use windows::Win32::System::SystemInformation::{ComputerNameDnsHostname, GetComputerNameExW};
+    let mut size = 0u32;
+    unsafe {
+        let _ = GetComputerNameExW(ComputerNameDnsHostname, None, &mut size);
+    }
+    if size == 0 || size > 1024 {
+        return None;
+    }
+    let mut name = vec![0u16; size as usize];
+    unsafe {
+        GetComputerNameExW(
+            ComputerNameDnsHostname,
+            Some(windows::core::PWSTR(name.as_mut_ptr())),
+            &mut size,
+        )
+        .ok()?;
+    }
+    name.truncate(size as usize);
+    Some(String::from_utf16_lossy(&name)).filter(|name| !name.trim().is_empty())
+}
 /// Use the interface carrying this connection, including IPv4-mapped IPv6.
 /// Loopback and interfaces without an Ethernet address cannot support WOL.
 pub fn local_mac(address: std::net::IpAddr) -> Result<String> {

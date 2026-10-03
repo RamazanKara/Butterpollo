@@ -35,8 +35,7 @@ fn rtx_parameters(config: &Config) -> [u32; 4] {
     ]
 }
 fn rtx_enabled(config: &Config) -> bool {
-    config.boolean("rtx_hdr", false)
-        && config.boolean(&butterpollo_core::rtx_policy::marker("rtx_hdr"), false)
+    butterpollo_core::rtx_policy::enabled(config)
 }
 fn truehdr_filter(
     image: &GpuImage,

@@ -154,6 +154,14 @@ impl Config {
             .filter(|item| !item.is_empty())
             .collect()
     }
+    /// `virtual_display_mode`; unset, it is per client on Windows 11 and
+    /// disabled on Windows 10, as in Vibepollo.
+    pub fn virtual_display_mode(&self, windows_11: bool) -> &str {
+        self.get(
+            "virtual_display_mode",
+            if windows_11 { "per_client" } else { "disabled" },
+        )
+    }
     pub fn log_level(&self) -> &'static str {
         match self
             .get("min_log_level", "info")
@@ -366,7 +374,8 @@ impl Config {
             resolution,
             refresh,
             prefer_highest: refresh_option == "prefer_highest",
-            hdr: if self.boolean("rtx_hdr", false) {
+            // RTX HDR converts an SDR source for the HDR stream.
+            hdr: if hdr && crate::rtx_policy::enabled(self) {
                 Some(false)
             } else if self.get("dd_hdr_option", "auto") == "disabled" {
                 None

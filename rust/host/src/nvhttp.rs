@@ -214,10 +214,7 @@ async fn serverinfo(
     xml(
         200,
         &[
-            (
-                "hostname",
-                config.get("sunshine_name", "Butterpollo Rust").into(),
-            ),
+            ("hostname", crate::network::host_name(&config)),
             ("appversion", "7.1.431.-1".into()),
             ("GfeVersion", "3.23.0.74".into()),
             ("uniqueid", h.paired.read().unwrap().unique_id.clone()),
@@ -463,7 +460,7 @@ async fn applist(
         &client.uuid,
         remote_owner(&h, &client.uuid),
         game.as_ref(),
-        config.boolean("enable_input_only_mode", true),
+        config.boolean("enable_input_only_mode", false),
         configured,
     );
     let entries: Vec<_> = projection
@@ -632,7 +629,7 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
                 .config
                 .read()
                 .unwrap()
-                .boolean("enable_input_only_mode", true)
+                .boolean("enable_input_only_mode", false)
         {
             bail!("remote input is disabled by the administrator");
         }

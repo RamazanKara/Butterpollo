@@ -36,6 +36,14 @@ pub fn ping_timeout(config: &Config) -> Duration {
     Duration::from_millis(config.integer("ping_timeout", 10000).clamp(1000, 300000) as u64)
 }
 
+/// The name clients show for this host: `sunshine_name`, else the PC's name.
+pub fn host_name(config: &Config) -> String {
+    let configured = config.get("sunshine_name", "").trim();
+    if !configured.is_empty() {
+        return configured.to_owned();
+    }
+    butterpollo_windows::net::host_name().unwrap_or_else(|| "Butterpollo".into())
+}
 pub fn bind_address(config: &Config, override_address: Option<IpAddr>) -> Result<IpAddr> {
     if let Some(address) = override_address {
         return Ok(address);
@@ -91,7 +99,8 @@ impl Discovery {
                 "{}.local.",
                 hostname.trim_end_matches('.').to_ascii_lowercase()
             );
-            let instance = config.get("sunshine_name", "Butterpollo Rust");
+            let instance = host_name(config);
+            let instance = instance.as_str();
             let addresses = if bind.is_unspecified() {
                 String::new()
             } else {
