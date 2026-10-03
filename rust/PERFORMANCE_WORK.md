@@ -182,10 +182,15 @@ with the latency wins kept and Vibepollo's behaviour everywhere else.
   this PC's 17 installed apps in three libraries; covers from the cache or the
   store. A Steam app's stream follows the game's processes.
 
-Still missing: Playnite (the customer's profile has Playnite apps and the
-fullscreen entry; Playnite is not installed on this PC now), Lossless
-Scaling, tray notifications, update version checks, the virtual display
-render GPU and reclaim after restart.
+- Playnite (`core::playnite`, `host/src/playnite.rs`) through Vibepollo's
+  plugin, and Lossless Scaling (`core::lossless`, `host/src/lossless.rs`),
+  both tested against stand-ins because neither is installed on this PC
+  (the customer's profile has Playnite apps and the fullscreen entry).
+- Tray notifications for pairing and new versions; release checks compare
+  versions and skip streams.
+
+Still missing: the virtual display render GPU and reclaim after restart,
+Playnite focus retries and fullscreen relaunch, `/api/browse`.
 
 Unverified here: the secure desktop during a stream, streaming the sign-in
 screen after a reboot, a Steam game ending its stream, the restore hotkey.

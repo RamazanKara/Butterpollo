@@ -34,23 +34,25 @@ Settings changed in the console are saved at once and most take effect from the 
 | Audio | Same | Endpoint matching by id, name, description or adapter; Steam Streaming Speakers; surround Opus. |
 | Apps | Same | Commands, preparation and undo, detached commands, URLs and documents, working folder inference, `APOLLO_*` variables, starting before sign-in. |
 | Steam library | Same | `steam_*` settings, sync on demand and every 30 seconds, covers from Steam's cache or store as PNG, `/api/steam/*`. A Steam app's stream ends when the game's processes exit. |
-| Playnite | Missing | No plugin connection, sync or Playnite launches yet. Imported apps that only have a `playnite-id` stream the desktop without starting the game. |
-| Lossless Scaling | Missing | `lossless_scaling_*` settings and the app's `lossless-scaling-*` fields are ignored. |
-| Frame limiting | Same | RTSS and NVIDIA profiles, game-provided frame generation, NVIDIA Smooth Motion; not the Lossless Scaling provider. |
-| Web console | Rebuilt | A new console (Svelte) covers overview, library, devices, settings, logs, maintenance and API tokens. Missing endpoints: `/api/browse`, `/api/playnite/*`, `/api/lossless_scaling/status`, `/api/apps/purge_autosync`, `/api/apps/{uuid}/icon`. |
+| Playnite | Mostly the same | Talks to Vibepollo's Playnite plugin (shipped in the package, installed from the console). Apps with a `playnite-id` start through Playnite with the stream's environment and end when Playnite reports the game stopped; ending the stream closes the game's processes. The library syncs recent, category, plugin or all installed games with Vibepollo's rules, and the "Playnite (Fullscreen)" app opens fullscreen mode. Missing: window focus retries (`playnite_focus_*`), relaunching fullscreen mode after a game, setting covers back into Playnite, `/api/playnite/cover` and `/launch`. |
+| Lossless Scaling | Mostly the same | The app's `lossless-scaling-*` fields become Vibepollo's "Vibeshine" profile for the game's programs; Lossless Scaling is restarted and its hotkey pressed (or auto scale with `lossless_scaling_legacy_auto_detect`), and closed with the profile removed afterwards. Frame generation holds the game at the app's limit or half the target. The game is the first new windowed process (in its Steam or Playnite folder when known) rather than Vibepollo's CPU and memory scoring, and it is not re-targeted if the game changes process. |
+| Frame limiting | Same | RTSS and NVIDIA profiles, game-provided frame generation, NVIDIA Smooth Motion and Lossless Scaling frame generation. |
+| Web console | Rebuilt | A new console (Svelte) covers overview, library (with Steam and Playnite), devices, settings, logs, maintenance and API tokens, and per-app Lossless Scaling. Missing endpoints: `/api/browse`, `/api/apps/{uuid}/icon`. |
 | Service and setup | Same | `setup.exe` upgrades a Vibepollo installation in place (drivers, service, firewall, shortcuts) and can uninstall it. The service restarts the host after a crash. `--creds` sets the console sign-in. The service's credentials folder is limited to SYSTEM and Administrators at every start. |
-| Tray | Partial | Open, disconnect, restart and quit. No notifications (pairing requests, app started or stopped, new version) and no force-close of the app. |
-| Updates | Partial | Lists releases; does not compare versions or notify. |
+| Tray | Mostly the same | Open, disconnect, restart and quit; notifications for pairing requests, paired devices and new versions. Missing: app started or stopped notifications, state icons and force-closing the app. |
+| Updates | Same | Checks releases (not during a stream), compares versions including pre-releases and notifies once per new version. |
 | Logs and support | Same | Rotating logs (`log_path`), live tail in the console, crash dumps and support bundle. |
 
 ## Evidence
 
-- Workspace tests: 166 pass (`cargo test --locked --release --workspace`), Clippy with warnings denied, and the web console's type check.
+- Workspace tests: 173 pass (`cargo test --locked --release --workspace`), Clippy with warnings denied, and the web console's type check.
 - Native AMD tests on the test PC: GPU colour and letterbox conversion, cursor composition, AMF loss recovery, Opus surround, WGC teardown, and the software encoder letterbox test.
 - Live on the test PC with the installed service: phone streaming at 1968x2184, 120 Hz, HDR, on a per-device virtual display; two clients streaming at once on their own displays; capture recovery after a lost Desktop Duplication session; OTP pairing; the installer upgrading the Vibepollo installation in place.
 - Steam: discovery of 17 installed apps across three libraries, appinfo names and types, play history, covers (including store downloads), and a sync that adds the apps once and then reports no change.
+- Playnite, against a stand-in that speaks the plugin's protocol (Playnite is not installed on the test PC): plugin install, library sync with a converted cover, a launch that passes the stream's 88 environment variables and ends on `gameStopped`, and closing the app mid-game.
+- Lossless Scaling, with a stand-in program and settings file (Lossless Scaling is not installed on the test PC): the profile names the game's program and is removed when the app closes.
 
-Not verified on hardware: NVIDIA and Intel encoders, RTX HDR, Lossless Scaling and Playnite (not implemented), the secure desktop during a stream (UAC, lock screen) and streaming the sign-in screen after a reboot, a Steam game's stream ending when the game exits, and the restore hotkey.
+Not verified on hardware: NVIDIA and Intel encoders, RTX HDR, a real Playnite with the plugin, a real Lossless Scaling (its hotkey and window handling), the secure desktop during a stream (UAC, lock screen) and streaming the sign-in screen after a reboot, a Steam game's stream ending when the game exits, the restore hotkey and tray notifications.
 
 ## Reproducible verification
 
