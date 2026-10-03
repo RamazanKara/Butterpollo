@@ -7,6 +7,9 @@ param(
     [string]$PyrowaveRoot = $env:BUTTERPOLLO_PYROWAVE_ROOT,
     [string]$NvidiaRoot = $env:NV_RTX_VIDEO_SDK,
     [string]$MsvcSdk = $env:BUTTERPOLLO_MSVC_ROOT,
+    # Signed virtual display and gamepad driver packages (a Vibepollo
+    # installation's drivers folder); fetched from Vibepollo 2.0.0 otherwise.
+    [string]$DriverRoot = $env:BUTTERPOLLO_DRIVER_ROOT,
     [switch]$FetchDependencies,
     [switch]$DebugBuild,
     [switch]$SkipTrueHdr,
@@ -62,6 +65,28 @@ if ($FetchDependencies) {
         if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'abf4f34e2b5a618e355b0d5a0365d8ecc3db4396e756e4c850a867e1ae2ed69e') { throw 'NVIDIA SDK checksum mismatch' }
         $NvidiaRoot = Join-Path $Dependencies 'ngx-1.1.0'
         Expand-Archive -LiteralPath $archive -DestinationPath $NvidiaRoot -Force
+    }
+}
+if ($FetchDependencies -and !$DriverRoot) {
+    # The virtual display (libvirtualdisplay 1.6.3) and gamepad (libvirtualgamepad
+    # 0.1.0-beta.6) drivers, both MIT, signed for Vibepollo 2.0.0 by the SignPath
+    # Foundation. Upstream archives are unsigned, so take them from the release.
+    $setup = Join-Path $Dependencies 'VibepolloSetup-v2.0.0.exe'
+    Get-PinnedArchive 'https://github.com/Nonary/Vibepollo/releases/download/2.0.0/VibepolloSetup-v2.0.0.exe' $setup '7b3500ec0c774644ce5a435a48f61c046c48494d0f18b67afa0b3561931794b7'
+    $msi = Join-Path $Dependencies 'vibepollo-2.0.0-payload.msi'
+    $resource = [Reflection.Assembly]::LoadFile($setup).GetManifestResourceStream('Payload.msi')
+    $file = [IO.File]::Create($msi)
+    try { $resource.CopyTo($file) } finally { $file.Dispose(); $resource.Dispose() }
+    $expanded = Join-Path $Dependencies 'vibepollo-2.0.0-msi'
+    if (Test-Path -LiteralPath $expanded) { Remove-Item -LiteralPath $expanded -Recurse -Force }
+    $process = Start-Process msiexec.exe -ArgumentList "/a `"$msi`" /qn TARGETDIR=`"$expanded`"" -Wait -PassThru
+    if ($process.ExitCode -ne 0) { throw "Extracting the Vibepollo driver packages failed with $($process.ExitCode)" }
+    $DriverRoot = Join-Path $expanded 'Apollo\drivers'
+}
+if ($DriverRoot) {
+    foreach ($catalog in @('sunshine\SunshineVirtualDisplayDriver.cat', 'vhf-gamepad\driver\VibeshineVhfGamepad.cat', 'vhf-gamepad\tools\VibeshineVhfGamepadDeviceSetup.exe')) {
+        $signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $DriverRoot $catalog)
+        if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '^CN=SignPath Foundation') { throw "Driver file is not signed as expected: $catalog" }
     }
 }
 if (!$FfmpegRoot -or !$PyrowaveRoot) { throw 'Provide FFmpeg/PyroWave SDK paths, or use -FetchDependencies' }
@@ -167,6 +192,19 @@ try {
             if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination "$distribution\licenses\$library" -Recurse -Force }
         }
         if (!$SkipTrueHdr) { Copy-Item -LiteralPath (Join-Path $NvidiaRoot 'NVIDIA_RTX_Video_SDK_License.pdf') -Destination "$distribution\licenses" }
+        if ($DriverRoot) {
+            # Setup installs these with Vibepollo's own driver scripts.
+            New-Item -ItemType Directory -Path "$distribution\drivers" -Force | Out-Null
+            Copy-Item -LiteralPath (Join-Path $DriverRoot 'sunshine') -Destination "$distribution\drivers\display" -Recurse -Force
+            Copy-Item -LiteralPath (Join-Path $DriverRoot 'vhf-gamepad') -Destination "$distribution\drivers\gamepad" -Recurse -Force
+            @(
+                'Virtual display driver: https://github.com/Nonary/libvirtualdisplay v1.6.3 (MIT).',
+                'Virtual gamepad driver: https://github.com/Nonary/libvirtualgamepad v0.1.0-beta.6 (MIT).',
+                'Driver catalogs, tools and install scripts as released in Vibepollo 2.0.0 (GPL-3.0),',
+                'https://github.com/Nonary/Vibepollo, signed by the SignPath Foundation.',
+                'nefconc.exe: https://github.com/nefarius/nefcon by Nefarius Software Solutions.'
+            ) | Set-Content -LiteralPath "$distribution\licenses\drivers.txt" -Encoding utf8
+        }
         $metadata = & cargo $toolchain metadata --format-version 1 --locked
         Assert-NativeExit 'Dependency manifest'
         ($metadata | ConvertFrom-Json).packages | Select-Object name, version, license, repository, source | ConvertTo-Json | Set-Content -LiteralPath "$distribution\licenses\rust-dependencies.json" -Encoding utf8
@@ -174,8 +212,23 @@ try {
             [pscustomobject]@{ path = $_.FullName.Substring($distribution.Length + 1); sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
         }
         $manifest | ConvertTo-Json | Set-Content -LiteralPath "$distribution\manifest.json" -Encoding utf8
-        Compress-Archive -LiteralPath $distribution -DestinationPath "$TargetDirectory\butterpollo-rust-$profile.zip" -Force
-        Write-Output "Package: $TargetDirectory\butterpollo-rust-$profile.zip"
+        $zip = "$TargetDirectory\butterpollo-rust-$profile.zip"
+        Compress-Archive -LiteralPath $distribution -DestinationPath $zip -Force
+        Write-Output "Package: $zip"
+        # setup.exe carries the package after its own executable, followed by
+        # 'BPSETUP1' and the package length (see rust/setup/src/payload.rs).
+        $version = (Select-String -LiteralPath (Join-Path $repo 'Cargo.toml') -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+        $installer = "$TargetDirectory\butterpollo-setup-$version.exe"
+        $stub = [IO.File]::ReadAllBytes((Join-Path $output 'butterpollo-setup.exe'))
+        $archive = [IO.File]::ReadAllBytes($zip)
+        $stream = [IO.File]::Create($installer)
+        try {
+            $stream.Write($stub, 0, $stub.Length)
+            $stream.Write($archive, 0, $archive.Length)
+            $stream.Write([Text.Encoding]::ASCII.GetBytes('BPSETUP1'), 0, 8)
+            $stream.Write([BitConverter]::GetBytes([uint64]$archive.Length), 0, 8)
+        } finally { $stream.Dispose() }
+        Write-Output "Installer: $installer"
     }
     Write-Output "Rust executables: $output"
 } finally { Pop-Location }
