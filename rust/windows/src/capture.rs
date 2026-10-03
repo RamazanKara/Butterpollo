@@ -321,6 +321,10 @@ impl Duplication {
     pub fn new_format(name: &str, hdr: bool) -> Result<Self> {
         Self::new_device(Device::new(name)?, hdr)
     }
+    /// Duplicate the device's output with that device, which may be shared.
+    pub fn new_format_device(gpu: Device, hdr: bool) -> Result<Self> {
+        Self::new_device(gpu, hdr)
+    }
     fn new_device(gpu: Device, hdr: bool) -> Result<Self> {
         let native_hdr = hdr
             && gpu
@@ -328,20 +332,27 @@ impl Duplication {
                 .cast::<IDXGIOutput6>()
                 .and_then(|output| unsafe { output.GetDesc1() })
                 .is_ok_and(|desc| desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020);
+        // Always name the formats this host accepts. The legacy call loses
+        // access in a loop whenever Windows composes the output in FP16, as it
+        // does for advanced color or after another virtual display arrives.
+        let formats: &[DXGI_FORMAT] = if native_hdr {
+            &[DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_B8G8R8A8_UNORM]
+        } else {
+            &[DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT]
+        };
         let duplicate = unsafe {
-            if native_hdr {
-                gpu.output
-                    .cast::<IDXGIOutput5>()?
-                    .DuplicateOutput1(
-                        &gpu.device,
-                        0,
-                        &[DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_B8G8R8A8_UNORM],
-                    )
-                    .context("opening HDR Desktop Duplication")?
-            } else {
-                gpu.output
+            // DuplicateOutput1 needs a per-monitor DPI-aware process; fall back
+            // to the legacy call rather than fail where it is refused.
+            match gpu
+                .output
+                .cast::<IDXGIOutput5>()
+                .and_then(|output| output.DuplicateOutput1(&gpu.device, 0, formats))
+            {
+                Ok(duplicate) => duplicate,
+                Err(_) => gpu
+                    .output
                     .DuplicateOutput(&gpu.device)
-                    .context("opening Desktop Duplication")?
+                    .context("opening Desktop Duplication")?,
             }
         };
         Ok(Self {
@@ -909,12 +920,15 @@ impl Drop for Wgc {
 pub enum Capture {
     Wgc(Box<Wgc>),
     Dxgi(Box<Duplication>),
+    /// Holds no device: the place of a lost capture while a new one is made.
+    Closed,
 }
 impl Capture {
     pub fn backend(&self) -> &'static str {
         match self {
             Self::Wgc(_) => "wgc",
             Self::Dxgi(_) => "ddx",
+            Self::Closed => "closed",
         }
     }
     pub fn set_claim_grid(
@@ -964,12 +978,14 @@ impl Capture {
         match self {
             Self::Wgc(w) => w.next_frame(),
             Self::Dxgi(d) => d.next(Duration::from_millis(1)),
+            Self::Closed => bail!("capture is closed"),
         }
     }
     pub fn next_gpu(&mut self) -> Result<Option<GpuImage>> {
         match self {
             Self::Wgc(w) => w.next_gpu(),
             Self::Dxgi(d) => d.next_gpu(),
+            Self::Closed => bail!("capture is closed"),
         }
     }
 }

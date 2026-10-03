@@ -17,6 +17,9 @@ pub(crate) const RTX_KEYS: &[&str] = &[
 ];
 /// How often completed encoder output is collected while a frame is in flight.
 const OUTPUT_POLL: Duration = Duration::from_micros(100);
+/// Time for streams to release a lost capture device before it is re-created.
+/// Streams notice the reset within one 50 ms frame wait.
+const RELEASE_WAIT: Duration = Duration::from_millis(150);
 fn rtx_parameters(config: &Config) -> [u32; 4] {
     let peak = config
         .integer("rtx_hdr_peak_brightness", 1000)
@@ -391,6 +394,34 @@ impl Media {
                         };
                     capture.set_claim_grid(worker_grid.clone(), aligned);
                     tracing::info!(requested=%kind, backend=capture.backend(), output=%target.0, "capture backend opened");
+                    // Re-create the capture on a new device. Windows keeps handing
+                    // out the stale adapter while anything holds the old device, so
+                    // every duplication made then loses access at once (a display
+                    // arriving for another client does this). The old capture is
+                    // dropped and consumers are given time to release their frames
+                    // and encoders before the new device is made.
+                    let reopen = |lost: Capture, target: &(String, u64)| -> Result<Capture> {
+                        drop(lost);
+                        worker.publish(None)?;
+                        let deadline = Instant::now() + Duration::from_secs(30);
+                        loop {
+                            thread::sleep(RELEASE_WAIT);
+                            if worker_stop.load(Ordering::Acquire) {
+                                anyhow::bail!("capture stopped while recovering");
+                            }
+                            let next = prepared.capture_target();
+                            match Capture::new_options(&next.0, &kind, hdr, &capture_config) {
+                                Ok(recovered) => {
+                                    if next != *target {
+                                        tracing::info!(output = %next.0, "capture moved to the recreated display");
+                                    }
+                                    return Ok(recovered);
+                                }
+                                Err(error) if Instant::now() >= deadline => return Err(error),
+                                Err(_) => {}
+                            }
+                        }
+                    };
                     let _ = started_tx.send(Ok(()));
                     let mut check_target = Instant::now();
                     let poll_interval = Duration::from_micros(
@@ -401,11 +432,14 @@ impl Media {
                             check_target = Instant::now() + Duration::from_millis(100);
                             let next = prepared.capture_target();
                             if next != target {
-                                worker.publish(None)?;
-                                capture =
-                                    Capture::new_options(&next.0, &kind, hdr, &capture_config)?;
+                                let lost = std::mem::replace(&mut capture, Capture::Closed);
+                                capture = match reopen(lost, &next) {
+                                    Ok(capture) => capture,
+                                    Err(_) if worker_stop.load(Ordering::Acquire) => return Ok(()),
+                                    Err(error) => return Err(error),
+                                };
                                 capture.set_claim_grid(worker_grid.clone(), aligned);
-                                target = next;
+                                target = prepared.capture_target();
                             }
                         }
                         match capture.next_gpu() {
@@ -422,29 +456,15 @@ impl Media {
                                 timer.until(capture.publication_deadline().unwrap_or(deadline).min(deadline));
                             }
                             Err(e) => {
-                                tracing::warn!(error=%e,"capture restarting");
-                                thread::sleep(Duration::from_millis(100));
-                                worker.publish(None)?;
-                                let deadline = Instant::now() + Duration::from_secs(30);
-                                loop {
-                                    if worker_stop.load(Ordering::Acquire) {
-                                        return Ok(());
-                                    }
-                                    let next = prepared.capture_target();
-                                    match Capture::new_options(&next.0, &kind, hdr, &capture_config)
-                                    {
-                                        Ok(recovered) => {
-                                            capture = recovered;
-                                            target = next;
-                                            break;
-                                        }
-                                        Err(error) if Instant::now() >= deadline => {
-                                            return Err(error);
-                                        }
-                                        Err(_) => thread::sleep(Duration::from_millis(100)),
-                                    }
-                                }
+                                tracing::warn!(error=%e, output=%target.0, backend=capture.backend(), "capture restarting");
+                                let lost = std::mem::replace(&mut capture, Capture::Closed);
+                                capture = match reopen(lost, &target) {
+                                    Ok(capture) => capture,
+                                    Err(_) if worker_stop.load(Ordering::Acquire) => return Ok(()),
+                                    Err(error) => return Err(error),
+                                };
                                 capture.set_claim_grid(worker_grid.clone(), aligned);
+                                target = prepared.capture_target();
                             }
                         }
                     }
@@ -578,12 +598,18 @@ impl Media {
                             if let Some(image) = latest.wait_for_frame(&timer, &capture_wake, (Instant::now() + Duration::from_millis(50)).min(deadline))? { break image; }
                         }
                     };
-                    let mut encoder =
-                        Encoder::new_gpu_options(&s.config, c.get("encoder", "auto"), &first, &c)?;
+                    let mut encoder = Some(Encoder::new_gpu_options(
+                        &s.config,
+                        c.get("encoder", "auto"),
+                        &first,
+                        &c,
+                    )?);
                     tracing::info!(width=s.config.width,height=s.config.height,fps=f64::from(s.config.fps_millihz())/1000.,codec=s.config.codec,hdr=s.config.hdr,vrr=s.config.vrr_low_latency,capture=%prepared.capture(),encoder=c.get("encoder","auto"),source_width=first.width,source_height=first.height,source_pixel=?first.pixel,"stream configured");
                     let metadata = first.gpu.hdr_metadata();
                     *s.hdr_metadata.write().unwrap() = metadata;
-                    encoder.set_hdr_metadata(metadata);
+                    if let Some(encoder) = encoder.as_mut() {
+                        encoder.set_hdr_metadata(metadata);
+                    }
                     let mut truehdr = if use_truehdr {
                         truehdr_filter(&first, &c)
                     } else {
@@ -800,9 +826,9 @@ impl Media {
                             let due = cadence.deadline();
                             if !s.config.vrr_low_latency && !arrival_pacing && now < due {
                                 while Instant::now() < due {
-                                    if encoder.pending() {
-                                        send_frames(encoder.poll()?, peer, Duration::ZERO)?;
-                                        if encoder.pending() {
+                                    if encoder.as_ref().is_some_and(Encoder::pending) {
+                                        send_frames(encoder.as_mut().map_or(Ok(vec![]), Encoder::poll)?, peer, Duration::ZERO)?;
+                                        if encoder.as_ref().is_some_and(Encoder::pending) {
                                             timer.until(
                                                 (Instant::now() + OUTPUT_POLL)
                                                     .min(due),
@@ -814,9 +840,22 @@ impl Media {
                                 }
                             }
                             let image = latest.wait_for_frame(&timer, &capture_wake, Instant::now() + period.min(Duration::from_millis(50)))?;
-                            let Some(image) = image else { continue };
+                            let Some(image) = image else {
+                                // The capture is being re-created on a new device.
+                                // Release everything on the old one so Windows can
+                                // give the new capture a current adapter.
+                                if encoder.take().is_some() {
+                                    tracing::info!(client = %s.launch.client.name, "releasing the encoder while the capture recovers");
+                                }
+                                last_image = None;
+                                truehdr = None;
+                                truehdr_staging = None;
+                                continue;
+                            };
                             // Resolution changes or DXGI loss can recreate the capture device.
-                            rebuild_encoder |= !encoder.accepts_gpu_device(&image);
+                            rebuild_encoder |= encoder
+                                .as_ref()
+                                .is_none_or(|encoder| !encoder.accepts_gpu_device(&image));
                             let fresh = last_image.as_ref().is_none_or(|previous| !Arc::ptr_eq(previous, &image));
                             if arrival_pacing
                                 && fresh
@@ -831,10 +870,10 @@ impl Media {
                                 if first_seen.is_none_or(|(seen, ..)| seen != key) {
                                     first_seen = Some((key, Instant::now(), interval, Some(deadline)));
                                 }
-                                if encoder.pending() {
-                                    send_frames(encoder.poll()?, peer, Duration::ZERO)?;
+                                if encoder.as_ref().is_some_and(Encoder::pending) {
+                                    send_frames(encoder.as_mut().map_or(Ok(vec![]), Encoder::poll)?, peer, Duration::ZERO)?;
                                 }
-                                let until = if encoder.pending() {
+                                let until = if encoder.as_ref().is_some_and(Encoder::pending) {
                                     deadline.min(Instant::now() + OUTPUT_POLL)
                                 } else {
                                     deadline
@@ -851,8 +890,8 @@ impl Media {
                                     .is_some_and(|previous| Arc::ptr_eq(previous, &image))
                                 && encoded_at.elapsed() < static_period
                             {
-                                if encoder.pending() { send_frames(encoder.poll()?,peer,Duration::ZERO)?; }
-                                let wait = if encoder.pending() { OUTPUT_POLL } else { period };
+                                if encoder.as_ref().is_some_and(Encoder::pending) { send_frames(encoder.as_mut().map_or(Ok(vec![]), Encoder::poll)?, peer, Duration::ZERO)?; }
+                                let wait = if encoder.as_ref().is_some_and(Encoder::pending) { OUTPUT_POLL } else { period };
                                 latest.wait_if_current(&timer, &capture_wake, &image, Instant::now() + wait.min(static_period.saturating_sub(encoded_at.elapsed())))?;
                                 continue;
                             }
@@ -867,14 +906,15 @@ impl Media {
                                 runtime_config = butterpollo_core::rtx_policy::resolve(&runtime_config, visible.is_some(), profiles.poll(visible.as_deref()));
                                 if let Some(filter) = truehdr.as_mut() { filter.set_parameters(rtx_parameters(&runtime_config)); }
                             }
+                            let rebuilt = rebuild_encoder;
                             if rebuild_encoder {
-                                encoder = Encoder::new_gpu_options(
+                                encoder = None;
+                                encoder = Some(Encoder::new_gpu_options(
                                     &s.config,
                                     c.get("encoder", "auto"),
                                     &image,
                                     &c,
-                                )?;
-                                encoder.set_next_frame(next_wire_frame.get());
+                                )?);
                                 metadata_due = Instant::now();
                                 truehdr = if use_truehdr {
                                     truehdr_filter(&image, &runtime_config)
@@ -884,6 +924,12 @@ impl Media {
                                 truehdr_staging = None;
                                 s.request_idr();
                                 rebuild_encoder = false;
+                            }
+                            let active = encoder
+                                .as_mut()
+                                .expect("a missing encoder is rebuilt above");
+                            if rebuilt {
+                                active.set_next_frame(next_wire_frame.get());
                             }
                             let begin = Instant::now();
                             if fresh && tracing::enabled!(target: "pacing", tracing::Level::TRACE) {
@@ -914,11 +960,11 @@ impl Media {
                             if Instant::now() >= metadata_due {
                                 let metadata = image.gpu.hdr_metadata();
                                 *s.hdr_metadata.write().unwrap() = metadata;
-                                encoder.set_hdr_metadata(metadata);
+                                active.set_hdr_metadata(metadata);
                                 metadata_due = Instant::now() + Duration::from_secs(1);
                             }
                             if let Some((first, last)) = s.invalidation.lock().unwrap().take()
-                                && !encoder.invalidate_ref_frames(first, last)
+                                && !active.invalidate_ref_frames(first, last)
                             {
                                 s.request_idr();
                             }
@@ -935,7 +981,7 @@ impl Media {
                             } else {
                                 1.
                             };
-                            encoder.set_luminance(
+                            active.set_luminance(
                                 100. + runtime_config
                                     .integer("rtx_hdr_sdr_brightness", 0)
                                     .clamp(0, 100) as f32,
@@ -945,16 +991,16 @@ impl Media {
                             if last_image.as_ref().is_some_and(|previous| Arc::ptr_eq(previous,&image)) { presented_image.captured = Instant::now(); }
                             let transformed = if converted { truehdr.as_mut().map(|filter| filter.apply_gpu(&presented_image)).transpose() } else { Ok(None) };
                             let output = if let Ok(Some(transformed)) = transformed.as_ref() {
-                                encoder.encode_gpu(transformed, idr, bitrate)?
+                                active.encode_gpu(transformed, idr, bitrate)?
                             } else if let Err(error) = transformed {
                                 tracing::warn!(%error, "TrueHDR conversion failed; continuing with SDR-to-PQ");
                                 truehdr = None;
-                                encoder.set_luminance(100. + runtime_config.integer("rtx_hdr_sdr_brightness",0).clamp(0,100) as f32, 1.);
-                                encoder.encode_gpu(&presented_image, idr, bitrate)?
+                                active.set_luminance(100. + runtime_config.integer("rtx_hdr_sdr_brightness",0).clamp(0,100) as f32, 1.);
+                                active.encode_gpu(&presented_image, idr, bitrate)?
                             } else if c.boolean("wgc_direct_encoder_input", true) {
-                                encoder.encode_gpu(&presented_image, idr, bitrate)?
+                                active.encode_gpu(&presented_image, idr, bitrate)?
                             } else {
-                                encoder.encode(
+                                active.encode(
                                     &presented_image.readback(&mut truehdr_staging)?,
                                     idr,
                                     bitrate,

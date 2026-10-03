@@ -63,6 +63,9 @@ float3 load(int2 p) {
         rgb *= sdrWhiteScale;
     }
     if (hdr != 0 && pixel == 1) rgb *= hdrScale;
+    // Windows can compose an SDR desktop in FP16 (advanced color); an SDR
+    // stream needs it back in sRGB with SDR white at full scale.
+    if (hdr == 0 && pixel == 1) rgb = gamma(saturate(rgb / sdrWhiteScale));
     return rgb;
 }
 float3 nonlinear(float2 target) {
