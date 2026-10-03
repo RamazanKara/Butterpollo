@@ -198,6 +198,13 @@ fn apply_overrides(
     let overrides: serde_json::Map<String, serde_json::Value> = overrides
         .iter()
         .filter(|(_, v)| v.as_str() != Some(""))
+        .filter(|(k, _)| {
+            let allowed = butterpollo_core::config::override_allowed(k);
+            if !allowed {
+                tracing::warn!(key = %k, "ignoring an override of a host-wide setting");
+            }
+            allowed
+        })
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     config.update(&overrides)?;

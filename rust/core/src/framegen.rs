@@ -89,10 +89,7 @@ impl Provider {
 /// whether limiting is on by default, whether virtual displays limit
 /// automatically, and the manual limit in millihertz.
 pub fn advertised(config: &Config, virtual_display_enabled: bool) -> (bool, bool, u32) {
-    let virtual_limiter = !matches!(
-        normalize(config.get("frame_limiter_auto_virtual_framegen", "legacy")).as_str(),
-        "disabled" | "off" | "false" | "0"
-    );
+    let virtual_limiter = virtual_refresh(config) != VirtualRefresh::Disabled;
     let manual = config.boolean("frame_limiter_enable", false)
         && Provider::parse(config.get("frame_limiter_provider", "auto")) != Provider::None;
     let limit = Rate::parse(config.get("frame_limiter_fps_limit", "0")).map_or(0, |r| r.0);
@@ -108,6 +105,35 @@ fn normalize(value: &str) -> String {
         .filter(char::is_ascii_alphanumeric)
         .flat_map(char::to_lowercase)
         .collect()
+}
+/// How a virtual display's refresh follows the stream
+/// (`frame_limiter_auto_virtual_framegen`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VirtualRefresh {
+    /// Twice the stream rate.
+    Legacy,
+    /// Four times the stream rate.
+    Enabled,
+    /// A fixed 1000 Hz.
+    Vrr,
+    Disabled,
+}
+/// The setting with Vibepollo's spellings. The default is legacy rather
+/// than Vibepollo's enabled: 2x measured lower latency here.
+pub fn virtual_refresh(config: &Config) -> VirtualRefresh {
+    let value = config.get("frame_limiter_auto_virtual_framegen", "legacy");
+    match normalize(value).as_str() {
+        "" | "legacy" | "2x" | "fixed2x" => VirtualRefresh::Legacy,
+        "vrr" | "1000hz" | "1000" | "fixed1000hz" => VirtualRefresh::Vrr,
+        "false" | "no" | "disable" | "disabled" | "off" | "0" => VirtualRefresh::Disabled,
+        "enabled" | "enable" | "true" | "yes" | "on" | "1" | "smooth" | "smoother" => {
+            VirtualRefresh::Enabled
+        }
+        _ => {
+            crate::config::invalid("frame_limiter_auto_virtual_framegen", value);
+            VirtualRefresh::Legacy
+        }
+    }
 }
 pub fn generation_provider(value: &str) -> &'static str {
     match normalize(value).as_str() {
@@ -142,17 +168,13 @@ impl Policy {
         let generation = generation_provider(generation);
         let smooth_motion = generation == "nvidia-smooth-motion";
         let framegen = generation_enabled || generation != "none";
-        let mode = normalize(config.get("frame_limiter_auto_virtual_framegen", "legacy"));
-        let automatic =
-            virtual_display && !matches!(mode.as_str(), "disabled" | "off" | "false" | "0");
-        let multiplier = if !virtual_display {
-            1
-        } else if mode == "legacy" {
-            2
-        } else if automatic {
-            4
-        } else {
-            1
+        let mode = virtual_refresh(config);
+        let automatic = virtual_display && mode != VirtualRefresh::Disabled;
+        let multiplier = match mode {
+            _ if !virtual_display => 1,
+            VirtualRefresh::Legacy => 2,
+            VirtualRefresh::Enabled | VirtualRefresh::Vrr => 4,
+            VirtualRefresh::Disabled => 1,
         };
         let provider = Provider::parse(config.get("frame_limiter_provider", "auto"));
         let overridden = Rate::parse(config.get("frame_limiter_fps_limit", "0"))?;
@@ -194,9 +216,7 @@ impl Policy {
         .to_owned();
         Ok(Self {
             rate,
-            display_rate: if virtual_display
-                && matches!(mode.as_str(), "vrr" | "1000hz" | "1000" | "fixed1000hz")
-            {
+            display_rate: if virtual_display && mode == VirtualRefresh::Vrr {
                 Rate(1_000_000)
             } else {
                 Rate(stream.0.saturating_mul(multiplier))
@@ -215,11 +235,7 @@ impl Policy {
         })
     }
     pub fn with_vrr(mut self, config: &Config, virtual_display: bool, requested: bool) -> Self {
-        let mode = normalize(config.get("frame_limiter_auto_virtual_framegen", "legacy"));
-        if virtual_display
-            && requested
-            && !matches!(mode.as_str(), "disabled" | "off" | "false" | "0")
-        {
+        if virtual_display && requested && virtual_refresh(config) != VirtualRefresh::Disabled {
             self.display_rate = Rate(1_000_000);
             if matches!(config.get("capture", "auto"), "" | "auto") {
                 self.capture = "wgc".into();
@@ -317,5 +333,24 @@ mod tests {
             .display_rate,
             Rate(239760)
         );
+    }
+    #[test]
+    fn virtual_refresh_reads_vibepollo_spellings() {
+        for (value, mode) in [
+            ("2x", VirtualRefresh::Legacy),
+            ("fixed_2x", VirtualRefresh::Legacy),
+            ("No", VirtualRefresh::Disabled),
+            ("disable", VirtualRefresh::Disabled),
+            ("smoother", VirtualRefresh::Enabled),
+            ("1000hz", VirtualRefresh::Vrr),
+            ("sideways", VirtualRefresh::Legacy),
+        ] {
+            let c = Config::parse(&format!("frame_limiter_auto_virtual_framegen={value}")).unwrap();
+            assert_eq!(virtual_refresh(&c), mode, "{value}");
+        }
+        assert_eq!(virtual_refresh(&Config::default()), VirtualRefresh::Legacy);
+        let c = Config::parse("frame_limiter_auto_virtual_framegen=fixed-2x").unwrap();
+        let p = Policy::resolve(&c, Rate(60000), true, "none", false, false, true, false).unwrap();
+        assert_eq!(p.display_rate, Rate(120000));
     }
 }

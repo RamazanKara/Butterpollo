@@ -1470,7 +1470,12 @@ fn permanent_response(bytes: &[u8]) -> Result<u32> {
 /// Persistent driver setting, applied only when the administrator explicitly
 /// configured this key. It is independent of temporary streaming leases.
 pub fn configure_permanent(config: &butterpollo_core::config::Config) -> Result<()> {
-    let Some(value) = config.values.get("dd_virtual_display_permanent_count") else {
+    // dd_vdd_static_monitor_count is the key's older name.
+    let Some(value) = config
+        .values
+        .get("dd_virtual_display_permanent_count")
+        .or_else(|| config.values.get("dd_vdd_static_monitor_count"))
+    else {
         return Ok(());
     };
     let count = value
