@@ -21,6 +21,7 @@ pub mod nvenc;
 pub mod packet;
 pub mod pairing;
 pub mod performance;
+pub mod playnite;
 pub mod present_timing;
 pub mod pyrowave;
 pub mod remote;
