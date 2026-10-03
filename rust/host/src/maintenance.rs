@@ -49,7 +49,9 @@ pub fn trigger_update(h: &Shared) {
                             && r["assets"].as_array().is_some_and(|assets| {
                                 assets.iter().any(|a| {
                                     a["name"].as_str().is_some_and(|s| {
-                                        s.starts_with("butterpollo-rust-") && s.ends_with(".zip")
+                                        (s.starts_with("butterpollo-rust-") && s.ends_with(".zip"))
+                                            || (s.starts_with("butterpollo-setup-")
+                                                && s.ends_with(".exe"))
                                     })
                                 })
                             })
@@ -63,10 +65,100 @@ pub fn trigger_update(h: &Shared) {
         state["checked_at"] = json!(now());
         state["check_failed"] = json!(result.is_err());
         match result {
-            Ok(releases) => state["releases"] = json!(releases),
+            Ok(releases) => {
+                let current = env!("CARGO_PKG_VERSION");
+                let latest = releases
+                    .iter()
+                    .filter_map(|r| r["tag_name"].as_str())
+                    .filter(|tag| newer(tag, current))
+                    .max_by(|a, b| {
+                        if newer(a, b) {
+                            std::cmp::Ordering::Greater
+                        } else {
+                            std::cmp::Ordering::Less
+                        }
+                    })
+                    .map(str::to_owned);
+                state["current_version"] = json!(current);
+                state["update_available"] = json!(latest.is_some());
+                state["latest_version"] = json!(latest);
+                state["releases"] = json!(releases);
+                drop(state);
+                if let Some(latest) = latest {
+                    announce(&h, &latest);
+                }
+            }
             Err(error) => tracing::warn!(%error,"release check failed"),
         }
     });
+}
+/// Tell the user about a new version once, as Vibepollo does.
+fn announce(h: &Shared, version: &str) {
+    let mut aliases = h.aliases.lock().unwrap();
+    if aliases["root"]["last_notified_version"].as_str() == Some(version) {
+        return;
+    }
+    let mut next = aliases.clone();
+    if !next["root"].is_object() {
+        next["root"] = json!({});
+    }
+    next["root"]["last_notified_version"] = json!(version);
+    if butterpollo_core::state::write_json(&h.aliases_path, &next).is_ok() {
+        *aliases = next;
+    }
+    drop(aliases);
+    tracing::info!(version, "a newer Butterpollo is available");
+    butterpollo_windows::tray::notify(
+        "Butterpollo update",
+        &format!(
+            "Version {} is available. See Maintenance in the console.",
+            version.trim_start_matches('v')
+        ),
+    );
+}
+/// Whether release `a` is newer than `b`: dotted numbers, then a final
+/// release above its pre-releases (`2.0.0` > `2.0.0-rc.2` > `2.0.0-rc.1`).
+pub fn newer(a: &str, b: &str) -> bool {
+    fn parts(version: &str) -> (Vec<u64>, Option<Vec<String>>) {
+        let version = version.trim().trim_start_matches(['v', 'V']);
+        let version = version.split('+').next().unwrap_or(version);
+        let (release, pre) = match version.split_once('-') {
+            Some((release, pre)) => (release, Some(pre.split('.').map(str::to_owned).collect())),
+            None => (version, None),
+        };
+        (
+            release.split('.').map(|p| p.parse().unwrap_or(0)).collect(),
+            pre,
+        )
+    }
+    let ((a_release, a_pre), (b_release, b_pre)) = (parts(a), parts(b));
+    for i in 0..a_release.len().max(b_release.len()) {
+        let (x, y) = (
+            a_release.get(i).copied().unwrap_or(0),
+            b_release.get(i).copied().unwrap_or(0),
+        );
+        if x != y {
+            return x > y;
+        }
+    }
+    match (a_pre, b_pre) {
+        (None, Some(_)) => true,
+        (Some(_), None) | (None, None) => false,
+        (Some(a), Some(b)) => {
+            for (x, y) in a.iter().zip(&b) {
+                let order = match (x.parse::<u64>(), y.parse::<u64>()) {
+                    (Ok(x), Ok(y)) => x.cmp(&y),
+                    (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+                    (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
+                    (Err(_), Err(_)) => x.cmp(y),
+                };
+                if order != std::cmp::Ordering::Equal {
+                    return order == std::cmp::Ordering::Greater;
+                }
+            }
+            a.len() > b.len()
+        }
+    }
 }
 fn now() -> u64 {
     SystemTime::now()
@@ -310,4 +402,18 @@ pub fn bundle(h: &Shared) -> Result<PathBuf> {
 }
 pub fn integration_status(h: &Shared) -> Value {
     butterpollo_windows::limiter::status(&h.config.read().unwrap())
+}
+#[cfg(test)]
+mod version_tests {
+    #[test]
+    fn release_versions_compare_like_semver() {
+        use super::newer;
+        assert!(newer("v2.0.0", "2.0.0-rc.1"));
+        assert!(newer("2.0.0-rc.2", "2.0.0-rc.1"));
+        assert!(newer("2.0.0-rc.10", "2.0.0-rc.9"));
+        assert!(newer("2.1.0-beta", "2.0.0"));
+        assert!(!newer("2.0.0-rc.1", "2.0.0-rc.1"));
+        assert!(!newer("1.9.9", "2.0.0-rc.1"));
+        assert!(!newer("2.0.0-rc.1", "v2.0.0"));
+    }
 }

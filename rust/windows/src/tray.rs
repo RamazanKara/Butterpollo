@@ -169,6 +169,7 @@ impl Tray {
                     )?;
                     state.icon.hWnd = hwnd;
                     let _ = Shell_NotifyIconW(NIM_ADD, &state.icon);
+                    *SHOWN.lock().unwrap() = Some(hwnd.0 as isize);
                     let _ = ready.send(Ok(GetCurrentThreadId()));
                     let mut message = MSG::default();
                     loop {
@@ -179,6 +180,7 @@ impl Tray {
                         let _ = TranslateMessage(&message);
                         DispatchMessageW(&message);
                     }
+                    *SHOWN.lock().unwrap() = None;
                     let _ = Shell_NotifyIconW(NIM_DELETE, &state.icon);
                     SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                     let _ = DestroyWindow(hwnd);
@@ -213,6 +215,31 @@ impl Drop for Tray {
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
+    }
+}
+/// The tray icon's window while it is shown.
+static SHOWN: std::sync::Mutex<Option<isize>> = std::sync::Mutex::new(None);
+/// Show a notification from the tray icon, if there is one.
+pub fn notify(title: &str, text: &str) {
+    let Some(window) = *SHOWN.lock().unwrap() else {
+        return;
+    };
+    let mut icon = NOTIFYICONDATAW {
+        cbSize: size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: HWND(window as *mut _),
+        uID: 1,
+        uFlags: NIF_INFO,
+        dwInfoFlags: NIIF_INFO,
+        ..Default::default()
+    };
+    let copy = |target: &mut [u16], value: &str| {
+        let units: Vec<u16> = value.encode_utf16().take(target.len() - 1).collect();
+        target[..units.len()].copy_from_slice(&units);
+    };
+    copy(&mut icon.szInfoTitle, title);
+    copy(&mut icon.szInfo, text);
+    unsafe {
+        let _ = Shell_NotifyIconW(NIM_MODIFY, &icon);
     }
 }
 pub fn open_web(port: u16) -> Result<()> {

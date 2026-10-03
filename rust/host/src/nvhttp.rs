@@ -456,6 +456,10 @@ async fn do_pair(h: Shared, args: &Args) -> Result<Vec<(String, String)>> {
             );
         }
         tracing::info!(client=%name,"Pairing PIN required in the web interface");
+        butterpollo_windows::tray::notify(
+            "Pairing request",
+            &format!("{name} wants to pair. Enter the PIN it shows in the Butterpollo console."),
+        );
         let response = tokio::time::timeout(Duration::from_secs(300), receiver).await;
         h.pins.lock().unwrap().remove(&id);
         let (pin, name) = response
@@ -522,6 +526,10 @@ async fn do_pair(h: Shared, args: &Args) -> Result<Vec<(String, String)>> {
                 },
             )?;
             tracing::info!(client=%p.name,"Client paired and saved");
+            butterpollo_windows::tray::notify(
+                "Device paired",
+                &format!("{} can now stream from this PC.", p.name),
+            );
             Ok(vec![("paired".into(), "1".into())])
         } else {
             bail!("unknown pairing phase")

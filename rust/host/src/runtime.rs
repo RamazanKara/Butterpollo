@@ -165,11 +165,17 @@ pub async fn maintain(
                 .read()
                 .unwrap()
                 .integer("update_check_interval", 86400);
-            if interval > 0 {
+            // Not during a stream, as in Vibepollo; try again in a minute.
+            let streaming = !h.sessions.lock().unwrap().active.is_empty();
+            if interval > 0 && !streaming {
                 maintenance::trigger_update(&h);
             }
             update_at = Instant::now()
-                + Duration::from_secs(if interval > 0 { interval as u64 } else { 60 });
+                + Duration::from_secs(if interval > 0 && !streaming {
+                    interval as u64
+                } else {
+                    60
+                });
         }
         start_deferred(&h);
         if application_finished(&h) {
