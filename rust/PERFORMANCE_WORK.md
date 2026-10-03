@@ -7,11 +7,10 @@ still open; the measured fixture results below are local loopback evidence.
 
 ## Current state
 
-Installed revision: `36bff835a` (Codex). It still has the signed launch-ID bug
-behind the intermittent `invalid digit found in string` / 503: the customer's
-tablet hit it twice at 19:42 UTC before connecting. Source on
-`codex/butterpollo-rust` adds the Codex fixes after `36bff835a` and the
-scheduling work below; install it while the host is idle.
+Installed revision: `8db29eee4` (October 3, 07:37 UTC; `butterpollo.exe`
+SHA-256 `DB543650FC4824E0CDA61919E619E6419106E7B5D45A815AD0C541CB816ACA77`,
+58 package files, profile preserved). It contains the scheduling work below
+and the multi-stream and display fixes of October 3.
 Push only to the owned `butterpollo` remote. Draft PR:
 https://github.com/RamazanKara/Butterpollo/pull/1.
 
@@ -91,6 +90,74 @@ The WSL clock ran 43 s behind Windows, so cargo on Windows skipped rebuilding
 files edited in WSL within that window. `systemd-timesyncd` in WSL was stopped
 and the WSL clock set from Windows. If edits seem to have no effect, compare
 `wsl date` with Windows time and touch the sources.
+
+## October 3: multiple streams and display restoration
+
+The customer reported that multiple streams did not work. Fixed in
+`c23384eae`..`8db29eee4`:
+
+1. Reconnect lockout. A client launching again after an abandoned launch or
+   stream got "client already has a session" until the old one timed out
+   (four failures in a row at 05:09 UTC). A launch now supersedes the same
+   client's launch or stream in that role and waits up to 5 s for its teardown.
+2. Second client refused. A different display mode ("another stream owns a
+   different display mode") or a running arrangement refused the second
+   stream, and clients shared one retained display. Each client now has its
+   own retained display, a mode set by one stream is kept (the other stream
+   scales), and the arrangement is shared and re-laid out as streams come
+   and go.
+3. A second client's virtual display broke the first client's DDX capture:
+   `0x887A0026` on every re-created duplication, 117 restarts, never
+   recovered. Windows keeps returning the stale adapter while any device on
+   it is alive (`multi_ddx_probe` reproduces this). The capture worker now
+   drops the lost capture, withdraws the frame and waits 150 ms for streams
+   to release their encoder before re-creating it. The first stream recovers
+   after one or two restarts, about a second without frames.
+4. RTSP refusals and failures were logged at debug; now warnings.
+5. Display restoration. `Topology::set_mode_rate` trusted SetDisplayConfig:
+   the HISENSE TV asked for 1080p120 came back at 60 Hz with no error, and
+   re-applying the unchanged layout (`set_positions`) did the same. It now
+   skips a display already in the mode, verifies the result, and falls back
+   to the display's mode list. The layout recorded for restore no longer
+   contains the stream's own virtual display (a retained one stayed as an
+   invisible monitor beside the Odyssey; restoring its settings after it was
+   removed is the likely source of the customer's "os error 31"). Restore
+   continues past a failing display, names the failed step, re-checks rates
+   after moving displays, and retries briefly while Windows applies another
+   change ("cannot read display mode").
+
+Fixtures (in `day-work-20261002`): `multi_stream.py` runs two paired clients
+against an isolated host (concurrent join, retry after an unconnected launch,
+resume after a client crash). `run-system-multi.ps1` runs it as SYSTEM so each
+client gets its own virtual display (`-Layout extended`). The check
+`capture_restarts_bounded` allows up to four capture restarts when a display
+arrives. `restore_probe` re-applies the current layout, optionally step by
+step, and prints every display's rate.
+
+| Run | Result |
+| --- | --- |
+| Physical display, all scenarios | PASS, 0 capture restarts |
+| SYSTEM, per-client virtual displays, before the fix | FAIL, 117 restarts |
+| SYSTEM, per-client virtual displays, final | PASS, 1 restart; A 58.1 fps at 60, B 114 fps at 120; layout and rates unchanged; no restore warning |
+
+The arrival fixture could not be compared with the 240 Hz runs above: the
+Odyssey was at 120 Hz and the phone's retained 240 Hz virtual display was
+attached. Same display state, installed `f44de5dd8` against the new build:
+received age 13.6 / 19.8 ms against 13.2 / 20.2 ms (mean / p99), host p99
+2.6 ms for both. No pacing regression.
+
+Display state found on October 3 (not changed back without the customer):
+Odyssey 5120x1440 at 120 Hz (240 Hz on October 2), HISENSE active at 120 Hz
+until `restore_probe` reproduced the 60 Hz bug on it several times; it was
+returned to 120 Hz and then went inactive about a minute later, while no
+probe ran (TV standby or switched off; still connected). After the update
+restarted the service it was active again at 1920x1080 at 120 Hz in its
+usual place, and the retained virtual display was gone. The Odyssey is still
+at 120 Hz.
+
+Open: the customer's own configuration (exclusive layout, HDR virtual
+display) was not run here because it turns the physical monitors off. If
+error 31 still occurs, the warning now names the display and step.
 
 ## Next work
 
