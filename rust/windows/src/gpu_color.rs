@@ -852,7 +852,7 @@ mod tests {
             let output = readback(&gpu, sdr_convert.convert(&sdr)?.as_ref())?;
             assert!(output[32 * 64 + 32].abs_diff((64. + 876. * pq).round() as u16) <= 2);
         }
-        let resized = make_image(&[[0.; 3], [25.; 3], [0.; 3], [25.; 3]], 1, 2);
+        let resized = make_image(&[[0.; 3], [25.; 3], [0.; 3], [25.; 3]], 1, 4);
         let config = butterpollo_core::rtsp::Negotiated {
             width: 2,
             height: 2,
@@ -873,6 +873,28 @@ mod tests {
         )?;
         for value in &output[..4] {
             assert!(value.abs_diff(723) <= 1, "1000-nit linear average: {value}");
+        }
+        // A wider source is letterboxed: an 8x2 image fills one row of 4x4.
+        let wide = make_image(&[[125.; 3]], 8, 2);
+        let mut convert = Converter::new(
+            &gpu,
+            &butterpollo_core::rtsp::Negotiated {
+                width: 4,
+                height: 4,
+                codec: 1,
+                hdr: true,
+                ..Default::default()
+            },
+            (wide.width, wide.height, wide.pixel),
+        )?;
+        let output = readback(
+            &gpu,
+            convert.convert(&GpuImage::upload(&gpu, &wide)?)?.as_ref(),
+        )?;
+        for (row, picture) in [(0, false), (1, true), (2, false), (3, false)] {
+            for value in &output[row * 4..row * 4 + 4] {
+                assert_eq!(*value > 100, picture, "row {row}: {value}");
+            }
         }
         Ok(())
     }

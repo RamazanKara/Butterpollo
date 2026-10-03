@@ -68,12 +68,28 @@ float3 load(int2 p) {
     if (hdr == 0 && pixel == 1) rgb = gamma(saturate(rgb / sdrWhiteScale));
     return rgb;
 }
+// The source keeps its aspect ratio, centred in the stream with black bars
+// (a 32:9 desktop streamed to a 16:10 tablet). Sizes within a pixel of the
+// stream's shape still fill it, so rounding never adds a one-pixel line.
+bool content(float2 target, out float2 p) {
+    float2 ratio = float2(targetSize) / float2(sourceSize);
+    float scale = min(ratio.x, ratio.y);
+    float2 size = float2(sourceSize) * scale;
+    if (all(abs(size - float2(targetSize)) < 1)) {
+        p = (target + 0.5) / ratio - 0.5;
+        return true;
+    }
+    float2 at = target + 0.5 - (float2(targetSize) - size) * 0.5;
+    p = at / scale - 0.5;
+    return all(at >= 0) && all(at < size);
+}
 float3 nonlinear(float2 target) {
     float3 rgb;
     if (all(sourceSize == targetSize)) {
         rgb = load(int2(target));
     } else {
-        float2 p = (target + 0.5) * float2(sourceSize) / float2(targetSize) - 0.5;
+        float2 p;
+        if (!content(target, p)) return float3(0, 0, 0);
         int2 at = int2(floor(p));
         float2 f = frac(p);
         rgb = lerp(lerp(load(at), load(at + int2(1, 0)), f.x),
