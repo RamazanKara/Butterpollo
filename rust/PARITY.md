@@ -1,41 +1,58 @@
-# Previous Butterpollo features and Rust validation
+# Butterpollo and Vibepollo 2.0
 
-The retained compatibility baseline is `2.0.0-beta.3-butter.4`, C++ commit `f23ee0c9e7857887be7f774de6ac5153500a7e53`. Windows streaming changes are ported from stable Vibepollo `2.0.0`, commit `8a8c4b03a280ab9f567beb380110abb80f5220b8`. Linux hosting is explicitly outside this release. This inventory describes the Rust implementation and evidence on 2026-10-02. An implemented platform adapter is not the same as an exercised hardware feature. NVIDIA, Intel, VHF and the remaining virtual-display lifecycle cases await native validation.
+Butterpollo's Rust host is meant to replace Vibepollo 2.0.0 (commit `8a8c4b03a280ab9f567beb380110abb80f5220b8`) on Windows. This file lists what matches, what differs on purpose and what is still missing, as of 2026-10-03. "Same" means the Rust host reads the same settings and files and gives clients the same answers; it does not mean every hardware path has been exercised. Evidence is at the end.
 
-The host, service supervisor, console, protocol, display recovery process, Vulkan layer and NGX adapter are Rust. External codec/GPU SDK libraries and Windows device drivers remain dependencies. The package does not build or invoke the previous C++ host, display helper, service wrapper or Vue frontend. WebRTC, SudoVDA and ViGEm were already removed in the baseline; they are not requirements introduced by this migration.
+Left out on purpose: WebRTC streaming, session history and host statistics pages, the ViGEm and SudoVDA fallbacks, and Linux and macOS hosting.
 
-| Previous behavior | Rust implementation | Evidence and remaining validation |
+## Deliberate differences
+
+Three defaults differ because they measured lower latency on the test PC (see [PERFORMANCE.md](PERFORMANCE.md)). Setting the Vibepollo value restores Vibepollo's behaviour.
+
+| Setting | Vibepollo default | Butterpollo default |
 | --- | --- | --- |
-| Existing configuration, certificates, credentials, app/client identity, permissions and unknown fields | Atomic migration and state writes; previous C++ and early Rust digest byte orders; legacy client normalization; stable app aliases after artwork changes | Independent previous-password vector, real remembered-session/API-key migration, restart/CSRF/logout/rotation/scope checks, actual pairing and administration fixtures pass |
-| PIN pairing and authenticated Moonlight endpoints | RSA/AES pairing, TLS identities, certificate authorization and permission checks | Independent Moonlight-common-c client passes real pairing and denied actions |
-| RTSP, SDP, encrypted control, video and audio | Fractional negotiation, legacy CBC/GCM, replay window, ENet control, RTP, Cauchy FEC and codec capability advertisement | Wire vectors and independent encrypted streaming/decode pass |
-| H.264, HEVC, AV1, HDR, 10-bit SDR and NVIDIA 4:4:4 | Direct AMF and NVENC, reviewed NVIDIA API 11.0–13.0 compatibility, D3D11 4:2:0/8-bit 4:4:4, GPU-only CUDA ten-bit 4:4:4, native QSV imports and compatibility/software encoders | AMD streams and GPU 4:2:0/4:4:4 math tests pass; seven NVENC mock-driver tests pass; NVIDIA/Intel encoding awaits hardware |
-| AMD reference frame invalidation | Bounded LTR anchors, loss feedback, recovery frame signaling, IDR fallback and AVC wrap handling | Strict independent H.264/HEVC/AV1 decode after dropping two frame ranges passes |
-| NVIDIA reference frame invalidation, dynamic bitrate and reconnect | Capability-gated native reference invalidation, ordered drain through dependent frames, confirmation only after successful recovery, bounded asynchronous slots and wire frame indices preserved after encoder recreation | Seven NVENC mock-driver tests cover stale/partial feedback, pending outputs, async event reuse, timeout teardown and rejected bitrate updates; opt-in strict NVIDIA decode fixture is implemented and awaits hardware |
-| Display HDR metadata and changes | Read-only DXGI luminance metadata, bounded units, native encoder metadata snapshots and updated Moonlight control metadata after display changes | Wire/unit vectors and in-flight NVENC metadata ownership tests pass; native NVIDIA metadata decoding awaits hardware |
-| Stable PyroWave SDR/HDR, 8/10-bit, 4:2:0/4:4:4 | Bitstream 186f0393 and three stable codec patches; shared D3D11/Vulkan planar GPU inputs, legacy length and current record framing, critical/adaptive detail FEC, partial recovery, routed pacing and authenticated 32 MiB bandwidth probe | Twelve framing/color/chroma profiles pass independent vendor decoding. All 24 encrypted/plain RTP cases match original C++ FEC and recover lost coarse packets; all six record profiles decode after deliberate detail loss. Four encrypted 1080p/120 Nonary transport + vendor decoder streams pass, including HDR control flags and both chroma formats. Actual Nonary Qt HDR rendering is unverified |
-| VRR presentation-driven capture | Fixed 1000 Hz virtual-display policy without changing the negotiated rate; WGC SystemRelativeTime, preserved asynchronous encoder timestamps and Rust DXGI ETW/refiner | Stable cadence vectors and native event ABI checks; tracking falls back when unavailable. Real game/Nonary-client VRR acceptance remains |
-| Slow PyroWave client isolation | Separate sender per client with one pending intra frame, replacement counts and bounded teardown; dynamic wire budget and routed-link pacing | A 30-second encrypted 800 Mbps target loopback run replaces pending frames and continuously decodes 2,993 frames without errors. A congested physical LAN and multi-client playback remain unverified |
-| First-run import and visible readiness | Rust GUI launcher; atomic copy into an empty profile, owned identity/state/artwork files, source retained; progress, connection checklist, physical LAN address/custom port, pairing steps, rates/p95/history and optional refresh | Migration/rollback vectors and JavaScript-disabled desktop/mobile first-stream fixtures pass, including custom ports. An authorized SCM installation imported the actual profile, preserved the original files byte-for-byte and connected an existing paired phone; native folder-picker remains unverified |
-| DXGI/WGC capture, pacing and optional WGC publication alignment | Previous `ddx` alias selects Desktop Duplication; bounded pools, desktop/pointer QPC timestamps, cursor composition in GPU conversion, repeat-frame minimum, exact rate grid and fatal-error notifications | Native SDR/HDR cursor composition matches the CPU reference; actual DDX encrypted HEVC HDR at 1968×2184/120 passes on a virtual display. WGC's 16 repeated reconnect/COM teardown cycles, closed-pool propagation and scheduling vectors pass |
-| TrueHDR app/client/live tuning and driver profiles | Explicit override precedence, asynchronous NVDRS/visible-window lookup, passive overlay handling, neutral desktop tuning, native FP16/PQ bypass and shared-device NGX output | Precedence, visible-stack, calibration and ABI vectors pass; live NVIDIA NGX/profile behavior awaits hardware |
-| NVIDIA power, OpenGL/Vulkan presentation and HAGS priority preferences | Owned app/base profile journal and conditional restoration; process GPU scheduling policy | Vendor SDK ABI and recovery/policy vectors pass; live NVIDIA driver verification remains |
-| Frame generation, fractional display rates, render scaling and EDID refresh checks | Previous provider aliases and multiplier semantics; independent resolution/refresh policies; inherited capture/sync settings | Baseline identity/rate/scaling/EDID vectors pass; physical mode application is unverified |
-| Virtual displays, permanent counts, per-client/app/shared identities | Legacy protocol 3.5 and secure 3.6+, stable recovery owner capability, original GUID/FNV identities, persisted shared GUID, labels, HDR peak and finite leases | Both protocol payload/identity vectors pass. LocalSystem in the signed-in session creates a per-client 1968×2184 HDR display and passes strict encrypted HEVC decoding at 120 FPS. The installed driver reports 3.6+. Legacy 3.5 hardware, driver-loss recreate, permanent-count and shared/retained lifecycle cases remain unverified |
-| Display loss recovery during a game or retained monitor session | Reopen/recreate the owned lease, refresh output identity, reapply HDR/DPI/layout/profile and restart capture; retry retained layout restoration | Implemented; native driver-loss fault injection remains unverified |
-| Exclusive, primary, extended and isolated arrangements; Golden snapshot recovery | Native CCD topology/modes/HDR/DPI/rotation, old snapshot import, original restoration snapshot and independent crash recovery | Import/route vectors and read-only Golden comparison pass; physical apply/crash restoration is unverified |
-| Remote Game/Input/Monitor/Secondary catalogue and confirmations | Stable control IDs, owner projection, generation/target/client-scoped confirmations, independent roles and retained monitor layout state | Previous transition and permission vectors pass; actual retained monitors require the privileged driver path |
-| Keyboard, mouse, clipboard, touch, pen and VHF controllers | Previous bindings, disabled-device policies, per-controller type selection, Back-to-Home and feedback paths | Packet/policy vectors and independent denied-input checks pass; VHF haptics/controller and secure-desktop interaction need native testing |
-| Stereo, 5.1, 7.1, quality/custom Opus layouts and audio routing | WASAPI, PCM/float format fallback with valid/container depth preserved, bounded Opus packets, channel mappings, default/format journals and shared owned leases | 21 Opus layout/quality/duration round trips pass. A rendered tone through Steam Streaming Speakers, WASAPI, encrypted Moonlight transport and independent Opus decoding has peak 0.053/RMS 0.032. This separate test exercises and restores native routing; the Opus unit fixture does not change devices |
-| App execution, preparation/undo, client connect/disconnect commands and lifecycle | Case-insensitive saved environment, owned process jobs, pause retention, state hooks, graceful exit and timeout fallback | Native process-tree teardown, quoted output and real client connect/disconnect hooks pass |
-| RTSS/NVAPI frame limiting and HDR Vulkan interception | Direct SDK profile/RPC calls, durable conditional restoration and Rust implicit Vulkan layer | Profile/ABI/format vectors pass; live RTSS/NVIDIA/Vulkan presentation remains unverified |
-| Discovery, IPv4/IPv6 listeners, UPnP and wake-on-LAN identity | Native mDNS, dual-stack sockets, finite IPv4 leases with permanent-only fallback, stable host ownership/adoption, IGDv2 IPv6 pinholes and interface MAC | Dual-stack, real loopback SOAP create/renew/cleanup and UDP offload tests pass; physical router behavior remains unverified |
-| Administration, locales and persistent browser sessions | Rust HTML global/app/client editors, typed TrueHDR fields, inherited reset, app ordering, 22 previous locale catalogues with English fallback, token scopes, refresh/revoke/remember-me and previous session import | Real API, restart/migration and JavaScript-disabled desktop/mobile browser fixtures pass; locale vectors preserve names, commands, JSON and field values |
-| Maintenance, diagnostics, logs, updates and crash support | Rust minidumps, support ZIP/parts, tray, CLI probes, private cross-session stop event, parent validation and intentional-restart/crash policies; support ZIP includes supervisor logs | Native minidump, ZIP integrity and administration tests pass. A LocalSystem supervisor in session 0 gracefully stops its disposable session-1 child in 3.8 ms; this measures the IPC fixture, not full-host teardown. Actual installation/import/readiness and stop/start checks passed with separate backups |
+| `capture` (automatic) | Windows Graphics Capture on Windows 11 23H2 and later | Desktop Duplication, except for VRR and game-provided frame generation on a virtual display |
+| `amd_quality` | `balanced` | `speed` |
+| `frame_limiter_auto_virtual_framegen` | `enabled` (virtual display at 4x the stream rate) | `legacy` (2x); a VRR request still gets 1000 Hz |
+
+Settings changed in the console are saved at once and most take effect from the next stream; Vibepollo applies some (log level, display revert, RTX HDR) to a running host. The console says when a restart is needed.
+
+## Feature by feature
+
+| Area | Status | Notes |
+| --- | --- | --- |
+| Profile and settings | Same | Imports a Vibepollo or Apollo profile in place. The parser accepts what Vibepollo accepts (BOM, quoted and hex numbers, lists, enum spellings, `driver_decides`, `wgcc`) and logs values it ignores. An invalid `apps.json` starts the host with no apps and is kept as `apps.json.invalid`. The shared virtual display GUID in `vibeshine_state.json` is reused. |
+| Per-app and per-device overrides | Same | Only Vibepollo's list of stream, input, display and encoder keys can be overridden; other keys are logged and ignored. |
+| Pairing | Same | PIN and one-time PIN (`/api/otp`), pending requests in the console, per-device permissions and enable switch. |
+| Moonlight endpoints | Same | `serverinfo` extras (virtual display, frame limiter, permissions, server commands), `/applist` with Vibepollo's placeholder for devices without the list permission, `/launch` and `/resume` with `VirtualDisplayDriverReady`, `/unpair` on HTTP and HTTPS, `/bitrate` capped by `max_bitrate` and 500 Mbps, ABR capability reported as client-driven. |
+| Codecs and stream | Same | H.264, HEVC, AV1, HDR, 10-bit SDR, 4:4:4 where the encoder supports it, PyroWave, FEC, reference frame invalidation (AMF and NVENC). |
+| Capture | Same, different default | Desktop Duplication and WGC with recovery; input and capture follow the secure desktop (UAC, lock screen). |
+| Virtual displays | Mostly the same | Per device, shared or off; layouts exclusive, extended, primary, isolated; HDR; permanent count (also the old `dd_vdd_static_monitor_count`). Missing: choosing the GPU that renders the virtual display (`adapter_name` only picks the capture and encode GPU), reclaiming displays after a host restart (driver protocol 3.7), and creating one automatically on a host with no active display. |
+| Display layout | Same | Golden layout restore (skipped while a display it names is disconnected), restore after a stream or crash, mode remapping, the display restore hotkey (`dd_snapshot_restore_hotkey`). `dd_wa_dummy_plug_hdr10` turns VSync off but does not force HDR on. |
+| Device display mode | Same | A device's `display_mode` sets its display's resolution and refresh in place of the host's policies; the stream keeps the client's rate. |
+| Letterboxing | Same | A source of another shape keeps its aspect ratio between black bars, in the GPU and the software encoders. |
+| Input | Same | Keyboard (key code mask, synthetic modifiers), mouse, touch, pen, controllers through the VHF driver, DualSense triggers and feedback. |
+| Audio | Same | Endpoint matching by id, name, description or adapter; Steam Streaming Speakers; surround Opus. |
+| Apps | Same | Commands, preparation and undo, detached commands, URLs and documents, working folder inference, `APOLLO_*` variables, starting before sign-in. |
+| Steam library | Same | `steam_*` settings, sync on demand and every 30 seconds, covers from Steam's cache or store as PNG, `/api/steam/*`. A Steam app's stream ends when the game's processes exit. |
+| Playnite | Missing | No plugin connection, sync or Playnite launches yet. Imported apps that only have a `playnite-id` stream the desktop without starting the game. |
+| Lossless Scaling | Missing | `lossless_scaling_*` settings and the app's `lossless-scaling-*` fields are ignored. |
+| Frame limiting | Same | RTSS and NVIDIA profiles, game-provided frame generation, NVIDIA Smooth Motion; not the Lossless Scaling provider. |
+| Web console | Rebuilt | A new console (Svelte) covers overview, library, devices, settings, logs, maintenance and API tokens. Missing endpoints: `/api/browse`, `/api/playnite/*`, `/api/lossless_scaling/status`, `/api/apps/purge_autosync`, `/api/apps/{uuid}/icon`. |
+| Service and setup | Same | `setup.exe` upgrades a Vibepollo installation in place (drivers, service, firewall, shortcuts) and can uninstall it. The service restarts the host after a crash. `--creds` sets the console sign-in. The service's credentials folder is limited to SYSTEM and Administrators at every start. |
+| Tray | Partial | Open, disconnect, restart and quit. No notifications (pairing requests, app started or stopped, new version) and no force-close of the app. |
+| Updates | Partial | Lists releases; does not compare versions or notify. |
+| Logs and support | Same | Rotating logs (`log_path`), live tail in the console, crash dumps and support bundle. |
+
+## Evidence
+
+- Workspace tests: 166 pass (`cargo test --locked --release --workspace`), Clippy with warnings denied, and the web console's type check.
+- Native AMD tests on the test PC: GPU colour and letterbox conversion, cursor composition, AMF loss recovery, Opus surround, WGC teardown, and the software encoder letterbox test.
+- Live on the test PC with the installed service: phone streaming at 1968x2184, 120 Hz, HDR, on a per-device virtual display; two clients streaming at once on their own displays; capture recovery after a lost Desktop Duplication session; OTP pairing; the installer upgrading the Vibepollo installation in place.
+- Steam: discovery of 17 installed apps across three libraries, appinfo names and types, play history, covers (including store downloads), and a sync that adds the apps once and then reports no change.
+
+Not verified on hardware: NVIDIA and Intel encoders, RTX HDR, Lossless Scaling and Playnite (not implemented), the secure desktop during a stream (UAC, lock screen) and streaming the sign-in screen after a reboot, a Steam game's stream ending when the game exits, and the restore hotkey.
 
 ## Reproducible verification
-
-`build.ps1 -Package` runs formatting, locked workspace tests, Clippy with warnings denied, release builds and separate MSVC NGX adapter checks. Hardware tests are intentionally opt-in in a normal CI environment:
 
 ```powershell
 cargo test --workspace --locked
@@ -43,11 +60,9 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test -p butterpollo-windows --locked -- --ignored --skip native_nvenc_loss_recovery_and_444_hdr_decode --skip native_av1_geometry_and_hdr_are_preserved --test-threads=1 --nocapture
 ```
 
-The ordinary workspace suite has 130 passing tests. The native command requires the packaged codec DLLs on `PATH`, the same SDK environment as the build, an AMD D3D11/AMF adapter and a local network route. Twelve available native tests pass, exercising GPU 4:2:0/4:4:4 math and conversion timing, SDR/HDR hardware cursor composition, retained textures and pointer-only copies, FFmpeg ownership, AMD loss recovery, Opus surround, WGC reconnect/COM teardown, closed-pool propagation and adapter MAC lookup. They do not change display modes, audio defaults or the installed service. The separate strict AV1 geometry gate currently fails; it must not be counted as a passing native test.
+The native command needs the packaged codec DLLs on `PATH`, an AMD D3D11/AMF adapter and a local network route; it does not change display modes, audio defaults or the installed service. Set `BUTTERPOLLO_TEST_OPUS_ROOT` to the packaged runtime directory, `BUTTERPOLLO_TEST_FFMPEG` to an independent FFmpeg decoder and `BUTTERPOLLO_TEST_RFI_REPORT` to a report file. AMD AV1 exact-size decoding of unaligned sizes (such as 1968x2184) is a driver limitation; HEVC passes the same sizes.
 
-Set `BUTTERPOLLO_TEST_OPUS_ROOT` to the packaged runtime directory, `BUTTERPOLLO_TEST_FFMPEG` to an independent FFmpeg decoder executable, and `BUTTERPOLLO_TEST_RFI_REPORT` to the desired JSON report filename. `BUTTERPOLLO_TEST_AUDIO_REPORT` optionally saves the Opus report. The loss fixture saves its elementary streams beside the report and verifies all retained frames using the independent decoder.
-
-On a NVIDIA host with a display attached to that adapter, run the separate native fixture:
+On an NVIDIA host with a display attached to that adapter:
 
 ```powershell
 $env:BUTTERPOLLO_TEST_NVENC = '1'
@@ -56,12 +71,4 @@ $env:BUTTERPOLLO_TEST_FFMPEG = 'C:\path\to\ffmpeg.exe'
 cargo test -p butterpollo-windows --locked native_nvenc_loss_recovery_and_444_hdr_decode -- --ignored --test-threads=1 --nocapture
 ```
 
-The default cases are H.264, HEVC HDR, HEVC 4:4:4 SDR and HEVC 4:4:4 HDR. Set `BUTTERPOLLO_TEST_NVENC_CASES` to `h264,hevc-hdr,hevc444-sdr,hevc444-hdr,av1-hdr,av1444-hdr` on hardware supporting those AV1 modes. `BUTTERPOLLO_TEST_NVENC_DISPLAY` selects an attached output, and `BUTTERPOLLO_TEST_FFPROBE` overrides the FFprobe executable beside FFmpeg. The fixture encodes 64 changing frames, checks exact dimensions, chroma/depth and BT.2020/PQ metadata, changes bitrate, and strictly decodes after two deliberate loss ranges when reference invalidation is supported. Unsupported requested modes fail explicitly; they are not silently counted as passes. This fixture has not run on the AMD test machine.
-
-Run `tests/web_api.py`, `tests/console_browser.cjs` and `tests/session_restart.py` against isolated test-owned configurations. The browser fixture requires Playwright/Chromium, an artifact directory and the fixture password through environment variables. The restart fixture launches and stops only its own subprocess. `tests/interop.py` pairs a temporary client, streams/decrypts/decodes, checks permissions/hooks, then cancels and unpairs that client. See [PERFORMANCE.md](PERFORMANCE.md) for the hardware, limitations and measurement commands.
-
-## Production parity gate
-
-Production parity remains open until the native hardware paths are exercised: NVIDIA/Intel codecs; NVIDIA NGX, power/presentation/profile restoration and HAGS; VHF controller feedback and secure desktop; privileged VDD recreate/permanent/shared/retained monitors; full display/audio policy and crash restoration; physical UPnP routers; and Vulkan/RTSS integrations. Actual SCM installation, a per-client virtual HDR display and native stereo routing have been exercised with the user's authorization, preserving the previous installation and its profile. AMD AV1 exact-resolution decoding still fails for unaligned sizes, including the customer's 1968×2184 mode; HEVC passes the same dimensions. See the measured scope in [PERFORMANCE.md](PERFORMANCE.md).
-
-A controlled FEC comparison against the exact C++ baseline passes with identical parity bytes and a 1.26–1.40× video-block speedup. A whole-host comparison with the same C++ baseline, content and hardware remains outstanding. See [PERFORMANCE.md](PERFORMANCE.md) for the component benchmark and its limits.
+`tests/web_api.py`, `tests/console_browser.cjs`, `tests/session_restart.py`, `tests/interop.py` and `tests/otp_pairing.py` run against isolated test-owned profiles and stop only their own processes. See [PERFORMANCE.md](PERFORMANCE.md) for measurements.

@@ -159,6 +159,37 @@ Open: the customer's own configuration (exclusive layout, HDR virtual
 display) was not run here because it turns the physical monitors off. If
 error 31 still occurs, the warning now names the display and step.
 
+## October 3 evening: Vibepollo 2.0 parity
+
+Goal from the customer: Butterpollo replaces Vibepollo 2.0 for its users,
+with the latency wins kept and Vibepollo's behaviour everywhere else.
+`rust/PARITY.md` is the current list. Done since `967fe6a87`:
+
+- Setup (`rust/setup`): `butterpollo-setup-<version>.exe` upgrades a
+  Vibepollo installation in place (drivers as SYSTEM, service, firewall,
+  shortcuts, uninstall). Installed on this PC; the host name is now `homepc`.
+- New web console (`rust/web`, Svelte 5); the host serves it from
+  `assets\web` and keeps the server-rendered pages as a fallback.
+- Vibepollo replies for `/bitrate` (capped by `max_bitrate`), `/unpair` on
+  HTTP, ABR capabilities, the applist placeholder and
+  `VirtualDisplayDriverReady`.
+- Device `display_mode`, the config override allow-list, Vibepollo's
+  `frame_limiter_auto_virtual_framegen` spellings, `--creds`, credential
+  folder permissions at start, the display restore hotkey, an invalid
+  `apps.json` no longer stopping the host, and letterboxing in the software
+  encoders.
+- Steam library sync (`core::steam`, `host/src/steam.rs`): verified against
+  this PC's 17 installed apps in three libraries; covers from the cache or the
+  store. A Steam app's stream follows the game's processes.
+
+Still missing: Playnite (the customer's profile has Playnite apps and the
+fullscreen entry; Playnite is not installed on this PC now), Lossless
+Scaling, tray notifications, update version checks, the virtual display
+render GPU and reclaim after restart.
+
+Unverified here: the secure desktop during a stream, streaming the sign-in
+screen after a reboot, a Steam game ending its stream, the restore hotkey.
+
 ## Next work
 
 1. Install the current source while the host is idle (package with
