@@ -85,6 +85,8 @@ export interface Draft {
   enabled: boolean;
   perm: number;
   output_name_override: string;
+  /** WIDTHxHEIGHTxREFRESH, empty for the mode the device asks for. */
+  display_mode: string;
   always_use_virtual_display: boolean;
   virtual_display_mode: string;
   virtual_display_layout: string;
@@ -111,6 +113,15 @@ function choice(value: unknown, allowed: { value: string }[]): string {
   return allowed.some((option) => option.value === wanted) ? wanted : '';
 }
 
+/** The host reads WIDTHxHEIGHTxREFRESH, with up to three decimals in the refresh. */
+export function validDisplayMode(value: string): boolean {
+  if (value.trim() === '') return true;
+  const match = /^\s*(\d{1,5})[xX](\d{1,5})[xX](\d{1,4}(?:\.\d{1,3})?)\s*$/.exec(value);
+  if (!match) return false;
+  const [width, height, rate] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  return width >= 1 && width <= 16384 && height >= 1 && height <= 16384 && rate >= 1 && rate <= 1000;
+}
+
 let nextKey = 1;
 
 export function commandRow(cmd = '', elevated = false): CommandRow {
@@ -134,6 +145,7 @@ export function toDraft(client: Client): Draft {
     enabled: flag(client.enabled) !== false,
     perm: client.perm & PERM_ALL,
     output_name_override: text(client.output_name_override),
+    display_mode: text(client.display_mode),
     always_use_virtual_display: flag(client.always_use_virtual_display) === true,
     virtual_display_mode: choice(client.virtual_display_mode, VIRTUAL_DISPLAY_MODES),
     virtual_display_layout: choice(client.virtual_display_layout, VIRTUAL_DISPLAY_LAYOUTS),
@@ -159,6 +171,7 @@ function serialise(draft: Draft): Changes {
     enabled: draft.enabled,
     perm: draft.perm,
     output_name_override: draft.output_name_override || null,
+    display_mode: draft.display_mode.trim() || null,
     always_use_virtual_display: draft.always_use_virtual_display,
     virtual_display_mode: draft.virtual_display_mode || null,
     virtual_display_layout: draft.virtual_display_layout || null,

@@ -1185,7 +1185,12 @@ pub(crate) async fn api(
                     .ok_or_else(|| anyhow::anyhow!("client update must be an object"))?
                 {
                     if !matches!(k.as_str(), "uuid" | "cert" | "perm" | "name" | "enabled") {
-                        c.extra.insert(k.clone(), v.clone());
+                        // null clears a per-device setting.
+                        if v.is_null() {
+                            c.extra.remove(k);
+                        } else {
+                            c.extra.insert(k.clone(), v.clone());
+                        }
                     }
                 }
                 let revoked = data.get("enabled").and_then(Value::as_bool) == Some(false)

@@ -127,6 +127,19 @@ pub fn render_dimensions(width: u32, height: u32, client_scale: i64, app_scale: 
         _ => (width, height),
     }
 }
+/// A device's own display mode, `WIDTHxHEIGHTxREFRESH` (refresh in Hz, up to
+/// three decimals, e.g. `1920x1080x59.94`).
+pub fn parse_display_mode(text: &str) -> Option<(u32, u32, crate::framegen::Rate)> {
+    let mut parts = text.trim().split(['x', 'X']);
+    let width = parts.next()?.trim().parse::<u32>().ok()?;
+    let height = parts.next()?.trim().parse::<u32>().ok()?;
+    let rate = crate::framegen::Rate::parse(parts.next()?).ok()?;
+    (parts.next().is_none()
+        && (1..=16384).contains(&width)
+        && (1..=16384).contains(&height)
+        && rate.0 >= 1000)
+        .then_some((width, height, rate))
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arrangement {
     Extended,
@@ -277,6 +290,28 @@ impl Arrangement {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn device_display_modes_parse_like_vibepollo() {
+        use crate::framegen::Rate;
+        assert_eq!(
+            parse_display_mode("1920x1080x59.94"),
+            Some((1920, 1080, Rate(59940)))
+        );
+        assert_eq!(
+            parse_display_mode(" 2560X1600x120 "),
+            Some((2560, 1600, Rate(120000)))
+        );
+        for bad in [
+            "",
+            "1920x1080",
+            "1920x1080x0",
+            "0x1080x60",
+            "1920x1080x60x1",
+            "axbxc",
+        ] {
+            assert_eq!(parse_display_mode(bad), None, "{bad}");
+        }
+    }
     #[test]
     fn unsupported_physical_resolutions_keep_the_current_mode_and_rate() {
         let odyssey = [

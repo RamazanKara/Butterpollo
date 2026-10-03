@@ -13,6 +13,7 @@
     VIEW_ONLY,
     VIRTUAL_DISPLAY_LAYOUTS,
     VIRTUAL_DISPLAY_MODES,
+    validDisplayMode,
     type Draft,
   } from './device';
 
@@ -32,6 +33,7 @@
   const pending = $derived(changes(saved, draft));
   const changed = $derived(Object.keys(pending).length > 0);
   const nameMissing = $derived(draft.name.trim() === '');
+  const modeInvalid = $derived(!validDisplayMode(draft.display_mode));
 
   $effect(() => {
     dirty = changed;
@@ -111,7 +113,7 @@
 
   async function save(event: SubmitEvent) {
     event.preventDefault();
-    if (!changed || nameMissing) return;
+    if (!changed || nameMissing || modeInvalid) return;
     saving = true;
     // Edits made while the request is out stay unsaved.
     const submitted = $state.snapshot(draft);
@@ -201,6 +203,21 @@
           {/each}
         </select>
       </Field>
+      <Field
+        label="Display mode"
+        id="{uid}-display-mode"
+        hint="Width, height and refresh for this device's display, such as 2560x1600x120. Empty uses the mode the device asks for. The stream keeps the device's frame rate."
+        error={modeInvalid ? 'Use WIDTHxHEIGHTxREFRESH, such as 1920x1080x59.94.' : undefined}
+      >
+        <input
+          id="{uid}-display-mode"
+          class="input mono"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="The device's own"
+          bind:value={draft.display_mode}
+        />
+      </Field>
       <div class="toggle-cell">
         <Toggle
           label="Always use a virtual display"
@@ -276,7 +293,7 @@
   </section>
 
   <footer>
-    <Button type="submit" variant="primary" busy={saving} disabled={!changed || nameMissing}>Save</Button>
+    <Button type="submit" variant="primary" busy={saving} disabled={!changed || nameMissing || modeInvalid}>Save</Button>
     <Button disabled={!changed || saving} onclick={discard}>Discard</Button>
     <span class="status muted">
       {#if client.connected}

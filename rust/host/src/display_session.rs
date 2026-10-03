@@ -289,9 +289,29 @@ impl Prepared {
             })
         };
         let adapters = butterpollo_windows::capture::gpus()?;
+        // A device's own display mode replaces the host's resolution and
+        // refresh policies for its display; the stream keeps the rate the
+        // client asked for.
+        let device_mode = launch
+            .client
+            .extra
+            .get("display_mode")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .and_then(|text| {
+                let mode = butterpollo_core::display_policy::parse_display_mode(text);
+                if mode.is_none() {
+                    tracing::warn!(
+                        display_mode = text,
+                        "ignoring a device display mode that is not WIDTHxHEIGHTxREFRESH"
+                    );
+                }
+                mode
+            });
         let framegen = Policy::resolve(
             config,
-            Rate(stream.fps_millihz()),
+            device_mode.map_or(Rate(stream.fps_millihz()), |(_, _, rate)| rate),
             virtual_mode,
             generation,
             generation_enabled,
@@ -388,6 +408,13 @@ impl Prepared {
             stream.hdr,
             virtual_mode,
         )?;
+        if let Some((width, height, _)) = device_mode
+            && (virtual_mode || config.get("dd_configuration_option", "verify_only") != "disabled")
+        {
+            request.resolution = Some((width, height));
+            request.refresh = Some(framegen.display_rate.0);
+            request.prefer_highest = false;
+        }
         if request.prefer_highest && !virtual_mode {
             request.refresh =
                 Some(butterpollo_windows::display::highest_refresh(output, request.resolution)?.0);
