@@ -468,8 +468,12 @@ impl Injector {
             },
         })
     }
+    /// Inject input, following the input desktop when Windows refuses it:
+    /// a UAC prompt or the lock screen runs on the secure desktop.
     fn send(inputs: &[INPUT]) -> Result<()> {
-        if unsafe { SendInput(inputs, size_of::<INPUT>() as i32) } != inputs.len() as u32 {
+        let sent =
+            || unsafe { SendInput(inputs, size_of::<INPUT>() as i32) } == inputs.len() as u32;
+        if !sent() && !(follow_input_desktop() && sent()) {
             bail!(
                 "Windows input injection failed: {}",
                 std::io::Error::last_os_error()
@@ -576,7 +580,7 @@ impl Injector {
                 .collect();
             if !contacts.is_empty() {
                 unsafe {
-                    InjectSyntheticPointerInput(device, &contacts)?;
+                    inject_pointer(device, &contacts)?;
                 }
             }
         }
@@ -743,7 +747,7 @@ impl Injector {
                         ((-angle).cos() * tilt.sin()).atan2(tilt.cos()).to_degrees() as i32;
                 }
             }
-            InjectSyntheticPointerInput(
+            inject_pointer(
                 self.pen_device.unwrap(),
                 &[POINTER_TYPE_INFO {
                     r#type: PT_PEN,
@@ -784,7 +788,7 @@ impl Injector {
             && let Some(device) = self.pen_device
         {
             unsafe {
-                InjectSyntheticPointerInput(
+                inject_pointer(
                     device,
                     &[POINTER_TYPE_INFO {
                         r#type: PT_PEN,
@@ -1022,6 +1026,41 @@ impl Injector {
     }
     pub fn feedback_allowed(&self, kind: u16) -> bool {
         !matches!(kind, 0x010b | 0x5500 | 0x5503) || (self.policy.forward_rumble && self.haptics)
+    }
+}
+/// Move the calling thread to the desktop that receives input, which is the
+/// secure desktop while a UAC prompt or the lock screen shows. Only a host
+/// running as SYSTEM may attach to it; elsewhere this fails harmlessly.
+/// Returns whether the thread is now on the input desktop.
+pub fn follow_input_desktop() -> bool {
+    use windows::Win32::System::StationsAndDesktops::{
+        CloseDesktop, DESKTOP_ACCESS_FLAGS, DF_ALLOWOTHERACCOUNTHOOK, OpenInputDesktop,
+        SetThreadDesktop,
+    };
+    unsafe {
+        let Ok(desktop) = OpenInputDesktop(
+            DF_ALLOWOTHERACCOUNTHOOK,
+            false,
+            DESKTOP_ACCESS_FLAGS(windows::Win32::Foundation::GENERIC_ALL.0),
+        ) else {
+            return false;
+        };
+        let attached = SetThreadDesktop(desktop).is_ok();
+        let _ = CloseDesktop(desktop);
+        attached
+    }
+}
+/// Inject touch or pen input, retrying once on the input desktop.
+unsafe fn inject_pointer(
+    device: HSYNTHETICPOINTERDEVICE,
+    info: &[POINTER_TYPE_INFO],
+) -> Result<()> {
+    unsafe {
+        match InjectSyntheticPointerInput(device, info) {
+            Ok(()) => Ok(()),
+            Err(_) if follow_input_desktop() => Ok(InjectSyntheticPointerInput(device, info)?),
+            Err(error) => Err(error.into()),
+        }
     }
 }
 const MODIFIER_SHIFT: u8 = 0x01;

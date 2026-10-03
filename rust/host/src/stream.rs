@@ -383,6 +383,9 @@ impl Media {
                     let _priority = Priority::new();
                     let timer = butterpollo_windows::timing::Timer::new()?;
                     let mut target = prepared.capture_target();
+                    // Duplicate the desktop that is showing, including the secure
+                    // desktop of a UAC prompt or the lock screen.
+                    butterpollo_windows::input::follow_input_desktop();
                     let mut capture =
                         match Capture::new_options(&target.0, &kind, hdr, &capture_config) {
                             Ok(c) => c,
@@ -409,7 +412,21 @@ impl Media {
                                 anyhow::bail!("capture stopped while recovering");
                             }
                             let next = prepared.capture_target();
-                            match Capture::new_options(&next.0, &kind, hdr, &capture_config) {
+                            // A UAC prompt or the lock screen switches the input
+                            // desktop; duplication must be made on that desktop.
+                            butterpollo_windows::input::follow_input_desktop();
+                            let opened = Capture::new_options(&next.0, &kind, hdr, &capture_config)
+                                .or_else(|error| {
+                                    // WGC cannot capture the secure desktop; Desktop
+                                    // Duplication can until the next restart.
+                                    if matches!(kind.as_str(), "ddx" | "dxgi") {
+                                        return Err(error);
+                                    }
+                                    Capture::new_options(&next.0, "ddx", hdr, &capture_config)
+                                        .inspect(|_| tracing::info!("capturing with Desktop Duplication until the configured capture recovers"))
+                                        .map_err(|_| error)
+                                });
+                            match opened {
                                 Ok(recovered) => {
                                     if next != *target {
                                         tracing::info!(output = %next.0, "capture moved to the recreated display");
