@@ -197,9 +197,28 @@ pub fn apply(stream: &mut Negotiated, launch_millihz: u32, config: &Config) {
         stream.packet_size = packet_size as usize;
     }
 }
+/// The bitrate a client may set during a stream: `max_bitrate` caps it, and
+/// 500 Mbps keeps it inside the encoders' rate fields, as in Vibepollo.
+pub fn runtime_bitrate_kbps(config: &Config, requested: u32) -> u32 {
+    let ceiling = config.integer("max_bitrate", 0);
+    let applied = requested.min(500_000);
+    if ceiling > 0 {
+        applied.min(ceiling.min(i64::from(u32::MAX)) as u32)
+    } else {
+        applied
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn runtime_bitrate_honours_the_host_ceiling() {
+        assert_eq!(runtime_bitrate_kbps(&Config::default(), 80_000), 80_000);
+        assert_eq!(runtime_bitrate_kbps(&Config::default(), 900_000), 500_000);
+        let capped = Config::parse("max_bitrate=25000\n").unwrap();
+        assert_eq!(runtime_bitrate_kbps(&capped, 80_000), 25_000);
+        assert_eq!(runtime_bitrate_kbps(&capped, 10_000), 10_000);
+    }
     /// Claims (claim time, presented time) in milliseconds for source frames
     /// presented at `source` and observed `detect` milliseconds later.
     fn simulate(period: f64, source: &[f64], detect: impl Fn(usize) -> f64) -> Vec<(f64, f64)> {

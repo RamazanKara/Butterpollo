@@ -142,13 +142,14 @@ pub fn router(h: Shared, https: bool) -> Router {
     let r = Router::new()
         .route("/serverinfo", get(serverinfo))
         .route("/pair", get(pair).post(pair))
-        .route("/pair/", get(pair).post(pair));
+        .route("/pair/", get(pair).post(pair))
+        // Plain HTTP answers too, but only HTTPS can identify a client.
+        .route("/unpair", get(unpair).post(unpair));
     let r = if https {
         r.route("/applist", get(applist))
             .route("/launch", get(launch))
             .route("/resume", get(resume))
             .route("/cancel", get(cancel))
-            .route("/unpair", get(unpair).post(unpair))
             .route("/appasset", get(appasset))
             .route("/bitrate", get(bitrate))
             .route("/api/abr/capabilities", get(abr))
@@ -535,10 +536,14 @@ async fn applist(
     State(h): State<Shared>,
     Extension(connection): Extension<Connection>,
 ) -> Response {
-    let client = match authenticated(&h, &connection, 1 << 24) {
+    let client = match authenticated(&h, &connection, 0) {
         Ok(c) => c,
         Err(e) => return xml(401, &[], Some(e.to_string())),
     };
+    if !client.allows(1 << 24) {
+        // As in Vibepollo: one entry that tells the user what to change.
+        return ([(header::CONTENT_TYPE, "application/xml")], "<?xml version=\"1.0\"?><root status_code=\"200\"><App><IsHdrSupported>0</IsHdrSupported><AppTitle>Permission denied - enable &quot;List applications&quot; for this device in the host's Web UI</AppTitle><UUID></UUID><IDX>0</IDX><ID>114514</ID></App></root>").into_response();
+    }
     h.wait_for_video_codecs().await;
     use butterpollo_core::remote::{self, Control};
     let configured = h
@@ -1038,7 +1043,14 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
     match result {
         Ok((key, url)) => xml(
             200,
-            &[(key.as_str(), "1".into()), ("sessionUrl0", url)],
+            &[
+                (key.as_str(), "1".into()),
+                ("sessionUrl0", url),
+                (
+                    "VirtualDisplayDriverReady",
+                    butterpollo_windows::display::virtual_display_available().to_string(),
+                ),
+            ],
             None,
         ),
         Err(error) => {
@@ -1087,16 +1099,22 @@ async fn cancel(State(h): State<Shared>, Extension(connection): Extension<Connec
     xml(200, &[("cancel", "1".into())], None)
 }
 async fn unpair(State(h): State<Shared>, Extension(connection): Extension<Connection>) -> Response {
-    let result = authenticated(&h, &connection, 0).and_then(|c| {
-        h.paired.write().unwrap().remove(&h.paired_path, &c.uuid)?;
-        h.sessions.lock().unwrap().request_stop(Some(&c.uuid));
-        crate::remote_display::disconnect(&h, Some(&c.uuid));
-        Ok(())
-    });
-    match result {
-        Ok(()) => xml(200, &[("unpaired", "1".into())], None),
-        Err(e) => xml(401, &[], Some(e.to_string())),
+    // Only a paired client's own certificate can unpair it; anything else is
+    // answered like Vibepollo, with nothing removed.
+    let Ok(client) = authenticated(&h, &connection, 0) else {
+        return xml(200, &[("unpaired", "0".into())], None);
+    };
+    let removed = h
+        .paired
+        .write()
+        .unwrap()
+        .remove(&h.paired_path, &client.uuid);
+    if let Err(e) = removed {
+        return xml(500, &[("unpaired", "0".into())], Some(e.to_string()));
     }
+    h.sessions.lock().unwrap().request_stop(Some(&client.uuid));
+    crate::remote_display::disconnect(&h, Some(&client.uuid));
+    xml(200, &[("unpaired", "1".into())], None)
 }
 async fn appasset(
     State(h): State<Shared>,
@@ -1219,37 +1237,51 @@ async fn bitrate(
     Extension(c): Extension<Connection>,
     Query(args): Query<Args>,
 ) -> Response {
-    let result = (|| -> Result<usize> {
-        let client = authenticated(&h, &c, 1 << 25)?;
-        let bitrate = args
-            .get("bitrate")
-            .or_else(|| args.get("bitrate_kbps"))
-            .context("missing bitrate")?
-            .parse::<u32>()?;
-        if !(100..=2_000_000).contains(&bitrate) {
-            bail!("invalid bitrate");
+    // Vibepollo's reply: the applied bitrate, 0 on failure.
+    let failed = |code, message: &str| xml(code, &[("bitrate", "0".into())], Some(message.into()));
+    let client = match authenticated(&h, &c, 1 << 25) {
+        Ok(client) => client,
+        Err(e) => return failed(403, &e.to_string()),
+    };
+    let Some(requested) = args
+        .get("bitrate")
+        .or_else(|| args.get("bitrate_kbps"))
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|v| *v > 0)
+    else {
+        return failed(400, "Missing or invalid bitrate parameter");
+    };
+    let applied =
+        butterpollo_core::stream_policy::runtime_bitrate_kbps(&h.config.read().unwrap(), requested);
+    let sessions = h.sessions.lock().unwrap();
+    let mut count = 0;
+    for s in sessions.active.values() {
+        if s.launch.client.uuid == client.uuid {
+            s.bitrate
+                .store(applied, std::sync::atomic::Ordering::Release);
+            count += 1;
         }
-        let sessions = h.sessions.lock().unwrap();
-        let mut count = 0;
-        for s in sessions.active.values() {
-            if s.launch.client.uuid == client.uuid {
-                s.bitrate
-                    .store(bitrate, std::sync::atomic::Ordering::Release);
-                count += 1;
-            }
-        }
-        Ok(count)
-    })();
-    match result {
-        Ok(n) => xml(200, &[("updated", n.to_string())], None),
-        Err(e) => xml(400, &[], Some(e.to_string())),
     }
+    if count == 0 {
+        return failed(404, "No active session for this client");
+    }
+    tracing::info!(client = %client.name, requested, applied, "client set the stream bitrate");
+    xml(
+        200,
+        &[
+            ("bitrate", applied.to_string()),
+            ("updated", count.to_string()),
+        ],
+        None,
+    )
 }
 async fn abr(State(h): State<Shared>, Extension(c): Extension<Connection>) -> Response {
     if authenticated(&h, &c, 1 << 25).is_err() {
         return axum::http::StatusCode::UNAUTHORIZED.into_response();
     }
-    axum::Json(json!({"supported":true,"min_bitrate_kbps":100,"max_bitrate_kbps":2_000_000}))
+    // The host has no adaptive bitrate of its own; clients that see this run
+    // their own controller and apply it through /bitrate.
+    axum::Json(json!({"supported":false,"version":1,"features":["runtime_bitrate"]}))
         .into_response()
 }
 
