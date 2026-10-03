@@ -1567,12 +1567,40 @@ fn feedback_packets(id: u16, kind: u16, data: &[u8]) -> Vec<(u16, Vec<u8>)> {
             result.push((0x5502, [&id.to_le_bytes()[..], &data[4..7]].concat()));
         }
         if kind == 5 && data.len() == 32 && data[7] & 2 != 0 {
+            // moonlight-common-c: id, event flags (0x08 left, 0x04 right),
+            // left type, right type, then each trigger's ten parameters.
+            // The driver reports both triggers at once.
             let mut trigger = id.to_le_bytes().to_vec();
-            trigger.push(3);
-            trigger.extend_from_slice(&data[10..21]);
-            trigger.extend_from_slice(&data[21..32]);
+            trigger.extend_from_slice(&[0x0c, data[10], data[21]]);
+            trigger.extend_from_slice(&data[11..21]);
+            trigger.extend_from_slice(&data[22..32]);
             result.push((0x5503, trigger));
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn dualsense_trigger_effects_use_the_moonlight_layout() {
+        let mut data = vec![0u8; 32];
+        data[..4].copy_from_slice(&[1, 2, 3, 4]);
+        data[7] = 2;
+        data[10] = 0x21;
+        for (i, byte) in data[11..21].iter_mut().enumerate() {
+            *byte = i as u8 + 1;
+        }
+        data[21] = 0x26;
+        for (i, byte) in data[22..32].iter_mut().enumerate() {
+            *byte = i as u8 + 11;
+        }
+        let packets = feedback_packets(1, 5, &data);
+        let (_, trigger) = packets.iter().find(|(kind, _)| *kind == 0x5503).unwrap();
+        let mut expected = vec![1, 0, 0x0c, 0x21, 0x26];
+        expected.extend(1..=20);
+        assert_eq!(trigger, &expected);
+        assert!(packets.iter().any(|(kind, _)| *kind == 0x010b));
+    }
 }

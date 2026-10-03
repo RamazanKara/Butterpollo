@@ -77,6 +77,8 @@ pub struct Gamepads {
     policy: butterpollo_core::input_policy::Policy,
     started: std::time::Instant,
     pointers: BTreeMap<(u8, u32), u8>,
+    /// The last feedback report forwarded for each controller.
+    last_feedback: BTreeMap<u16, (u16, Vec<u8>)>,
 }
 static SLOTS: std::sync::Mutex<[bool; 16]> = std::sync::Mutex::new([false; 16]);
 static HELD: std::sync::Mutex<BTreeMap<(bool, u16), usize>> =
@@ -125,6 +127,7 @@ impl Gamepads {
             policy,
             started: std::time::Instant::now(),
             pointers: BTreeMap::new(),
+            last_feedback: BTreeMap::new(),
         };
         let out = g.ioctl(0x800, &request(8, None), 28)?;
         if out.len() != 28 || u16::from_le_bytes(out[4..6].try_into().unwrap()) != 2 {
@@ -319,18 +322,29 @@ impl Gamepads {
         }
         Ok(())
     }
+    /// New feedback (rumble, lights, trigger effects) for each controller.
+    /// A controller with nothing pending or a failed poll does not hide the
+    /// others' feedback, and a repeated report is not sent again.
     pub fn feedback(&mut self) -> Result<Vec<(u16, u16, Vec<u8>)>> {
         let mut output = vec![];
         for (id, global) in self.active.clone() {
-            let b = self.ioctl(0x804, &request(12, Some(u32::from(global))), 48)?;
+            let Ok(b) = self.ioctl(0x804, &request(12, Some(u32::from(global))), 48) else {
+                continue;
+            };
             if b.len() == 48 {
                 let kind = u16::from_le_bytes(b[12..14].try_into().unwrap());
                 let len = u16::from_le_bytes(b[14..16].try_into().unwrap()) as usize;
                 if kind != 0 && len <= 32 {
-                    output.push((id, kind, b[16..16 + len].to_vec()));
+                    let report = (kind, b[16..16 + len].to_vec());
+                    if self.last_feedback.get(&id) != Some(&report) {
+                        self.last_feedback.insert(id, report.clone());
+                        output.push((id, report.0, report.1));
+                    }
                 }
             }
         }
+        self.last_feedback
+            .retain(|id, _| self.active.contains_key(id));
         Ok(output)
     }
     fn submit(
