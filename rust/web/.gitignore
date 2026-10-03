@@ -1,0 +1,4 @@
+node_modules/
+dist/
+# npm ci in build.ps1 needs the lock file; the root .gitignore drops it.
+!package-lock.json
