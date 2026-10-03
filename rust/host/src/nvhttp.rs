@@ -178,11 +178,50 @@ async fn serverinfo(
         0
     };
     let address = connection.local.ip();
-    let mac = tokio::task::spawn_blocking(move || butterpollo_windows::net::local_mac(address))
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .unwrap_or_else(|| "00:00:00:00:00:00".into());
+    // Only paired clients learn the MAC address (for wake-on-LAN).
+    let mac = if paired {
+        tokio::task::spawn_blocking(move || butterpollo_windows::net::local_mac(address))
+            .await
+            .ok()
+            .and_then(Result::ok)
+    } else {
+        None
+    }
+    .unwrap_or_else(|| "00:00:00:00:00:00".into());
+    let windows_11 = butterpollo_windows::display::windows_11();
+    let (limiter, virtual_limiter, limit) = butterpollo_core::framegen::advertised(
+        &config,
+        config.virtual_display_mode(windows_11) != "disabled",
+    );
+    let driver_ready =
+        tokio::task::spawn_blocking(butterpollo_windows::display::virtual_display_available)
+            .await
+            .unwrap_or(false);
+    let permission = client.as_ref().map_or(0, |client| client.perm);
+    // Artemis lists these commands; a client runs one by its index.
+    let commands: Vec<String> = if permission & 0x0010_0000 != 0 {
+        serde_json::from_str::<serde_json::Value>(config.get("server_cmd", "[]"))
+            .ok()
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default()
+            .iter()
+            .map(|command| {
+                command
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    // Moonlight stores LocalIP as the IPv4 LAN address; over IPv6 it expects
+    // GFE's placeholder, as Vibepollo sends.
+    let local_ip = match connection.local.ip().to_canonical() {
+        std::net::IpAddr::V6(_) => "127.0.0.1".to_owned(),
+        v4 => v4.to_string(),
+    };
     let game = remote_game(&h);
     // GameStream's public state is scoped to the requesting client. Local
     // maintenance needs the actual session counts, including queued launches.
@@ -211,60 +250,76 @@ async fn serverinfo(
             })
         })
         .map_or(0, |game| game.app.id);
-    xml(
-        200,
-        &[
-            ("hostname", crate::network::host_name(&config)),
-            ("appversion", "7.1.431.-1".into()),
-            ("GfeVersion", "3.23.0.74".into()),
-            ("uniqueid", h.paired.read().unwrap().unique_id.clone()),
-            ("HttpsPort", ports.https.to_string()),
-            ("ExternalPort", ports.http.to_string()),
-            ("PairStatus", u8::from(paired).to_string()),
-            ("currentgame", current.to_string()),
-            (
-                "state",
-                if current == 0 {
-                    "SUNSHINE_SERVER_FREE"
-                } else {
-                    "SUNSHINE_SERVER_BUSY"
-                }
-                .into(),
-            ),
-            ("LocalIP", connection.local.ip().to_string()),
-            ("mac", mac),
-            ("MaxLumaPixelsHEVC", "1869449984".into()),
-            (
-                "ServerCodecModeSupport",
-                (h.codecs.load(std::sync::atomic::Ordering::Acquire) & !0x40000000).to_string(),
-            ),
-            ("RustHostVersion", env!("CARGO_PKG_VERSION").into()),
-            ("RustHostSessionCount", session_count),
-            ("RustHostPendingSessionCount", pending_count),
-            (
-                "RustHostApplicationActive",
-                if local {
-                    u8::from(game.is_some()).to_string()
-                } else {
-                    String::new()
-                },
-            ),
-            (
-                "RustHostProfile",
-                if connection.peer.ip().to_canonical().is_loopback() {
-                    butterpollo_core::migration::profile_id(&h.directory)
-                } else {
-                    String::new()
-                },
-            ),
-            ("PyroWaveHostLinkMbps", pyrowave_link.to_string()),
-            (
-                "PyroWaveBandwidthProbeBytes",
-                if paired { "33554432" } else { "0" }.into(),
-            ),
-        ],
-        None,
-    )
+    let current_uuid = game
+        .as_ref()
+        .filter(|game| game.app.id == current && current != 0)
+        .map(|game| game.app.uuid.clone())
+        .unwrap_or_default();
+    let mut fields = vec![
+        ("hostname", crate::network::host_name(&config)),
+        ("appversion", "7.1.431.-1".into()),
+        ("GfeVersion", "3.23.0.74".into()),
+        ("uniqueid", h.paired.read().unwrap().unique_id.clone()),
+        ("HttpsPort", ports.https.to_string()),
+        ("ExternalPort", ports.http.to_string()),
+        ("PairStatus", u8::from(paired).to_string()),
+        ("currentgame", current.to_string()),
+        ("currentgameuuid", current_uuid),
+        (
+            "state",
+            if current == 0 {
+                "SUNSHINE_SERVER_FREE"
+            } else {
+                "SUNSHINE_SERVER_BUSY"
+            }
+            .into(),
+        ),
+        ("LocalIP", local_ip),
+        ("mac", mac),
+        ("MaxLumaPixelsHEVC", "1869449984".into()),
+        (
+            "ServerCodecModeSupport",
+            (h.codecs.load(std::sync::atomic::Ordering::Acquire) & !0x40000000).to_string(),
+        ),
+        ("RustHostVersion", env!("CARGO_PKG_VERSION").into()),
+        ("RustHostSessionCount", session_count),
+        ("RustHostPendingSessionCount", pending_count),
+        (
+            "RustHostApplicationActive",
+            if local {
+                u8::from(game.is_some()).to_string()
+            } else {
+                String::new()
+            },
+        ),
+        (
+            "RustHostProfile",
+            if connection.peer.ip().to_canonical().is_loopback() {
+                butterpollo_core::migration::profile_id(&h.directory)
+            } else {
+                String::new()
+            },
+        ),
+        ("PyroWaveHostLinkMbps", pyrowave_link.to_string()),
+        (
+            "PyroWaveBandwidthProbeBytes",
+            if paired { "33554432" } else { "0" }.into(),
+        ),
+        ("Permission", permission.to_string()),
+        ("FrameLimiterSupported", "1".into()),
+        ("FrameLimiterEnabled", u8::from(limiter).to_string()),
+        (
+            "VirtualDisplayFrameLimiterEnabled",
+            u8::from(virtual_limiter).to_string(),
+        ),
+        ("FrameLimiterFpsLimitMilliHz", limit.to_string()),
+        // Artemis offers virtual-display launches only when capable.
+        ("VirtualDisplayCapable", "true".into()),
+        ("VirtualDisplayDriverReady", driver_ready.to_string()),
+        ("VirtualDisplayHDRCapable", "true".into()),
+    ];
+    fields.extend(commands.into_iter().map(|name| ("ServerCommand", name)));
+    xml(200, &fields, None)
 }
 async fn pyrowave_bandwidth(
     State(h): State<Shared>,
@@ -329,6 +384,49 @@ async fn do_pair(h: Shared, args: &Args) -> Result<Vec<(String, String)>> {
             .get("devicename")
             .cloned()
             .unwrap_or("Moonlight Client".into());
+        if let Some(auth) = args.get("otpauth") {
+            // One-time PIN pairing (Artemis). A wrong hash still gets an
+            // ordinary answer, with a random PIN that fails the next step.
+            let otp = h
+                .otp
+                .lock()
+                .unwrap()
+                .take()
+                .filter(|otp| otp.created.elapsed() < Duration::from_secs(180))
+                .context("OTP pairing is not available")?;
+            let salt_text = args.get("salt").map_or("", String::as_str);
+            let expected = hex::encode_upper(crypto::hash(
+                format!("{}{salt_text}{}", otp.pin, otp.passphrase).as_bytes(),
+            ));
+            let (pin, name) = if expected.eq_ignore_ascii_case(auth) {
+                tracing::info!(client=%name, "Pairing with a one-time PIN");
+                let name = if otp.device_name.is_empty() {
+                    name
+                } else {
+                    otp.device_name
+                };
+                (otp.pin, name)
+            } else {
+                tracing::warn!(client=%name, "One-time PIN pairing failed");
+                *h.otp.lock().unwrap() = Some(otp);
+                (
+                    format!(
+                        "{:04}",
+                        rand::Rng::gen_range(&mut rand::thread_rng(), 0..10_000u16)
+                    ),
+                    name,
+                )
+            };
+            let pair = Pairing::new(id, name, certificate, &salt, &pin)?;
+            h.pairings.lock().unwrap().insert(pair)?;
+            return Ok(vec![
+                ("paired".into(), "1".into()),
+                (
+                    "plaincert".into(),
+                    hex::encode(h.identity.certificate.as_bytes()),
+                ),
+            ]);
+        }
         let (sender, receiver) = tokio::sync::oneshot::channel();
         {
             let mut pins = h.pins.lock().unwrap();

@@ -140,6 +140,7 @@ fn token_catalog() -> Vec<auth::Scope> {
         ("/api/logs/export_crash", &["GET"][..]),
         ("/api/logs/export_crash/manifest", &["GET"][..]),
         ("/api/pin", &["POST"][..]),
+        ("/api/otp", &["POST"][..]),
         ("/api/restart", &["POST"][..]),
         ("/api/quit", &["POST"][..]),
         ("/api/password", &["POST"][..]),
@@ -1078,6 +1079,27 @@ pub(crate) async fn api(
                     targets = vec![120, 180, 240, 288];
                 }
                 butterpollo_windows::display::edid_refresh(hint, &targets)?
+            }
+            ("POST", "/api/otp") => {
+                let passphrase = text("passphrase");
+                if passphrase.chars().count() < 4 {
+                    anyhow::bail!("passphrase must have at least four characters");
+                }
+                let pin = format!("{:04}", rand::Rng::gen_range(&mut rand::thread_rng(), 0..10_000u16));
+                *h.otp.lock().unwrap() = Some(crate::state::OneTimePin {
+                    pin: pin.clone(),
+                    passphrase: passphrase.to_owned(),
+                    device_name: text("deviceName").to_owned(),
+                    created: Instant::now(),
+                });
+                let config = h.config.read().unwrap().clone();
+                json!({
+                    "status": true,
+                    "otp": pin,
+                    "ip": butterpollo_windows::net::lan_addresses().unwrap_or_default().first().cloned().unwrap_or_default(),
+                    "name": crate::network::host_name(&config),
+                    "message": "OTP created, effective within 3 minutes.",
+                })
             }
             ("POST", "/api/pin") => {
                 let pin = text("pin");

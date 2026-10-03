@@ -15,6 +15,13 @@ use std::{
 };
 pub type Shared = Arc<Host>;
 use crate::web_sessions::{self, WebSession};
+/// A one-time PIN that lets a client pair with a passphrase, valid 180 s.
+pub struct OneTimePin {
+    pub pin: String,
+    pub passphrase: String,
+    pub device_name: String,
+    pub created: Instant,
+}
 pub struct PendingPin {
     pub name: String,
     pub created: Instant,
@@ -39,6 +46,7 @@ pub struct Host {
     pub sessions: Mutex<Sessions>,
     pub pairings: Mutex<Pairings>,
     pub pins: Mutex<BTreeMap<String, PendingPin>>,
+    pub otp: Mutex<Option<OneTimePin>>,
     pub web_sessions: Mutex<HashMap<String, WebSession>>,
     pub stop: std::sync::atomic::AtomicBool,
     pub restart: std::sync::atomic::AtomicBool,
@@ -160,6 +168,7 @@ impl Host {
             sessions: Mutex::new(Sessions::default()),
             pairings: Mutex::new(Pairings::default()),
             pins: Mutex::new(BTreeMap::new()),
+            otp: Mutex::new(None),
             web_sessions: Mutex::new(web_sessions),
             stop: std::sync::atomic::AtomicBool::new(false),
             restart: std::sync::atomic::AtomicBool::new(false),

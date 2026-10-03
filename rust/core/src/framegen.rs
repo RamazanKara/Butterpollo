@@ -85,6 +85,23 @@ impl Provider {
         }
     }
 }
+/// The configured frame limiting Moonlight extensions report in serverinfo:
+/// whether limiting is on by default, whether virtual displays limit
+/// automatically, and the manual limit in millihertz.
+pub fn advertised(config: &Config, virtual_display_enabled: bool) -> (bool, bool, u32) {
+    let virtual_limiter = !matches!(
+        normalize(config.get("frame_limiter_auto_virtual_framegen", "legacy")).as_str(),
+        "disabled" | "off" | "false" | "0"
+    );
+    let manual = config.boolean("frame_limiter_enable", false)
+        && Provider::parse(config.get("frame_limiter_provider", "auto")) != Provider::None;
+    let limit = Rate::parse(config.get("frame_limiter_fps_limit", "0")).map_or(0, |r| r.0);
+    (
+        manual || (virtual_display_enabled && virtual_limiter),
+        virtual_limiter,
+        limit,
+    )
+}
 fn normalize(value: &str) -> String {
     value
         .chars()
