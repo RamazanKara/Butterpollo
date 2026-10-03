@@ -22,10 +22,22 @@ const FRIENDLY: PROPERTYKEY = PROPERTYKEY {
     fmtid: GUID::from_u128(0xa45c254e_df1c_4efd_8020_67d146a850e0),
     pid: 14,
 };
+/// PKEY_Device_DeviceDesc: the endpoint's own name, e.g. "Speakers".
+const DESCRIPTION: PROPERTYKEY = PROPERTYKEY {
+    fmtid: GUID::from_u128(0xa45c254e_df1c_4efd_8020_67d146a850e0),
+    pid: 2,
+};
+/// PKEY_DeviceInterface_FriendlyName: the adapter, e.g. "Steam Streaming Speakers".
+const ADAPTER: PROPERTYKEY = PROPERTYKEY {
+    fmtid: GUID::from_u128(0x026e516e_b814_414b_83cd_856d6fef4822),
+    pid: 2,
+};
 #[derive(Clone, Serialize)]
 pub struct Endpoint {
     pub id: String,
     pub name: String,
+    pub description: String,
+    pub adapter: String,
     pub default: bool,
     pub virtual_sink: bool,
 }
@@ -56,27 +68,31 @@ pub fn endpoints() -> Result<Vec<Endpoint>> {
         for index in 0..list.GetCount()? {
             let device = list.Item(index)?;
             let id = device_id(&device)?;
-            let name = device
-                .OpenPropertyStore(STGM_READ)
-                .ok()
-                .and_then(|store| {
-                    let mut property = store.GetValue(&FRIENDLY).ok()?;
-                    let name = PropVariantToStringAlloc(&property).ok().and_then(|name| {
-                        let result = name.to_string().ok();
-                        CoTaskMemFree(Some(name.0.cast()));
+            let store = device.OpenPropertyStore(STGM_READ).ok();
+            let text = |key: &PROPERTYKEY| {
+                store.as_ref().and_then(|store| {
+                    let mut property = store.GetValue(key).ok()?;
+                    let text = PropVariantToStringAlloc(&property).ok().and_then(|text| {
+                        let result = text.to_string().ok();
+                        CoTaskMemFree(Some(text.0.cast()));
                         result
                     });
                     let _ = PropVariantClear(&mut property);
-                    name
+                    text
                 })
-                .unwrap_or_else(|| id.clone());
-            let virtual_sink = name
-                .to_ascii_lowercase()
-                .contains("steam streaming speakers");
+            };
+            let name = text(&FRIENDLY).unwrap_or_else(|| id.clone());
+            let description = text(&DESCRIPTION).unwrap_or_default();
+            let adapter = text(&ADAPTER).unwrap_or_default();
+            let virtual_sink = [&name, &adapter]
+                .iter()
+                .any(|n| n.to_ascii_lowercase().contains("steam streaming speakers"));
             endpoints.push(Endpoint {
                 default: default.as_ref() == Some(&id),
                 id,
                 name,
+                description,
+                adapter,
                 virtual_sink,
             });
         }
@@ -245,12 +261,30 @@ pub fn recover(directory: &Path) -> Result<()> {
     }
     restore(directory)
 }
+/// An endpoint by ID, friendly name, description or adapter name, in that
+/// order, as Vibepollo matches audio_sink and virtual_sink.
 fn find<'a>(endpoints: &'a [Endpoint], requested: &str) -> Option<&'a Endpoint> {
-    endpoints.iter().find(|endpoint| {
-        endpoint.id.eq_ignore_ascii_case(requested) || endpoint.name.eq_ignore_ascii_case(requested)
+    let requested = requested.trim();
+    let fields: [fn(&Endpoint) -> &str; 4] =
+        [|e| &e.id, |e| &e.name, |e| &e.description, |e| &e.adapter];
+    fields.iter().find_map(|field| {
+        endpoints
+            .iter()
+            .find(|endpoint| field(endpoint).eq_ignore_ascii_case(requested))
     })
 }
-fn install_steam(config: &Config, endpoints: &[Endpoint]) -> Result<bool> {
+/// Install Steam Streaming Speakers when Steam provides them and none exist.
+/// Best effort: streaming continues on another endpoint if this fails.
+fn install_steam(config: &Config, endpoints: &[Endpoint]) -> bool {
+    match try_install_steam(config, endpoints) {
+        Ok(installed) => installed,
+        Err(error) => {
+            tracing::warn!(error = %format!("{error:#}"), "Steam Streaming Speakers could not be installed");
+            false
+        }
+    }
+}
+fn try_install_steam(config: &Config, endpoints: &[Endpoint]) -> Result<bool> {
     if endpoints.iter().any(|endpoint| endpoint.virtual_sink)
         || !config.boolean("install_steam_audio_drivers", true)
     {
@@ -432,8 +466,33 @@ impl Route {
             });
         }
         let mut available = endpoints()?;
-        if !host_audio && !capture_only && install_steam(config, &available)? {
-            available = endpoints()?;
+        // Taken before any driver installation, which can move the defaults.
+        let before = defaults()?;
+        if !host_audio && !capture_only && install_steam(config, &available) {
+            // The new endpoint appears shortly after installation.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                available = endpoints()?;
+                if available.iter().any(|endpoint| endpoint.virtual_sink)
+                    || std::time::Instant::now() >= deadline
+                {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            let moved = defaults()?;
+            if moved != before
+                && let Ok(policy) = Policy::new()
+            {
+                for (index, role) in ROLES.into_iter().enumerate() {
+                    if let Some(previous) = &before[index]
+                        && moved[index].as_ref() != Some(previous)
+                    {
+                        let _ = policy.set_default(previous, role);
+                    }
+                }
+                available = endpoints()?;
+            }
         }
         let configured = config.get("virtual_sink", "");
         let configured = if configured.is_empty() {
@@ -465,7 +524,7 @@ impl Route {
             find(&available, configured).context("configured audio sink is unavailable")?
         };
         let mut journal = Journal {
-            before: defaults()?,
+            before,
             applied: if capture_only {
                 String::new()
             } else {
@@ -612,6 +671,33 @@ impl Drop for Route {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sinks_match_by_id_name_description_or_adapter() {
+        let endpoint = |id: &str, name: &str, description: &str, adapter: &str| Endpoint {
+            id: id.into(),
+            name: name.into(),
+            description: description.into(),
+            adapter: adapter.into(),
+            default: false,
+            virtual_sink: false,
+        };
+        let endpoints = [
+            endpoint("{a}", "Speakers (Realtek)", "Speakers", "Realtek(R) Audio"),
+            endpoint(
+                "{b}",
+                "Speakers (Steam Streaming Speakers)",
+                "Speakers",
+                "Steam Streaming Speakers",
+            ),
+        ];
+        let id = |name: &str| find(&endpoints, name).map(|e| e.id.as_str());
+        assert_eq!(id("{B}"), Some("{b}"));
+        assert_eq!(id("speakers (realtek)"), Some("{a}"));
+        assert_eq!(id("Steam Streaming Speakers"), Some("{b}"));
+        // A shared description picks the first endpoint, as Vibepollo does.
+        assert_eq!(id("Speakers"), Some("{a}"));
+        assert_eq!(id("Headphones"), None);
+    }
     #[test]
     fn virtual_speakers_preserve_valid_depth_and_offer_pcm_fallbacks() -> Result<()> {
         let formats = virtual_formats(2, 24)?;
