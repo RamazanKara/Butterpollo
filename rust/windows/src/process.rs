@@ -88,6 +88,33 @@ pub fn is_system() -> bool {
         IsWellKnownSid(user.User.Sid, WinLocalSystemSid).as_bool()
     }
 }
+/// The signed-in user's SID (`S-1-5-21-...`), whose registry hive and
+/// folders hold per-user program settings. Without the service this is the
+/// current user.
+pub fn user_sid() -> Option<String> {
+    use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
+    let user_token = target_token(&Target::User { elevated: false }).ok()?;
+    let own = token().ok()?;
+    let token = user_token.as_ref().unwrap_or(&own);
+    unsafe {
+        let mut buffer = [0usize; 64];
+        let mut needed = 0;
+        GetTokenInformation(
+            raw(token),
+            TokenUser,
+            Some(buffer.as_mut_ptr().cast()),
+            size_of::<[usize; 64]>() as u32,
+            &mut needed,
+        )
+        .ok()?;
+        let user = &*buffer.as_ptr().cast::<TOKEN_USER>();
+        let mut text = PWSTR::null();
+        ConvertSidToStringSidW(user.User.Sid, &mut text).ok()?;
+        let sid = text.to_string().ok();
+        let _ = LocalFree(Some(HLOCAL(text.0.cast())));
+        sid
+    }
+}
 /// Give only SYSTEM and Administrators access to `folder` and the files in
 /// it, replacing inherited permissions, as Vibepollo does for the service's
 /// credentials.

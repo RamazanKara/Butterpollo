@@ -3,6 +3,7 @@ mod display_session;
 mod maintenance;
 mod network;
 mod nvhttp;
+mod playnite;
 mod process;
 mod pyrowave_send;
 mod remote_display;

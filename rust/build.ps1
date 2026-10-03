@@ -210,11 +210,19 @@ try {
             New-Item -ItemType Directory -Path "$distribution\drivers" -Force | Out-Null
             Copy-Item -LiteralPath (Join-Path $DriverRoot 'sunshine') -Destination "$distribution\drivers\display" -Recurse -Force
             Copy-Item -LiteralPath (Join-Path $DriverRoot 'vhf-gamepad') -Destination "$distribution\drivers\gamepad" -Recurse -Force
+            # The Playnite plugin from the same release; the host installs it
+            # into Playnite.
+            $playnitePlugin = Join-Path (Split-Path -Parent $DriverRoot) 'plugins\playnite\SunshinePlaynite'
+            if (Test-Path -LiteralPath $playnitePlugin) {
+                New-Item -ItemType Directory -Path "$distribution\plugins\playnite" -Force | Out-Null
+                Copy-Item -LiteralPath $playnitePlugin -Destination "$distribution\plugins\playnite\SunshinePlaynite" -Recurse -Force
+            }
             @(
                 'Virtual display driver: https://github.com/Nonary/libvirtualdisplay v1.6.3 (MIT).',
                 'Virtual gamepad driver: https://github.com/Nonary/libvirtualgamepad v0.1.0-beta.6 (MIT).',
                 'Driver catalogs, tools and install scripts as released in Vibepollo 2.0.0 (GPL-3.0),',
                 'https://github.com/Nonary/Vibepollo, signed by the SignPath Foundation.',
+                'Playnite plugin (plugins\playnite): Sunshine Playnite Connector from the same Vibepollo 2.0.0 release (GPL-3.0).',
                 'nefconc.exe: https://github.com/nefarius/nefcon by Nefarius Software Solutions.'
             ) | Set-Content -LiteralPath "$distribution\licenses\drivers.txt" -Encoding utf8
         }

@@ -147,6 +147,13 @@ fn token_catalog() -> Vec<auth::Scope> {
         ("/api/steam/games", &["GET"][..]),
         ("/api/steam/force_sync", &["POST"][..]),
         ("/api/steam/launch", &["POST"][..]),
+        ("/api/playnite/status", &["GET"][..]),
+        ("/api/playnite/games", &["GET"][..]),
+        ("/api/playnite/categories", &["GET"][..]),
+        ("/api/playnite/install", &["POST"][..]),
+        ("/api/playnite/uninstall", &["POST"][..]),
+        ("/api/playnite/force_sync", &["POST"][..]),
+        ("/api/apps/purge_autosync", &["POST"][..]),
         ("/api/restart", &["POST"][..]),
         ("/api/quit", &["POST"][..]),
         ("/api/password", &["POST"][..]),
@@ -603,6 +610,51 @@ pub(crate) async fn api(
             Ok(Ok(value)) => Json(value).into_response(),
             Ok(Err(err)) => error(StatusCode::BAD_REQUEST, &format!("{err:#}")),
             Err(err) => error(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
+        };
+    }
+    if let Some(action) = path.strip_prefix("/api/playnite/") {
+        let h = h.clone();
+        let task = match (method.as_str(), action) {
+            ("GET", "status") => {
+                tokio::task::spawn_blocking(move || Ok(crate::playnite::status(&h))).await
+            }
+            ("GET", "games") => tokio::task::spawn_blocking(crate::playnite::games).await,
+            ("GET", "categories") => tokio::task::spawn_blocking(crate::playnite::categories).await,
+            ("POST", "install") => {
+                tokio::task::spawn_blocking(move || {
+                    crate::playnite::install_plugin(&h).map(|folder| {
+                        json!({"status":true,"path":folder,
+                               "restart_required":butterpollo_windows::playnite::running().is_some()})
+                    })
+                })
+                .await
+            }
+            ("POST", "uninstall") => {
+                tokio::task::spawn_blocking(|| crate::playnite::uninstall_plugin().map(|()| json!({"status":true}))).await
+            }
+            ("POST", "force_sync") => {
+                tokio::task::spawn_blocking(move || {
+                    crate::playnite::sync(&h)
+                        .map(|outcome| json!({"status":true,"changed":outcome.changed,"game_count":outcome.games}))
+                })
+                .await
+            }
+            _ => return error(StatusCode::BAD_REQUEST, "unknown API endpoint"),
+        };
+        return match task {
+            Ok(Ok(value)) => Json(value).into_response(),
+            Ok(Err(err)) => error(StatusCode::BAD_REQUEST, &format!("{err:#}")),
+            Err(err) => error(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
+        };
+    }
+    if method == Method::POST && path == "/api/apps/purge_autosync" {
+        let mut removed = 0;
+        return match crate::steam::update_apps(&h, |apps| {
+            removed = butterpollo_core::playnite::purge(apps);
+            removed > 0
+        }) {
+            Ok(_) => Json(json!({"status":true,"removed":removed})).into_response(),
+            Err(err) => error(StatusCode::INTERNAL_SERVER_ERROR, &format!("{err:#}")),
         };
     }
     if method == Method::GET && path == "/api/logs/export_crash" {

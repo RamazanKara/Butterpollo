@@ -56,6 +56,8 @@ pub mod nvenc;
 #[cfg(windows)]
 mod nvenc_cuda;
 #[cfg(windows)]
+pub mod playnite;
+#[cfg(windows)]
 pub mod present_timing;
 #[cfg(windows)]
 pub mod process;

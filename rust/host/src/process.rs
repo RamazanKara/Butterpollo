@@ -145,6 +145,10 @@ pub struct RunningApp {
     /// A game Steam starts, followed through its install folder.
     steam: Option<butterpollo_core::steam::Tracker>,
     steam_check: std::time::Instant,
+    /// A game Playnite starts.
+    playnite: Option<crate::playnite::Launch>,
+    /// Playnite's fullscreen mode, closed when the app stops.
+    playnite_fullscreen: bool,
 }
 /// The folder of the program an app starts, as Vibepollo uses when the app
 /// has no working directory: games often load files relative to it.
@@ -204,6 +208,8 @@ impl RunningApp {
             deferred_check: std::time::Instant::now(),
             steam: None,
             steam_check: std::time::Instant::now(),
+            playnite: None,
+            playnite_fullscreen: false,
             exit_timeout: Duration::from_secs(
                 app.extra
                     .get("exit-timeout")
@@ -353,6 +359,12 @@ impl RunningApp {
         if let Some(tracker) = self.steam.take() {
             butterpollo_windows::process::stop_processes(&tracker.tracked, self.exit_timeout);
         }
+        if let Some(launch) = self.playnite.take() {
+            launch.stop(self.exit_timeout);
+        }
+        if std::mem::take(&mut self.playnite_fullscreen) {
+            crate::playnite::close_fullscreen(self.exit_timeout);
+        }
         if let Some(child) = self.child.take()
             && let Err(error) = child.stop_graceful(self.exit_timeout)
         {
@@ -387,6 +399,9 @@ impl RunningApp {
             .flatten()
     }
     pub fn exited(&mut self) -> Result<bool> {
+        if let Some(launch) = &self.playnite {
+            return Ok(launch.finished());
+        }
         if let Some(tracker) = &mut self.steam {
             use butterpollo_core::steam::Tracked;
             if self.steam_check.elapsed() < Duration::from_secs(1) {
@@ -477,6 +492,12 @@ fn expand(value: &str, environment: &BTreeMap<String, String>) -> Result<String>
 fn runs_commands(h: &crate::state::Shared, app: &App) -> bool {
     !app.cmd.trim().is_empty()
         || !app.prep.is_empty()
+        || app
+            .extra
+            .get("playnite-id")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|id| !id.trim().is_empty())
+        || playnite_fullscreen(app)
         || app
             .extra
             .get("detached")
@@ -708,7 +729,35 @@ pub fn launch(
             )?);
         }
     }
-    RunningApp::with_environment(&app, environment)
+    // An app linked to a Playnite game has no command: Playnite starts it.
+    let playnite_id = app
+        .extra
+        .get("playnite-id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty() && app.cmd.trim().is_empty())
+        .map(str::to_owned);
+    let fullscreen = app.cmd.trim().is_empty() && playnite_fullscreen(&app);
+    if fullscreen {
+        match crate::playnite::fullscreen_command() {
+            Some(command) => app.cmd = command,
+            None => tracing::warn!("Playnite was not found; streaming the desktop"),
+        }
+    }
+    let mut running = RunningApp::with_environment(&app, environment)?;
+    running.playnite_fullscreen = fullscreen;
+    if let Some(id) = playnite_id
+        && h.config.read().unwrap().boolean("playnite_enabled", true)
+    {
+        running.playnite = Some(crate::playnite::Launch::start(h, &id, &running.environment));
+    }
+    Ok(running)
+}
+fn playnite_fullscreen(app: &App) -> bool {
+    match app.extra.get("playnite-fullscreen") {
+        Some(serde_json::Value::Number(n)) => n.as_i64() == Some(1),
+        _ => app_bool(app, "playnite-fullscreen", false),
+    }
 }
 
 impl Drop for RunningApp {

@@ -154,7 +154,10 @@ pub async fn maintain(
         if Instant::now() >= steam_at {
             steam_at = Instant::now() + Duration::from_secs(30);
             let h = h.clone();
-            tokio::task::spawn_blocking(move || crate::steam::watch(&h));
+            tokio::task::spawn_blocking(move || {
+                crate::steam::watch(&h);
+                crate::playnite::watch(&h);
+            });
         }
         if Instant::now() >= update_at {
             let interval = h

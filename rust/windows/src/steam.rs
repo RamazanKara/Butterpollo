@@ -7,7 +7,8 @@ use windows::{
     core::PCWSTR,
 };
 
-fn registry_string(root: HKEY, key: &str, value: &str) -> Option<String> {
+/// A string registry value; an empty `value` reads the key's default value.
+pub(crate) fn registry_string(root: HKEY, key: &str, value: &str) -> Option<String> {
     let key: Vec<u16> = key.encode_utf16().chain(Some(0)).collect();
     let value: Vec<u16> = value.encode_utf16().chain(Some(0)).collect();
     let mut buffer = [0u16; 1024];
