@@ -40,6 +40,8 @@ pub struct Convert {
     height: u32,
     pixel: i32,
     source: (u32, u32),
+    /// The picture's size inside the frame.
+    content: (u32, u32),
     hdr: bool,
     matrix: u8,
     full_range: bool,
@@ -63,6 +65,7 @@ impl Convert {
                 height,
                 pixel,
                 source: (0, 0),
+                content: (0, 0),
                 hdr: matches!(
                     pixel,
                     ff::AVPixelFormat_AV_PIX_FMT_P010LE
@@ -107,11 +110,17 @@ impl Convert {
         {
             bail!("invalid captured image layout");
         }
+        // A source of another shape keeps its aspect ratio between black
+        // bars, as in the GPU converter.
+        let (x, y, content_width, content_height) = butterpollo_core::display_policy::letterbox(
+            (image.width, image.height),
+            (self.width, self.height),
+        );
         if self.hdr {
             crate::color::hdr_rgba_scaled_luminance(
                 image,
-                self.width,
-                self.height,
+                content_width,
+                content_height,
                 self.luminance,
                 &mut self.scratch,
             );
@@ -121,11 +130,14 @@ impl Convert {
         unsafe {
             check(ff::av_frame_make_writable(self.frame))?;
             let source = if self.hdr {
-                (self.width, self.height)
+                (content_width, content_height)
             } else {
                 (image.width, image.height)
             };
-            if self.context.is_null() || self.source != source {
+            if self.context.is_null()
+                || self.source != source
+                || self.content != (content_width, content_height)
+            {
                 if !self.context.is_null() {
                     ff::sws_freeContext(self.context);
                 }
@@ -137,8 +149,8 @@ impl Convert {
                     } else {
                         ff::AVPixelFormat_AV_PIX_FMT_BGRA
                     },
-                    self.width as i32,
-                    self.height as i32,
+                    content_width as i32,
+                    content_height as i32,
                     self.pixel,
                     1,
                     ptr::null_mut(),
@@ -164,6 +176,7 @@ impl Convert {
                     65536,
                 ))?;
                 self.source = source;
+                self.content = (content_width, content_height);
             }
             let src = [
                 if self.hdr {
@@ -177,7 +190,7 @@ impl Convert {
             ];
             let strides = [
                 if self.hdr {
-                    self.width as i32 * 8
+                    content_width as i32 * 8
                 } else {
                     image.stride as i32
                 },
@@ -215,17 +228,73 @@ impl Convert {
             } else {
                 ff::AVColorRange_AVCOL_RANGE_MPEG
             };
+            let mut destination = (*self.frame).data;
+            if (content_width, content_height) != (self.width, self.height) {
+                // The bars, then the picture into the rectangle between them.
+                let linesize: [isize; 4] =
+                    std::array::from_fn(|plane| (*self.frame).linesize[plane] as isize);
+                check(ff::av_image_fill_black(
+                    (*self.frame).data.as_ptr(),
+                    linesize.as_ptr(),
+                    self.pixel,
+                    (*self.frame).color_range,
+                    self.width as i32,
+                    self.height as i32,
+                ))?;
+                for (plane, offset) in plane_offsets(self.frame, self.pixel, x, y)?
+                    .into_iter()
+                    .enumerate()
+                {
+                    if !destination[plane].is_null() {
+                        destination[plane] = destination[plane].add(offset);
+                    }
+                }
+            }
             check(ff::sws_scale(
                 self.context,
                 src.as_ptr(),
                 strides.as_ptr(),
                 0,
                 self.source.1 as i32,
-                (*self.frame).data.as_ptr(),
+                destination.as_ptr(),
                 (*self.frame).linesize.as_ptr(),
             ))?;
             Ok(())
         }
+    }
+}
+/// Byte offsets of pixel (x, y) in each plane of `frame`.
+unsafe fn plane_offsets(
+    frame: *const ff::AVFrame,
+    pixel: i32,
+    x: u32,
+    y: u32,
+) -> Result<[usize; 4]> {
+    unsafe {
+        let Some(format) = ff::av_pix_fmt_desc_get(pixel).as_ref() else {
+            bail!("unknown pixel format {pixel}");
+        };
+        let components = &format.comp[..usize::from(format.nb_components)];
+        let mut offsets = [0; 4];
+        for (plane, offset) in offsets.iter_mut().enumerate() {
+            let Some(step) = components
+                .iter()
+                .filter(|c| c.plane as usize == plane)
+                .map(|c| c.step as usize)
+                .max()
+            else {
+                continue;
+            };
+            // Planes 1 and 2 hold subsampled chroma.
+            let (shift_x, shift_y) = if matches!(plane, 1 | 2) {
+                (format.log2_chroma_w, format.log2_chroma_h)
+            } else {
+                (0, 0)
+            };
+            *offset = (y as usize >> shift_y) * (*frame).linesize[plane] as usize
+                + (x as usize >> shift_x) * step;
+        }
+        Ok(offsets)
     }
 }
 impl Drop for Convert {
@@ -837,5 +906,33 @@ impl Encoder {
             Self::Nvenc(e) => e.encode(image, idr, bitrate),
             Self::Pyrowave(e) => e.encode(image, idr, bitrate),
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    /// Needs the packaged FFmpeg libraries on PATH.
+    #[test]
+    #[ignore]
+    fn native_software_converter_letterboxes_other_shapes() {
+        let image = Image {
+            width: 32,
+            height: 32,
+            stride: 128,
+            bytes: vec![255; 32 * 32 * 4],
+            captured: std::time::Instant::now(),
+            pixel: crate::capture::Pixel::Bgra8,
+        };
+        let mut convert = Convert::new(64, 32, ff::AVPixelFormat_AV_PIX_FMT_YUV420P).unwrap();
+        convert.convert(&image).unwrap();
+        let luma = |x: usize, y: usize| unsafe {
+            *(*convert.frame).data[0].add(y * (*convert.frame).linesize[0] as usize + x)
+        };
+        for y in [0, 15, 31] {
+            assert_eq!([luma(0, y), luma(15, y), luma(48, y), luma(63, y)], [16; 4]);
+            assert_eq!([luma(16, y), luma(32, y), luma(47, y)], [235; 3]);
+        }
+        let chroma = unsafe { *(*convert.frame).data[1].add(2) };
+        assert_eq!(chroma, 128);
     }
 }

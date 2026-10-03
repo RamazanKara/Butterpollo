@@ -12,7 +12,7 @@ fn main() {
     shaders::compile(&out);
     let ff=bindgen::Builder::default().header_contents("ffmpeg.h","#include <libavcodec/avcodec.h>\n#include <libavutil/opt.h>\n#include <libavutil/imgutils.h>\n#include <libavutil/hwcontext.h>\n#include <libavutil/hwcontext_d3d11va.h>\n#include <libswscale/swscale.h>\n")
         .clang_arg(format!("-I{}",include.display())).allowlist_type("AV.*|SwsContext")
-        .allowlist_function("avcodec_.*|av_frame_.*|av_packet_.*|av_new_packet|av_hwdevice_.*|av_hwframe_.*|av_buffer_.*|av_opt_set.*|av_dict_.*|av_strerror|sws_.*")
+        .allowlist_function("avcodec_.*|av_frame_.*|av_packet_.*|av_new_packet|av_hwdevice_.*|av_hwframe_.*|av_buffer_.*|av_opt_set.*|av_dict_.*|av_strerror|av_image_fill_black|av_pix_fmt_desc_get|sws_.*")
         .allowlist_var("AV.*|SWS_.*|LIBAV.*").layout_tests(false).derive_debug(false).generate_comments(false).generate().expect("generate FFmpeg C ABI");
     ff.write_to_file(out.join("ffmpeg.rs")).unwrap();
     let amf=bindgen::Builder::default().header_contents("amf.h","#include <AMF/core/Factory.h>\n#include <AMF/components/VideoEncoderVCE.h>\n#include <AMF/components/VideoEncoderHEVC.h>\n#include <AMF/components/VideoEncoderAV1.h>\n")

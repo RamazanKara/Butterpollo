@@ -127,6 +127,26 @@ pub fn render_dimensions(width: u32, height: u32, client_scale: i64, app_scale: 
         _ => (width, height),
     }
 }
+/// Where a source of another shape sits in the stream, as `(x, y, width,
+/// height)`: centred, keeping its aspect ratio, with black bars around it.
+/// Sizes and offsets are even for 4:2:0 chroma. A shape within a pixel of
+/// the stream's fills it, as in the GPU converter.
+pub fn letterbox(source: (u32, u32), target: (u32, u32)) -> (u32, u32, u32, u32) {
+    let full = (0, 0, target.0, target.1);
+    if source.0 == 0 || source.1 == 0 || source == target {
+        return full;
+    }
+    let (sw, sh) = (f64::from(source.0), f64::from(source.1));
+    let (tw, th) = (f64::from(target.0), f64::from(target.1));
+    let scale = (tw / sw).min(th / sh);
+    let (w, h) = (sw * scale, sh * scale);
+    if (w - tw).abs() < 1. && (h - th).abs() < 1. {
+        return full;
+    }
+    let even = |value: f64, limit: u32| ((value.round() as u32) & !1).max(2).min(limit);
+    let (w, h) = (even(w, target.0), even(h, target.1));
+    (((target.0 - w) / 2) & !1, ((target.1 - h) / 2) & !1, w, h)
+}
 /// A device's own display mode, `WIDTHxHEIGHTxREFRESH` (refresh in Hz, up to
 /// three decimals, e.g. `1920x1080x59.94`).
 pub fn parse_display_mode(text: &str) -> Option<(u32, u32, crate::framegen::Rate)> {
@@ -290,6 +310,17 @@ impl Arrangement {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn other_shapes_are_centred_with_bars() {
+        // The 32:9 desktop on a 16:10 tablet.
+        assert_eq!(letterbox((5120, 1440), (2560, 1600)), (0, 440, 2560, 720));
+        // A 16:9 source on a tall phone stream.
+        assert_eq!(letterbox((1920, 1080), (1968, 2184)), (0, 538, 1968, 1106));
+        assert_eq!(letterbox((3840, 2160), (1920, 1080)), (0, 0, 1920, 1080));
+        // Within a pixel of the stream's shape fills it.
+        assert_eq!(letterbox((1921, 1080), (1920, 1080)), (0, 0, 1920, 1080));
+        assert_eq!(letterbox((0, 0), (1920, 1080)), (0, 0, 1920, 1080));
+    }
     #[test]
     fn device_display_modes_parse_like_vibepollo() {
         use crate::framegen::Rate;
