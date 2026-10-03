@@ -254,6 +254,23 @@ export interface SteamStatus {
   recent_games: number;
 }
 
+export interface PlayniteStatus {
+  status: true;
+  enabled: boolean;
+  /** Playnite is running. */
+  active: boolean;
+  /** Playnite was found on the host. */
+  available: boolean;
+  /** The plugin is in Playnite's extensions. */
+  installed: boolean;
+  installed_version: string | null;
+  packaged_version: string | null;
+  update_available: boolean;
+  auto_sync: boolean;
+  game_count: number;
+  synced_seconds_ago: number | null;
+}
+
 export interface PerfSample {
   fps: number;
   bitrate_mbps: number;
@@ -431,6 +448,11 @@ export const api = {
         '/api/steam/force_sync',
         {},
       ),
+  },
+  playnite: {
+    status: () => get<PlayniteStatus>('/api/playnite/status'),
+    sync: () => post<{ status: true; changed: boolean; game_count: number }>('/api/playnite/force_sync', {}),
+    install: () => post<{ status: true; path: string; restart_required: boolean }>('/api/playnite/install', {}),
   },
   clients: {
     list: () => get<{ status: true; clients: Client[] }>('/api/clients/list'),

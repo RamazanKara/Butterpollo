@@ -7,6 +7,7 @@
   import AppEditor from '../components/library/AppEditor.svelte';
   import LibraryGrid from '../components/library/LibraryGrid.svelte';
   import SteamSource from '../components/library/SteamSource.svelte';
+  import PlayniteSource from '../components/library/PlayniteSource.svelte';
   import { api, type App, type SessionStatus } from '../lib/api';
   import { failed } from '../lib/feedback.svelte';
   import { poll } from '../lib/format';
@@ -103,6 +104,7 @@
   {/if}
 
   <SteamSource onsynced={load} />
+  <PlayniteSource onsynced={load} />
 
   {#if apps === null}
     {#if !loadError}<p class="muted placeholder">Loading apps…</p>{/if}

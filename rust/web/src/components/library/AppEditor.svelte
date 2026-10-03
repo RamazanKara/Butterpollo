@@ -211,6 +211,11 @@
       The Steam sync keeps this app in step with Steam and replaces its name, command and cover at each sync; other
       settings stay. To keep your own name or command, add the game as a new app: the sync leaves apps you add alone.
     </p>
+  {:else if typeof app?.['playnite-id'] === 'string' && app['playnite-id'] !== ''}
+    <p class="notice">
+      Playnite starts this game{app['playnite-managed'] === 'auto' ? ', and the Playnite sync updates its name and cover' : ''}.
+      Leave the command empty; a command here replaces the Playnite launch.
+    </p>
   {/if}
 
   <form class="sections" onsubmit={save} aria-label={isNew ? 'New app' : `Edit ${savedName}`}>
@@ -224,7 +229,13 @@
           >
             <input id="{uid}-name" class="input" autocomplete="off" required bind:value={draft.app.name} />
           </Field>
-          <Field label="Command" id="{uid}-cmd" hint="Empty streams the desktop.">
+          <Field
+            label="Command"
+            id="{uid}-cmd"
+            hint={typeof app?.['playnite-id'] === 'string' && app['playnite-id'] !== ''
+              ? 'Empty: Playnite starts the game.'
+              : 'Empty streams the desktop.'}
+          >
             <input
               id="{uid}-cmd"
               class="input mono"
