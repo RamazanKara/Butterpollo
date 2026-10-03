@@ -81,13 +81,54 @@ fn apply(state: &mut State, arrangement: Arrangement, leaving: Option<&str>) -> 
     state.applied = desired;
     Ok(())
 }
+/// Retry while Windows is still applying another change, such as a virtual
+/// display being removed: reading its mode fails until the change settles.
+fn settled<T>(mut attempt: impl FnMut() -> Result<T>) -> Result<T> {
+    for _ in 0..3 {
+        match attempt() {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                tracing::debug!(error = %format!("{error:#}"), "display layout change pending; retrying");
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+        }
+    }
+    attempt()
+}
+/// The layout to restore after streaming: Windows extends the desktop onto a
+/// new virtual display before the arrangement is taken, but restoring that
+/// would leave a retained display as an invisible monitor beside the user's
+/// own, and its settings fail once it is removed (os error 31).
+fn original_layout(mut snapshot: Snapshot, target: &str) -> Snapshot {
+    let others_active = snapshot
+        .nodes
+        .iter()
+        .any(|n| n.active && n.device_id != target);
+    if others_active {
+        for node in snapshot.nodes.iter_mut().filter(|n| n.device_id == target) {
+            node.active = false;
+            node.primary = false;
+        }
+        snapshot.hdr.remove(target);
+        snapshot.scale.remove(target);
+        snapshot.rotation.remove(target);
+    }
+    snapshot
+}
 pub struct Lease {
     arrangement: Arrangement,
     /// The streamed display; a recreated virtual display may change identity.
     target: Mutex<String>,
 }
 impl Lease {
-    pub fn acquire(output: &str, arrangement: Arrangement, retained: &[String]) -> Result<Self> {
+    /// `virtual_target`: the streamed display is a virtual display made for
+    /// streaming, so the user's own layout does not include it.
+    pub fn acquire(
+        output: &str,
+        arrangement: Arrangement,
+        retained: &[String],
+        virtual_target: bool,
+    ) -> Result<Self> {
         let mut state = state().lock().unwrap();
         let monitors = crate::display::monitors()?;
         let target = monitors
@@ -131,12 +172,17 @@ impl Lease {
                 target: Mutex::new(target_id),
             });
         }
-        let before = Snapshot::capture()?;
-        let desired = arrangement.compose(&before.nodes, &target_id, &retained)?;
+        let current = Snapshot::capture()?;
+        let desired = arrangement.compose(&current.nodes, &target_id, &retained)?;
+        let before = if virtual_target {
+            original_layout(current.clone(), &target_id)
+        } else {
+            current.clone()
+        };
         crate::display_recovery::arrangement(Some((before.clone(), desired.clone())))?;
         let apply = (|| -> Result<()> {
             let ids = active_ids(&desired);
-            if ids != active_ids(&before.nodes) {
+            if ids != active_ids(&current.nodes) {
                 Topology::set_active(&ids.into_iter().collect::<Vec<_>>())?;
             }
             Topology::query()?.set_positions(
@@ -148,7 +194,7 @@ impl Lease {
             )
         })();
         if let Err(error) = apply {
-            before.restore()?;
+            current.restore()?;
             crate::display_recovery::arrangement(None)?;
             return Err(error);
         }
@@ -228,16 +274,16 @@ impl Drop for Lease {
             return;
         }
         let restored = (|| -> Result<()> {
-            let current = Topology::query()?.nodes()?;
+            let current = settled(|| Topology::query()?.nodes())?;
             if matches(&current, &state.applied)
                 && let Some(before) = &state.before
             {
-                before.restore()?;
+                settled(|| before.restore())?;
             }
             crate::display_recovery::arrangement(None)
         })();
         if let Err(error) = restored {
-            tracing::warn!(%error,"display arrangement restoration remains pending");
+            tracing::warn!(error = %format!("{error:#}"), "display arrangement restoration remains pending");
         }
         state.before = None;
         state.applied.clear();
@@ -337,5 +383,60 @@ impl Drop for Activation {
         state.before = None;
         state.applied.clear();
         state.key.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use butterpollo_core::topology::{Kind, Mode, Position};
+    fn node(id: &str, active: bool, primary: bool) -> Node {
+        Node {
+            id: id.into(),
+            label: id.into(),
+            kind: Kind::Physical,
+            active,
+            primary,
+            desired_position: Position { x: 0, y: 0 },
+            mode: Mode {
+                width: 1920,
+                height: 1080,
+                refresh_hz: 60.,
+            },
+            device_id: id.into(),
+        }
+    }
+    fn snapshot(nodes: Vec<Node>) -> Snapshot {
+        Snapshot {
+            version: 1,
+            hdr: nodes.iter().map(|n| (n.device_id.clone(), true)).collect(),
+            scale: nodes.iter().map(|n| (n.device_id.clone(), 125)).collect(),
+            rotation: Default::default(),
+            clone_groups: vec![],
+            nodes,
+        }
+    }
+    #[test]
+    fn the_original_layout_leaves_out_the_streams_virtual_display() {
+        let layout = original_layout(
+            snapshot(vec![node("monitor", true, true), node("vdd", true, false)]),
+            "vdd",
+        );
+        let vdd = layout.nodes.iter().find(|n| n.device_id == "vdd").unwrap();
+        assert!(!vdd.active && !vdd.primary);
+        assert!(
+            layout
+                .nodes
+                .iter()
+                .any(|n| n.device_id == "monitor" && n.active)
+        );
+        assert!(!layout.hdr.contains_key("vdd") && !layout.scale.contains_key("vdd"));
+        assert!(layout.hdr.contains_key("monitor"));
+        // With no other active display the layout cannot exclude it.
+        let only = original_layout(
+            snapshot(vec![node("monitor", false, false), node("vdd", true, true)]),
+            "vdd",
+        );
+        assert!(only.nodes.iter().any(|n| n.device_id == "vdd" && n.active));
     }
 }

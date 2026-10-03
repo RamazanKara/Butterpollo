@@ -487,6 +487,7 @@ impl Prepared {
                     &output,
                     butterpollo_core::display_policy::Arrangement::parse(selection)?,
                     &retained,
+                    virtual_mode && display.is_some(),
                 )?)
             } else {
                 None
