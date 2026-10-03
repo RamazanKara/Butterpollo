@@ -136,7 +136,12 @@ impl Host {
         };
         let app_document = butterpollo_core::state::load_json(
             &apps_path,
-            json!({"env":{},"apps":[App::desktop()]}),
+            // Vibepollo's default library.
+            json!({"env":{},"apps":[
+                {"name":"Desktop","image-path":"desktop.png","allow-client-commands":false},
+                {"name":"Steam Big Picture","prep-cmd":[{"do":"","undo":"steam://close/bigpicture","elevated":false}],
+                 "detached":["steam://open/bigpicture"],"image-path":"steam.png"}
+            ]}),
         )?;
         let mut apps: Vec<App> =
             serde_json::from_value(app_document.get("apps").cloned().unwrap_or(json!([])))?;

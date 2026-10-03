@@ -296,6 +296,7 @@ impl Process {
         )
         .join("System32")
         .join("cmd.exe");
+        let command = shell_command(command);
         let line = format!("{} /D /S /C \"{command}\"", quote(executable.as_os_str())?);
         Self::spawn_command(
             &executable,
@@ -706,8 +707,80 @@ impl StopSignal {
     }
 }
 
+/// The program a command line starts: its first argument, without quotes.
+pub fn command_target(command: &str) -> &str {
+    let command = command.trim_start();
+    match command.strip_prefix('"') {
+        Some(rest) => rest.split('"').next().unwrap_or(rest),
+        None => command.split(char::is_whitespace).next().unwrap_or(""),
+    }
+}
+/// Whether Windows must open the target through its association: a URL
+/// (`steam://`, `ms-settings:`) or a file that is not a program. cmd.exe
+/// cannot start a URL, so Steam Big Picture and store links failed.
+fn opens_through_shell(target: &str) -> bool {
+    if let Some((scheme, _)) = target.split_once(':')
+        && scheme.len() > 1
+        && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    {
+        return true;
+    }
+    let name = target.rsplit(['\\', '/']).next().unwrap_or(target);
+    match name.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() => !matches!(
+            extension.to_ascii_lowercase().as_str(),
+            "exe" | "com" | "bat" | "cmd"
+        ),
+        _ => false,
+    }
+}
+/// The command for cmd.exe. URLs and documents are opened as Windows opens
+/// them (as Vibepollo resolves associations), waiting for the program they
+/// start, which stays in the app's job.
+pub fn shell_command(command: &str) -> String {
+    let target = command_target(command);
+    if target.is_empty() || !opens_through_shell(target) {
+        return command.to_owned();
+    }
+    let trimmed = command.trim_start();
+    let rest = if trimmed.starts_with('"') {
+        &trimmed[(target.len() + 2).min(trimmed.len())..]
+    } else {
+        &trimmed[target.len()..]
+    };
+    format!("start \"\" /wait \"{target}\"{rest}")
+}
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn urls_and_documents_open_through_their_association() {
+        use super::{command_target, shell_command};
+        assert_eq!(
+            shell_command("steam://open/bigpicture"),
+            "start \"\" /wait \"steam://open/bigpicture\""
+        );
+        assert_eq!(
+            shell_command("ms-settings:display"),
+            "start \"\" /wait \"ms-settings:display\""
+        );
+        assert_eq!(
+            shell_command("\"C:\\Games\\My Game.lnk\" -windowed"),
+            "start \"\" /wait \"C:\\Games\\My Game.lnk\" -windowed"
+        );
+        for unchanged in [
+            "\"C:\\Program Files\\Game\\game.exe\" -fullscreen",
+            "C:\\tools\\setup.bat",
+            "powershell -NoProfile -Command Get-Date",
+            "start \"\" steam://run/570",
+            "",
+        ] {
+            assert_eq!(shell_command(unchanged), unchanged);
+        }
+        assert_eq!(command_target("\"C:\\a b\\c.exe\" x"), "C:\\a b\\c.exe");
+    }
     #[test]
     fn supervisor_event_is_wait_only_and_outlives_the_source_handle() -> Result<()> {
         let source = HostStop::new()?;

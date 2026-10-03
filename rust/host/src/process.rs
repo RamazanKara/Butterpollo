@@ -131,6 +131,21 @@ pub struct RunningApp {
     state_events: Option<std::sync::mpsc::Sender<bool>>,
     exit_timeout: Duration,
 }
+/// The folder of the program an app starts, as Vibepollo uses when the app
+/// has no working directory: games often load files relative to it.
+fn inferred_working_dir(command: &str) -> String {
+    let target = butterpollo_windows::process::command_target(command);
+    if target.contains("://") {
+        return String::new();
+    }
+    let path = Path::new(target);
+    path.is_absolute()
+        .then(|| path.parent())
+        .flatten()
+        .filter(|parent| parent.is_dir())
+        .map(|parent| parent.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
 fn directory(s: &str) -> Option<&Path> {
     if s.is_empty() {
         None
@@ -156,7 +171,11 @@ impl RunningApp {
                 .unwrap_or_default(),
             generation: uuid::Uuid::new_v4().to_string(),
             undo: vec![],
-            working: app.working_dir.clone(),
+            working: if app.working_dir.trim().is_empty() {
+                inferred_working_dir(&app.cmd)
+            } else {
+                app.working_dir.clone()
+            },
             environment,
             started: std::time::Instant::now(),
             auto_detach: app_bool(app, "auto-detach", true),
@@ -463,6 +482,15 @@ pub fn launch(
             }
             .into(),
         ),
+        (
+            "SUNSHINE_CLIENT_ENABLE_SOPS",
+            if args.get("sops").is_some_and(|v| v == "1") {
+                "true"
+            } else {
+                "false"
+            }
+            .into(),
+        ),
     ] {
         environment.insert(name.into(), value);
     }
@@ -501,6 +529,35 @@ pub fn launch(
         if let Some(suffix) = key.strip_prefix("SUNSHINE_") {
             environment.insert(format!("APOLLO_{suffix}"), value);
         }
+    }
+    // Apollo/Vibepollo additions: the app's UUID, the client's own mode
+    // before render scaling, and its scale factor.
+    for (name, value) in [
+        (
+            "APOLLO_APP_UUID",
+            app.extra
+                .get("uuid")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+        ),
+        (
+            "APOLLO_CLIENT_RENDER_WIDTH",
+            mode.first().unwrap_or(&"1920").to_string(),
+        ),
+        (
+            "APOLLO_CLIENT_RENDER_HEIGHT",
+            mode.get(1).unwrap_or(&"1080").to_string(),
+        ),
+        (
+            "APOLLO_CLIENT_SCALE_FACTOR",
+            args.get("scaleFactor")
+                .cloned()
+                .unwrap_or_else(|| "100".into()),
+        ),
+        ("APOLLO_APP_STATUS", "STARTING".to_owned()),
+    ] {
+        environment.insert(name.into(), value);
     }
     if !app_bool(&app, "exclude-global-prep-cmd", false) {
         let mut global: Vec<PrepCommand> =
