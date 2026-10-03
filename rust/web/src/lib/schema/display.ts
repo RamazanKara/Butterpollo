@@ -262,6 +262,26 @@ export const settings: Setting[] = [
     advanced: true,
   },
   {
+    key: 'dd_snapshot_restore_hotkey',
+    label: 'Restore hotkey',
+    description:
+      'A key on this PC that ends every stream, removes the virtual displays and restores the display layout, for when a stream leaves the screens unusable. F1 to F24, a letter, a digit or a virtual-key code such as 0x2E. Empty turns it off.',
+    category: 'display',
+    group: 'After a stream',
+    control: { kind: 'text', placeholder: 'Off', mono: true },
+    default: '',
+  },
+  {
+    key: 'dd_snapshot_restore_hotkey_modifiers',
+    label: 'Restore hotkey modifiers',
+    description: 'Keys held with the restore hotkey: ctrl, alt, shift and win, joined with +.',
+    category: 'display',
+    group: 'After a stream',
+    control: { kind: 'text', placeholder: 'ctrl+alt+shift', mono: true },
+    default: 'ctrl+alt+shift',
+    visibleWhen: (values) => String(values.dd_snapshot_restore_hotkey ?? '').trim() !== '',
+  },
+  {
     key: 'remote_monitor_mute_audio',
     label: 'Mute remote monitors',
     description: 'Sends picture and input, but no audio, to a device used as a remote monitor.',

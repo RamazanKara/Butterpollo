@@ -74,6 +74,65 @@ fn user_action(h: &Shared, action: Action, web_port: u16) {
         Action::Quit => h.stop.store(true, Ordering::Release),
     }
 }
+/// End every stream and remote monitor and release the displays they held,
+/// which removes the virtual displays and restores the layout.
+pub fn release_displays(h: &Shared) {
+    h.sessions.lock().unwrap().request_stop(None);
+    crate::remote_display::disconnect(h, None);
+    h.app_display.lock().unwrap().clear();
+}
+/// The registered restore hotkey, following the setting.
+#[derive(Default)]
+struct RestoreHotkey {
+    wanted: Option<(u32, u32)>,
+    registered: Option<butterpollo_windows::hotkey::Hotkey>,
+    presses: Option<std::sync::mpsc::Receiver<()>>,
+    checked: Option<Instant>,
+}
+impl RestoreHotkey {
+    fn poll(&mut self, h: &Shared) {
+        if self
+            .presses
+            .as_ref()
+            .is_some_and(|presses| presses.try_iter().count() > 0)
+        {
+            tracing::info!("restore hotkey pressed; ending streams and restoring the displays");
+            let h = h.clone();
+            // Restoring the layout waits on Windows.
+            tokio::task::spawn_blocking(move || release_displays(&h));
+        }
+        if self
+            .checked
+            .is_some_and(|at| at.elapsed() < Duration::from_secs(2))
+        {
+            return;
+        }
+        self.checked = Some(Instant::now());
+        let wanted = butterpollo_core::hotkey::restore_hotkey(&h.config.read().unwrap());
+        if wanted == self.wanted {
+            return;
+        }
+        self.wanted = wanted;
+        self.registered = None;
+        self.presses = None;
+        let Some((key, modifiers)) = wanted else {
+            return;
+        };
+        let (pressed, presses) = std::sync::mpsc::channel();
+        match butterpollo_windows::hotkey::Hotkey::register(key, modifiers, move || {
+            let _ = pressed.send(());
+        }) {
+            Ok(hotkey) => {
+                tracing::info!(key, modifiers, "registered the display restore hotkey");
+                self.registered = Some(hotkey);
+                self.presses = Some(presses);
+            }
+            Err(error) => {
+                tracing::warn!(error = %format!("{error:#}"), key, modifiers, "the display restore hotkey could not be registered");
+            }
+        }
+    }
+}
 pub async fn maintain(
     h: Shared,
     stop_signal: StopSignal,
@@ -81,6 +140,7 @@ pub async fn maintain(
     web_port: u16,
 ) {
     let mut update_at = Instant::now();
+    let mut hotkey = RestoreHotkey::default();
     while !h.stop.load(Ordering::Acquire) {
         if stop_signal.requested() {
             tracing::info!("service requested host shutdown");
@@ -89,6 +149,7 @@ pub async fn maintain(
         }
         h.sessions.lock().unwrap().expire();
         h.reap_paused_display();
+        hotkey.poll(&h);
         if Instant::now() >= update_at {
             let interval = h
                 .config

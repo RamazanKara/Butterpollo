@@ -36,6 +36,8 @@ mod gpu_priority;
 #[cfg(windows)]
 pub mod hdr_profile;
 #[cfg(windows)]
+pub mod hotkey;
+#[cfg(windows)]
 pub mod input;
 #[cfg(windows)]
 mod keylayout;
