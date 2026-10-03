@@ -1,5 +1,7 @@
 # Butterpollo
 
+The `codex/butterpollo-rust` branch contains **Butterpollo Rust 2.0.0-rc.1 for Windows**, including stable Vibepollo 2.0 PyroWave/VRR streaming, a Rust launcher with profile import, and connection/performance pages that work without JavaScript. Video FEC generation is measured 1.26–1.40× faster than the original C++ baseline, with identical parity bytes and 21–29% less CPU time. AMD/PyroWave GPU conversion and native NVIDIA encoding keep capture surfaces on the GPU. See [start streaming and migrate](rust/README.md), [candidate release notes](rust/RELEASE_NOTES.md), [feature validation](rust/PARITY.md) and [measured Rust performance](rust/PERFORMANCE.md). Hardware acceptance gates remain; the measurements and architecture below describe the retained C++ reference.
+
 Butterpollo is a Windows game-streaming host built on [Vibepollo](https://github.com/Nonary/Vibepollo), which builds on [Apollo](https://github.com/ClassicOldSong/Apollo) and [Sunshine](https://github.com/LizardByte/Sunshine). It has one job: get each frame from your PC to your Moonlight client as fast and as evenly as possible. Anything that doesn't serve that job has been taken out. A change goes in only if it makes streaming faster or smoother, and I measure it before it ships.
 
 The name comes from the first tester's verdict on the WGC fix: "smooth as butter". Also, *pollo* is Spanish for chicken.

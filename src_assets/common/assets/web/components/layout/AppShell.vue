@@ -155,7 +155,7 @@ onBeforeUnmount(() => {
       </button>
       <RouterLink class="mobile-brand" to="/" :aria-label="t('ui.shell.brand_overview')">
         <img :src="`${baseUrl}images/logo-apollo-45.png`" alt="" width="28" height="28" />
-        <span>Vibepollo</span>
+        <span>Butterpollo</span>
       </RouterLink>
       <span class="mobile-status" :data-state="system.health">{{ statusText }}</span>
     </header>
@@ -182,7 +182,7 @@ onBeforeUnmount(() => {
         <RouterLink class="brand" to="/" :aria-label="t('ui.shell.brand_overview')">
           <img :src="`${baseUrl}images/logo-apollo-45.png`" alt="" width="32" height="32" />
           <span class="sidebar__label">
-            <span class="brand__name">Vibepollo</span>
+            <span class="brand__name">Butterpollo</span>
             <span class="brand__description">{{ t('ui.shell.host_console') }}</span>
           </span>
         </RouterLink>

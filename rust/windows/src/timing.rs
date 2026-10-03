@@ -1,0 +1,209 @@
+use anyhow::Result;
+use std::time::{Duration, Instant};
+use windows::{
+    Win32::{Foundation::*, System::Threading::*},
+    core::PCWSTR,
+};
+
+/// One high-resolution waitable timer per media worker. Packet pacing must not
+/// pay the coarse scheduler tick for every UDP datagram.
+pub struct Timer(HANDLE);
+/// Each capture consumer owns a separate unnamed event. Resetting it cannot
+/// consume another client's notification, and publishing before a wait is safe.
+pub struct Signal(HANDLE);
+// Windows event operations are thread-safe; ownership keeps the handle alive.
+unsafe impl Send for Signal {}
+unsafe impl Sync for Signal {}
+impl Signal {
+    pub fn new() -> Result<Self> {
+        Ok(Self(unsafe {
+            CreateEventW(None, true, false, PCWSTR::null())?
+        }))
+    }
+    pub fn set(&self) -> Result<()> {
+        unsafe {
+            SetEvent(self.0)?;
+        }
+        Ok(())
+    }
+    /// Reset while holding the protected capture-image lock, before waiting.
+    pub fn reset(&self) -> Result<()> {
+        unsafe {
+            ResetEvent(self.0)?;
+        }
+        Ok(())
+    }
+}
+impl Drop for Signal {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
+impl Timer {
+    pub fn new() -> Result<Self> {
+        unsafe {
+            let timer = CreateWaitableTimerExW(
+                None,
+                PCWSTR::null(),
+                CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                TIMER_ALL_ACCESS.0,
+            )
+            .or_else(|_| CreateWaitableTimerExW(None, PCWSTR::null(), 0, TIMER_ALL_ACCESS.0))?;
+            Ok(Self(timer))
+        }
+    }
+    pub fn until(&self, deadline: Instant) {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining > Duration::from_micros(100) {
+            let ticks = -(((remaining - Duration::from_micros(50)).as_nanos() / 100)
+                .min(i64::MAX as u128) as i64);
+            unsafe {
+                if SetWaitableTimer(self.0, &ticks, 0, None, None, false).is_ok() {
+                    let _ = WaitForSingleObject(
+                        self.0,
+                        (remaining.as_millis() + 100).min(u32::MAX as u128) as u32,
+                    );
+                } else {
+                    std::thread::sleep(remaining);
+                }
+            }
+        }
+        while Instant::now() < deadline {
+            std::hint::spin_loop();
+        }
+    }
+    /// Like `until`, accurate to a few microseconds at the cost of yielding the
+    /// last 600 us. Waitable timers here wake 0.3-0.5 ms late for short waits,
+    /// even at a 1 ms system timer resolution (`examples/timer_probe.rs`), so a
+    /// paced packet burst would otherwise leave its last packet that much later.
+    pub fn until_precise(&self, deadline: Instant) {
+        const SPIN: Duration = Duration::from_micros(600);
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining > SPIN + Duration::from_micros(100) {
+            self.until(deadline - SPIN);
+        }
+        while Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+    }
+    /// Wait for capture or the precise encoder/static-frame deadline, without
+    /// a coarse condition-variable timeout or a polling/spinning thread.
+    pub fn until_or_signal(&self, deadline: Instant, signal: &Signal) -> Result<bool> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(false);
+        }
+        let ticks = -((remaining.as_nanos() / 100).clamp(1, i64::MAX as u128) as i64);
+        unsafe {
+            SetWaitableTimer(self.0, &ticks, 0, None, None, false)?;
+            let result = WaitForMultipleObjects(&[self.0, signal.0], false, INFINITE);
+            if result == WAIT_OBJECT_0 {
+                Ok(false)
+            } else if result.0 == WAIT_OBJECT_0.0 + 1 {
+                Ok(true)
+            } else {
+                Err(windows::core::Error::from_thread().into())
+            }
+        }
+    }
+}
+impl Drop for Timer {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
+/// Process-wide scheduling for the lifetime of at least one stream: a 1 ms
+/// system timer, high priority class, and no power throttling. Without these,
+/// driver waits (an AMF output query, a DXGI acquire) and Windows 11 timer
+/// coalescing can add a scheduler tick to a frame. Restored after the last stream.
+pub struct StreamingScope(());
+static STREAMS: std::sync::Mutex<(usize, u32)> = std::sync::Mutex::new((0, 0));
+impl StreamingScope {
+    pub fn enter() -> Self {
+        let mut streams = STREAMS.lock().unwrap();
+        if streams.0 == 0 {
+            unsafe {
+                let process = GetCurrentProcess();
+                // Windows 11 otherwise ignores timer requests from a process
+                // without a visible window, and may run it on efficiency cores.
+                let state = PROCESS_POWER_THROTTLING_STATE {
+                    Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+                    ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+                        | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+                    StateMask: 0,
+                };
+                if let Err(error) = SetProcessInformation(
+                    process,
+                    ProcessPowerThrottling,
+                    (&state as *const PROCESS_POWER_THROTTLING_STATE).cast(),
+                    std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+                ) {
+                    tracing::debug!(%error, "power throttling opt-out unavailable");
+                }
+                let _ = windows::Win32::Media::timeBeginPeriod(1);
+                streams.1 = GetPriorityClass(process);
+                if let Err(error) = SetPriorityClass(process, HIGH_PRIORITY_CLASS) {
+                    tracing::debug!(%error, "high process priority unavailable");
+                }
+            }
+        }
+        streams.0 += 1;
+        Self(())
+    }
+}
+impl Drop for StreamingScope {
+    fn drop(&mut self) {
+        let mut streams = STREAMS.lock().unwrap();
+        streams.0 -= 1;
+        if streams.0 == 0 {
+            unsafe {
+                let process = GetCurrentProcess();
+                if streams.1 != 0 {
+                    let _ = SetPriorityClass(process, PROCESS_CREATION_FLAGS(streams.1));
+                }
+                let _ = windows::Win32::Media::timeEndPeriod(1);
+            }
+        }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn capture_before_wait_is_retained_and_each_consumer_has_its_own_wake() -> Result<()> {
+        let timer = Timer::new()?;
+        let first = Signal::new()?;
+        let second = Signal::new()?;
+        first.set()?;
+        second.set()?;
+        first.reset()?;
+        // One consumer resetting its event must leave the other ready.
+        assert!(timer.until_or_signal(Instant::now() + Duration::from_secs(1), &second)?);
+        let due = Instant::now() + Duration::from_millis(2);
+        assert!(!timer.until_or_signal(due, &first)?);
+        assert!(Instant::now() >= due);
+        // Reusing the same timer must not retain its previous expiration.
+        second.reset()?;
+        let due = Instant::now() + Duration::from_millis(2);
+        assert!(!timer.until_or_signal(due, &second)?);
+        assert!(Instant::now() >= due);
+        Ok(())
+    }
+    #[test]
+    fn capture_can_interrupt_a_later_static_repeat_deadline() -> Result<()> {
+        let timer = Timer::new()?;
+        let signal = std::sync::Arc::new(Signal::new()?);
+        let publisher = signal.clone();
+        let worker = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(2));
+            publisher.set().unwrap();
+        });
+        assert!(timer.until_or_signal(Instant::now() + Duration::from_secs(1), &signal)?);
+        worker.join().unwrap();
+        Ok(())
+    }
+}

@@ -26,7 +26,7 @@
 
 set -euo pipefail
 
-PINNED_COMMIT=89f7e47d4abbf650c91fae766728af866c5e32a0
+PINNED_COMMIT=186f0393b77f7755953b5ecde994bb1cec2e4155
 COMMIT=${1:-$PINNED_COMMIT}
 PREFIX=${2:-$PWD/pyrowave-install}
 WORKDIR=${PYROWAVE_WORKDIR:-$PWD/pyrowave-work}
@@ -36,6 +36,9 @@ if [[ "${MSYSTEM:-}" != "UCRT64" ]]; then
 	echo "error: run this from an MSYS2 UCRT64 shell (MSYSTEM=UCRT64), got '${MSYSTEM:-unset}'" >&2
 	exit 1
 fi
+# PowerShell and Visual Studio developer shells can put Windows find.exe and
+# link.exe ahead of MSYS utilities. Use this MSYS installation's tools first.
+export PATH="/ucrt64/bin:/usr/bin:$PATH"
 if [[ ! "$COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
 	echo "error: commit must be a full 40-character SHA, got '$COMMIT'" >&2
 	exit 1
@@ -76,6 +79,12 @@ if [[ "$GRANITE_SHA" != "$GRANITE_COMMIT" ]]; then
 	exit 1
 fi
 echo "Granite: $GRANITE_SHA"
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PATCH_DIR=$SCRIPT_DIR/../rust/codec-patches/pyrowave
+for patch in "$PATCH_DIR"/*.patch; do
+	git -C "$SRC" apply --check "$patch"
+	git -C "$SRC" apply "$patch"
+done
 
 # 3. Configure. The defaults build the shared C API; PYROWAVE_DEVEL/UTILS would
 #    pull in the full Granite (SDL, glslang, ...).
@@ -106,6 +115,7 @@ cat > "$PREFIX/share/pyrowave-shared/build-info.txt" <<EOF
 pyrowave_commit=$PYROWAVE_SHA
 granite_commit=$GRANITE_SHA
 api_version=$API_VERSION
+patches=0001-encoder-buffer-pool,0002-payload-data-444-sizing,0003-decoder-reject-short-block
 compiler=$(gcc --version | head -n1)
 cmake=$(cmake --version | head -n1)
 EOF

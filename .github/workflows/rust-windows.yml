@@ -1,0 +1,72 @@
+name: Butterpollo Rust Windows
+permissions: {}
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths: ['rust/**', 'Cargo.*', 'rust-toolchain.toml', '.cargo/**', 'scripts/build_pyrowave.sh', 'src_assets/common/assets/*.png', 'src_assets/common/assets/*.ico', 'src_assets/common/assets/web/public/assets/locale/**', '.github/workflows/rust-windows.yml']
+  workflow_dispatch:
+concurrency:
+  group: butterpollo-rust-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e
+        id: msys
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-clang
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-vulkan-headers
+            mingw-w64-ucrt-x86_64-opus
+            mingw-w64-ucrt-x86_64-libvpl
+      - name: Rust toolchains
+        run: |
+          rustup toolchain install 1.98.1-x86_64-pc-windows-gnu --profile minimal --component rustfmt --component clippy
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          rustup target add x86_64-pc-windows-msvc --toolchain 1.98.1-x86_64-pc-windows-gnu
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      # The web console build needs Vite 7's Node.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+      - name: Check the web console
+        working-directory: rust/web
+        run: |
+          npm ci --no-audit --no-fund
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run check
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: |
+            ~/AppData/Local/ButterpolloRust/sdk
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: rust-sdk-v3-ffmpeg-2026.516.30821-pyro-186f0393-patched-ngx-1.1.0
+      - name: Test, lint and package Rust
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          .\rust\build.ps1 -MsysRoot '${{ steps.msys.outputs.msys2-location }}' -FetchDependencies -Package -TargetDirectory "$env:RUNNER_TEMP\butterpollo-rust-target"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: butterpollo-rust-windows-x64
+          path: ${{ runner.temp }}/butterpollo-rust-target/butterpollo-rust-release.zip
+          if-no-files-found: error
+          retention-days: 30
