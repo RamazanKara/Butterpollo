@@ -1771,8 +1771,15 @@ impl Guard {
                 }
                 let (width, height, fps) = requested;
                 if let Some((_, _, applied)) = &settings.mode {
+                    // Another stream set this display's mode; keep it and let
+                    // the encoder scale, rather than refuse the second stream.
                     if *applied != requested {
-                        bail!("another stream owns a different display mode");
+                        tracing::info!(
+                            output = %guard.output,
+                            "another stream set this display to {}x{}; scaling this stream",
+                            applied.0,
+                            applied.1
+                        );
                     }
                 } else {
                     if (previous.dmPelsWidth, previous.dmPelsHeight, previous_rate.0) != requested {

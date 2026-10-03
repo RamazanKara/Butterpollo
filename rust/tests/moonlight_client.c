@@ -148,6 +148,8 @@ int main(int argc,char**argv){
     if(config.width<2||config.width>8192||config.height<2||config.height>8192||config.fps<1||config.fps>240||duration<0||duration>300||decoder_threads<1||decoder_threads>16)return 2;
     printf("DECODER threads=%d\n",decoder_threads);
     for(int i=0;i<16;i++)config.remoteInputAesKey[i]=(char)i;config.remoteInputAesIv[3]=123;
+    /* Concurrent clients need distinct stream keys: rikey byte i is i+seed and rikeyid is 123+seed. */
+    if(getenv("BUTTERPOLLO_TEST_KEY_SEED")){int seed=atoi(getenv("BUTTERPOLLO_TEST_KEY_SEED"))&0x7f;for(int i=0;i<16;i++)config.remoteInputAesKey[i]=(char)(i+seed);config.remoteInputAesIv[3]=(char)(123+seed);}
     if(getenv("BUTTERPOLLO_TEST_SIGNED_KEY_ID")&&strcmp(getenv("BUTTERPOLLO_TEST_SIGNED_KEY_ID"),"1")==0)config.remoteInputAesIv[0]=(char)0x80;
     CONNECTION_LISTENER_CALLBACKS listener;LiInitializeConnectionCallbacks(&listener);listener.stageStarting=stage_start;listener.stageFailed=stage_failed;listener.connectionTerminated=terminated;listener.logMessage=log_message;
     DECODER_RENDERER_CALLBACKS video;LiInitializeVideoCallbacks(&video);video.setup=video_setup;video.submitDecodeUnit=video_frame;video.capabilities=CAPABILITY_DIRECT_SUBMIT;

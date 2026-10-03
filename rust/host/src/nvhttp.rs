@@ -765,7 +765,7 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
             current.take();
             drop(current);
             h.app_audio.lock().unwrap().take();
-            h.app_display.lock().unwrap().take();
+            h.app_display.lock().unwrap().clear();
             let deadline = Instant::now() + Duration::from_secs(10);
             while h
                 .sessions
@@ -814,18 +814,20 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
                 butterpollo_core::stream_policy::apply_color(&mut stream, &config);
                 stream.validate()?;
                 if role == Role::Stream {
+                    // Reuse only this client's own retained display; another
+                    // client streaming the same app keeps its display.
                     let retained = h
                         .app_display
                         .lock()
                         .unwrap()
-                        .as_ref()
+                        .get(&launch.client.uuid)
                         .map(|(lease, _)| lease.clone());
                     if let Some(lease) = retained
                         && lease.matches(&stream)
                     {
                         return Ok(lease);
                     }
-                    h.app_display.lock().unwrap().take();
+                    h.app_display.lock().unwrap().remove(&launch.client.uuid);
                 }
                 crate::display_session::Ready::new(crate::display_session::Prepared::create(
                     &h, &launch, &stream, &config,
@@ -906,9 +908,21 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
                 })
                 .cloned()
             {
-                *h.app_display.lock().unwrap() = Some((lease, None));
+                h.app_display
+                    .lock()
+                    .unwrap()
+                    .insert(launch.client.uuid.clone(), (lease, None));
             }
         }
+        tracing::info!(
+            client = %launch.client.name,
+            app_id,
+            role = ?role,
+            mode = args.get("mode").map_or("", String::as_str),
+            hdr = args.get("hdrMode").is_some_and(|v| v == "1"),
+            resume,
+            "Moonlight session launched"
+        );
         let host = match connection.local.ip() {
             std::net::IpAddr::V4(ip) => ip.to_string(),
             std::net::IpAddr::V6(ip) => format!("[{ip}]"),

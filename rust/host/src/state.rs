@@ -20,6 +20,8 @@ pub struct PendingPin {
     pub created: Instant,
     pub sender: tokio::sync::oneshot::Sender<(String, String)>,
 }
+/// A client's display lease and when it last stopped being streamed.
+pub type RetainedDisplay = (Arc<crate::display_session::Ready>, Option<Instant>);
 pub struct Host {
     pub directory: PathBuf,
     pub config_path: PathBuf,
@@ -48,7 +50,8 @@ pub struct Host {
     pub launch_transition: Mutex<()>,
     pub confirmations: Mutex<butterpollo_core::remote::Confirmations>,
     pub app_audio: Mutex<Option<Arc<butterpollo_windows::audio_route::Route>>>,
-    pub app_display: Mutex<Option<(Arc<crate::display_session::Ready>, Option<Instant>)>>,
+    /// Each client's game display, kept between its streams while the app runs.
+    pub app_display: Mutex<BTreeMap<String, RetainedDisplay>>,
     pub monitors: Mutex<BTreeMap<String, Arc<butterpollo_windows::display::Retained>>>,
     pub updates: Mutex<Value>,
     pub metadata: Mutex<Option<(Instant, Value)>>,
@@ -59,38 +62,37 @@ impl Host {
         self.current_app.lock().unwrap().take();
         self.live_rtx.lock().unwrap().take();
         self.app_audio.lock().unwrap().take();
-        self.app_display.lock().unwrap().take();
+        self.app_display.lock().unwrap().clear();
     }
     pub fn reap_paused_display(&self) {
         let config = self.config.read().unwrap().clone();
-        let released = {
-            let mut display = self.app_display.lock().unwrap();
-            let expired = if let Some((lease, paused)) = display.as_mut() {
+        let delay = if config.boolean("dd_config_revert_on_disconnect", false) {
+            Duration::from_millis(config.integer("dd_config_revert_delay", 3000).max(0) as u64)
+        } else {
+            let timeout = config
+                .integer("dd_paused_virtual_display_timeout_secs", 7200)
+                .max(0);
+            if timeout == 0 {
+                return;
+            }
+            Duration::from_secs(timeout as u64)
+        };
+        let released: Vec<_> = {
+            let mut displays = self.app_display.lock().unwrap();
+            let mut expired = vec![];
+            for (owner, (lease, paused)) in displays.iter_mut() {
                 if Arc::strong_count(lease) > 1 {
                     *paused = None;
-                    false
-                } else {
-                    let since = *paused.get_or_insert_with(Instant::now);
-                    let delay = if config.boolean("dd_config_revert_on_disconnect", false) {
-                        Duration::from_millis(
-                            config.integer("dd_config_revert_delay", 3000).max(0) as u64
-                        )
-                    } else {
-                        let timeout = config
-                            .integer("dd_paused_virtual_display_timeout_secs", 7200)
-                            .max(0);
-                        if timeout == 0 {
-                            return;
-                        }
-                        Duration::from_secs(timeout as u64)
-                    };
-                    since.elapsed() >= delay
+                } else if paused.get_or_insert_with(Instant::now).elapsed() >= delay {
+                    expired.push(owner.clone());
                 }
-            } else {
-                false
-            };
-            if expired { display.take() } else { None }
+            }
+            expired
+                .iter()
+                .filter_map(|owner| displays.remove(owner))
+                .collect()
         };
+        // Display leases restore Windows settings; do that outside the lock.
         drop(released);
     }
     pub fn load(directory: PathBuf, assets: PathBuf, port: Option<u16>) -> Result<Shared> {
@@ -169,7 +171,7 @@ impl Host {
             launch_transition: Mutex::new(()),
             confirmations: Mutex::new(Default::default()),
             app_audio: Mutex::new(None),
-            app_display: Mutex::new(None),
+            app_display: Mutex::new(BTreeMap::new()),
             monitors: Mutex::new(BTreeMap::new()),
             updates: Mutex::new(
                 json!({"status":true,"checking":false,"check_failed":false,"checked_at":0,"releases":[]}),

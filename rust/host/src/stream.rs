@@ -538,7 +538,7 @@ impl Media {
                         Some(p) if p.matches(&s.config) => *p,
                         previous => {
                             drop(previous);
-                            h.app_display.lock().unwrap().take();
+                            h.app_display.lock().unwrap().remove(&s.launch.client.uuid);
                             crate::display_session::Ready::new(
                                 crate::display_session::Prepared::create(
                                     &h, &s.launch, &s.config, &c,
@@ -547,7 +547,10 @@ impl Media {
                         }
                     };
                     if s.launch.role == Role::Stream {
-                        *h.app_display.lock().unwrap() = Some((prepared.clone(), None));
+                        h.app_display
+                            .lock()
+                            .unwrap()
+                            .insert(s.launch.client.uuid.clone(), (prepared.clone(), None));
                     }
                     let output = prepared.output();
                     *s.output.write().unwrap() = output.clone();

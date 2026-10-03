@@ -219,6 +219,60 @@ impl Arrangement {
         }
         Ok(result)
     }
+    /// One layout for several streams. The first target is laid out as for a
+    /// single stream; each later target stays active and is placed to the right
+    /// of the streamed displays, so no two of them overlap. An isolated layout
+    /// keeps the streamed displays next to each other, away from the others.
+    pub fn compose_all(
+        self,
+        nodes: &[Node],
+        targets: &[String],
+        retained: &[String],
+    ) -> Result<Vec<Node>> {
+        let (first, rest) = targets
+            .split_first()
+            .ok_or_else(|| anyhow::anyhow!("display arrangement has no target"))?;
+        let mut keep = retained.to_vec();
+        keep.extend(rest.iter().cloned());
+        let mut result = self.compose(nodes, first, &keep)?;
+        let isolated = matches!(self, Self::Isolated | Self::PrimaryIsolated);
+        let mut placed = vec![first.clone()];
+        for target in rest {
+            if !result.iter().any(|n| n.device_id == *target) {
+                bail!("display arrangement target is missing");
+            }
+            let y = result
+                .iter()
+                .find(|n| n.device_id == *first)
+                .map_or(0, |n| n.desired_position.y);
+            let right = result
+                .iter()
+                .filter(|n| {
+                    n.active
+                        && if isolated {
+                            placed.contains(&n.device_id)
+                        } else {
+                            !rest.contains(&n.device_id) || placed.contains(&n.device_id)
+                        }
+                })
+                .map(|n| {
+                    n.desired_position
+                        .x
+                        .saturating_add(i32::try_from(n.mode.width).unwrap_or(i32::MAX))
+                })
+                .max()
+                .unwrap_or(0);
+            let node = result
+                .iter_mut()
+                .find(|n| n.device_id == *target)
+                .expect("checked above");
+            node.active = true;
+            node.primary = false;
+            node.desired_position = Position { x: right, y };
+            placed.push(target.clone());
+        }
+        Ok(result)
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -332,6 +386,53 @@ mod tests {
                 refresh_hz: 60.,
             },
         }
+    }
+    #[test]
+    fn several_streams_share_one_layout_without_overlapping() {
+        let mut second = node("second", 1920);
+        second.mode.width = 1968;
+        let nodes = vec![node("physical", 0), node("first", 1920), second];
+        let targets = ["first".to_owned(), "second".to_owned()];
+        let at = |nodes: &[Node], id: &str| {
+            let n = nodes.iter().find(|n| n.device_id == id).unwrap();
+            (
+                n.active,
+                n.primary,
+                n.desired_position.x,
+                n.desired_position.y,
+            )
+        };
+        // Exclusive: only the streamed displays stay on; the first is primary.
+        let exclusive = Arrangement::Exclusive
+            .compose_all(&nodes, &targets, &[])
+            .unwrap();
+        assert!(!at(&exclusive, "physical").0);
+        assert_eq!(at(&exclusive, "first"), (true, true, 0, 0));
+        assert_eq!(at(&exclusive, "second"), (true, false, 1920, 0));
+        // Extended: the second display goes right of everything active.
+        let extended = Arrangement::Extended
+            .compose_all(&nodes, &targets, &[])
+            .unwrap();
+        assert_eq!(at(&extended, "physical"), (true, true, 0, 0));
+        assert_eq!(at(&extended, "first"), (true, false, 1920, 0));
+        assert_eq!(at(&extended, "second"), (true, false, 3840, 0));
+        // Isolated: streamed displays sit next to each other, away from the rest.
+        let isolated = Arrangement::Isolated
+            .compose_all(&nodes, &targets, &[])
+            .unwrap();
+        assert_eq!(at(&isolated, "first"), (true, false, 64000, 64000));
+        assert_eq!(at(&isolated, "second"), (true, false, 65920, 64000));
+        assert_eq!(at(&isolated, "physical"), (true, true, 0, 0));
+        // One target is the single-stream layout.
+        let single = Arrangement::Exclusive
+            .compose_all(&nodes, &targets[..1], &[])
+            .unwrap();
+        assert!(!at(&single, "second").0);
+        assert!(
+            Arrangement::Exclusive
+                .compose_all(&nodes, &[], &[])
+                .is_err()
+        );
     }
     #[test]
     fn exclusive_retains_remote_monitors_and_isolation_keeps_physical_geometry() {

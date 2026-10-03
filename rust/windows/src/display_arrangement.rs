@@ -9,6 +9,11 @@ struct State {
     key: String,
     before: Option<Snapshot>,
     applied: Vec<Node>,
+    /// Streamed displays in the order their streams arrived, with their lease
+    /// counts. The first is laid out as for a single stream.
+    owners: Vec<(String, usize)>,
+    arrangement: Option<Arrangement>,
+    retained: Vec<String>,
 }
 fn state() -> &'static Mutex<State> {
     static STATE: OnceLock<Mutex<State>> = OnceLock::new();
@@ -32,8 +37,54 @@ pub fn matches(nodes: &[Node], applied: &[Node]) -> bool {
                 .any(|a| a.device_id == n.device_id && a.desired_position == n.desired_position)
         })
 }
+fn active_ids(nodes: &[Node]) -> std::collections::BTreeSet<String> {
+    nodes
+        .iter()
+        .filter(|n| n.active)
+        .map(|n| n.device_id.clone())
+        .collect()
+}
+/// Lay out the current owners' displays and record the result for recovery.
+/// `leaving` is switched off unless it was on before streaming started.
+fn apply(state: &mut State, arrangement: Arrangement, leaving: Option<&str>) -> Result<()> {
+    let current = Snapshot::capture()?;
+    let targets: Vec<_> = state.owners.iter().map(|(t, _)| t.clone()).collect();
+    let mut desired = arrangement.compose_all(&current.nodes, &targets, &state.retained)?;
+    if let Some(leaving) = leaving {
+        let was_active = state.before.as_ref().is_some_and(|before| {
+            before
+                .nodes
+                .iter()
+                .any(|n| n.device_id == leaving && n.active)
+        });
+        if !was_active {
+            for node in desired.iter_mut().filter(|n| n.device_id == leaving) {
+                node.active = false;
+                node.primary = false;
+            }
+        }
+    }
+    if let Some(before) = &state.before {
+        crate::display_recovery::arrangement(Some((before.clone(), desired.clone())))?;
+    }
+    let ids = active_ids(&desired);
+    if ids != active_ids(&current.nodes) {
+        Topology::set_active(&ids.into_iter().collect::<Vec<_>>())?;
+    }
+    Topology::query()?.set_positions(
+        &desired
+            .iter()
+            .filter(|n| n.active)
+            .map(|n| (n.device_id.clone(), n.desired_position))
+            .collect(),
+    )?;
+    state.applied = desired;
+    Ok(())
+}
 pub struct Lease {
     arrangement: Arrangement,
+    /// The streamed display; a recreated virtual display may change identity.
+    target: Mutex<String>,
 }
 impl Lease {
     pub fn acquire(output: &str, arrangement: Arrangement, retained: &[String]) -> Result<Self> {
@@ -43,36 +94,50 @@ impl Lease {
             .iter()
             .find(|m| m.matches(output))
             .ok_or_else(|| anyhow::anyhow!("display arrangement target unavailable"))?;
-        let key = format!("{:?}:{}", arrangement, target.device_id);
-        if state.users != 0 {
-            if state.key != key {
-                bail!("another stream owns a different display arrangement");
-            }
-            state.users += 1;
-            return Ok(Self { arrangement });
-        }
-        let before = Snapshot::capture()?;
+        let target_id = target.device_id.clone();
         let retained: Vec<_> = monitors
             .iter()
             .filter(|m| retained.contains(&m.display_name) || retained.contains(&m.device_id))
             .map(|m| m.device_id.clone())
             .collect();
-        let desired = arrangement.compose(&before.nodes, &target.device_id, &retained)?;
+        if state.users != 0 {
+            // Another stream owns the layout: join it rather than refuse.
+            let owned = state.arrangement.unwrap_or(arrangement);
+            if owned != arrangement {
+                tracing::info!(requested = ?arrangement, active = ?owned, "joining the display arrangement of the running streams");
+            }
+            if let Some(owner) = state.owners.iter_mut().find(|(t, _)| *t == target_id) {
+                owner.1 += 1;
+                state.users += 1;
+                return Ok(Self {
+                    arrangement: owned,
+                    target: Mutex::new(target_id),
+                });
+            }
+            state.owners.push((target_id.clone(), 1));
+            let added: Vec<_> = retained
+                .into_iter()
+                .filter(|id| !state.retained.contains(id))
+                .collect();
+            state.retained.extend(added.iter().cloned());
+            if let Err(error) = apply(&mut state, owned, None) {
+                state.owners.pop();
+                state.retained.retain(|id| !added.contains(id));
+                return Err(error);
+            }
+            state.users += 1;
+            return Ok(Self {
+                arrangement: owned,
+                target: Mutex::new(target_id),
+            });
+        }
+        let before = Snapshot::capture()?;
+        let desired = arrangement.compose(&before.nodes, &target_id, &retained)?;
         crate::display_recovery::arrangement(Some((before.clone(), desired.clone())))?;
         let apply = (|| -> Result<()> {
-            let ids = desired
-                .iter()
-                .filter(|n| n.active)
-                .map(|n| n.device_id.clone())
-                .collect::<Vec<_>>();
-            let old = before
-                .nodes
-                .iter()
-                .filter(|n| n.active)
-                .map(|n| n.device_id.clone())
-                .collect::<Vec<_>>();
-            if ids != old {
-                Topology::set_active(&ids)?;
+            let ids = active_ids(&desired);
+            if ids != active_ids(&before.nodes) {
+                Topology::set_active(&ids.into_iter().collect::<Vec<_>>())?;
             }
             Topology::query()?.set_positions(
                 &desired
@@ -90,11 +155,17 @@ impl Lease {
         state.before = Some(before);
         state.applied = desired;
         state.users = 1;
-        state.key = key;
-        Ok(Self { arrangement })
+        state.key = format!("{arrangement:?}:{target_id}");
+        state.owners = vec![(target_id.clone(), 1)];
+        state.arrangement = Some(arrangement);
+        state.retained = retained;
+        Ok(Self {
+            arrangement,
+            target: Mutex::new(target_id),
+        })
     }
-    /// Reapply the original stream policy after its owned VDD is recreated,
-    /// retaining the original restoration snapshot and recovery journal.
+    /// Reapply the stream layout after an owned VDD is recreated, retaining the
+    /// original restoration snapshot and recovery journal.
     pub fn reapply(&self, output: &str, retained: &[String]) -> Result<()> {
         let mut state = state().lock().unwrap();
         let monitors = crate::display::monitors()?;
@@ -102,42 +173,58 @@ impl Lease {
             .iter()
             .find(|m| m.matches(output))
             .ok_or_else(|| anyhow::anyhow!("recovered arrangement target unavailable"))?;
-        let current = Snapshot::capture()?;
-        let retained: Vec<_> = monitors
+        let mut owned = self.target.lock().unwrap();
+        if *owned != target.device_id {
+            for owner in state.owners.iter_mut().filter(|(t, _)| *t == *owned) {
+                owner.0 = target.device_id.clone();
+            }
+            *owned = target.device_id.clone();
+        }
+        for id in monitors
             .iter()
             .filter(|m| retained.contains(&m.display_name) || retained.contains(&m.device_id))
-            .map(|m| m.device_id.clone())
-            .collect();
-        let desired = self
-            .arrangement
-            .compose(&current.nodes, &target.device_id, &retained)?;
-        if let Some(before) = &state.before {
-            crate::display_recovery::arrangement(Some((before.clone(), desired.clone())))?;
+        {
+            if !state.retained.contains(&id.device_id) {
+                state.retained.push(id.device_id.clone());
+            }
         }
-        Topology::set_active(
-            &desired
-                .iter()
-                .filter(|n| n.active)
-                .map(|n| n.device_id.clone())
-                .collect::<Vec<_>>(),
-        )?;
-        Topology::query()?.set_positions(
-            &desired
-                .iter()
-                .filter(|n| n.active)
-                .map(|n| (n.device_id.clone(), n.desired_position))
-                .collect(),
-        )?;
-        state.applied = desired;
-        state.key = format!("{:?}:{}", self.arrangement, target.device_id);
-        Ok(())
+        let arrangement = state.arrangement.unwrap_or(self.arrangement);
+        apply(&mut state, arrangement, None)
     }
 }
 impl Drop for Lease {
     fn drop(&mut self) {
         let mut state = state().lock().unwrap();
+        let target = self.target.lock().unwrap().clone();
         state.users -= 1;
+        let mut left = false;
+        if let Some(index) = state.owners.iter().position(|(t, _)| *t == target) {
+            state.owners[index].1 -= 1;
+            if state.owners[index].1 == 0 {
+                state.owners.remove(index);
+                left = true;
+            }
+        }
         if state.users != 0 {
+            // Other streams continue: lay out their displays without this one.
+            if left {
+                let arrangement = state.arrangement.unwrap_or(self.arrangement);
+                let unchanged = Topology::query()
+                    .and_then(|t| t.nodes())
+                    .is_ok_and(|current| matches(&current, &state.applied));
+                let result = if unchanged {
+                    apply(&mut state, arrangement, Some(&target))
+                } else {
+                    // The user changed the layout; only stop expecting this display.
+                    for node in state.applied.iter_mut().filter(|n| n.device_id == target) {
+                        node.active = false;
+                    }
+                    Ok(())
+                };
+                if let Err(error) = result {
+                    tracing::warn!(%error, "display arrangement update for the remaining streams failed");
+                }
+            }
             return;
         }
         let restored = (|| -> Result<()> {
@@ -155,6 +242,9 @@ impl Drop for Lease {
         state.before = None;
         state.applied.clear();
         state.key.clear();
+        state.owners.clear();
+        state.arrangement = None;
+        state.retained.clear();
     }
 }
 

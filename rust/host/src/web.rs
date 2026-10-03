@@ -713,7 +713,7 @@ pub(crate) async fn api(
             ("POST", "/api/display/terminate_virtual") => {
                 h.sessions.lock().unwrap().request_stop(None);
                 crate::remote_display::disconnect(&h, None);
-                h.app_display.lock().unwrap().take();
+                h.app_display.lock().unwrap().clear();
                 json!({"status":true})
             }
             ("GET", "/api/clients/display-layout") => crate::remote_display::snapshot(&h)?,
