@@ -389,6 +389,11 @@ impl Launch {
     pub fn finished(&self) -> bool {
         self.state.lock().unwrap().phase == Phase::Exited
     }
+    /// The game's folder, once Playnite has reported it.
+    pub fn folder(&self) -> impl Fn() -> Option<String> + Send + 'static {
+        let state = self.state.clone();
+        move || Some(state.lock().unwrap().install_dir.clone()).filter(|f| !f.is_empty())
+    }
     /// End the game: close the windows of the processes started in its
     /// folder since the launch, then end them.
     pub fn stop(mut self, timeout: Duration) {

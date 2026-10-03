@@ -309,7 +309,7 @@ impl Prepared {
                 }
                 mode
             });
-        let framegen = Policy::resolve(
+        let mut framegen = Policy::resolve(
             config,
             device_mode.map_or(Rate(stream.fps_millihz()), |(_, _, rate)| rate),
             virtual_mode,
@@ -334,6 +334,22 @@ impl Prepared {
             virtual_mode,
             stream.vrr_low_latency || launch.vrr_requested,
         );
+        // Lossless Scaling doubles the frames: the game runs at its limit.
+        if let Some(limit) = app
+            .as_ref()
+            .and_then(|a| serde_json::to_value(a).ok())
+            .and_then(|a| {
+                butterpollo_core::lossless::options(
+                    &a,
+                    config,
+                    f64::from(stream.fps_millihz()) / 1000.,
+                )
+            })
+            .and_then(|options| options.frame_limit)
+        {
+            framegen.rate = Rate(limit.saturating_mul(1000).min(1_000_000));
+            framegen.enabled = true;
+        }
         let limiter = limiter::Lease::acquire(&h.directory, config, &framegen)?;
         let vulkan = if stream.hdr && config.boolean("vulkan_hdr_layer", true) {
             Some(vulkan::Lease::acquire()?)

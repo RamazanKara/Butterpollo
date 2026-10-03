@@ -1,5 +1,6 @@
 mod console;
 mod display_session;
+mod lossless;
 mod maintenance;
 mod network;
 mod nvhttp;

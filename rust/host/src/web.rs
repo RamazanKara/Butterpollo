@@ -154,6 +154,7 @@ fn token_catalog() -> Vec<auth::Scope> {
         ("/api/playnite/uninstall", &["POST"][..]),
         ("/api/playnite/force_sync", &["POST"][..]),
         ("/api/apps/purge_autosync", &["POST"][..]),
+        ("/api/lossless_scaling/status", &["GET"][..]),
         ("/api/restart", &["POST"][..]),
         ("/api/quit", &["POST"][..]),
         ("/api/password", &["POST"][..]),
@@ -644,6 +645,33 @@ pub(crate) async fn api(
         return match task {
             Ok(Ok(value)) => Json(value).into_response(),
             Ok(Err(err)) => error(StatusCode::BAD_REQUEST, &format!("{err:#}")),
+            Err(err) => error(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
+        };
+    }
+    if method == Method::GET && path == "/api/lossless_scaling/status" {
+        let candidate = url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes())
+            .find(|(key, _)| key == "path")
+            .map(|(_, value)| value.into_owned());
+        let configured = h
+            .config
+            .read()
+            .unwrap()
+            .get("lossless_scaling_path", "")
+            .to_owned();
+        let checked = candidate.unwrap_or_else(|| configured.clone());
+        let result = tokio::task::spawn_blocking(move || {
+            let resolved = butterpollo_windows::lossless::program(&checked);
+            let status = match (&resolved, checked.trim().is_empty()) {
+                (Some(_), _) => "detected",
+                (None, true) => "not-configured",
+                (None, false) => "path-not-found",
+            };
+            json!({"status": status, "configured_path": configured, "checked_path": checked,
+                   "resolved_path": resolved, "using_configured_path": !configured.trim().is_empty()})
+        })
+        .await;
+        return match result {
+            Ok(value) => Json(value).into_response(),
             Err(err) => error(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
         };
     }

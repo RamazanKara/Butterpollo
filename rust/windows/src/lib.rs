@@ -48,6 +48,8 @@ pub mod launcher;
 #[cfg(windows)]
 pub mod limiter;
 #[cfg(windows)]
+pub mod lossless;
+#[cfg(windows)]
 pub mod net;
 #[cfg(windows)]
 mod nvapi;

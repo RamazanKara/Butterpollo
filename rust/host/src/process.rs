@@ -149,6 +149,8 @@ pub struct RunningApp {
     playnite: Option<crate::playnite::Launch>,
     /// Playnite's fullscreen mode, closed when the app stops.
     playnite_fullscreen: bool,
+    /// Lossless Scaling for the game.
+    lossless: Option<crate::lossless::Session>,
 }
 /// The folder of the program an app starts, as Vibepollo uses when the app
 /// has no working directory: games often load files relative to it.
@@ -210,6 +212,7 @@ impl RunningApp {
             steam_check: std::time::Instant::now(),
             playnite: None,
             playnite_fullscreen: false,
+            lossless: None,
             exit_timeout: Duration::from_secs(
                 app.extra
                     .get("exit-timeout")
@@ -356,6 +359,9 @@ impl RunningApp {
     }
     pub fn stop(&mut self) {
         self.state_events.take();
+        if let Some(lossless) = self.lossless.take() {
+            lossless.stop();
+        }
         if let Some(tracker) = self.steam.take() {
             butterpollo_windows::process::stop_processes(&tracker.tracked, self.exit_timeout);
         }
@@ -744,12 +750,46 @@ pub fn launch(
             None => tracing::warn!("Playnite was not found; streaming the desktop"),
         }
     }
+    let config = h.config.read().unwrap().clone();
+    let lossless = if fullscreen {
+        None
+    } else {
+        let fps = mode
+            .get(2)
+            .and_then(|rate| rate.parse::<f64>().ok())
+            .map_or(60., |rate| if rate >= 1000. { rate / 1000. } else { rate });
+        butterpollo_core::lossless::options(&serde_json::to_value(&app)?, &config, fps)
+    };
+    // Lossless Scaling looks for the game among the processes that start
+    // after this.
+    let baseline = lossless
+        .as_ref()
+        .map(|_| butterpollo_windows::process::processes().unwrap_or_default());
     let mut running = RunningApp::with_environment(&app, environment)?;
     running.playnite_fullscreen = fullscreen;
     if let Some(id) = playnite_id
-        && h.config.read().unwrap().boolean("playnite_enabled", true)
+        && config.boolean("playnite_enabled", true)
     {
         running.playnite = Some(crate::playnite::Launch::start(h, &id, &running.environment));
+    }
+    if let (Some(options), Some(baseline)) = (lossless, baseline) {
+        let folder: Box<dyn Fn() -> Option<String> + Send> = match &running.playnite {
+            Some(launch) => Box::new(launch.folder()),
+            None => {
+                let steam = app
+                    .extra
+                    .get("steam-install-dir")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned);
+                Box::new(move || steam.clone())
+            }
+        };
+        running.lossless = Some(crate::lossless::Session::start(
+            options,
+            config.get("lossless_scaling_path", "").to_owned(),
+            baseline,
+            folder,
+        ));
     }
     Ok(running)
 }
