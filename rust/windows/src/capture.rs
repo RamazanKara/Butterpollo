@@ -1066,7 +1066,8 @@ impl Capture {
         // surface; on a compute queue that copy keeps pace beside a game.
         let duplication = |gpu: Device| -> Result<Duplication> {
             let mut duplication = Duplication::new_device(gpu, hdr)?;
-            if crate::compute::enabled(config) {
+            if crate::compute::enabled(config) && crate::compute::copies_on(&duplication.gpu.device)
+            {
                 match crate::compute::Compute::for_device(&duplication.gpu.device)
                     .and_then(|compute| crate::compute::Handoff::new(compute, &duplication.gpu))
                 {

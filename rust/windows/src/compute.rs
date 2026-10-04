@@ -34,6 +34,18 @@ include!(concat!(env!("OUT_DIR"), "/shader_bytecode.rs"));
 pub fn enabled(config: &butterpollo_core::config::Config) -> bool {
     config.boolean("gpu_compute_conversion", true)
 }
+/// Whether captures on `device` copy on the compute queue: on AMD GPUs,
+/// where AMF converts and encodes from it too. Other encoders read the
+/// copies on the graphics queue, and that path is unverified elsewhere.
+pub fn copies_on(device: &windows::Win32::Graphics::Direct3D11::ID3D11Device) -> bool {
+    unsafe {
+        device
+            .cast::<IDXGIDevice>()
+            .and_then(|device| device.GetAdapter())
+            .and_then(|adapter| adapter.GetDesc())
+            .is_ok_and(|desc| desc.VendorId == 0x1002)
+    }
+}
 /// Whether the compute queue can open `texture` (an NT-handle shared one).
 pub fn shareable(texture: &ID3D11Texture2D) -> bool {
     let mut desc = windows::Win32::Graphics::Direct3D11::D3D11_TEXTURE2D_DESC::default();
