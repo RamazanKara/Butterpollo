@@ -256,7 +256,8 @@ and conversion until the path is tested there.
 - Routine idle-safe updates are authorized. Do not add project approval gates.
 - Preserve timestamps. Report capture-to-delivery and frame intervals alongside
   host processing, so a prettier counter cannot conceal older frames.
-- Keep the PR draft and do not claim release readiness without evidence.
+- Release only at the customer's request (2.0.0-rc.1 on October 4), and name
+  unverified hardware and missing features in the release notes.
 
 ## Work log
 

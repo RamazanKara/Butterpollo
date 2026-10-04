@@ -1,31 +1,35 @@
-# Butterpollo Rust 2.0.0-rc.1 — Windows
+# Butterpollo 2.0.0-rc.1 — Windows
 
-This candidate brings the Windows streaming features of Vibepollo 2.0 into the Rust host. Extract the complete package and open **Start Butterpollo.exe**. The host, launcher, service, console and platform helpers are Rust; codec SDKs and Windows drivers remain external dependencies.
+Butterpollo's host, service, setup and console are now written in Rust. It replaces Vibepollo 2.0.0 and earlier Butterpollo builds on Windows: run `butterpollo-setup-2.0.0-rc.1.exe` and it upgrades the existing installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
 
-## What players experience
+## Install
 
-- A first-run import for existing Vibepollo/Apollo settings, paired devices, certificates, library and covers. The original profile is retained. Missing configured identity files stop the import with an error instead of silently requiring everyone to pair again.
-- Imported passwords, browser access/refresh sessions and API keys recognize the previous C++ digest byte order as well as earlier Rust profiles. Saved login data stays intact; API permissions, expiry, rotation, CSRF checks and logout remain enforced.
-- Existing `amdvce` encoder aliases resolve to the native Rust AMF backend without rewriting the saved profile.
-- Installed Sunshine virtual display drivers using protocol 3.5 remain usable through their original lease API. Protocol 3.6 keeps its secure creation API and retains the same owner capability when recovering a display.
-- The `ddx` capture setting now selects Desktop Duplication, with nonblocking capture polling, real hardware cursor composition and the newest desktop/pointer QPC timestamp. The log identifies the backend actually opened. HDR streaming from an SDR desktop uses an SDR capture surface and converts it to PQ.
-- Virtual speakers negotiate integer, float and 24-bit-in-32-bit formats, with the previous host's depth and surround preferences. Failed routing and WASAPI capture are visible in logs and retried. Default devices and formats remain journaled for restoration.
-- Mouse input uses a high-resolution timer instead of a coarse thread sleep. Service shutdown uses a private, parent-validated event across Windows sessions; intentional restarts bypass the crash backoff. Support archives include the supervisor log.
-- A connection checklist explaining video, display and audio readiness, followed by the steps to pair Moonlight and start Desktop. Manual Add PC shows the physical LAN address and includes a custom Moonlight port. GPU checks show progress. Device names, commands and JSON remain data when changing language.
-- Live session rates, encode p95 and two minutes of bounded performance history. Optional five-second refresh works without JavaScript.
-- Capture and encoder waits use an interruptible high-resolution timer. A 250 µs wait measured 0.615 ms instead of 15.293 ms on the validation machine. Unchanged desktop images preserve the waiting encode slot, avoiding another full frame interval when fresh content arrives. Host processing and encode latency are measured separately; this is a scheduling improvement, not a measured whole-host advantage over C++.
-- Capture and encoder workers read a published display identity while display maintenance runs separately, avoiding a shared lock across slow native display calls. Pointer-only updates retain desktop pixels, reducing GPU copies during mouse movement. Same-size HDR conversion uses one source load per pixel; its isolated GPU time at 1968×2184 was approximately 49% lower. Full-stream motion/latency improvement still requires a matched comparison.
-- Vibepollo 2.0 PyroWave bitstream `186f0393`, GPU conversion, SDR/HDR, 8/10-bit and 4:2:0/4:4:4; old length framing and current record framing. Coarse data receives FEC, detail can recover after loss, and adaptive protection stays within each frame's bandwidth allowance.
-- A PyroWave sender per client that retains one pending frame. A slow connection replaces older pending frames instead of building latency in an encoder queue. The console explains how to reduce repeated replacements.
-- Streaming stays continuous when the 16-bit RTP counter wraps. The separate Moonlight stream index retains all 24 bits, including in FEC recovery. Explicit repeat-frame rates no longer drop to half the requested cadence because encoding time was counted twice.
-- Encrypted video packets reuse AES-GCM setup per frame and share the final allocation with FEC, avoiding extra ciphertext allocations and payload moves. Measured packet-processing CPU time is 11–16% lower than the first Rust 2.0 candidate, with identical wire output. A standalone packet probe is included for reproduction.
-- VRR virtual displays use 1000 Hz capture while keeping the client's requested stream rate. WGC composition timestamps travel through asynchronous encoders; DXGI present timing refines timestamps when Windows permits ETW tracking. Physical displays retain their selected refresh policy.
-- Existing Remote Input/Monitor roles, retained monitor ownership, VHF controller profiles and feedback, per-app ten-bit SDR, capture-only audio, TrueHDR policies, fractional rates and permission controls remain available.
+- **Setup:** `butterpollo-setup-2.0.0-rc.1.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
+- **Portable:** extract `butterpollo-rust-release.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile; the original is left untouched. Drivers must then be installed separately.
+- Unsigned test build. Keep a copy of your configuration and the previous installer for rollback.
 
-## Measured reason to switch
+## Lower latency
 
-Rust video FEC uses **21–29% less CPU time** than the previous C++ baseline on representative blocks, with identical parity bytes. GPU conversion and bounded queues also remove avoidable work and backlog, but these do not establish a whole-host latency advantage. Reproduction and measurement limits are in [PERFORMANCE.md](PERFORMANCE.md).
+- On AMD GPUs, captured frames are copied and converted on D3D12 compute queues, and AMF encodes from D3D12. The game no longer delays this work on the graphics engine. In a full AV1 HDR 1968×2184 120 fps stream beside a heavy GPU load, the picture arrived 7-9 ms sooner, and 50 rather than 45 new pictures reached the client each second. Idle, it arrived about 0.6 ms sooner; encoding was already at the hardware limit (2.8-3.3 ms). `gpu_compute_conversion` (Settings › Capture) turns this off.
+- Defaults that measured lower latency: Desktop Duplication capture (WGC for VRR and game frame generation on a virtual display), AMF `speed` quality, and a virtual display at twice the stream rate. Setting Vibepollo's values restores its behaviour.
+- Video FEC uses 21-29% less CPU time than the C++ host, with identical output; encrypted packets avoid extra copies.
 
-## Before a production release
+## Vibepollo 2.0 features
 
-This is a release candidate. AMD codec/capture/color, independent encrypted Moonlight streaming, PyroWave vendor decoding and console tests are available. Actual service installation/restart, a per-client HDR virtual display and real stereo audio through WASAPI and independent Opus decoding have passed. AMD AV1 still pads unaligned dimensions: strict decoding fails at 1968×2184, while HEVC passes at that size. NVIDIA/Intel hardware, the remaining VDD lifecycle cases, VHF feedback and full Nonary-client VRR/HDR rendering still require acceptance. See [PARITY.md](PARITY.md) for the precise evidence. The package does not install device drivers automatically.
+- Moonlight pairing (PIN and one-time PIN), per-device permissions, display modes and overrides, `/bitrate`, `/unpair`, and the virtual display, permission and frame limiter replies of Vibepollo.
+- H.264, HEVC, AV1, HDR, 10-bit SDR, 4:4:4 where supported, PyroWave and VRR with Nonary's Moonlight client, and reference frame invalidation.
+- Per-device virtual displays with exclusive, extended, primary and isolated layouts, golden layout restore and the restore hotkey.
+- Steam library sync with covers, and streams that end when the Steam game exits. Playnite through Vibepollo's plugin (shipped in the package), including the fullscreen app. Lossless Scaling profiles and frame generation per app.
+- Frame limiting through RTSS and NVIDIA profiles, NVIDIA Smooth Motion and RTX HDR.
+- A new web console: overview with performance history, library with Steam and Playnite, devices, settings, logs, maintenance and API tokens.
+- Tray notifications for pairing requests and new versions; release checks that skip streams.
+
+Left out on purpose: WebRTC streaming, session history and host statistics pages, the ViGEm and SudoVDA fallbacks, and Linux and macOS hosting.
+
+## Known limits
+
+- AMD's AV1 encoder pads some sizes: 1968×2184 decodes as 1984×2186 ([AMF issue 423](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/issues/423)); Vibepollo has the same result. HEVC is exact.
+- Verified on an AMD RX 7900 XT. NVIDIA and Intel encoders, RTX HDR, a real Playnite and Lossless Scaling, the secure desktop during a stream and streaming the sign-in screen after a reboot are not yet verified on hardware. NVIDIA and Intel keep the graphics-queue capture path.
+- Still missing from Vibepollo: choosing the GPU that renders the virtual display, reclaiming virtual displays after a host restart, Playnite focus retries and fullscreen relaunch, `/api/browse`, `/api/apps/{uuid}/icon`, and tray app notifications and state icons.
+
+Details: [PARITY.md](PARITY.md) for each feature and its evidence, [PERFORMANCE.md](PERFORMANCE.md) for measurements and how to reproduce them.

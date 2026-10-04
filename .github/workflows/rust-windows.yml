@@ -67,6 +67,9 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: butterpollo-rust-windows-x64
-          path: ${{ runner.temp }}/butterpollo-rust-target/butterpollo-rust-release.zip
+          # The portable package and the setup that carries it.
+          path: |
+            ${{ runner.temp }}/butterpollo-rust-target/butterpollo-rust-release.zip
+            ${{ runner.temp }}/butterpollo-rust-target/butterpollo-setup-*.exe
           if-no-files-found: error
           retention-days: 30
