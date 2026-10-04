@@ -1,11 +1,17 @@
-# Butterpollo 2.0.0-rc.1 for Windows
+# Butterpollo 2.0.0-rc.2 for Windows
 
-Butterpollo's host, service, setup and console are now written in Rust. It replaces Vibepollo 2.0.0 and earlier Butterpollo builds on Windows: run `butterpollo-setup-2.0.0-rc.1.exe` and it upgrades the existing installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+Butterpollo's host, service, setup and console are now written in Rust. It replaces Vibepollo 2.0.0 and earlier Butterpollo builds on Windows: run `butterpollo-setup-2.0.0-rc.2.exe` and it upgrades the existing installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+
+## New in rc.2
+
+- **The mouse pointer no longer disappears.** Desktop Duplication reports the pointer's shape only when it changes, so every capture restart (a mode change, the secure desktop, another client's display arriving) lost the pointer until it changed shape. It is now carried into the new capture.
+- **HDR10 metadata in AMF streams.** HEVC and AV1 streams from AMD now carry the mastering display and content light level metadata and signal their colour range, as FFmpeg-based hosts do. Verified in the bitstream for HEVC and AV1, limited and full range.
+- **Measured against Vibepollo 2.0.** At 1080p60 HEVC HDR on the same PC with the same encoder settings, the picture reached the client in 13.8 ms against 16.0 ms idle, and in 42.4 ms against 96.4 ms beside a game-like GPU load, with 51 rather than 24 new pictures a second. Decoded HDR colours match the expected values on both hosts.
 
 ## Install
 
-- `butterpollo-setup-2.0.0-rc.1.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
-- For a portable copy, extract `butterpollo-rust-2.0.0-rc.1-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
+- `butterpollo-setup-2.0.0-rc.2.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
+- For a portable copy, extract `butterpollo-rust-2.0.0-rc.2-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
 - These are unsigned test builds. Keep a copy of your configuration and the previous installer for rollback.
 
 ## Lower latency
