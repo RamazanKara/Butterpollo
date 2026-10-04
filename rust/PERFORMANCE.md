@@ -210,6 +210,66 @@ D3D11 copy and conversion are small. Beside the game it delivers the
 picture 7.5 ms sooner on average and 12 ms sooner at the 95th percentile.
 Artifacts: `day-work-20261004\load-1080p60`, `day-work-20261002\p1080-*`.
 
+### Against Vibepollo 2.0
+
+Vibepollo 2.0 and Butterpollo 2.0.0-rc.2 alternated in one batch on the
+same fixture. Vibepollo is a Release build of the 2.0.0 tag (`8a8c4b03a`)
+with two startup-only patches for the isolated fixture (skip machine-wide
+recovery, log the test display's name); no per-frame code changed. Both
+hosts ran HEVC 10-bit HDR at 1080p60, 20 Mbps requested (14,988 kbps after
+FEC and audio on both), native AMF at ultra-low latency and `speed` with
+VBAQ and an input queue of 4, Desktop Duplication, realtime GPU priority,
+and a 120 Hz virtual display (Vibepollo set to
+`frame_limiter_auto_virtual_framegen = legacy`, its 2x mode; its default is
+4x). Three runs each; the game-like load ran at 174-177 fps in all of them.
+"Host latency" is the per-frame value Moonlight reports from the host.
+
+| Case | Vibepollo 2.0 | Butterpollo 2.0 |
+|---|---|---|
+| Idle, picture age mean / p95 | 16.03 / 16.62, 15.80 / 16.40, 16.05 / 16.93 ms | 13.88 / 14.58, 13.70 / 14.44, 13.73 / 14.52 ms |
+| Idle, host latency | 2.73, 2.71, 2.80 ms | 1.96, 1.96, 1.97 ms |
+| Load, picture age mean / p95 | 93.99 / 132.54, 92.04 / 129.45, 103.28 / 148.96 ms | 42.27 / 55.98, 42.31 / 56.81, 42.70 / 56.69 ms |
+| Load, new pictures per second | 24.2, 25.0, 22.5 | 52.0, 51.0, 51.1 |
+| Load, host latency | 59.09, 57.30, 65.28 ms | 9.11, 9.14, 8.80 ms |
+
+Beside the load, Vibepollo handed AMF about 24 frames a second: its own
+`encoder output has not caught up` lines count 60 submitted frames every
+2.4-2.6 s. Butterpollo's graphics-queue path delivered about 57 new pictures
+a second beside the same load in an earlier batch, so sharing the graphics
+queue alone does not explain the gap; where Vibepollo loses the frames has
+not been traced. The probe window rendered 50-59 fps beside the load with
+Vibepollo and 59 fps with Butterpollo. Vibepollo applied an RTSS 60 fps
+limit during every stream (Butterpollo's virtual-display policy does the
+same); it does not reach the probe, which rendered 121 fps idle under both.
+Absolute load numbers move between batches (Butterpollo measured 33.5 ms in
+an earlier batch without Vibepollo runs), so only compare rows measured
+together. Artifacts: `day-work-20261002\hh1080-*`.
+
+### HDR colour accuracy
+
+`tests/colour_check.py` reads frame 900 of each stream above as decoded by
+the client (`tests/moonlight_client.c` with `BUTTERPOLLO_TEST_FRAME_DUMP`),
+recomputes the probe's scRGB picture for that frame, converts it as BT.2100
+PQ with BT.2020 primaries in limited range, and compares. The
+Vibepollo runs beside the load sent too few frames to reach frame 900, so
+its column has the three idle runs; Butterpollo's has all six.
+
+| | Vibepollo 2.0 | Butterpollo 2.0 |
+|---|---|---|
+| Black / 100-nit white patch (expected 64.0 / 509.08) | 64.0 / 509.0 | 64.0 / 509.0 |
+| Luma error, mean absolute (10-bit codes) | 0.44 | 0.38-0.44 |
+| Contrast slope (1 is exact) | 1.000 | 0.998-0.9995 |
+| Saturation (decoded / expected chroma) | 97.9-98.0% | 100.2-100.6% |
+| Chroma error, mean absolute | 0.96 | 0.30-0.59 |
+
+Both streams also carry the same HDR10 metadata (BT.2020 primaries, D65,
+the virtual display's peak luminance). Butterpollo's decoded pictures match
+the expected values within half a 10-bit code on average, with no lifted
+black and no lost saturation. A washed-out look therefore comes from before
+capture (how Windows composes SDR content on an HDR display) or after
+decoding (how the client shows HDR), not from the host's conversion or
+encoding.
+
 ## Controlled comparison with the original C++ FEC
 
 The benchmark loads the original C++ host's Reed–Solomon wrapper from baseline commit `f23ee0c9e7857887be7f774de6ac5153500a7e53`, with its pinned nanors implementation at `19f07b513e924e471cadd141943c1ec4adc8d0e0`. The source verification script checks every compiled reference file against its pinned SHA-256. GCC 16.1.0 builds the reference with `-O3 -ftree-vectorize -funroll-loops`; Rust uses the release profile. Both select AVX2 on this Ryzen 7 5800X3D. The original runtime ISA dispatch is retained.

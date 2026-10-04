@@ -2,7 +2,7 @@
 
 **A Moonlight game-streaming host for Windows, written in Rust and built around AMD Radeon.** It keeps your stream quick while a game is pushing the GPU as hard as it can.
 
-[![Butterpollo in 35 seconds: why frames arrive late, the measured difference, and a live stream in the console](docs/media/demo.gif)](docs/media/demo.mp4)
+[![Butterpollo in 35 seconds: why frames arrive late, the measured difference against Vibepollo 2.0, and a live stream in the console](docs/media/demo.gif)](docs/media/demo.mp4)
 
 <sub>35-second demo. Click it for the full 1080p video.</sub>
 
@@ -16,7 +16,20 @@ Butterpollo moves that work to Direct3D 12 compute queues, which the GPU runs ne
 
 ## What it measures
 
-RX 7900 XT, HEVC 10-bit HDR at 1080p and 60 fps, the setting most people stream at, next to a game-like load that keeps the GPU busy:
+RX 7900 XT, HEVC 10-bit HDR at 1080p and 60 fps, the setting most people stream at. Vibepollo 2.0 and Butterpollo ran one after the other on the same PC with the same encoder settings, three times each, idle and next to a game-like load running at about 175 fps:
+
+| 1080p60, mean of 3 runs | Vibepollo 2.0 | Butterpollo |
+|---|---:|---:|
+| Idle: render to decoded picture | 16.0 ms | **13.8 ms** |
+| Idle: host latency shown in Moonlight | 2.75 ms | **1.96 ms** |
+| Next to the game: render to decoded picture | 96.4 ms | **42.4 ms** |
+| Same, 95th percentile | 137.0 ms | **56.5 ms** |
+| Next to the game: new pictures per second (of 60) | 23.9 | **51.4** |
+| Next to the game: host latency shown in Moonlight | 60.6 ms | **9.0 ms** |
+
+Colours match too: the decoded HDR pictures from both hosts land on the expected black and white levels, and Butterpollo's are within half a 10-bit step of the reference on average ([runs and colour check](rust/PERFORMANCE.md#against-vibepollo-20)).
+
+Where the gain comes from, measured on Butterpollo itself with the compute path switched off and on:
 
 | 1080p60 | Graphics queue | Butterpollo |
 |---|---:|---:|
@@ -35,7 +48,7 @@ And at a phone's 1968×2184 with AV1 10-bit HDR and 120 fps:
 | Frames encoded per second (target 120) | 90 | **120** |
 | Full stream, render to decoded picture, mean | 52.9 ms | **45.5 ms** |
 
-"Graphics queue" is the same build with the compute path switched off (`gpu_compute_conversion = false`), which handles frames the way Sunshine-based hosts do. The bitstream rows encode moving test frames. The full-stream rows come from encrypted streams to an independent client that reads a moving barcode, so they include Windows' compositor and decoding. With an idle GPU the two paths are level at 1080p60 (14.0 ms) and Butterpollo is 0.6 ms ahead at 1968×2184 and 120 fps (12.4 against 13.0 ms); the big win shows up the moment a game uses the GPU.
+"Graphics queue" is the same build with the compute path switched off (`gpu_compute_conversion = false`), which handles frames the way Sunshine-based hosts do. The bitstream rows encode moving test frames. The render-to-picture rows, here and in the Vibepollo table, come from encrypted streams to an independent client that reads a moving barcode, so they include Windows' compositor and decoding. With an idle GPU the two paths are level at 1080p60 (14.0 ms) and Butterpollo is 0.6 ms ahead at 1968×2184 and 120 fps (12.4 against 13.0 ms); the big win shows up the moment a game uses the GPU. Each table is one batch of alternating runs. How fast the GPU gets through the load drifts from batch to batch (Butterpollo's 1080p60 picture took 33.5 ms in one and 42.4 ms in the other), so compare numbers within a table, not across tables.
 
 ## Tuned for AMD, end to end
 
