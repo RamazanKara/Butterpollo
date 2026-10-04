@@ -1,12 +1,12 @@
-# Butterpollo 2.0.0-rc.1 — Windows
+# Butterpollo 2.0.0-rc.1 for Windows
 
 Butterpollo's host, service, setup and console are now written in Rust. It replaces Vibepollo 2.0.0 and earlier Butterpollo builds on Windows: run `butterpollo-setup-2.0.0-rc.1.exe` and it upgrades the existing installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
 
 ## Install
 
-- **Setup:** `butterpollo-setup-2.0.0-rc.1.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
-- **Portable:** extract `butterpollo-rust-release.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile; the original is left untouched. Drivers must then be installed separately.
-- Unsigned test build. Keep a copy of your configuration and the previous installer for rollback.
+- `butterpollo-setup-2.0.0-rc.1.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
+- For a portable copy, extract `butterpollo-rust-2.0.0-rc.1-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
+- These are unsigned test builds. Keep a copy of your configuration and the previous installer for rollback.
 
 ## Lower latency
 
