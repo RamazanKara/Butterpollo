@@ -1,9 +1,9 @@
-name: Butterpollo Windows build
+name: Butterpollo C++ reference build
 permissions: {}
 
+# The C++ host is kept as a reference since Butterpollo 2.0 (the Rust host,
+# built by rust-windows.yml). Run it by hand; it no longer runs on pushes.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:

@@ -32,10 +32,10 @@ def step(job: dict, name: str) -> dict:
 
 
 class ButterpolloWorkflowTest(unittest.TestCase):
-    def test_builds_main_pushes_and_manual_runs(self) -> None:
+    def test_runs_only_by_hand(self) -> None:
+        # The C++ host is a reference since the Rust host (rust-windows.yml).
         triggers = load_workflow("butterpollo-windows.yml")["on"]
-        self.assertEqual(set(triggers), {"push", "workflow_dispatch"})
-        self.assertEqual(triggers["push"]["branches"], ["main"])
+        self.assertEqual(set(triggers), {"workflow_dispatch"})
 
     def test_inputs_match_the_reusable_workflow(self) -> None:
         caller = load_workflow("butterpollo-windows.yml")["jobs"]["windows"]
@@ -51,7 +51,7 @@ class ButterpolloWorkflowTest(unittest.TestCase):
     def test_only_butterpollo_workflows_remain(self) -> None:
         self.assertEqual(
             sorted(path.name for path in WORKFLOWS.glob("*.yml")),
-            ["butterpollo-windows.yml", "ci-windows.yml"],
+            ["butterpollo-windows.yml", "ci-windows.yml", "rust-windows.yml"],
         )
         for path in WORKFLOWS.glob("*.yml"):
             match = re.search("(?i)signpath", path.read_text(encoding="utf-8"))
