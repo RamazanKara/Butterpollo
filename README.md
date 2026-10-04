@@ -16,17 +16,26 @@ Butterpollo moves that work to Direct3D 12 compute queues, which the GPU runs ne
 
 ## What it measures
 
-RX 7900 XT, AV1 10-bit HDR at 1968×2184 and 120 fps, next to a game-like load that keeps the GPU busy:
+RX 7900 XT, HEVC 10-bit HDR at 1080p and 60 fps, the setting most people stream at, next to a game-like load that keeps the GPU busy:
 
-| | Graphics queue | Butterpollo |
+| 1080p60 | Graphics queue | Butterpollo |
+|---|---:|---:|
+| Frame to finished bitstream, mean | 21.5 ms | **2.0 ms** |
+| Same, 95th percentile | 37.5 ms | **2.3 ms** |
+| Frames encoded per second (target 60) | 58.9 | **60** |
+| Full stream, render to decoded picture, mean | 41.0 ms | **33.5 ms** |
+| Same, 95th percentile | 54.4 ms | **42.3 ms** |
+
+And at a phone's 1968×2184 with AV1 10-bit HDR and 120 fps:
+
+| 1968×2184 at 120 fps | Graphics queue | Butterpollo |
 |---|---:|---:|
 | Frame to finished bitstream, mean | 14.3 ms | **2.8 ms** |
 | Same, 95th percentile | 32.6 ms | **2.9 ms** |
 | Frames encoded per second (target 120) | 90 | **120** |
-| Full stream, render to decoded picture | 52.9 ms | **45.5 ms** |
-| Full stream with an idle GPU | 13.0 ms | **12.4 ms** |
+| Full stream, render to decoded picture, mean | 52.9 ms | **45.5 ms** |
 
-"Graphics queue" is the same build with the compute path switched off (`gpu_compute_conversion = false`), which handles frames the way Sunshine-based hosts do. The first three rows encode moving test frames. The full-stream rows come from encrypted streams to an independent client that reads a moving barcode, so they include Windows' compositor and decoding. The encode itself sits at the hardware's floor of about 3 ms, so the idle gain is small; the big win shows up the moment a game uses the GPU.
+"Graphics queue" is the same build with the compute path switched off (`gpu_compute_conversion = false`), which handles frames the way Sunshine-based hosts do. The bitstream rows encode moving test frames. The full-stream rows come from encrypted streams to an independent client that reads a moving barcode, so they include Windows' compositor and decoding. With an idle GPU the two paths are level at 1080p60 (14.0 ms) and Butterpollo is 0.6 ms ahead at 1968×2184 and 120 fps (12.4 against 13.0 ms); the big win shows up the moment a game uses the GPU.
 
 ## Tuned for AMD, end to end
 

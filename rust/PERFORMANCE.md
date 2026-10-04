@@ -184,6 +184,32 @@ includes that wait, because frames are published before DWM's copy finishes
 and the encoder waits for it on the GPU. These runs exclude network transport
 and a remote display.
 
+### 1080p at 60 fps
+
+The same comparisons at the most common stream setting: HEVC 10-bit HDR,
+1920×1080 at 60 fps and 20 Mbps, from a 120 Hz virtual display, with the
+same game-like load (the game ran at 174 fps in both paths). Two runs each.
+
+| Synthetic encode | Graphics queue | Compute queues |
+|---|---|---|
+| Idle, mean | 2.26 / 2.40 ms | 2.14 / 2.03 ms |
+| Beside the load, mean | 21.99 / 20.93 ms | 1.98 / 1.95 ms |
+| Beside the load, p95 | 37.04 / 37.91 ms | 2.28 / 2.29 ms |
+| Beside the load, encoded fps | 58.6 / 59.1 | 60.1 / 60.1 |
+
+| Full stream | Graphics queue | Compute queues |
+|---|---|---|
+| Idle, picture age mean / p95 | 14.05 / 15.03, 13.98 / 14.72 ms | 14.05 / 14.63, 14.04 / 14.69 ms |
+| Load, picture age mean / p95 | 40.92 / 54.04, 41.13 / 54.69 ms | 33.48 / 42.20, 33.46 / 42.46 ms |
+| Load, new pictures per second | 56.8, 56.6 | 58.3, 57.8 |
+| Load, present to send (host counter) | 16.39, 16.10 ms | 11.40, 11.07 ms |
+
+Idle, both paths deliver the picture at the same time; the compute path's
+fence handoffs cost about 0.15 ms of host time at this size, where the
+D3D11 copy and conversion are small. Beside the game it delivers the
+picture 7.5 ms sooner on average and 12 ms sooner at the 95th percentile.
+Artifacts: `day-work-20261004\load-1080p60`, `day-work-20261002\p1080-*`.
+
 ## Controlled comparison with the original C++ FEC
 
 The benchmark loads the original C++ host's Reed–Solomon wrapper from baseline commit `f23ee0c9e7857887be7f774de6ac5153500a7e53`, with its pinned nanors implementation at `19f07b513e924e471cadd141943c1ec4adc8d0e0`. The source verification script checks every compiled reference file against its pinned SHA-256. GCC 16.1.0 builds the reference with `-O3 -ftree-vectorize -funroll-loops`; Rust uses the release profile. Both select AVX2 on this Ryzen 7 5800X3D. The original runtime ISA dispatch is retained.
