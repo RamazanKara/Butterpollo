@@ -408,6 +408,7 @@ dependencies = [
  "socket2",
  "tempfile",
  "tracing",
+ "tracing-subscriber",
  "windows",
  "windows-service",
 ]

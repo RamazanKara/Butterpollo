@@ -116,6 +116,20 @@ float4 chroma(float4 p : SV_Position) : SV_Target {
                              : floor(clamp(128 + (fullRange != 0 ? 255 : 224) * uv, 0, 255) + 0.5) / 255.0;
     return float4(code, 0, 1);
 }
+// The same conversion on a compute queue, which keeps running while a game
+// fills the graphics queue. The two views address the luma and chroma planes.
+RWTexture2D<float> lumaPlane : register(u0);
+RWTexture2D<float2> chromaPlane : register(u1);
+[numthreads(8, 8, 1)]
+void luma_cs(uint3 id : SV_DispatchThreadID) {
+    if (any(id.xy >= targetSize)) return;
+    lumaPlane[id.xy] = luma(float4(float2(id.xy) + 0.5, 0, 1)).r;
+}
+[numthreads(8, 8, 1)]
+void chroma_cs(uint3 id : SV_DispatchThreadID) {
+    if (any(id.xy >= targetSize / 2)) return;
+    chromaPlane[id.xy] = chroma(float4(float2(id.xy) + 0.5, 0, 1)).rg;
+}
 float3 yuv444(float2 p) {
     float3 rgb = nonlinear(p);
     float3 k = weights();

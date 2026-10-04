@@ -81,7 +81,7 @@ pub(crate) struct Cursor {
     pub height: u32,
     pub position: [i32; 2],
     pub logic: bool,
-    pixels: std::sync::Arc<[u8]>,
+    pub(crate) pixels: std::sync::Arc<[u8]>,
 }
 impl Cursor {
     pub fn new(gpu: &Device, info: &DXGI_OUTDUPL_POINTER_SHAPE_INFO, bytes: &[u8]) -> Result<Self> {

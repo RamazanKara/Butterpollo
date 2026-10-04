@@ -14,6 +14,8 @@ pub mod clipboard;
 #[cfg(windows)]
 pub mod color;
 #[cfg(windows)]
+pub mod compute;
+#[cfg(windows)]
 pub mod crash;
 #[cfg(windows)]
 mod cursor;
@@ -32,7 +34,7 @@ pub mod foreground;
 #[cfg(windows)]
 mod gpu_color;
 #[cfg(windows)]
-mod gpu_priority;
+pub mod gpu_priority;
 #[cfg(windows)]
 pub mod hdr_profile;
 #[cfg(windows)]

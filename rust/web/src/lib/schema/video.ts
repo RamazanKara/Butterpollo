@@ -133,6 +133,18 @@ const video: Setting[] = [
     advanced: true,
   },
   {
+    key: 'gpu_compute_conversion',
+    label: 'Copy and convert on a compute queue',
+    description:
+      'With Desktop Duplication and an AMD encoder, copies each frame and converts its colours on a compute queue that runs beside a game, instead of waiting behind the game on the graphics queue. Turn off only to troubleshoot.',
+    category: 'video',
+    group: 'Capture',
+    control: { kind: 'toggle' },
+    default: true,
+    visibleWhen: (values) => !['wgc', 'wgcc'].includes(capture(values)),
+    advanced: true,
+  },
+  {
     key: 'hevc_mode',
     label: 'HEVC support',
     description:

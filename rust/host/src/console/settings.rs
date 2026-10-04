@@ -65,6 +65,7 @@ pub const GLOBAL: &[Setting] = settings! {
         "minimum_fps_target", "Minimum frame rate for an unchanged desktop", Number;
         "wgc_pacing_smoothing", "Smooth capture pacing", Bool;
         "wgc_direct_encoder_input", "Pass GPU capture directly to the encoder", Bool;
+        "gpu_compute_conversion", "Copy and convert captures on a compute queue", Bool;
         "wgc_slot_aligned_publish", "Align capture publication to frame slots", Bool;
         "fec_percentage", "Forward error correction (%)", Number;
         "pyrowave", "Enable PyroWave for compatible clients", Bool;

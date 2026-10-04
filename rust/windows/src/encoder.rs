@@ -676,7 +676,34 @@ impl Encoder {
                 || ((preference.is_empty() || preference == "auto")
                     && image.gpu.display.adapter.contains("Radeon")))
         {
-            match crate::amf::Encoder::new_device_options(config, image.gpu.clone(), tuning) {
+            // Colour conversion on a compute queue keeps running beside a
+            // game that fills the GPU's graphics queue.
+            let compute = if crate::compute::enabled(tuning)
+                && crate::compute::shareable(&image.texture)
+            {
+                match crate::compute::Compute::for_device(&image.gpu.device) {
+                    Ok(compute) => Some(compute),
+                    Err(error) => {
+                        tracing::warn!(error = %format!("{error:#}"), "compute conversion unavailable; converting on the graphics queue");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let created = match crate::amf::Encoder::new_gpu(
+                config,
+                image.gpu.clone(),
+                tuning,
+                compute.clone(),
+            ) {
+                Err(error) if compute.is_some() => {
+                    tracing::warn!(error = %format!("{error:#}"), "AMF on the compute queue failed; converting on the graphics queue");
+                    crate::amf::Encoder::new_gpu(config, image.gpu.clone(), tuning, None)
+                }
+                created => created,
+            };
+            match created {
                 Ok(encoder) => return Ok(Self::Amf(Box::new(encoder))),
                 Err(error) if preference == "amf" => return Err(error),
                 Err(error) => tracing::warn!(%error, "AMF unavailable; trying other encoders"),

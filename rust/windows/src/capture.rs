@@ -519,6 +519,9 @@ pub struct GpuImage {
     pub acquired: Instant,
     pub gpu: Device,
     pub texture: std::sync::Arc<ID3D11Texture2D>,
+    /// When a compute-queue copy into `texture` completes. D3D11 work on
+    /// `gpu` is already ordered after it; D3D12 queues wait for this.
+    pub(crate) ready: Option<crate::compute::Ready>,
 }
 impl GpuImage {
     pub fn readback(&self, staging: &mut Option<ID3D11Texture2D>) -> Result<Image> {
@@ -556,6 +559,9 @@ impl GpuImage {
                 },
                 Usage: D3D11_USAGE_DEFAULT,
                 BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+                // Shareable with the D3D12 compute converter.
+                MiscFlags: (D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0 | D3D11_RESOURCE_MISC_SHARED.0)
+                    as u32,
                 ..Default::default()
             };
             let data = D3D11_SUBRESOURCE_DATA {
@@ -575,6 +581,7 @@ impl GpuImage {
                 acquired: Instant::now(),
                 gpu: gpu.clone(),
                 texture: std::sync::Arc::new(texture.unwrap()),
+                ready: None,
             })
         }
     }
@@ -583,6 +590,9 @@ impl GpuImage {
 #[derive(Default)]
 pub(crate) struct GpuPool {
     textures: Vec<std::sync::Arc<ID3D11Texture2D>>,
+    /// Copies on a compute queue instead of the D3D11 graphics queue,
+    /// where they wait behind a game's rendering.
+    pub(crate) compute: Option<crate::compute::Handoff>,
 }
 impl GpuPool {
     fn desktop_snapshot(
@@ -638,7 +648,12 @@ impl GpuPool {
                 desc.Usage = D3D11_USAGE_DEFAULT;
                 desc.BindFlags = D3D11_BIND_SHADER_RESOURCE.0 as u32;
                 desc.CPUAccessFlags = 0;
-                desc.MiscFlags = 0;
+                // Shared with the compute queue that copies and converts it.
+                desc.MiscFlags = if self.compute.is_some() {
+                    (D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0 | D3D11_RESOURCE_MISC_SHARED.0) as u32
+                } else {
+                    0
+                };
                 let mut texture = None;
                 gpu.device
                     .CreateTexture2D(&desc, None, Some(&mut texture))?;
@@ -646,7 +661,26 @@ impl GpuPool {
                 self.textures.push(texture.clone());
                 texture
             };
-            gpu.context.CopyResource(texture.as_ref(), source);
+            let ready = match self
+                .compute
+                .as_mut()
+                .map(|handoff| handoff.copy(texture.as_ref(), source))
+            {
+                Some(Ok(ready)) => Some(ready),
+                Some(Err(error)) => {
+                    // Drop this frame and the shared textures; encoders that
+                    // read them through the compute queue see unshared ones
+                    // next and rebuild for the graphics queue.
+                    tracing::warn!(error = %format!("{error:#}"), "compute copy failed; copying on the graphics queue");
+                    self.compute = None;
+                    self.textures.clear();
+                    return Ok(None);
+                }
+                None => {
+                    gpu.context.CopyResource(texture.as_ref(), source);
+                    None
+                }
+            };
             Ok(Some(GpuImage {
                 cursor: None,
                 width: desc.Width,
@@ -656,6 +690,7 @@ impl GpuPool {
                 acquired: Instant::now(),
                 gpu: gpu.clone(),
                 texture,
+                ready,
             }))
         }
     }
@@ -1027,12 +1062,28 @@ impl Capture {
         if let Err(error) = crate::gpu_priority::configure(&gpu, config) {
             tracing::debug!(%error, "GPU priority remains at the process default");
         }
+        // Desktop Duplication copies each frame out of the shared desktop
+        // surface; on a compute queue that copy keeps pace beside a game.
+        let duplication = |gpu: Device| -> Result<Duplication> {
+            let mut duplication = Duplication::new_device(gpu, hdr)?;
+            if crate::compute::enabled(config) {
+                match crate::compute::Compute::for_device(&duplication.gpu.device)
+                    .and_then(|compute| crate::compute::Handoff::new(compute, &duplication.gpu))
+                {
+                    Ok(compute) => duplication.owned.compute = Some(compute),
+                    Err(error) => {
+                        tracing::warn!(error = %format!("{error:#}"), "compute copies unavailable; copying on the graphics queue")
+                    }
+                }
+            }
+            Ok(duplication)
+        };
         match kind {
             "wgc" => Ok(Self::Wgc(Box::new(Wgc::new_device(gpu, hdr)?))),
-            "ddx" | "dxgi" => Ok(Self::Dxgi(Box::new(Duplication::new_device(gpu, hdr)?))),
+            "ddx" | "dxgi" => Ok(Self::Dxgi(Box::new(duplication(gpu)?))),
             _ => Wgc::new_device(gpu.clone(), hdr)
                 .map(|capture| Self::Wgc(Box::new(capture)))
-                .or_else(|_| Duplication::new_device(gpu, hdr).map(|d| Self::Dxgi(Box::new(d)))),
+                .or_else(|_| duplication(gpu).map(|d| Self::Dxgi(Box::new(d)))),
         }
     }
     pub fn next_frame(&mut self) -> Result<Option<Image>> {

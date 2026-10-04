@@ -23,6 +23,8 @@ pub fn compile(out: &Path) {
         ("pyro_y", "ps_5_0"),
         ("pyro_u", "ps_5_0"),
         ("pyro_v", "ps_5_0"),
+        ("luma_cs", "cs_5_0"),
+        ("chroma_cs", "cs_5_0"),
     ] {
         let name = CString::new(entry).unwrap();
         let profile = CString::new(target).unwrap();

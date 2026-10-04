@@ -83,6 +83,50 @@ pub(crate) struct Converter {
     layout: Layout,
     targets: Vec<Target>,
 }
+/// `cbuffer Config` in color.hlsl, for a `source` (width, height, pixel)
+/// converted to the stream, as both converters fill it.
+pub(crate) fn constants(
+    config: &butterpollo_core::rtsp::Negotiated,
+    source: (u32, u32, Pixel),
+    luminance: [f32; 2],
+    pointer: Option<&crate::cursor::Cursor>,
+) -> [u32; 20] {
+    let mut values = [0; 20];
+    values[..11].copy_from_slice(&[
+        source.0,
+        source.1,
+        config.width,
+        config.height,
+        match source.2 {
+            Pixel::Bgra8 => 0,
+            Pixel::RgbaF16 => 1,
+            Pixel::Rgba10Pq => 2,
+        },
+        u32::from(config.hdr),
+        u32::from(config.color_matrix()),
+        u32::from(config.full_range()),
+        u32::from(config.ten_bit()),
+        (luminance[0] / 80.).to_bits(),
+        luminance[1].to_bits(),
+    ]);
+    values[12..].copy_from_slice(&pointer_constants(pointer));
+    values
+}
+/// The pointer's part of `cbuffer Config`: position, size and blend mode.
+fn pointer_constants(pointer: Option<&crate::cursor::Cursor>) -> [u32; 8] {
+    pointer.map_or([0; 8], |c| {
+        [
+            c.position[0] as u32,
+            c.position[1] as u32,
+            c.width,
+            c.height,
+            if c.logic { 2 } else { 1 },
+            0,
+            0,
+            0,
+        ]
+    })
+}
 impl Converter {
     pub fn new(
         gpu: &Device,
@@ -131,32 +175,7 @@ impl Converter {
                 None,
                 Some(&mut chroma),
             )?;
-            let values = [
-                source.0,
-                source.1,
-                config.width,
-                config.height,
-                match source.2 {
-                    Pixel::Bgra8 => 0,
-                    Pixel::RgbaF16 => 1,
-                    Pixel::Rgba10Pq => 2,
-                },
-                u32::from(config.hdr),
-                u32::from(config.color_matrix()),
-                u32::from(config.full_range()),
-                u32::from(config.ten_bit()),
-                1.25f32.to_bits(),
-                1.0f32.to_bits(),
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-            ];
+            let values = constants(config, source, [100., 1.], None);
             let mut constants = None;
             gpu.device.CreateBuffer(
                 &D3D11_BUFFER_DESC {
@@ -187,6 +206,7 @@ impl Converter {
         }
     }
     pub fn set_luminance(&mut self, luminance: [f32; 2]) {
+        // Kept in step with `constants`.
         let white = (luminance[0] / 80.).to_bits();
         let scale = luminance[1].to_bits();
         if self.values[9] != white || self.values[10] != scale {
@@ -276,18 +296,7 @@ impl Converter {
     }
     fn source_views(&mut self, image: &GpuImage) -> Result<[Option<ID3D11ShaderResourceView>; 2]> {
         let pointer = image.cursor.as_ref();
-        let values = pointer.map_or([0; 8], |c| {
-            [
-                c.position[0] as u32,
-                c.position[1] as u32,
-                c.width,
-                c.height,
-                if c.logic { 2 } else { 1 },
-                0,
-                0,
-                0,
-            ]
-        });
+        let values = pointer_constants(pointer);
         if self.values[12..] != values {
             self.values[12..].copy_from_slice(&values);
             self.dirty = true;
@@ -656,6 +665,208 @@ mod tests {
             gpu.context.Unmap(&staging, 0);
             Ok(values)
         }
+    }
+    /// A P010 texture on the compute device, as `readback` gives it.
+    fn readback_compute(
+        compute: &crate::compute::Compute,
+        texture: &windows::Win32::Graphics::Direct3D12::ID3D12Resource,
+    ) -> Result<Vec<u16>> {
+        use windows::Win32::Graphics::Direct3D12::*;
+        unsafe {
+            let desc = texture.GetDesc();
+            let mut layouts = [D3D12_PLACED_SUBRESOURCE_FOOTPRINT::default(); 2];
+            let mut total = 0u64;
+            compute.device.GetCopyableFootprints(
+                &desc,
+                0,
+                2,
+                0,
+                Some(layouts.as_mut_ptr()),
+                None,
+                None,
+                Some(&mut total),
+            );
+            let mut buffer: Option<ID3D12Resource> = None;
+            compute.device.CreateCommittedResource(
+                &D3D12_HEAP_PROPERTIES {
+                    Type: D3D12_HEAP_TYPE_READBACK,
+                    ..Default::default()
+                },
+                D3D12_HEAP_FLAG_NONE,
+                &D3D12_RESOURCE_DESC {
+                    Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+                    Width: total,
+                    Height: 1,
+                    DepthOrArraySize: 1,
+                    MipLevels: 1,
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: 1,
+                        Quality: 0,
+                    },
+                    Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+                    ..Default::default()
+                },
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                None,
+                &mut buffer,
+            )?;
+            let buffer = buffer.unwrap();
+            let allocator: ID3D12CommandAllocator = compute
+                .device
+                .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COMPUTE)?;
+            let list: ID3D12GraphicsCommandList = compute.device.CreateCommandList(
+                0,
+                D3D12_COMMAND_LIST_TYPE_COMPUTE,
+                &allocator,
+                None,
+            )?;
+            for (plane, layout) in layouts.iter().enumerate() {
+                let destination = D3D12_TEXTURE_COPY_LOCATION {
+                    pResource: std::mem::ManuallyDrop::new(Some(buffer.clone())),
+                    Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+                    Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                        PlacedFootprint: *layout,
+                    },
+                };
+                let source = D3D12_TEXTURE_COPY_LOCATION {
+                    pResource: std::mem::ManuallyDrop::new(Some(texture.clone())),
+                    Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+                    Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                        SubresourceIndex: plane as u32,
+                    },
+                };
+                list.CopyTextureRegion(&destination, 0, 0, 0, &source, None);
+                drop(std::mem::ManuallyDrop::into_inner(destination.pResource));
+                drop(std::mem::ManuallyDrop::into_inner(source.pResource));
+            }
+            list.Close()?;
+            compute.wait(compute.execute(&list)?)?;
+            let mut mapped = std::ptr::null_mut();
+            buffer.Map(0, None, Some(&mut mapped))?;
+            let mut values = Vec::new();
+            for (plane, layout) in layouts.iter().enumerate() {
+                let rows = if plane == 0 {
+                    desc.Height as usize
+                } else {
+                    desc.Height as usize / 2
+                };
+                for y in 0..rows {
+                    let row = std::slice::from_raw_parts(
+                        mapped
+                            .cast::<u8>()
+                            .add(layout.Offset as usize + y * layout.Footprint.RowPitch as usize),
+                        desc.Width as usize * 2,
+                    );
+                    values.extend(
+                        row.as_chunks::<2>()
+                            .0
+                            .iter()
+                            .map(|v| u16::from_le_bytes(*v) >> 6),
+                    );
+                }
+            }
+            buffer.Unmap(0, None);
+            Ok(values)
+        }
+    }
+    #[test]
+    #[ignore = "requires D3D12 compute and native P010 conversion"]
+    fn compute_conversion_matches_the_graphics_converter() -> Result<()> {
+        let _com = ComGuard::new()?;
+        let gpu = Device::new("")?;
+        let compute = crate::compute::Compute::for_device(&gpu.device)?;
+        let colors = [
+            [0., 0., 0.],
+            [1., 1., 1.],
+            [12.5, 12.5, 12.5],
+            [1.2, 0.1, 0.05],
+            [0.05, 0.8, 0.3],
+            [0.2, 0.3, 4.0],
+        ];
+        let hdr_image = GpuImage::upload(&gpu, &make_image(&colors, 16, 40))?;
+        // Desktop BGRA: a gradient with distinct channels.
+        let mut bytes = vec![0u8; 96 * 40 * 4];
+        for (index, pixel) in bytes.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let (x, y) = (index % 96, index / 96);
+            *pixel = [(x * 2) as u8, (y * 6) as u8, (255 - x * 2) as u8, 255];
+        }
+        let sdr_image = GpuImage::upload(
+            &gpu,
+            &Image {
+                width: 96,
+                height: 40,
+                stride: 96 * 4,
+                bytes,
+                pixel: Pixel::Bgra8,
+                captured: Instant::now(),
+            },
+        )?;
+        // Without a pointer, a monochrome (replace and XOR) pointer, and one
+        // hanging off the left edge.
+        let pointer = crate::cursor::Cursor::new(
+            &gpu,
+            &windows::Win32::Graphics::Dxgi::DXGI_OUTDUPL_POINTER_SHAPE_INFO {
+                Type: windows::Win32::Graphics::Dxgi::DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME.0
+                    as u32,
+                Width: 4,
+                Height: 2,
+                Pitch: 1,
+                ..Default::default()
+            },
+            &[0b00110000, 0b01010000],
+        )?;
+        let mut placed = pointer.clone();
+        placed.position = [20, 10];
+        let mut clipped = pointer.clone();
+        clipped.position = [-2, 30];
+        // The same size, a downscale and a letterboxed shape.
+        for (width, height) in [(96, 40), (48, 20), (64, 64)] {
+            for (hdr, base) in [(true, &hdr_image), (false, &sdr_image)] {
+                for cursor in [None, Some(&placed), Some(&clipped)] {
+                    let mut image = base.clone();
+                    image.cursor = cursor.cloned();
+                    let image = &image;
+                    let config = butterpollo_core::rtsp::Negotiated {
+                        width,
+                        height,
+                        codec: 1,
+                        hdr,
+                        sdr_10bit: !hdr,
+                        ..Default::default()
+                    };
+                    let mut graphics = Converter::new(&gpu, &config, (96, 40, image.pixel))?;
+                    graphics.set_luminance([100., 1.]);
+                    let expected = readback(&gpu, graphics.convert(image)?.as_ref())?;
+                    let mut converter =
+                        crate::compute::Converter::new(compute.clone(), width, height, true)?;
+                    converter.values = constants(
+                        &config,
+                        (image.width, image.height, image.pixel),
+                        [100., 1.],
+                        image.cursor.as_ref(),
+                    );
+                    let shape = cursor.map(|c| converter.pointer(c)).transpose()?;
+                    let source = compute.open(&image.texture)?;
+                    let converted = converter.convert(
+                        &source,
+                        crate::compute::format(image.pixel),
+                        shape.as_ref(),
+                        None,
+                    )?;
+                    converted.wait()?;
+                    let actual = readback_compute(&compute, &converted.texture)?;
+                    assert_eq!(actual.len(), expected.len());
+                    for (index, (a, e)) in actual.iter().zip(&expected).enumerate() {
+                        assert!(
+                            a.abs_diff(*e) <= 1,
+                            "{width}x{height} hdr {hdr} pointer {:?}: value {index} is {a}, the graphics converter gives {e}",
+                            cursor.map(|c| c.position)
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
     }
     #[test]
     #[ignore = "requires native D3D11 P010 conversion"]

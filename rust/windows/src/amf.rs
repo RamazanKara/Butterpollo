@@ -49,6 +49,12 @@ pub struct Encoder {
     references: butterpollo_core::ltr::References,
     ownership: Box<crate::amf_gpu::Ownership>,
     pub(crate) luminance: [f32; 2],
+    /// Conversion on a D3D12 compute queue, with AMF on D3D12.
+    compute: Option<Box<ComputeInput>>,
+}
+struct ComputeInput {
+    converter: crate::compute::Converter,
+    context: crate::amf_gpu::D3d12Context,
 }
 impl Encoder {
     pub fn new(config: &butterpollo_core::rtsp::Negotiated, display: &str) -> Result<Self> {
@@ -74,6 +80,32 @@ impl Encoder {
         device: Device,
         options: &butterpollo_core::config::Config,
         av1_alignment: i64,
+    ) -> Result<Self> {
+        Self::create(config, device, options, av1_alignment, None)
+    }
+    /// An encoder for captured GPU images. With `compute`, the colours are
+    /// converted on that D3D12 compute queue and AMF encodes from D3D12, so
+    /// neither waits behind a game's work on the graphics engine.
+    pub fn new_gpu(
+        config: &butterpollo_core::rtsp::Negotiated,
+        device: Device,
+        options: &butterpollo_core::config::Config,
+        compute: Option<std::sync::Arc<crate::compute::Compute>>,
+    ) -> Result<Self> {
+        Self::create(
+            config,
+            device,
+            options,
+            AMF_VIDEO_ENCODER_AV1_ALIGNMENT_MODE_ENUM_AMF_VIDEO_ENCODER_AV1_ALIGNMENT_MODE_NO_RESTRICTIONS as i64,
+            compute,
+        )
+    }
+    fn create(
+        config: &butterpollo_core::rtsp::Negotiated,
+        device: Device,
+        options: &butterpollo_core::config::Config,
+        av1_alignment: i64,
+        compute: Option<std::sync::Arc<crate::compute::Compute>>,
     ) -> Result<Self> {
         if config.yuv444 {
             bail!("AMF does not expose 4:4:4 for this encoder; select NVENC or software");
@@ -102,13 +134,20 @@ impl Encoder {
                 &mut context,
             ))?;
             let mut component = ptr::null_mut();
+            let mut d3d12 = None;
             let result = (|| -> Result<()> {
-                check(((*(*context).pVtbl).InitDX11.unwrap())(
-                    context,
-                    device.device.as_raw(),
-                    AMF_DX_VERSION_AMF_DX11_1,
-                ))
-                .context("AMF InitDX11")?;
+                if let Some(compute) = &compute {
+                    let interface = crate::amf_gpu::D3d12Context::new(context)?;
+                    interface.init(&compute.device)?;
+                    d3d12 = Some(interface);
+                } else {
+                    check(((*(*context).pVtbl).InitDX11.unwrap())(
+                        context,
+                        device.device.as_raw(),
+                        AMF_DX_VERSION_AMF_DX11_1,
+                    ))
+                    .context("AMF InitDX11")?;
+                }
                 let name = match config.codec {
                     0 => "AMFVideoEncoderVCE_AVC",
                     1 => "AMFVideoEncoderHW_HEVC",
@@ -125,6 +164,7 @@ impl Encoder {
                 Ok(())
             })();
             if let Err(e) = result {
+                drop(d3d12);
                 if !component.is_null() {
                     ((*(*component).pVtbl).Release.unwrap())(component);
                 }
@@ -132,6 +172,18 @@ impl Encoder {
                 ((*(*context).pVtbl).Release.unwrap())(context);
                 return Err(e);
             }
+            let compute = match (d3d12, compute) {
+                (Some(interface), Some(compute)) => Some(Box::new(ComputeInput {
+                    converter: crate::compute::Converter::new(
+                        compute,
+                        config.width,
+                        config.height,
+                        config.ten_bit(),
+                    )?,
+                    context: interface,
+                })),
+                _ => None,
+            };
             let mut e = Self {
                 component,
                 context,
@@ -147,6 +199,7 @@ impl Encoder {
                 references: Default::default(),
                 ownership: crate::amf_gpu::Ownership::new(),
                 luminance: [100., 1.],
+                compute,
             };
             for property in butterpollo_core::encoder_policy::amf(options, config)? {
                 use butterpollo_core::encoder_policy::Value;
@@ -315,8 +368,104 @@ impl Encoder {
                 config.height as i32,
             ))
             .context("AMF encoder Init")?;
+            e.log_effective();
             Ok(e)
         }
+    }
+    /// An integer or boolean property as the driver now has it.
+    fn read(&self, name: &str) -> Option<i64> {
+        unsafe {
+            let mut value = int(0);
+            if ((*(*self.component).pVtbl).GetProperty.unwrap())(
+                self.component,
+                wide(name).as_ptr(),
+                &mut value,
+            ) != AMF_RESULT_AMF_OK
+            {
+                return None;
+            }
+            match value.type_ {
+                AMF_VARIANT_TYPE_AMF_VARIANT_INT64 => Some(value.__bindgen_anon_1.int64Value),
+                AMF_VARIANT_TYPE_AMF_VARIANT_BOOL => {
+                    Some(i64::from(value.__bindgen_anon_1.boolValue))
+                }
+                _ => None,
+            }
+        }
+    }
+    /// The settings that decide encode time, as the driver applied them.
+    fn log_effective(&self) {
+        let names: &[&str] = match self.codec {
+            0 => &[
+                "Usage",
+                "QualityPreset",
+                "RateControlMethod",
+                "LowLatencyInternal",
+                "RateControlPreanalysisEnable",
+                "EnableVBAQ",
+                "SlicesPerFrame",
+                "InputQueueSize",
+                "QueryTimeout",
+            ],
+            1 => &[
+                "HevcUsage",
+                "HevcQualityPreset",
+                "HevcRateControlMethod",
+                "LowLatencyInternal",
+                "HevcMultiHwInstanceEncode",
+                "HevcRateControlPreAnalysisEnable",
+                "HevcEnableVBAQ",
+                "HevcSlicesPerFrame",
+                "HevcInputQueueSize",
+                "HevcQueryTimeout",
+            ],
+            _ => &[
+                "Av1Usage",
+                "Av1QualityPreset",
+                "Av1RateControlMethod",
+                "Av1EncodingLatencyMode",
+                "Av1MultiHwInstanceEncode",
+                "Av1RateControlPreEncode",
+                "Av1AQMode",
+                "Av1NumTilesPerFrame",
+                "Av1InputQueueSize",
+                "Av1QueryTimeout",
+            ],
+        };
+        let mut settings: Vec<String> = names
+            .iter()
+            .map(|name| match self.read(name) {
+                Some(value) => format!("{name}={value}"),
+                None => format!("{name}=?"),
+            })
+            .collect();
+        unsafe {
+            let mut caps = ptr::null_mut();
+            if ((*(*self.component).pVtbl).GetCaps.unwrap())(self.component, &mut caps)
+                == AMF_RESULT_AMF_OK
+                && !caps.is_null()
+            {
+                let names = match self.codec {
+                    0 => ["NumOfHwInstances", "ColorConversion"],
+                    1 => ["HevcNumOfHwInstances", "HevcColorConversion"],
+                    _ => ["Av1CapNumOfHwInstances", "Av1CapColorConversion"],
+                };
+                for name in names {
+                    let mut value = int(0);
+                    if ((*(*caps).pVtbl).GetProperty.unwrap())(
+                        caps,
+                        wide(name).as_ptr(),
+                        &mut value,
+                    ) == AMF_RESULT_AMF_OK
+                        && value.type_ == AMF_VARIANT_TYPE_AMF_VARIANT_INT64
+                    {
+                        settings.push(format!("{name}={}", value.__bindgen_anon_1.int64Value));
+                    }
+                }
+                ((*(*caps).pVtbl).Release.unwrap())(caps);
+            }
+        }
+        tracing::info!(settings = %settings.join(" "), "AMF encoder settings");
     }
     fn property(&mut self, name: &str, value: AMFVariantStruct) -> Result<()> {
         let prefix = match self.codec {
@@ -758,6 +907,7 @@ impl Encoder {
     }
     pub fn accepts_gpu_device(&self, image: &GpuImage) -> bool {
         self._device.device.as_raw() == image.gpu.device.as_raw()
+            && (self.compute.is_none() || crate::compute::shareable(&image.texture))
     }
     fn wait_capacity(&mut self) -> Result<Vec<Encoded>> {
         let mut output = self.poll()?;
@@ -783,27 +933,55 @@ impl Encoder {
             bail!("GPU frame and encoder must use the same D3D11 device");
         }
         let source = (image.width, image.height, image.pixel);
-        if self
-            .gpu_convert
-            .as_ref()
-            .is_none_or(|converter| converter.source != source)
-        {
-            self.gpu_convert = Some(crate::amf_gpu::Converter::new(
-                &self._device,
+        let (surface, converted) = if let Some(input) = self.compute.as_mut() {
+            let compute = input.converter.compute().clone();
+            let texture = compute.open(&image.texture)?;
+            let pointer = image
+                .cursor
+                .as_ref()
+                .map(|cursor| input.converter.pointer(cursor))
+                .transpose()?;
+            input.converter.values = crate::gpu_color::constants(
                 &self.config,
                 source,
-            )?);
-        }
-        self.gpu_convert
-            .as_mut()
-            .unwrap()
-            .color
-            .set_luminance(self.luminance);
-        let (surface, converted) =
+                self.luminance,
+                image.cursor.as_ref(),
+            );
+            let converted = input.converter.convert(
+                &texture,
+                crate::compute::format(image.pixel),
+                pointer.as_ref(),
+                image.ready.as_ref(),
+            )?;
+            crate::amf_gpu::synchronize(&converted.texture, &converted.fence, converted.value)?;
+            let surface = input
+                .context
+                .wrap(&converted.texture, &mut self.ownership)?;
+            (surface, None)
+        } else {
+            if self
+                .gpu_convert
+                .as_ref()
+                .is_none_or(|converter| converter.source != source)
+            {
+                self.gpu_convert = Some(crate::amf_gpu::Converter::new(
+                    &self._device,
+                    &self.config,
+                    source,
+                )?);
+            }
             self.gpu_convert
                 .as_mut()
                 .unwrap()
-                .convert(self.context, image, &mut self.ownership)?;
+                .color
+                .set_luminance(self.luminance);
+            let (surface, texture) = self.gpu_convert.as_mut().unwrap().convert(
+                self.context,
+                image,
+                &mut self.ownership,
+            )?;
+            (surface, Some(texture))
+        };
         self.set_bitrate(bitrate)?;
         unsafe {
             let v = &*(*surface.0).pVtbl;
@@ -845,7 +1023,7 @@ impl Encoder {
                 presentation: image.captured,
                 after_invalidation: plan.after_invalidation,
                 _capture: Some(image.clone()),
-                _converted: Some(converted),
+                _converted: converted,
             });
             self.references.accepted(self.index as u64 + 1, &plan);
             self.index += 1;
@@ -863,6 +1041,8 @@ impl Drop for Encoder {
                 ((*(*self.component).pVtbl).Terminate.unwrap())(self.component);
                 ((*(*self.component).pVtbl).Release.unwrap())(self.component);
             }
+            // After the encoder has let go of its D3D12 inputs.
+            self.compute.take();
             if !self.context.is_null() {
                 ((*(*self.context).pVtbl).Terminate.unwrap())(self.context);
                 ((*(*self.context).pVtbl).Release.unwrap())(self.context);
