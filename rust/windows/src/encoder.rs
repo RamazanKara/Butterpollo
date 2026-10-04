@@ -612,8 +612,10 @@ pub enum Encoder {
 }
 impl Encoder {
     pub fn set_hdr_metadata(&mut self, metadata: butterpollo_core::hdr::Metadata) {
-        if let Self::Nvenc(encoder) = self {
-            encoder.set_hdr_metadata(metadata);
+        match self {
+            Self::Nvenc(encoder) => encoder.set_hdr_metadata(metadata),
+            Self::Amf(encoder) => encoder.set_hdr_metadata(metadata),
+            Self::Ffmpeg(_) | Self::Pyrowave(_) => {}
         }
     }
     /// SDR white is absolute luminance; scRGB scaling expands NGX's 1000-nit ceiling.

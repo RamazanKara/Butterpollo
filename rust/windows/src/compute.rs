@@ -445,8 +445,9 @@ pub struct Converter {
     height: u32,
     ten_bit: bool,
     targets: Vec<Target>,
-    /// The pointer shape on this device, by its pixels' address.
-    pointer: Option<(usize, ID3D12Resource)>,
+    /// The pointer shape uploaded to this device, with the pixels it came
+    /// from. Holding them keeps a new shape from reusing their address.
+    pointer: Option<(Arc<[u8]>, ID3D12Resource)>,
 }
 unsafe impl Send for Converter {}
 const SLOTS: usize = 4;
@@ -598,9 +599,8 @@ impl Converter {
     /// The pointer shape as a texture on this device, uploaded when it
     /// changes (rarely; this waits for the copy).
     pub(crate) fn pointer(&mut self, cursor: &crate::cursor::Cursor) -> Result<ID3D12Resource> {
-        let key = cursor.pixels.as_ptr() as usize;
         if let Some((cached, texture)) = &self.pointer
-            && *cached == key
+            && Arc::ptr_eq(cached, &cursor.pixels)
         {
             return Ok(texture.clone());
         }
@@ -692,7 +692,7 @@ impl Converter {
             list.Close()?;
             let done = self.compute.execute(&list)?;
             self.compute.wait(done)?;
-            self.pointer = Some((key, texture.clone()));
+            self.pointer = Some((cursor.pixels.clone(), texture.clone()));
             Ok(texture)
         }
     }

@@ -86,13 +86,29 @@ pub(crate) struct Cursor {
 impl Cursor {
     pub fn new(gpu: &Device, info: &DXGI_OUTDUPL_POINTER_SHAPE_INFO, bytes: &[u8]) -> Result<Self> {
         let shape = decode(info, bytes)?;
+        Self::upload(
+            gpu,
+            shape.width,
+            shape.height,
+            shape.logic,
+            shape.pixels.into(),
+        )
+    }
+    /// A decoded shape as a texture on `gpu`.
+    fn upload(
+        gpu: &Device,
+        width: u32,
+        height: u32,
+        logic: bool,
+        pixels: std::sync::Arc<[u8]>,
+    ) -> Result<Self> {
         let mut texture = None;
         let mut view = None;
         unsafe {
             gpu.device.CreateTexture2D(
                 &D3D11_TEXTURE2D_DESC {
-                    Width: shape.width,
-                    Height: shape.height,
+                    Width: width,
+                    Height: height,
                     MipLevels: 1,
                     ArraySize: 1,
                     Format: DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -105,8 +121,8 @@ impl Cursor {
                     ..Default::default()
                 },
                 Some(&D3D11_SUBRESOURCE_DATA {
-                    pSysMem: shape.pixels.as_ptr().cast(),
-                    SysMemPitch: shape.width * 4,
+                    pSysMem: pixels.as_ptr().cast(),
+                    SysMemPitch: width * 4,
                     SysMemSlicePitch: 0,
                 }),
                 Some(&mut texture),
@@ -119,11 +135,11 @@ impl Cursor {
         }
         Ok(Self {
             view: view.unwrap(),
-            width: shape.width,
-            height: shape.height,
+            width,
+            height,
             position: [0; 2],
-            logic: shape.logic,
-            pixels: shape.pixels.into(),
+            logic,
+            pixels,
         })
     }
     pub fn blend(&self, image: &mut crate::capture::Image) {
@@ -179,7 +195,40 @@ pub(crate) struct State {
     position: [i32; 2],
     visible: bool,
 }
+/// The pointer as last reported, carried into a capture made after a
+/// restart. Desktop Duplication reports a shape only when it changes, so a
+/// new duplication would draw no pointer until the shape next changed. Holds
+/// no GPU object: a restart replaces the device, and Windows keeps handing
+/// out the old adapter while anything still holds the old device.
+#[derive(Clone, Default)]
+pub(crate) struct Carried {
+    shape: Option<(u32, u32, bool, std::sync::Arc<[u8]>)>,
+    position: [i32; 2],
+    visible: bool,
+}
 impl State {
+    pub fn carry(&self) -> Carried {
+        Carried {
+            shape: self
+                .cursor
+                .as_ref()
+                .map(|c| (c.width, c.height, c.logic, c.pixels.clone())),
+            position: self.position,
+            visible: self.visible,
+        }
+    }
+    /// Start from `carried` until Desktop Duplication reports otherwise.
+    pub fn resume(&mut self, gpu: &Device, carried: Carried) -> Result<()> {
+        if self.cursor.is_some() {
+            return Ok(());
+        }
+        if let Some((width, height, logic, pixels)) = carried.shape {
+            self.cursor = Some(Cursor::upload(gpu, width, height, logic, pixels)?);
+            self.position = carried.position;
+            self.visible = carried.visible;
+        }
+        Ok(())
+    }
     pub fn update(
         &mut self,
         gpu: &Device,
@@ -229,6 +278,64 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Context;
+    #[test]
+    #[ignore = "requires a D3D11 device"]
+    fn a_restarted_capture_draws_the_last_pointer_until_duplication_reports_one() -> Result<()> {
+        let _com = crate::capture::ComGuard::new()?;
+        let info = DXGI_OUTDUPL_POINTER_SHAPE_INFO {
+            Type: DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR.0 as u32,
+            Width: 2,
+            Height: 2,
+            Pitch: 8,
+            ..Default::default()
+        };
+        let bytes: Vec<u8> = (0..16).collect();
+        let carried = {
+            let first = Device::new("")?;
+            let mut state = State {
+                cursor: Some(Cursor::new(&first, &info, &bytes)?),
+                position: [10, 20],
+                visible: true,
+            };
+            let carried = state.carry();
+            state.visible = false;
+            assert!(state.carry().shape.is_some() && !state.carry().visible);
+            carried
+        };
+        // A new device, as a capture restart makes.
+        let second = Device::new("")?;
+        let mut state = State::default();
+        assert!(state.snapshot().is_none());
+        state.resume(&second, carried.clone())?;
+        let cursor = state
+            .snapshot()
+            .context("the carried pointer is not drawn")?;
+        assert_eq!(
+            (cursor.position, cursor.width, cursor.height),
+            ([10, 20], 2, 2)
+        );
+        assert_eq!(&cursor.pixels[..4], &[2, 1, 0, 3]);
+        // A pointer the new duplication reported already is kept.
+        let mut reported = State {
+            cursor: Some(Cursor::new(&second, &info, &bytes)?),
+            position: [1, 1],
+            visible: true,
+        };
+        reported.resume(&second, carried)?;
+        assert_eq!(reported.snapshot().unwrap().position, [1, 1]);
+        // A hidden pointer stays hidden.
+        let mut hidden = State::default();
+        hidden.resume(
+            &second,
+            Carried {
+                visible: false,
+                ..state.carry()
+            },
+        )?;
+        assert!(hidden.snapshot().is_none());
+        Ok(())
+    }
     #[test]
     fn monochrome_pointer_preserves_transparency_replacement_and_inversion() -> Result<()> {
         let info = DXGI_OUTDUPL_POINTER_SHAPE_INFO {

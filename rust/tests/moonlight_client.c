@@ -91,6 +91,24 @@ static int video_frame(PDECODE_UNIT unit){
         if(frame->width!=requested_width||frame->height!=requested_height)atomic_fetch_add(&failures,1);
         if(requested_hdr){const AVPixFmtDescriptor *desc=av_pix_fmt_desc_get(frame->format);if(!desc||desc->comp[0].depth<10||frame->color_primaries!=AVCOL_PRI_BT2020||frame->color_trc!=AVCOL_TRC_SMPTE2084)atomic_fetch_add(&failures,1);}
         atomic_fetch_add(&decoded_frames,1);if(atomic_load(&decoded_frames)==1)printf("DECODED %dx%d pixel_format=%d primaries=%d transfer=%d\n",frame->width,frame->height,frame->format,frame->color_primaries,frame->color_trc);
+        // Optional decoded picture for colour comparisons between hosts:
+        // a text header, then each plane's rows as decoded.
+        const char *picture_dump=getenv("BUTTERPOLLO_TEST_FRAME_DUMP");
+        int dump_at=getenv("BUTTERPOLLO_TEST_FRAME_DUMP_AT")?atoi(getenv("BUTTERPOLLO_TEST_FRAME_DUMP_AT")):600;
+        if(picture_dump&&atomic_load(&decoded_frames)==dump_at){
+            const AVPixFmtDescriptor *desc=av_pix_fmt_desc_get(frame->format);FILE *file=fopen(picture_dump,"wb");
+            if(file&&desc){
+                int bytes=(desc->comp[0].depth+7)/8;
+                fprintf(file,"BPFRAME %d %d %s %d %d %d %d\n",frame->width,frame->height,desc->name,desc->comp[0].depth,frame->color_range,frame->colorspace,desc->nb_components);
+                for(int plane=0;plane<3&&frame->data[plane];plane++){
+                    int w=plane?AV_CEIL_RSHIFT(frame->width,desc->log2_chroma_w):frame->width,h=plane?AV_CEIL_RSHIFT(frame->height,desc->log2_chroma_h):frame->height;
+                    int step=(desc->flags&AV_PIX_FMT_FLAG_PLANAR)||plane==0?1:2;
+                    for(int y=0;y<h;y++)fwrite(frame->data[plane]+(size_t)y*frame->linesize[plane],1,(size_t)w*bytes*step,file);
+                }
+            }
+            if(file)fclose(file);
+            printf("FRAME_DUMP frame=%d format=%s\n",dump_at,desc?desc->name:"unknown");
+        }
         if(picture_timestamp(frame,&picture_sequence,&picture_ticks)){
             LARGE_INTEGER frequency;QueryPerformanceFrequency(&frequency);
             age_ms=clock_ms()-(double)picture_ticks*1000.0/(double)frequency.QuadPart;

@@ -49,6 +49,8 @@ pub struct Encoder {
     references: butterpollo_core::ltr::References,
     ownership: Box<crate::amf_gpu::Ownership>,
     pub(crate) luminance: [f32; 2],
+    /// The HDR10 metadata last written into the bitstream.
+    hdr_metadata: Option<butterpollo_core::hdr::Metadata>,
     /// Conversion on a D3D12 compute queue, with AMF on D3D12.
     compute: Option<Box<ComputeInput>>,
 }
@@ -199,6 +201,7 @@ impl Encoder {
                 references: Default::default(),
                 ownership: crate::amf_gpu::Ownership::new(),
                 luminance: [100., 1.],
+                hdr_metadata: None,
                 compute,
             };
             for property in butterpollo_core::encoder_policy::amf(options, config)? {
@@ -353,9 +356,16 @@ impl Encoder {
                 },
             };
             e.property_raw(&format!("{prefix}InputFullRangeColor"), full)?;
-            if config.codec == 0 {
-                e.property_raw("FullRangeColor", full)?;
-            }
+            // The range written into the bitstream. HEVC and AV1 default to
+            // limited, which a full-range stream must not claim.
+            e.property_raw(
+                match config.codec {
+                    0 => "FullRangeColor",
+                    1 => "HevcNominalRange",
+                    _ => "Av1NominalRange",
+                },
+                full,
+            )?;
             e.configure_ltr(options.integer("amd_ltr_frames", 0).clamp(0, 4) as usize);
             check(((*(*e.component).pVtbl).Init.unwrap())(
                 e.component,
@@ -406,6 +416,7 @@ impl Encoder {
                 "SlicesPerFrame",
                 "InputQueueSize",
                 "QueryTimeout",
+                "FullRangeColor",
             ],
             1 => &[
                 "HevcUsage",
@@ -418,6 +429,7 @@ impl Encoder {
                 "HevcSlicesPerFrame",
                 "HevcInputQueueSize",
                 "HevcQueryTimeout",
+                "HevcNominalRange",
             ],
             _ => &[
                 "Av1Usage",
@@ -430,6 +442,7 @@ impl Encoder {
                 "Av1NumTilesPerFrame",
                 "Av1InputQueueSize",
                 "Av1QueryTimeout",
+                "Av1NominalRange",
             ],
         };
         let mut settings: Vec<String> = names
@@ -475,6 +488,93 @@ impl Encoder {
         };
         let name = format!("{prefix}{name}");
         self.property_raw(&name, value)
+    }
+    /// Write HDR10 static metadata (the mastering display and light levels)
+    /// into the bitstream, as FFmpeg's AMF encoder does from a frame's side
+    /// data. Clients that size HDR from the stream rather than from the
+    /// control channel's copy otherwise get no mastering metadata at all.
+    pub fn set_hdr_metadata(&mut self, metadata: butterpollo_core::hdr::Metadata) {
+        if !self.config.hdr || self.codec == 0 || self.hdr_metadata == Some(metadata) {
+            return;
+        }
+        // Not retried every second when the driver refuses it.
+        self.hdr_metadata = Some(metadata);
+        match self.write_hdr_metadata(&metadata) {
+            Ok(()) => tracing::info!(
+                maximum_nits = metadata.maximum_nits,
+                minimum = metadata.minimum,
+                max_cll = metadata.max_cll,
+                max_fall = metadata.max_fall,
+                "AMF HDR metadata in the bitstream"
+            ),
+            Err(error) => {
+                tracing::warn!(error = %format!("{error:#}"), "AMF HDR metadata not written")
+            }
+        }
+    }
+    fn write_hdr_metadata(&mut self, metadata: &butterpollo_core::hdr::Metadata) -> Result<()> {
+        unsafe {
+            let mut buffer = ptr::null_mut();
+            check(((*(*self.context).pVtbl).AllocBuffer.unwrap())(
+                self.context,
+                AMF_MEMORY_TYPE_AMF_MEMORY_HOST,
+                std::mem::size_of::<AMFHDRMetadata>(),
+                &mut buffer,
+            ))
+            .context("AMF HDR metadata buffer")?;
+            if buffer.is_null() {
+                bail!("AMF returned no HDR metadata buffer");
+            }
+            // HEVC takes primaries and white in 1/50000 and luminance in
+            // 1/10000 nit, as AMF documents. For AV1, AMF copies the values
+            // into the metadata OBU unscaled, so they must already be in
+            // AV1's units: 0.16 chromaticity, 24.8 and 18.14 fixed-point
+            // luminance (the documented units read back as 39,062 nits).
+            let av1 = self.codec == 2;
+            let chroma = |[x, y]: [u16; 2]| {
+                if av1 {
+                    [x, y].map(|v| (u32::from(v) * 65536 / 50000).min(65535) as u16)
+                } else {
+                    [x, y]
+                }
+            };
+            let (maximum, minimum) = if av1 {
+                (
+                    u32::from(metadata.maximum_nits) * 256,
+                    u32::from(metadata.minimum) * 16384 / 10000,
+                )
+            } else {
+                (
+                    u32::from(metadata.maximum_nits) * 10000,
+                    u32::from(metadata.minimum),
+                )
+            };
+            let [red, green, blue] = metadata.primaries;
+            ((*(*buffer).pVtbl).GetNative.unwrap())(buffer)
+                .cast::<AMFHDRMetadata>()
+                .write(AMFHDRMetadata {
+                    redPrimary: chroma(red),
+                    greenPrimary: chroma(green),
+                    bluePrimary: chroma(blue),
+                    whitePoint: chroma(metadata.white),
+                    maxMasteringLuminance: maximum,
+                    minMasteringLuminance: minimum,
+                    maxContentLightLevel: metadata.max_cll,
+                    maxFrameAverageLightLevel: metadata.max_fall,
+                });
+            // SetProperty keeps its own reference to the buffer.
+            let result = self.property(
+                "InHDRMetadata",
+                AMFVariantStruct {
+                    type_: AMF_VARIANT_TYPE_AMF_VARIANT_INTERFACE,
+                    __bindgen_anon_1: AMFVariantStruct__bindgen_ty_1 {
+                        pInterface: buffer.cast(),
+                    },
+                },
+            );
+            ((*(*buffer).pVtbl).Release.unwrap())(buffer);
+            result
+        }
     }
     fn property_raw(&mut self, name: &str, value: AMFVariantStruct) -> Result<()> {
         unsafe {
