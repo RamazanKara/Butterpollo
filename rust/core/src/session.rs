@@ -52,6 +52,16 @@ mod tests {
         }
     }
     #[test]
+    fn a_failed_stream_is_not_reported_as_a_normal_close() {
+        let closed = Session::new(launch("closed", Role::Stream), Negotiated::default());
+        closed.stop();
+        assert_eq!(closed.termination_reason(), 0x8003_0023);
+        let failed = Session::new(launch("failed", Role::Stream), Negotiated::default());
+        failed.fail();
+        assert!(failed.stopping());
+        assert_eq!(failed.termination_reason(), 0x8000_4005);
+    }
+    #[test]
     fn independent_roles_and_targeted_teardown_preserve_other_sessions() {
         let mut sessions = Sessions::default();
         sessions.queue(launch("game", Role::Stream)).unwrap();
@@ -142,6 +152,9 @@ pub struct Session {
     pub launch: Launch,
     pub config: Negotiated,
     pub stop: AtomicBool,
+    /// Set before `stop` when the stream ends on an error, so the client is
+    /// told it failed rather than that the host closed it.
+    pub failed: AtomicBool,
     pub idr: AtomicBool,
     pub invalidation: std::sync::Mutex<Option<(u64, u64)>>,
     pub bitrate: AtomicU32,
@@ -157,6 +170,7 @@ impl Session {
             launch,
             config,
             stop: AtomicBool::new(false),
+            failed: AtomicBool::new(false),
             idr: AtomicBool::new(true),
             invalidation: Default::default(),
             bitrate: AtomicU32::new(bitrate),
@@ -171,6 +185,23 @@ impl Session {
     }
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Release)
+    }
+    pub fn fail(&self) {
+        self.failed.store(true, Ordering::Release);
+        self.stop();
+    }
+    pub fn failed(&self) -> bool {
+        self.failed.load(Ordering::Acquire)
+    }
+    /// The termination reason the control stream sends. Moonlight closes
+    /// quietly on 0x80030023 (the host closed the stream) and shows an error
+    /// with the code otherwise; 0x80004005 is the generic failure HRESULT.
+    pub fn termination_reason(&self) -> u32 {
+        if self.failed() {
+            0x8000_4005
+        } else {
+            0x8003_0023
+        }
     }
     pub fn request_idr(&self) {
         self.idr.store(true, Ordering::Release);

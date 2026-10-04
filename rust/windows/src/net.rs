@@ -197,7 +197,73 @@ pub fn configure_udp(socket: &UdpSocket) -> Result<()> {
     {
         return Err(std::io::Error::from_raw_os_error(unsafe { WSAGetLastError() }.0).into());
     }
+    // Vibepollo's video socket buffer: a key frame's burst fits without the
+    // non-blocking socket refusing it.
+    socket2::SockRef::from(socket).set_send_buffer_size(1 << 20)?;
     Ok(())
+}
+/// Send errors after which the socket still works and only these datagrams
+/// are lost: a full send buffer, no buffer space, or a route that is down for
+/// the moment. Vibepollo drops the packets and keeps streaming; so do we.
+fn transient(error: WSA_ERROR) -> bool {
+    [
+        WSAEWOULDBLOCK,
+        WSAENOBUFS,
+        WSAENETDOWN,
+        WSAENETUNREACH,
+        WSAENETRESET,
+        WSAEHOSTUNREACH,
+        WSAEHOSTDOWN,
+        WSAECONNRESET,
+        WSAEADDRNOTAVAIL,
+    ]
+    .contains(&error)
+}
+/// How long a send waits for room in a full socket buffer before dropping.
+const WRITABLE_WAIT_MS: i32 = 4;
+fn writable(socket: &UdpSocket) -> bool {
+    let mut poll = [WSAPOLLFD {
+        fd: SOCKET(socket.as_raw_socket() as usize),
+        events: POLLWRNORM,
+        revents: WSAPOLL_EVENT_FLAGS(0),
+    }];
+    (unsafe { WSAPoll(poll.as_mut_ptr(), 1, WRITABLE_WAIT_MS) }) > 0
+        && poll[0].revents.0 & POLLWRNORM.0 != 0
+}
+/// One datagram, retried once when the socket buffer is full. The inner
+/// error is Winsock's.
+fn send_one(
+    socket: &UdpSocket,
+    packet: &[u8],
+    peer: SocketAddr,
+) -> Result<std::result::Result<(), WSA_ERROR>> {
+    let send = || {
+        socket
+            .send_to(packet, peer)
+            .map_err(|e| WSA_ERROR(e.raw_os_error().unwrap_or(WSAEINVAL.0)))
+    };
+    let mut result = send();
+    if result == Err(WSAEWOULDBLOCK) && writable(socket) {
+        result = send();
+    }
+    Ok(match result {
+        Ok(size) => {
+            anyhow::ensure!(
+                size == packet.len(),
+                "Winsock returned an incomplete UDP datagram"
+            );
+            Ok(())
+        }
+        Err(error) => Err(error),
+    })
+}
+/// One datagram; `Ok(false)` when a transient error dropped it.
+pub fn send_datagram(socket: &UdpSocket, packet: &[u8], peer: SocketAddr) -> Result<bool> {
+    match send_one(socket, packet, peer)? {
+        Ok(()) => Ok(true),
+        Err(error) if transient(error) => Ok(false),
+        Err(error) => Err(std::io::Error::from_raw_os_error(error.0).into()),
+    }
 }
 /// Physical Ethernet speed on the route to this client; zero means unknown.
 pub fn routed_link_bps(peer: SocketAddr) -> u64 {
@@ -230,12 +296,19 @@ pub fn routed_link_bps(peer: SocketAddr) -> u64 {
 pub struct Batch {
     offload: bool,
     pub system_calls: u64,
+    /// Datagrams lost to transient send errors.
+    pub dropped: u64,
+    unreported: u64,
+    reported: Option<std::time::Instant>,
 }
 impl Default for Batch {
     fn default() -> Self {
         Self {
             offload: true,
             system_calls: 0,
+            dropped: 0,
+            unreported: 0,
+            reported: None,
         }
     }
 }
@@ -253,6 +326,25 @@ impl Batch {
             .count()
             .max(1)
     }
+    /// Count dropped datagrams and report them at most every 5 seconds.
+    fn dropped(&mut self, count: usize, error: WSA_ERROR) {
+        self.dropped += count as u64;
+        self.unreported += count as u64;
+        if self
+            .reported
+            .is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(5))
+        {
+            tracing::warn!(
+                code = error.0,
+                dropped = self.unreported,
+                "UDP send failed; packets dropped"
+            );
+            self.unreported = 0;
+            self.reported = Some(std::time::Instant::now());
+        }
+    }
+    /// Bytes handed to Winsock. Datagrams that hit a transient error are
+    /// dropped, as Vibepollo does, rather than ending the stream.
     pub fn send(
         &mut self,
         socket: &UdpSocket,
@@ -267,41 +359,80 @@ impl Batch {
             && packets.len() <= 64
             && packets.iter().all(|p| p.len() == packets[0].len())
         {
-            #[repr(C)]
-            struct Control {
-                header: CMSGHDR,
-                size: u32,
-                padding: u32,
+            match self.send_segmented(socket, packets, peer)? {
+                Ok(sent) => return Ok(sent),
+                Err(error)
+                    if [WSAEINVAL, WSAENOPROTOOPT, WSAEOPNOTSUPP, WSAEMSGSIZE].contains(&error) =>
+                {
+                    self.offload = false;
+                    tracing::debug!(
+                        code = error.0,
+                        "UDP segmentation unavailable; using individual datagrams"
+                    );
+                }
+                Err(error) if transient(error) => {
+                    self.dropped(packets.len(), error);
+                    return Ok(0);
+                }
+                Err(error) => return Err(std::io::Error::from_raw_os_error(error.0).into()),
             }
-            let control = Control {
-                header: CMSGHDR {
-                    cmsg_len: std::mem::size_of::<CMSGHDR>() + 4,
-                    cmsg_level: IPPROTO_UDP.0,
-                    cmsg_type: UDP_SEND_MSG_SIZE,
-                },
-                size: packets[0].len().try_into()?,
-                padding: 0,
-            };
-            let address = socket2::SockAddr::from(peer);
-            let mut buffers = [WSABUF {
-                len: 0,
-                buf: windows::core::PSTR::null(),
-            }; 64];
-            for (buffer, packet) in buffers.iter_mut().zip(packets) {
-                buffer.len = packet.len() as u32;
-                buffer.buf = windows::core::PSTR(packet.as_ptr().cast_mut());
+        }
+        let mut sent = 0;
+        for packet in packets {
+            self.system_calls += 1;
+            match send_one(socket, packet, peer)? {
+                Ok(()) => sent += packet.len(),
+                Err(error) if transient(error) => self.dropped(1, error),
+                Err(error) => return Err(std::io::Error::from_raw_os_error(error.0).into()),
             }
-            let message = WSAMSG {
-                name: address.as_ptr().cast_mut().cast(),
-                namelen: address.len(),
-                lpBuffers: buffers.as_mut_ptr(),
-                dwBufferCount: packets.len() as u32,
-                Control: WSABUF {
-                    len: std::mem::size_of::<Control>() as u32,
-                    buf: windows::core::PSTR((&control as *const Control).cast_mut().cast()),
-                },
-                dwFlags: 0,
-            };
+        }
+        Ok(sent)
+    }
+    /// One WSASendMsg with UDP segmentation, retried once when the socket
+    /// buffer is full. The inner error is Winsock's.
+    fn send_segmented(
+        &mut self,
+        socket: &UdpSocket,
+        packets: &[Vec<u8>],
+        peer: SocketAddr,
+    ) -> Result<std::result::Result<usize, WSA_ERROR>> {
+        #[repr(C)]
+        struct Control {
+            header: CMSGHDR,
+            size: u32,
+            padding: u32,
+        }
+        let control = Control {
+            header: CMSGHDR {
+                cmsg_len: std::mem::size_of::<CMSGHDR>() + 4,
+                cmsg_level: IPPROTO_UDP.0,
+                cmsg_type: UDP_SEND_MSG_SIZE,
+            },
+            size: packets[0].len().try_into()?,
+            padding: 0,
+        };
+        let address = socket2::SockAddr::from(peer);
+        let mut buffers = [WSABUF {
+            len: 0,
+            buf: windows::core::PSTR::null(),
+        }; 64];
+        for (buffer, packet) in buffers.iter_mut().zip(packets) {
+            buffer.len = packet.len() as u32;
+            buffer.buf = windows::core::PSTR(packet.as_ptr().cast_mut());
+        }
+        let message = WSAMSG {
+            name: address.as_ptr().cast_mut().cast(),
+            namelen: address.len(),
+            lpBuffers: buffers.as_mut_ptr(),
+            dwBufferCount: packets.len() as u32,
+            Control: WSABUF {
+                len: std::mem::size_of::<Control>() as u32,
+                buf: windows::core::PSTR((&control as *const Control).cast_mut().cast()),
+            },
+            dwFlags: 0,
+        };
+        let expected: usize = packets.iter().map(Vec::len).sum();
+        for attempt in 0..2 {
             let mut sent = 0;
             self.system_calls += 1;
             let result = unsafe {
@@ -315,35 +446,18 @@ impl Batch {
                 )
             };
             if result == 0 {
-                let expected: usize = packets.iter().map(Vec::len).sum();
                 anyhow::ensure!(
                     sent as usize == expected,
                     "Winsock returned an incomplete UDP batch"
                 );
-                return Ok(expected);
+                return Ok(Ok(expected));
             }
             let error = unsafe { WSAGetLastError() };
-            if [WSAEINVAL, WSAENOPROTOOPT, WSAEOPNOTSUPP, WSAEMSGSIZE].contains(&error) {
-                self.offload = false;
-                tracing::debug!(
-                    code = error.0,
-                    "UDP segmentation unavailable; using individual datagrams"
-                );
-            } else {
-                return Err(std::io::Error::from_raw_os_error(error.0).into());
+            if error != WSAEWOULDBLOCK || attempt == 1 || !writable(socket) {
+                return Ok(Err(error));
             }
         }
-        let mut sent = 0;
-        for packet in packets {
-            self.system_calls += 1;
-            let size = socket.send_to(packet, peer)?;
-            anyhow::ensure!(
-                size == packet.len(),
-                "Winsock returned an incomplete UDP datagram"
-            );
-            sent += size;
-        }
-        Ok(sent)
+        unreachable!("the second attempt always returns")
     }
 }
 #[cfg(test)]
@@ -403,6 +517,29 @@ mod tests {
                 assert_eq!(&buffer[..n], expected);
             }
         }
+        Ok(())
+    }
+    #[test]
+    fn transient_send_errors_drop_packets_instead_of_ending_the_stream() -> Result<()> {
+        for error in [WSAEWOULDBLOCK, WSAENOBUFS, WSAEHOSTUNREACH, WSAECONNRESET] {
+            assert!(transient(error), "{}", error.0);
+        }
+        for error in [WSAEINVAL, WSAENOTSOCK, WSAEFAULT, WSAEMSGSIZE] {
+            assert!(!transient(error), "{}", error.0);
+        }
+        // Without SIO_UDP_CONNRESET disabled, the ICMP reply from a closed
+        // port turns later sends into WSAECONNRESET on Windows.
+        let sender = UdpSocket::bind("127.0.0.1:0")?;
+        let closed = UdpSocket::bind("127.0.0.1:0")?.local_addr()?;
+        let packets = vec![vec![7u8; 256]; 4];
+        let mut batch = Batch::default();
+        for _ in 0..20 {
+            send_datagram(&sender, &packets[0], closed)?;
+            batch.send(&sender, &packets, closed)?;
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        configure_udp(&sender)?;
+        assert!(socket2::SockRef::from(&sender).send_buffer_size()? >= 1 << 20);
         Ok(())
     }
 }

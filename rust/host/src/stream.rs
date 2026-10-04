@@ -1053,11 +1053,18 @@ impl Media {
                         }
                         Ok(())
                     })();
-                    s.stop();
+                    // Fail before stopping, so the control stream tells the
+                    // client about the error instead of a normal close.
+                    if result.is_err() {
+                        s.fail();
+                    } else {
+                        s.stop();
+                    }
                     let _ = audio.join();
                     result
                 })();
                 if let Err(e) = result {
+                    s.fail();
                     tracing::error!(error=%e,client=%s.launch.client.name,"session failed");
                 }
                 s.stop();
@@ -1206,7 +1213,9 @@ impl Media {
             };
             if let Some(peer) = peer {
                 for packet in p.encode(&opus.encode(samples.as_deref().unwrap_or(&silence))?)? {
-                    self.audio.send_to(&packet, peer)?;
+                    // A lost audio packet is concealed by the client; only a
+                    // broken socket stops the audio.
+                    butterpollo_windows::net::send_datagram(&self.audio, &packet, peer)?;
                 }
             } else if start.elapsed() > crate::network::ping_timeout(&config) {
                 anyhow::bail!("client audio ping timed out");
@@ -1444,8 +1453,14 @@ impl Media {
                 drop(sessions);
                 if let Some(s) = s {
                     p.session = Some(s.clone());
-                    if s.stopping() || p.seen.elapsed() > ping_timeout {
-                        if let Ok(message) = p.encrypt(&s, 0x0109, &0x80030023u32.to_be_bytes()) {
+                    let timed_out = p.seen.elapsed() > ping_timeout;
+                    if s.stopping() || timed_out {
+                        if timed_out && !s.stopping() {
+                            tracing::warn!(client=%s.launch.client.name,"client control stream timed out");
+                            s.fail();
+                        }
+                        let reason = s.termination_reason();
+                        if let Ok(message) = p.encrypt(&s, 0x0109, &reason.to_be_bytes()) {
                             let peer = host.peer_mut(*peer_id);
                             let _ = peer.send(0, &Packet::new(message, PacketKind::Reliable));
                             peer.disconnect_later(0);
