@@ -76,3 +76,6 @@ AGENTS.md
 test_sunshine.log
 vibeshine_state.json
 .claude/
+
+# Cargo build output
+/target/

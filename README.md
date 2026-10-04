@@ -1,5 +1,7 @@
 # Butterpollo
 
+**Butterpollo 2.0.0-rc.1 for Windows** is the Rust host in [`rust/`](rust/README.md). Download `butterpollo-setup-2.0.0-rc.1.exe` from the [releases](https://github.com/RamazanKara/Butterpollo/releases); it upgrades Vibepollo 2.0 or an earlier Butterpollo in place and keeps your settings and paired devices. On AMD GPUs it copies and converts captured frames on compute queues beside a running game; video FEC uses 21–29% less CPU time than the C++ host with identical parity bytes. See [what's new](rust/RELEASE_NOTES.md), [parity with Vibepollo 2.0](rust/PARITY.md) and [measured performance](rust/PERFORMANCE.md). The measurements and architecture below describe the retained C++ reference.
+
 Butterpollo is a Windows game-streaming host built on [Vibepollo](https://github.com/Nonary/Vibepollo), which builds on [Apollo](https://github.com/ClassicOldSong/Apollo) and [Sunshine](https://github.com/LizardByte/Sunshine). It has one job: get each frame from your PC to your Moonlight client as fast and as evenly as possible. Anything that doesn't serve that job has been taken out. A change goes in only if it makes streaming faster or smoother, and I measure it before it ships.
 
 The name comes from the first tester's verdict on the WGC fix: "smooth as butter". Also, *pollo* is Spanish for chicken.

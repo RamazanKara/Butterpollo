@@ -1,0 +1,124 @@
+/*
+ * Butterpollo console design tokens.
+ *
+ * Decisions (deliberate, not defaults):
+ * - Reference: a dense, status-first admin console in the manner of
+ *   Tailscale's admin panel. People come here to check whether the host
+ *   is streaming, pair a device or add a game; there is no marketing page.
+ * - Colour: neutral graphite on cool grey; one brand accent, butter yellow
+ *   (from the name), used for the current selection, primary actions and
+ *   the live indicator. No gradients, no glow.
+ * - Type: Segoe UI Variable, the host's own system face: Butterpollo is a
+ *   Windows host and its console should feel native to that PC. Numbers,
+ *   commands and logs use Cascadia Mono, which ships with Windows Terminal.
+ *   Nothing is downloaded.
+ * - Shape: small radii and hairline borders; density over decoration.
+ */
+:root {
+  --font: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  --font-display: 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
+  --mono: 'Cascadia Mono', 'Cascadia Code', Consolas, ui-monospace, monospace;
+
+  --text-xs: 11.5px;
+  --text-sm: 12.5px;
+  --text: 14px;
+  --text-lg: 16px;
+  --text-xl: 21px;
+  --text-2xl: 28px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  --radius: 6px;
+  --radius-lg: 10px;
+  --nav-width: 220px;
+
+  --butter: #f2b705;
+  --butter-strong: #d49d00;
+
+  color-scheme: light;
+  --bg: #eef0f3;
+  --panel: #ffffff;
+  --panel-raised: #ffffff;
+  --sunken: #f6f7f9;
+  --ink: #16181c;
+  --ink-2: #3d424a;
+  --muted: #6e7480;
+  --line: #dde0e6;
+  --line-strong: #c5cad3;
+  --accent: var(--butter);
+  --accent-ink: #16181c;
+  --accent-soft: #fff3c4;
+  --focus: #1f6fd1;
+  --ok: #17803d;
+  --ok-soft: #e3f4e8;
+  --warn: #a35d00;
+  --warn-soft: #fdf0dc;
+  --danger: #c2302e;
+  --danger-soft: #fbe7e6;
+  --live: #17803d;
+  --shadow: 0 1px 2px rgb(16 18 22 / 6%);
+  --shadow-pop: 0 10px 30px rgb(16 18 22 / 18%);
+  --scrim: rgb(16 18 22 / 45%);
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #0f1113;
+  --panel: #171a1e;
+  --panel-raised: #1d2126;
+  --sunken: #13161a;
+  --ink: #e9ebee;
+  --ink-2: #c3c8cf;
+  --muted: #8b929c;
+  --line: #2a2f36;
+  --line-strong: #3a4049;
+  --accent: #f5c22e;
+  --accent-ink: #16181c;
+  --accent-soft: #3a3111;
+  --focus: #6aa6f0;
+  --ok: #4cc27a;
+  --ok-soft: #12291b;
+  --warn: #f0a742;
+  --warn-soft: #2e2210;
+  --danger: #f06b67;
+  --danger-soft: #331716;
+  --live: #4cc27a;
+  --shadow: none;
+  --shadow-pop: 0 10px 30px rgb(0 0 0 / 50%);
+  --scrim: rgb(0 0 0 / 60%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-theme='system'] {
+    color-scheme: dark;
+    --bg: #0f1113;
+    --panel: #171a1e;
+    --panel-raised: #1d2126;
+    --sunken: #13161a;
+    --ink: #e9ebee;
+    --ink-2: #c3c8cf;
+    --muted: #8b929c;
+    --line: #2a2f36;
+    --line-strong: #3a4049;
+    --accent: #f5c22e;
+    --accent-ink: #16181c;
+    --accent-soft: #3a3111;
+    --focus: #6aa6f0;
+    --ok: #4cc27a;
+    --ok-soft: #12291b;
+    --warn: #f0a742;
+    --warn-soft: #2e2210;
+    --danger: #f06b67;
+    --danger-soft: #331716;
+    --live: #4cc27a;
+    --shadow: none;
+    --shadow-pop: 0 10px 30px rgb(0 0 0 / 50%);
+    --scrim: rgb(0 0 0 / 60%);
+  }
+}

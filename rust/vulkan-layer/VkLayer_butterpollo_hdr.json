@@ -1,0 +1,12 @@
+{
+  "file_format_version": "1.2.0",
+  "layer": {
+    "name": "VK_LAYER_BUTTERPOLLO_RUST_virtual_hdr",
+    "type": "GLOBAL",
+    "library_path": ".\\butterpollo_vulkan_layer.dll",
+    "api_version": "1.3.0",
+    "implementation_version": "1",
+    "description": "Butterpollo Rust virtual display HDR surface formats",
+    "disable_environment": { "DISABLE_SUNSHINE_VIRTUAL_HDR": "1" }
+  }
+}

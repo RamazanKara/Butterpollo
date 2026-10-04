@@ -1,0 +1,16 @@
+# Third-party code
+
+Butterpollo Rust is GPL-3.0-only. Its administration console is rendered by the Rust host. Rust package names, versions, license declarations and repositories are recorded in the packaged `rust-dependencies.json`; exact versions and registry checksums are in `Cargo.lock`. Source is available in the corresponding repository checkout.
+
+External SDKs are not a port of the original host:
+
+- FFmpeg SDK: LizardByte/build-deps `v2026.516.30821`, Windows AMD64 archive SHA-256 `2f7a2c2fc6be9b96de3c6f654389f73a5e5d369d7e802d017894fae96247661d`. Static encoding libraries include FFmpeg/libavcodec/libavutil/libswscale, x264, x265, SVT-AV1 and HDR10+ support. FFmpeg and codec source/build recipes: https://github.com/LizardByte/build-deps/tree/v2026.516.30821. GPL source and distribution requirements apply to the combined executable.
+- AMF headers are provided by the FFmpeg SDK; AMF runtime is loaded from the installed AMD graphics driver. SDK: https://github.com/GPUOpen-LibrariesAndSDKs/AMF.
+- Native NVENC/CUDA ABI headers are vendored unchanged from FFmpeg/nv-codec-headers commit `33a9ede8d9914299d9262539c576a15bd0a19621`, the baseline's Video Codec SDK 13.0 headers. Their permission/copyright notices remain in the headers and are copied into the package. Only installed Windows system driver DLLs are loaded; no NVIDIA import library, CUDA toolkit or previous host implementation is linked. Source: https://github.com/FFmpeg/nv-codec-headers/tree/33a9ede8d9914299d9262539c576a15bd0a19621.
+- PyroWave `186f0393b77f7755953b5ecde994bb1cec2e4155`, API 0.6.0; Granite `b6cffd5ce81f540f0855e6778428483e14763d9b`. `scripts/build_pyrowave.sh` builds the pinned upstream SDK and applies Vibepollo 2.0's buffer-pool, 4:4:4 payload-sizing and short-decoder-block patches from `rust/codec-patches/pyrowave`. Their source patches are retained; packaged `pyrowave-build-info.txt` records revisions and patches. MIT notices are included for PyroWave/Granite/volk. Source: https://github.com/Themaister/pyrowave/tree/186f0393b77f7755953b5ecde994bb1cec2e4155.
+- Opus, oneVPL and GNU runtime DLLs come from MSYS2 UCRT64. Their installed license notices are copied into the package. MSYS2 source/build recipes: https://github.com/msys2/MINGW-packages.
+- NVIDIA RTX Video SDK 1.1.0 archive SHA-256 `abf4f34e2b5a618e355b0d5a0365d8ecc3db4396e756e4c850a867e1ae2ed69e`. The optional adapter links NVIDIA's NGX import library and ships `nvngx_truehdr.dll` under the included NVIDIA RTX Video SDK license. It is excluded with `-SkipTrueHdr`.
+- Windows GPU, audio, input, service and security APIs are imported through Microsoft's Rust `windows` crate. Vulkan headers define the PyroWave ABI; Vulkan is supplied by the installed graphics driver.
+- The host compiles its embedded HLSL GPU conversion shaders through Windows' D3DCompiler API. These shaders are part of Butterpollo's source; the Windows compiler and GPU driver remain system dependencies.
+
+The standalone C programs under `rust/tests` are independent interoperability fixtures. Moonlight-common-c, FFmpeg decoding, OpenSSL and Opus are used by these fixtures and are not compiled as original host implementation code.

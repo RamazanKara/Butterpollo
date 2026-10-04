@@ -297,7 +297,7 @@ test('mobile navigation keeps hidden controls out of the tab order and releases 
   await page.keyboard.press('Tab');
   await expect(page.getByRole('button', { name: 'Refresh', exact: true })).toBeFocused();
   await menu.click();
-  const brand = navigation.getByRole('link', { name: 'Vibepollo overview' });
+  const brand = navigation.getByRole('link', { name: 'Butterpollo overview' });
   await expect(brand).toBeFocused();
   await page.keyboard.press('Shift+Tab');
   await expect(navigation.getByRole('button', { name: 'Logout' })).toBeFocused();
@@ -628,14 +628,14 @@ test('Windows shows the host update notice across pages and retries failed check
     notice.getByText('Release information is unavailable. Try again later.'),
   ).toBeVisible();
   await notice.getByRole('button', { name: 'Check for updates' }).click();
-  await expect(notice.getByText('Vibepollo 1.1.0 is available')).toBeVisible();
+  await expect(notice.getByText('Butterpollo 1.1.0 is available')).toBeVisible();
   expect(pollsAfterCheck).toBe(2);
   await expect(notice.getByRole('link', { name: 'Read release notes' })).toHaveAttribute(
     'href',
     releasePage,
   );
   await page.getByRole('link', { name: 'Library', exact: true }).click();
-  await expect(notice.getByText('Vibepollo 1.1.0 is available')).toBeVisible();
+  await expect(notice.getByText('Butterpollo 1.1.0 is available')).toBeVisible();
 });
 
 test('Windows stable install does not advertise a prerelease without opt-in', async ({ page }) => {
