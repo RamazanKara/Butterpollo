@@ -635,7 +635,7 @@ impl Media {
                         &first,
                         &c,
                     )?);
-                    tracing::info!(width=s.config.width,height=s.config.height,fps=f64::from(s.config.fps_millihz())/1000.,codec=s.config.codec,hdr=s.config.hdr,vrr=s.config.vrr_low_latency,capture=%prepared.capture(),encoder=c.get("encoder","auto"),source_width=first.width,source_height=first.height,source_pixel=?first.pixel,"stream configured");
+                    tracing::info!(width=s.config.width,height=s.config.height,fps=f64::from(s.config.fps_millihz())/1000.,codec=s.config.codec,hdr=s.config.hdr,full_range=s.config.full_range(),color_matrix=s.config.color_matrix(),vrr=s.config.vrr_low_latency,capture=%prepared.capture(),encoder=c.get("encoder","auto"),source_width=first.width,source_height=first.height,source_pixel=?first.pixel,"stream configured");
                     let metadata = first.gpu.hdr_metadata();
                     *s.hdr_metadata.write().unwrap() = metadata;
                     if let Some(encoder) = encoder.as_mut() {

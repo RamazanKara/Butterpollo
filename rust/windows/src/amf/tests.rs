@@ -1,6 +1,132 @@
 use super::*;
 
 #[test]
+#[ignore = "requires AMD AMF and an independent FFprobe"]
+fn hdr10_metadata_and_range_reach_the_bitstream() -> Result<()> {
+    use crate::capture::{ComGuard, Pixel};
+    use std::{os::windows::process::CommandExt, process::Command};
+    let _com = ComGuard::new()?;
+    let gpu = Device::new("")?;
+    let ffprobe =
+        std::env::var_os("BUTTERPOLLO_TEST_FFPROBE").context("set BUTTERPOLLO_TEST_FFPROBE")?;
+    let directory = tempfile::tempdir()?;
+    let (width, height) = (1920u32, 1080u32);
+    let pixels = (0..width * height)
+        .flat_map(|index| {
+            let value = half::f16::from_f32([0.05, 1., 6.][(index % width / 640) as usize]);
+            [value, value, value, half::f16::ONE]
+        })
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
+    let source = GpuImage::upload(
+        &gpu,
+        &Image {
+            width,
+            height,
+            stride: width as usize * 8,
+            bytes: pixels,
+            captured: Instant::now(),
+            pixel: Pixel::RgbaF16,
+        },
+    )?;
+    let mut metadata = butterpollo_core::hdr::Metadata::display(1000., 0.005, 400.);
+    metadata.max_cll = 1000;
+    metadata.max_fall = 400;
+    let options = butterpollo_core::config::Config::parse(
+        "amd_usage=ultralowlatency\namd_quality=speed\namd_smart_access_video=disabled\n",
+    )?;
+    for codec in [1u8, 2] {
+        for full_range in [false, true] {
+            for compute in [false, true] {
+                let config = butterpollo_core::rtsp::Negotiated {
+                    width,
+                    height,
+                    codec,
+                    hdr: true,
+                    csc_mode: 4 | u8::from(full_range),
+                    fps: 120,
+                    bitrate_kbps: 40000,
+                    ..Default::default()
+                };
+                let queue = compute
+                    .then(|| crate::compute::Compute::for_device(&gpu.device))
+                    .transpose()?;
+                let mut encoder = Encoder::new_gpu(&config, gpu.clone(), &options, queue)?;
+                // As the stream does before its first frame.
+                encoder.set_hdr_metadata(metadata);
+                let mut output = vec![];
+                for frame in 0..4 {
+                    output.extend(encoder.encode_gpu(&source, frame == 0, config.bitrate_kbps)?);
+                }
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while encoder.pending() {
+                    output.extend(encoder.poll()?);
+                    if Instant::now() >= deadline {
+                        bail!("HDR metadata probe output timed out");
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                let name = format!("codec{codec}-full{full_range}-compute{compute}");
+                let bitstream = directory.path().join(format!("{name}.bin"));
+                std::fs::write(
+                    &bitstream,
+                    output
+                        .iter()
+                        .flat_map(|packet| packet.bytes.iter().copied())
+                        .collect::<Vec<_>>(),
+                )?;
+                let probed = Command::new(&ffprobe)
+                    .args([
+                        "-v",
+                        "error",
+                        "-f",
+                        if codec == 1 { "hevc" } else { "obu" },
+                        "-i",
+                    ])
+                    .arg(&bitstream)
+                    .args(["-show_frames", "-of", "json"])
+                    .creation_flags(0x08000000)
+                    .output()?;
+                assert!(
+                    probed.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&probed.stderr)
+                );
+                let probed: serde_json::Value = serde_json::from_slice(&probed.stdout)?;
+                let first = &probed["frames"][0];
+                assert_eq!(
+                    first["color_range"],
+                    if full_range { "pc" } else { "tv" },
+                    "{name}: {first}"
+                );
+                assert_eq!(first["color_transfer"], "smpte2084", "{name}: {first}");
+                let side = first["side_data_list"]
+                    .as_array()
+                    .with_context(|| format!("{name}: no side data in {first}"))?;
+                let mastering = side
+                    .iter()
+                    .find(|s| s["side_data_type"] == "Mastering display metadata")
+                    .with_context(|| format!("{name}: no mastering display metadata"))?;
+                // 1000 nits and BT.2020 red (0.708) in each codec's units.
+                let (luminance, red) = if codec == 1 {
+                    ("10000000/10000", "35400/50000")
+                } else {
+                    ("256000/256", "46399/65536")
+                };
+                assert_eq!(mastering["max_luminance"], luminance, "{name}: {mastering}");
+                assert_eq!(mastering["red_x"], red, "{name}: {mastering}");
+                let light = side
+                    .iter()
+                    .find(|s| s["side_data_type"] == "Content light level metadata")
+                    .with_context(|| format!("{name}: no content light level"))?;
+                assert_eq!(light["max_content"], 1000, "{name}");
+                assert_eq!(light["max_average"], 400, "{name}");
+            }
+        }
+    }
+    Ok(())
+}
+#[test]
 #[ignore = "requires AMD AMF, independent FFprobe and an artifact directory"]
 fn native_av1_geometry_and_hdr_are_preserved() -> Result<()> {
     use crate::capture::{ComGuard, Pixel};
