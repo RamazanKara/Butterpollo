@@ -16,7 +16,7 @@ Butterpollo moves that work to Direct3D 12 compute queues, which the GPU runs ne
 
 ## What it measures
 
-RX 7900 XT, HEVC 10-bit HDR at 1080p and 60 fps, the setting most people stream at. Vibepollo 2.0 and Butterpollo ran one after the other on the same PC with the same encoder settings, three times each, idle and next to a game-like load running at about 175 fps:
+RX 7900 XT, HEVC 10-bit HDR at 1080p and 60 fps, the setting most people stream at. Vibepollo 2.0 and Butterpollo ran one after the other on the same PC with the same encoder settings, three times each, idle and next to a game-like load (177 fps beside Vibepollo, 174 fps beside Butterpollo, which sends twice as many frames):
 
 | 1080p60, mean of 3 runs | Vibepollo 2.0 | Butterpollo |
 |---|---:|---:|

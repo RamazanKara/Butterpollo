@@ -221,8 +221,11 @@ FEC and audio on both), native AMF at ultra-low latency and `speed` with
 VBAQ and an input queue of 4, Desktop Duplication, realtime GPU priority,
 and a 120 Hz virtual display (Vibepollo set to
 `frame_limiter_auto_virtual_framegen = legacy`, its 2x mode; its default is
-4x). Three runs each; the game-like load ran at 174-177 fps in all of them.
-"Host latency" is the per-frame value Moonlight reports from the host.
+4x). Three runs each. The game-like load ran at 176.7-177.4 fps beside
+Vibepollo and 173.8-174.9 fps beside Butterpollo, which streamed about
+twice as many frames. "Host latency" is the per-frame value Moonlight
+reports from the host; both hosts measure it from the moment Desktop
+Duplication hands over the frame to the moment the packet is sent.
 
 | Case | Vibepollo 2.0 | Butterpollo 2.0 |
 |---|---|---|
@@ -238,12 +241,27 @@ Beside the load, Vibepollo handed AMF about 24 frames a second: its own
 a second beside the same load in an earlier batch, so sharing the graphics
 queue alone does not explain the gap; where Vibepollo loses the frames has
 not been traced. The probe window rendered 50-59 fps beside the load with
-Vibepollo and 59 fps with Butterpollo. Vibepollo applied an RTSS 60 fps
-limit during every stream (Butterpollo's virtual-display policy does the
-same); it does not reach the probe, which rendered 121 fps idle under both.
-Absolute load numbers move between batches (Butterpollo measured 33.5 ms in
-an earlier batch without Vibepollo runs), so only compare rows measured
-together. Artifacts: `day-work-20261002\hh1080-*`.
+Vibepollo and 59 fps with Butterpollo. Absolute load numbers move between
+batches (Butterpollo measured 33.5 ms in an earlier batch without Vibepollo
+runs), so only compare rows measured together. Artifacts:
+`day-work-20261002\hh1080-*`.
+
+Both hosts' virtual-display policy also turns on an RTSS 60 fps limit
+during a stream (Vibepollo logs it). A second batch, beside the load only,
+ran each host with the limit and with `frame_limiter_provider = none`:
+
+| Beside the load | Vibepollo 2.0 | Butterpollo 2.0 |
+|---|---|---|
+| RTSS limit on, picture age mean / p95 | 124.84 / 156.05 ms | 42.68 / 57.60 ms |
+| RTSS limit off, picture age mean / p95 | 125.81 / 158.30, 120.95 / 154.31 ms | 43.32 / 57.33 ms |
+| New pictures per second, on / off | 18.6 / 18.5, 19.2 | 51.2 / 50.2 |
+| Host latency, on / off | 79.7 / 79.8, 77.2 ms | 9.0 / 9.6 ms |
+
+The limit changes neither host. One Butterpollo run with the limit off is
+left out: its probe window did not start. Vibepollo was slower in this
+batch than in the first (about 124 against 96 ms) and the probe rendered
+only 40 fps beside it, while Butterpollo stayed at 42-43 ms. Artifacts:
+`day-work-20261002\hh1080n-*`.
 
 ### HDR colour accuracy
 
