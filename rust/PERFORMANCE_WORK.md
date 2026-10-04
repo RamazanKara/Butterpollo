@@ -195,6 +195,38 @@ Playnite focus retries and fullscreen relaunch, `/api/browse`.
 Unverified here: the secure desktop during a stream, streaming the sign-in
 screen after a reboot, a Steam game ending its stream, the restore hotkey.
 
+## October 4: latency beside a game
+
+Customer request: the lowest possible encode and end-to-end latency. Encode
+is at the VCN floor when idle; the remaining cost was D3D11 work queued behind
+a game on the graphics engine. Captures are now copied and converted on D3D12
+compute queues and AMF encodes from D3D12 (`cc05d5018`, details and numbers in
+`PERFORMANCE.md`). Idle picture age fell 0.6 ms; beside a heavy GPU load it
+fell 7-9 ms with more new pictures per second. `gpu_compute_conversion = false`
+restores the graphics-queue path.
+
+Probes (`156c9f348`): `gpu_load`, `d3d12_probe`, `copy_probe`,
+`ddx_sync_probe`, and `performance --live-capture --arrival` for
+present-to-bitstream timing. Scripts in
+`<artifact>\day-work-20261004` (`load_matrix.py`, `e2e-latency.ps1`,
+`ddx-sync.ps1`, `live-latency.ps1`, `guarded.py`, `quiet.py`).
+
+Lessons for test runs:
+
+- Run GPU tests through `guarded.py`: it refuses to start unless the
+  installed host has been quiet for two minutes and kills the test the moment
+  a client launches. An idle check right before a test is not enough; a
+  customer session started a second after one passed.
+- Do not start the isolated host while the installed host has an app running
+  (`RustHostApplicationActive`). Its virtual display heartbeat then failed
+  with ERROR_BUSY and the customer's exclusive layout was replaced by the
+  physical displays. `quiet.py --host` checks this.
+- This PC sleeps when idle; a long run may resume hours later.
+
+Next: AMD AV1 still pads 1968×2184 to 1984×2186 (AMF issue 423). Only AMD
+GPUs use the compute queues; NVIDIA and Intel keep the graphics-queue copy
+and conversion until the path is tested there.
+
 ## Next work
 
 1. Install the current source while the host is idle (package with

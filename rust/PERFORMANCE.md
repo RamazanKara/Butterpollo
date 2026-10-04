@@ -125,6 +125,65 @@ the 240 Hz Rust fixture are therefore not accepted. The next elevated matched
 benchmark launch was rejected by automatic approval review. Work continues
 with non-elevated probes; native motion comparison remains pending.
 
+## October 4: capture copies and conversion beside a game
+
+On an RX 7900 XT (AMF 1.5.2), AV1 HDR at 1968×2184 already encodes at the
+VCN's floor: 2.8-3.3 ms from submission to bitstream when idle. Tiles,
+multi-VCN, pre-encode, CDEF, AQ, the lowest-latency mode and QueryTimeout 0
+measured no gain; the driver already applies them under ultra-low latency.
+The cost is elsewhere: `examples/gpu_load.rs` draws a game-like load
+(≈5.6 ms GPU frames), and beside it every D3D11 step waits behind the game on
+the graphics engine (conversion 7.2 ms instead of 0.9 ms, a plain copy 8.4 ms
+instead of 0.75 ms). D3D11 GPU priorities, process scheduling classes and a
+high-priority D3D12 direct queue did not change that. A D3D12 compute queue
+did the same conversion in 0.22-0.29 ms under the load (`d3d12_probe`,
+`copy_probe`).
+
+Captured frames are now copied into shared textures on one compute queue and
+converted on another, and AMF encodes from D3D12 (`windows/src/compute.rs`).
+Two synchronisation details decided correctness:
+
+- Desktop Duplication returns a frame while DWM's copy into it may still be
+  running; the D3D11 device waits for it through the keyed mutex. A compute
+  copy without that wait differed from the D3D11 copy in 159 of 788 frames
+  idle and 316 of 325 beside the load (`ddx_sync_probe verify-nosync`). The
+  D3D11 context signals a shared fence after acquiring, the copy waits for it
+  on the GPU, and the D3D11 context waits for the copy before the frame is
+  released: 0 of 1161 idle and 0 of 267 under load differed. A D3D11 fence
+  signal holding no frame completes in 0.016 ms beside the load; holding a
+  frame it completes when DWM's copy does (0.15 ms idle, 7-10 ms under load).
+- AMF signals the fence it is given again after reading a D3D12 texture. With
+  one fence for all conversions, that signal released the next texture before
+  its conversion ran: a third of the streamed pictures repeated. Each output
+  texture now has its own fence.
+
+Synthetic moving frames, AV1 HDR 1968×2184 paced at 120 fps
+(`performance --synthetic 16 --paced`, `load_matrix.py`):
+
+| Case | Graphics queue | Compute queues |
+|---|---|---|
+| Idle | 3.23 ms mean, 3.55 p95 | 2.92 ms mean, 3.04 p95 |
+| Beside the load | 14.32 ms mean, 32.55 p95, 90 fps | 2.79 ms mean, 2.85 p95, 120 fps |
+
+Full encrypted streams from the isolated host, AV1 HDR 1968×2184 at 120 fps
+and 80 Mbps from a 240 Hz virtual display, decoded by an independent client
+that times a moving barcode from render to decoded picture (`run-motion.py`
+virtual-motion; same binary, `gpu_compute_conversion` off and on):
+
+| Case | Picture age mean / p95 | New pictures/s | Host mean |
+|---|---|---|---|
+| Idle, graphics queue | 12.98 / 13.89 ms | 120.6 | 3.45 ms |
+| Idle, compute queues | 12.37 / 13.29 ms | 120.1 | 2.86 ms |
+| Load, graphics queue | 52.87 / 71.02 ms | 44.6 | 21.2 ms |
+| Load, compute queues | 45.45 / 62.26 ms | 50.1 | 10.6 ms |
+
+Under the load DWM's own composition dominates (its copy into the
+duplication surface finishes 7-10 ms after the frame is handed over), so the
+host's share falls but the picture stays late. Host time under compute
+includes that wait, because frames are published before DWM's copy finishes
+and the encoder waits for it on the GPU. These runs exclude network transport
+and a remote display.
+
 ## Controlled comparison with the original C++ FEC
 
 The benchmark loads the original C++ host's Reed–Solomon wrapper from baseline commit `f23ee0c9e7857887be7f774de6ac5153500a7e53`, with its pinned nanors implementation at `19f07b513e924e471cadd141943c1ec4adc8d0e0`. The source verification script checks every compiled reference file against its pinned SHA-256. GCC 16.1.0 builds the reference with `-O3 -ftree-vectorize -funroll-loops`; Rust uses the release profile. Both select AVX2 on this Ryzen 7 5800X3D. The original runtime ISA dispatch is retained.
