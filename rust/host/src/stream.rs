@@ -410,6 +410,9 @@ impl Media {
                     // dropped and consumers are given time to release their frames
                     // and encoders before the new device is made.
                     let reopen = |lost: Capture, target: &(String, u64)| -> Result<Capture> {
+                        // Desktop Duplication reports the pointer's shape only
+                        // when it changes; the new capture starts from this one.
+                        let mut pointer = lost.pointer();
                         drop(lost);
                         worker.publish(None)?;
                         let deadline = Instant::now() + Duration::from_secs(30);
@@ -434,9 +437,14 @@ impl Media {
                                         .map_err(|_| error)
                                 });
                             match opened {
-                                Ok(recovered) => {
+                                Ok(mut recovered) => {
                                     if next != *target {
                                         tracing::info!(output = %next.0, "capture moved to the recreated display");
+                                    }
+                                    if let Some(pointer) = pointer.take()
+                                        && let Err(error) = recovered.resume_pointer(pointer)
+                                    {
+                                        tracing::warn!(%error, "the pointer appears once it moves or changes");
                                     }
                                     return Ok(recovered);
                                 }

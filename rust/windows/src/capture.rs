@@ -442,8 +442,10 @@ impl Duplication {
         result.map(Some)
     }
     pub fn next_gpu(&mut self) -> Result<Option<GpuImage>> {
-        // Keep acquisition nonblocking: even a 1 ms DXGI wait can sleep for
-        // a coarse scheduler tick and hold the shared device lock meanwhile.
+        // Keep acquisition nonblocking. A waiting acquisition holds the device's
+        // lock, so another thread's D3D11 call took up to 42 ms meanwhile, and
+        // beside a game it delivered fewer pictures, later, than polling
+        // (`examples/ddx_arrival_probe.rs`).
         let Some((info, resource)) = self.acquire_frame(0)? else {
             return Ok(None);
         };
@@ -1019,7 +1021,25 @@ pub enum Capture {
     /// Holds no device: the place of a lost capture while a new one is made.
     Closed,
 }
+/// The desktop pointer a lost capture last saw, for the capture replacing it.
+pub struct Pointer(crate::cursor::Carried);
 impl Capture {
+    /// The pointer to hand to the capture that replaces this one.
+    pub fn pointer(&self) -> Option<Pointer> {
+        match self {
+            Self::Dxgi(duplication) => Some(Pointer(duplication.cursor.carry())),
+            _ => None,
+        }
+    }
+    /// Draw `pointer` until Desktop Duplication reports the pointer itself,
+    /// which it does for a shape only when the shape changes.
+    pub fn resume_pointer(&mut self, pointer: Pointer) -> Result<()> {
+        if let Self::Dxgi(duplication) = self {
+            let Duplication { gpu, cursor, .. } = &mut **duplication;
+            cursor.resume(gpu, pointer.0)?;
+        }
+        Ok(())
+    }
     pub fn backend(&self) -> &'static str {
         match self {
             Self::Wgc(_) => "wgc",
