@@ -227,6 +227,18 @@ Next: AMD AV1 still pads 1968×2184 to 1984×2186 (AMF issue 423). Only AMD
 GPUs use the compute queues; NVIDIA and Intel keep the graphics-queue copy
 and conversion until the path is tested there.
 
+Waiting in Desktop Duplication instead of polling was measured and rejected
+(`examples/ddx_arrival_probe.rs`, `day-work-20261004\ddx-wait`, `e2e11`,
+`e2e12`). A blocking `AcquireNextFrame` returns a frame 0.08 ms after its
+present (p95 0.11 ms) against 0.39 ms (p95 0.89 ms) when polling every
+0.5 ms, but it holds the device's immediate-context lock: another thread's
+`Flush` meanwhile took 1.1 ms at the median and up to 56 ms (texture
+`GetDesc` and output `GetDesc1` are unaffected). With AMF on compute queues
+nothing else used that context, and idle streams gained 0.16 ms of picture
+age over four runs. Beside the game load, waiting was worse in all three
+pairs: 30.6 against 29.2 ms picture age, 91 against 94 new pictures per
+second, 0.7 ms more host time. Capture keeps polling.
+
 ## Next work
 
 1. Install the current source while the host is idle (package with
