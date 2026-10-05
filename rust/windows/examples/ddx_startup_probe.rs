@@ -2,6 +2,8 @@
 //! Usage: ddx_startup_probe DISPLAY SECONDS raw-bgra|raw-fp16|raw-legacy|plain|graphics|compute|wgc [awake|passive] [follow|stay]
 //! JSON lines contain counts and sampled pixel ranges, never desktop images.
 //! Readback makes this a correctness diagnostic, not a latency benchmark.
+#[cfg(windows)]
+mod support;
 #[cfg(not(windows))]
 fn main() {
     eprintln!("This probe requires Windows.");
@@ -9,6 +11,9 @@ fn main() {
 
 #[cfg(windows)]
 fn main() -> anyhow::Result<()> {
+    if let Some(result) = support::wgc_worker() {
+        return result;
+    }
     probe::run()
 }
 

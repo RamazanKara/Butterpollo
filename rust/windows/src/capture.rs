@@ -1073,8 +1073,17 @@ impl Drop for Wgc {
         self.close();
     }
 }
+mod bridge;
+pub use bridge::run_worker as run_wgc_worker;
+
+/// Whether WGC can capture the input desktop without crossing into Winlogon.
+pub fn wgc_desktop_available() -> bool {
+    bridge::desktop_available()
+}
+
 pub enum Capture {
     Wgc(Box<Wgc>),
+    WgcWorker(Box<bridge::Session>),
     Dxgi(Box<Duplication>),
     /// Holds no device: the place of a lost capture while a new one is made.
     Closed,
@@ -1117,7 +1126,7 @@ impl Capture {
     }
     pub fn backend(&self) -> &'static str {
         match self {
-            Self::Wgc(_) => "wgc",
+            Self::Wgc(_) | Self::WgcWorker(_) => "wgc",
             Self::Dxgi(_) => "ddx",
             Self::Closed => "closed",
         }
@@ -1129,11 +1138,14 @@ impl Capture {
     ) {
         if let Self::Wgc(wgc) = self {
             wgc.grid = enabled.then_some(grid);
+        } else if let Self::WgcWorker(worker) = self {
+            worker.set_claim_grid(enabled.then_some(grid));
         }
     }
     pub fn publication_deadline(&self) -> Option<Instant> {
         match self {
             Self::Wgc(wgc) => wgc.held.as_ref().map(|(_, deadline, _)| *deadline),
+            Self::WgcWorker(worker) => worker.publication_deadline(),
             _ => None,
         }
     }
@@ -1180,6 +1192,13 @@ impl Capture {
         hdr: bool,
         config: &butterpollo_core::config::Config,
     ) -> Result<Self> {
+        if kind == "wgc"
+            && (crate::process::is_system() || config.boolean("wgc_user_helper", false))
+        {
+            return Ok(Self::WgcWorker(Box::new(bridge::Session::new(
+                name, hdr, config,
+            )?)));
+        }
         let gpu = Device::new_adapter(
             name,
             config.get("adapter_name", ""),
@@ -1237,6 +1256,7 @@ impl Capture {
     pub fn next_frame(&mut self) -> Result<Option<Image>> {
         match self {
             Self::Wgc(w) => w.next_frame(),
+            Self::WgcWorker(w) => w.next_frame(),
             Self::Dxgi(d) => d.next(Duration::from_millis(1)),
             Self::Closed => bail!("capture is closed"),
         }
@@ -1244,6 +1264,7 @@ impl Capture {
     pub fn next_gpu(&mut self) -> Result<Option<GpuImage>> {
         match self {
             Self::Wgc(w) => w.next_gpu(),
+            Self::WgcWorker(w) => w.next_gpu(),
             Self::Dxgi(d) => d.next_gpu(),
             Self::Closed => bail!("capture is closed"),
         }

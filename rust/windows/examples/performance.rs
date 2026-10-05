@@ -1,10 +1,15 @@
 //! Repeat-frame encoder throughput excludes capture, network, and decoding.
+#[cfg(windows)]
+mod support;
 #[cfg(not(windows))]
 fn main() {
     eprintln!("This probe requires Windows.");
 }
 #[cfg(windows)]
 fn main() -> anyhow::Result<()> {
+    if let Some(result) = support::wgc_worker() {
+        return result;
+    }
     use anyhow::{Context, bail};
     use butterpollo_core::rtsp::Negotiated;
     use butterpollo_windows::{

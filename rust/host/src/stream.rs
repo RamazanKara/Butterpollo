@@ -276,6 +276,7 @@ struct CaptureKey {
     phase: String,
     compute: bool,
     wgc_compute: bool,
+    wgc_user_helper: bool,
 }
 impl CaptureKey {
     fn new(kind: &str, output: &str, hdr: bool, config: &Config, phase: &str) -> Self {
@@ -293,6 +294,7 @@ impl CaptureKey {
             .into(),
             compute: config.boolean("gpu_compute_conversion", true),
             wgc_compute: config.boolean("wgc_compute_copy", true),
+            wgc_user_helper: config.boolean("wgc_user_helper", false),
         }
     }
 }
@@ -481,6 +483,8 @@ impl Media {
                     };
                     let _ = started_tx.send(Ok(()));
                     let mut check_target = Instant::now();
+                    let mut user_desktop = kind == "wgc"
+                        && butterpollo_windows::capture::wgc_desktop_available();
                     let poll_interval = Duration::from_micros(
                         capture_config.integer("capture_poll_interval_us", 500).clamp(100, 1000) as u64,
                     );
@@ -488,7 +492,11 @@ impl Media {
                         if Instant::now() >= check_target {
                             check_target = Instant::now() + Duration::from_millis(100);
                             let next = prepared.capture_target();
-                            if next != target {
+                            let available = kind == "wgc"
+                                && butterpollo_windows::capture::wgc_desktop_available();
+                            let return_to_wgc = available && !user_desktop && capture.backend() == "ddx";
+                            user_desktop = available;
+                            if next != target || return_to_wgc {
                                 let lost = std::mem::replace(&mut capture, Capture::Closed);
                                 capture = match reopen(lost, &next) {
                                     Ok(capture) => capture,
@@ -663,7 +671,7 @@ impl Media {
                         &first,
                         &c,
                     )?);
-                    tracing::info!(width=s.config.width,height=s.config.height,fps=f64::from(s.config.fps_millihz())/1000.,codec=s.config.codec,hdr=s.config.hdr,full_range=s.config.full_range(),color_matrix=s.config.color_matrix(),vrr=s.config.vrr_low_latency,capture=%prepared.capture(),encoder=c.get("encoder","auto"),source_width=first.width,source_height=first.height,source_pixel=?first.pixel,"stream configured");
+                    tracing::info!(width=s.config.width,height=s.config.height,fps=f64::from(s.config.fps_millihz())/1000.,codec=s.config.codec,hdr=s.config.hdr,full_range=s.config.full_range(),color_matrix=s.config.color_matrix(),vrr=s.config.vrr_low_latency,requested_capture=%prepared.capture(),encoder=c.get("encoder","auto"),source_width=first.width,source_height=first.height,source_pixel=?first.pixel,"stream configured");
                     let metadata = first.gpu.hdr_metadata();
                     *s.hdr_metadata.write().unwrap() = metadata;
                     if let Some(encoder) = encoder.as_mut() {
@@ -1672,6 +1680,11 @@ mod tests {
             |config: &Config, phase: &str| CaptureKey::new("wgc", "display", false, config, phase);
         let default = key(&config, "first");
         assert_eq!(default, key(&config, "second"));
+        let mut helper = config.clone();
+        helper
+            .values
+            .insert("wgc_user_helper".into(), "true".into());
+        assert_ne!(default, key(&helper, "first"));
         let mut changed = config.clone();
         changed
             .values

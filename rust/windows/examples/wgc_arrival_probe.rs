@@ -1,6 +1,8 @@
 //! Compare WGC frame detection with polling and FrameArrived notifications.
 //! Captures the selected desktop without saving pictures or changing displays.
 //! usage: wgc_arrival_probe DISPLAY SECONDS poll|notify|hybrid [POLL_US]
+#[cfg(windows)]
+mod support;
 #[cfg(not(windows))]
 fn main() {
     eprintln!("This probe requires Windows.");
@@ -8,6 +10,9 @@ fn main() {
 
 #[cfg(windows)]
 fn main() -> anyhow::Result<()> {
+    if let Some(result) = support::wgc_worker() {
+        return result;
+    }
     use anyhow::ensure;
     use butterpollo_windows::{
         capture::{Capture, ComGuard, Priority, enable_dpi_awareness},

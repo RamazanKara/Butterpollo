@@ -251,11 +251,43 @@ pub struct Handoff {
     signalled: u64,
     /// Command lists, each with the value of the copy that last used it.
     lists: Vec<(ID3D12CommandAllocator, ID3D12GraphicsCommandList, u64)>,
+    /// Foreign textures belong to this capture, not the adapter-wide cache.
+    /// Releasing a helper must release its imported resources immediately.
+    imported: HashMap<usize, (ID3D11Texture2D, ID3D12Resource)>,
 }
 // The context is only used by the capture that owns this, under the D3D11
 // device's multithread protection; D3D12 objects are free-threaded.
 unsafe impl Send for Handoff {}
 impl Handoff {
+    /// A helper already created this texture's NT handle. Import that handle
+    /// instead of calling CreateSharedHandle a second time on the resource.
+    pub(crate) fn import_shared(
+        &mut self,
+        texture: &ID3D11Texture2D,
+        handle: HANDLE,
+    ) -> Result<()> {
+        let mut resource: Option<ID3D12Resource> = None;
+        unsafe {
+            self.compute
+                .device
+                .OpenSharedHandle(handle, &mut resource)?;
+        }
+        self.imported.insert(
+            texture.as_raw() as usize,
+            (
+                texture.clone(),
+                resource.context("no imported shared resource")?,
+            ),
+        );
+        Ok(())
+    }
+    fn open(&self, texture: &ID3D11Texture2D) -> Result<ID3D12Resource> {
+        if let Some((_, resource)) = self.imported.get(&(texture.as_raw() as usize)) {
+            Ok(resource.clone())
+        } else {
+            self.compute.open(texture)
+        }
+    }
     pub fn new(compute: Arc<Compute>, gpu: &crate::capture::Device) -> Result<Self> {
         let device: ID3D11Device5 = gpu.device.cast()?;
         let shared = |compute: &Compute| -> Result<(ID3D12Fence, ID3D11Fence)> {
@@ -282,6 +314,7 @@ impl Handoff {
             value: 0,
             signalled: 0,
             lists: Vec::new(),
+            imported: HashMap::new(),
         })
     }
     /// Copy the frame the capture's D3D11 device holds into `destination`,
@@ -292,8 +325,8 @@ impl Handoff {
         destination: &ID3D11Texture2D,
         source: &ID3D11Texture2D,
     ) -> Result<Ready> {
-        let destination = self.compute.open(destination)?;
-        let source = self.compute.open(source)?;
+        let destination = self.open(destination)?;
+        let source = self.open(source)?;
         let list = self.list()?;
         self.value += 1;
         let value = self.value;

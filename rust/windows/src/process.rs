@@ -304,6 +304,27 @@ pub fn user_environment() -> Result<BTreeMap<String, String>> {
     }
 }
 impl Process {
+    /// Import an unnamed resource from this owned child. The child never gets
+    /// a handle to the service process or its credentials.
+    pub(crate) fn duplicate_resource(&self, handle: usize) -> Result<OwnedHandle> {
+        anyhow::ensure!(
+            handle != 0 && handle != usize::MAX,
+            "invalid child resource handle"
+        );
+        unsafe {
+            let mut duplicate = HANDLE::default();
+            DuplicateHandle(
+                raw(&self.handle),
+                HANDLE(handle as *mut _),
+                GetCurrentProcess(),
+                &mut duplicate,
+                0,
+                false,
+                DUPLICATE_SAME_ACCESS,
+            )?;
+            Ok(owned(duplicate))
+        }
+    }
     /// Keep the supervisor's unnamed stop event alive for the entire child.
     /// The child duplicates a wait-only handle; handle inheritance cannot cross
     /// Windows sessions, and session-local object names cannot reach the service.
