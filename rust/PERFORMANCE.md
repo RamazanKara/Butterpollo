@@ -1164,7 +1164,15 @@ remained about 1.85 ms. The revised default uses explicit zero at every rate;
 an explicit wgc_high_rate_capture=true retains the 1 ms diagnostic option.
 
 The candidate remains unpublished and is not installed over the running service.
-The revised executable still needs confirmation without a profile override.
+The rebuilt executable was then checked twice without an interval override:
+121.186/121.193 delivered FPS, no long intervals and no decoding errors.
+Distinct-picture rates were 116.289/116.595 FPS, so one still narrowly missed
+116.4 while the other passed. Mean decoded picture age was 9.084/9.339 ms;
+mean host processing was 1.864/1.865 ms. The test binary's SHA-256 is
+f4a04b4634a690a86727b5b9c9a6da27ff558e275251fae2fc2a23400ef4c82b.
+The revised source passed all 210 ordinary tests, with the same 24 environment
+checks skipped, plus formatting, Clippy with warnings denied and the release
+workspace build. Frontend sources did not change after their successful checks.
 Distinct-picture acceptance is not yet consistent; the 60 FPS gate, longer
 runs, reconnect/secure-desktop recovery, HDR and the reporter's RX 9070 XT/Wi-Fi
 case remain open. No failed case is relabelled as a pass. Logs, renderer reports,
