@@ -427,8 +427,444 @@ python rust/tests/interop.py C:\path\to\artifacts av1-hdr 3840 2160 120 20 80000
 
 The positional arguments after the artifact directory are codec, width, height, requested fps, duration, requested bitrate in kbps and software decoder thread count. Reports contain per-half-second host counters and the derived host steady rate. Requested Moonlight bitrates can be adjusted during negotiation; the actual encoder bitrate is in each session sample.
 
+## October 5: WGC startup and notification experiment
+
+The OpenCode investigation ended with a strict WGC smoke test succeeding as the
+interactive user but failing as SYSTEM in that user's session:
+`CreateForMonitor` returned `0x80070424`. The Rust service runs its host under
+that SYSTEM token. Capture recovery already tried Desktop Duplication when WGC
+could not open; initial stream startup did not. Startup and recovery now share
+the fallback, log the actual backend and retain both Windows errors if neither
+backend opens. Strict probes still fail rather than substitute DDX.
+
+This is a fallback, not service-mode WGC support. A capture helper running as
+the signed-in user is still needed. DDX fallback is not evidence of equivalent
+VRR or game-frame-generation behavior.
+
+The next experiment used WGC's
+[frame-arrival callback on the pool's worker thread](https://learn.microsoft.com/en-us/uwp/api/windows.graphics.capture.direct3d11captureframepool.createfreethreaded)
+to wake capture, replacing 500 us polling with notification waits bounded by a
+100 ms housekeeping timer. Eight ten-second runs used the same release probe,
+in poll/notify/notify/poll order for each GPU condition. The source was the
+existing physical desktop, with approximately 35 changing pictures per second;
+the first second was excluded from latency samples. GPU load was the existing
+offscreen `gpu_load 55 1000 0 200` fixture. The installed host remained idle.
+
+| Condition | Wake method | Frames sampled | Mean detection | Per-run p95 | Empty pool checks per ten seconds |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Idle | 500 us polling | 632 | 0.566 ms | 1.247 / 1.487 ms | 18,884 / 18,898 |
+| Idle | Notifications | 641 | 0.391 ms | 0.889 / 1.006 ms | 360 / 346 |
+| GPU load | 500 us polling | 645 | 4.527 ms | 9.647 / 9.655 ms | 18,938 / 18,941 |
+| GPU load | Notifications | 657 | 5.133 ms | 11.678 / 12.070 ms | 393 / 349 |
+
+Detection means WGC's `SystemRelativeTime` to the host's snapshot acquisition,
+including WGC's own delivery delay. The means above are weighted by frame
+count; p95 values belong to individual runs. These are capture-component
+measurements on changing desktop content, not a controlled game or an
+end-to-end WGC/DDX comparison. They do not measure encoding, transport,
+decoding or remote scanout.
+
+Notifications reduced idle detection by 0.175 ms and almost eliminated empty
+polls, but increased loaded detection by 0.606 ms in this batch. Therefore
+**production capture keeps polling**. Callback registration and waits are
+opt-in for `windows/examples/wgc_arrival_probe.rs`, not enabled by normal
+streams. An exploratory hybrid run had zero updated frames after warmup and
+overlapped part of a build; it is excluded and establishes no latency result.
+
+The callback experiment also exposed a Windows teardown trap: revoking
+`FrameArrived` after closing the pool aborts in `GraphicsCapture.dll` instead
+of returning an error. The probe's registration is revoked before closure and
+only once; the event remains owned until in-flight callbacks return. Sixteen
+native reconnect/COM-teardown cycles pass with this order. Workspace tests
+and warnings-as-errors checks pass too.
+
+The final release build also passed an isolated encrypted user-mode WGC
+stream: 1920x1080 HEVC SDR at 60 FPS, 20 Mbps requested, 12 seconds. The
+independent client decoded all 715 received frames with zero failures and
+decoded 2,222 audio packets with a nonzero test tone. The host log explicitly
+reports `requested=wgc backend="wgc"`; capture was the existing 5120x1440
+SDR physical desktop, with display changes disabled. This establishes
+functional capture/encode/transport/audio interoperability, not a motion
+latency improvement or service-mode WGC acceptance. The startup fallback's
+failure cases are covered by regression tests; a new SYSTEM-context runtime
+test was not run in this pass.
+
+Local raw results, guards and validation logs are in
+`C:\Users\ramaz\.codex\artifacts\butterpollo-wgc-20261005`.
+The stream's full logs are in the earlier fixture's
+`day-work-20261002/codex-20261005-wgc-startup` directory. The final host SHA-256
+is `c10eeb65724d0598b7869dab6f6a6ace7715d2b46da06e0ab85640339eb3e0c2`.
+The measured prototype's SHA-256 is
+`b2b7e36667f7317864c0f8a31a01f2f5d4077691d02a69de398988a2121e68e9`.
+For further investigation on a changing desktop, build the release
+`wgc_arrival_probe` example and run `wgc_arrival_probe DISPLAY 10 poll`,
+`wgc_arrival_probe DISPLAY 10 notify`, or `wgc_arrival_probe DISPLAY 10 hybrid`.
+An empty display argument selects the primary output. A report with zero
+post-warmup samples has no valid detection-latency comparison.
+
+## October 5: LAN pacing and encoder follow-up
+
+The reporter identifies an RX 9070 XT, the latest driver and Wi-Fi. Their
+rc.2 log contains one HEVC hardware instance, repeated DDX access-loss
+recovery, and transient UDP errors 10055 and 10035. The reported 4.7 versus
+3.9 ms comparison remains open. This workstation has an RX 7900 XT with two
+reported HEVC instances; disabling multi-instance encoding does not reproduce
+the reporter's GPU. These tests do not establish the cause of that difference.
+
+The independent receiver at `192.168.4.10` is an i5-8259U / Iris Plus 655 NUC
+running Debian 13 on gigabit Ethernet. The Windows sender uses 2.5 Gb Ethernet.
+The receiver uses Moonlight-common-c
+`2600beaf13f18bfa43453609cf5e3b84a4227760`, FFmpeg and Opus in an isolated
+Docker image. No host packages, network settings or installed service profile
+were changed. Streaming profiles disable display mode/HDR changes; the later
+motion-fixture refresh correction is documented below. A guard stops test-owned processes if an installed
+stream or application becomes active.
+
+### Packet pacing
+
+Video pacing now measures its next wait from completion of the preceding
+batch. A delayed socket call or wakeup can no longer accumulate credit for a
+catch-up burst. Pacing includes Ethernet/IP/UDP wire overhead. Known physical
+Ethernet routes cap the burst rate at 80% of link speed; unknown routes retain
+the existing 800 Mbps default. This measures the sender's local Ethernet link,
+not end-to-end capacity. It does not infer a Wi-Fi client's capacity through a
+wired access point. Explicit pacing limits remain useful for that case, and
+the stream bitrate and picture settings are unchanged.
+
+The UDP probe sends 46,042 deterministic 1,400-byte datagrams: 600 frames at
+60 FPS, 50 Mbps payload, with two keyframes eight times larger. The independent
+Linux receiver records kernel timestamps, integrity and socket-overflow counts.
+Its effective receive buffer is 425,984 bytes; Python processing and this buffer
+are part of the stress fixture, not Moonlight's normal receiver.
+
+| Pacing case | Actual receiver overflows | Complete frames | Mean frame send span |
+| --- | ---: | ---: | ---: |
+| Previous 800 Mbps, two runs | 344 / 400 | 598 / 599 | 0.693 / 0.693 ms |
+| Revised 800 Mbps | 129 | 599 | 0.779 ms |
+| Revised 80 Mbps | 0 | 600 | 10.728 ms |
+
+The slower cap delivered every datagram without corruption, at the cost of a
+longer send span. It is not a general latency win or proof of the Wi-Fi fix.
+In a separate **modeled** 100 Mbps / 128 KiB bottleneck, adding a 6 ms sender
+stall raised peak queued bytes to 93,357 with previous 80 Mbps pacing, versus
+39,694 with completion-based pacing. Both corresponding real receiver runs
+delivered every datagram. No sender-side 10055/10035 error was reproduced.
+Raw results: `udp-results.json`; probe: `windows/examples/udp_pacing_probe.rs`.
+
+### Encoder comparisons and rejected output-wait change
+
+The controlled encoder fixture uses eight deterministic moving input textures,
+HEVC 3840x2160 at 60 FPS / 50 Mbps, ULL/speed, VBAQ enabled and preanalysis
+disabled. Each run encodes 480 pictures; comparisons use two runs per setting
+in reverse order, separately idle and under the same offscreen GPU load.
+
+| Existing conversion path | Idle mean | Loaded mean | Loaded per-run p95 |
+| --- | ---: | ---: | ---: |
+| Compute, current default | 6.339 ms | 5.955 ms | 6.209 / 6.203 ms |
+| Graphics | 6.223 ms | 8.512 ms | 10.948 / 10.978 ms |
+| Compute, multi-instance disabled | 6.320 ms | 5.948 ms | 6.178 / 6.183 ms |
+
+This confirms the benefit of Opus's existing compute path under load on this
+GPU; it is not a newly implemented speedup or a whole-stream comparison.
+
+Removing an extra timer wait after AMF's own blocking output query reduced
+loaded component mean latency from 5.958 to 5.831 ms. It also reduced idle
+1080p60 LAN stream host mean from 2.279 to 2.201 ms and p95 from 2.6 to 2.3 ms.
+However, the loaded LAN comparison regressed from 6.102 to 6.501 ms mean, with
+per-run late-interval counts 89/76 before versus 83/97 after. All eight runs
+decoded successfully and sustained approximately 60 FPS. The source was the
+existing desktop scaled from 5120x1440, not controlled full-screen motion.
+**The production output-wait change was reverted.** Component gains alone did
+not justify the loaded stream regression. Raw results are in
+`encoder-controlled`, `encoder-polling` and `lan-poll2-results.json`.
+
+### Independent receiver limits and reproduction
+
+A native DDX snapshot test failed twice with no initial image. The physical
+display's existing idle timeout is 180 seconds. Holding a temporary display
+power request made the same unchanged test pass once in 0.36 seconds, but
+later repeats failed even with that request and a moving test window. The
+standalone DDX check remains unresolved; the power request alone did not fix
+it. Unlike the C++ host's capture loop, the Rust capture worker had no request
+to prevent display sleep, which is a separate missing behavior. Capture
+now holds `ES_DISPLAY_REQUIRED | ES_CONTINUOUS` for its lifetime, preserving
+prior thread requirements and restoring them at teardown. The guard cannot
+move between threads. The snapshot fixture uses the same guard.
+[Windows documents the request and restoration semantics here](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-setthreadexecutionstate).
+This is a capture-liveness correction, not evidence that display sleep caused
+the reporter's access-loss events or remaining encoder-latency difference.
+
+Two 230-second 1080p60 HEVC LAN runs crossed the existing 180-second display
+timeout. Input activity was recorded; the last input occurred at connection
+startup, with more than 230 seconds idle by each run's end. In the control,
+all ten five-second samples after 180 seconds had no fresh capture claims;
+the revised worker continued recording fresh claims in all ten. Sending
+repeated pictures can hide this problem behind an apparently healthy FPS.
+
+| Display request | Received / decoded pictures | Steady FPS | Host mean / p95 | Late arrival intervals |
+| --- | ---: | ---: | ---: | ---: |
+| Previous behavior | 13,743 / 13,743 | 60.139 | 2.290 / 2.6 ms | 51 |
+| Held during capture | 13,838 / 13,838 | 60.561 | 2.270 / 2.6 ms | 44 |
+
+Both runs decoded nonzero audio with zero codec failures. Both still needed
+two DDX restarts during startup and initially received some blank pictures;
+the awake request does not resolve that startup issue. This single long pair
+validates continued fresh claims in this idle environment, not a general
+latency improvement. Reports: `lan-power-results.json` and each run's
+`capture-freshness.json`. The native power-state test separately checks prior
+requirements, nested guards and restoration.
+
+Every hardware-decoded picture is read back before checking exact geometry,
+bit depth, HDR signalling and pixel contrast. Audio validation requires a
+decoded test tone. A 1080p60 HEVC run decoded 1,203/1,203 pictures, sustained
+60.597 FPS after warmup and had zero intervals above 1.5 frame periods.
+The 4K60 HEVC run decoded 538/538 received pictures without errors, but the
+NUC's decoder plus readback averaged 35.023 ms and delivered only 27.588 FPS.
+That run is **not a performance pass**, despite correct pictures and audio.
+The receiver now supports `BUTTERPOLLO_TEST_MIN_FPS` to fail such runs directly.
+The initial separately named comparison binary was unreachable from the NUC;
+it produced no stream and is excluded. Subsequent comparisons used the same
+test executable path and saved each binary's hash.
+
+Final 18-second runs of the retained changes passed the minimum-rate gate,
+exact dimensions, visible pixel contrast on every decoded picture, and the
+test tone. The source remained the existing SDR desktop; the HDR row checks
+SDR-to-HDR conversion and HDR signalling, not native HDR capture.
+
+| Backend / codec | Stream size | Received and decoded | Steady FPS | Decode failures |
+| --- | --- | ---: | ---: | ---: |
+| DDX / H.264 | 1920x1080 | 1,082 | 60.591 | 0 |
+| DDX / HEVC Main10 HDR | 1280x720 | 1,082 | 60.582 | 0 |
+| DDX / AV1 | 1280x720 | 1,083 | 60.614 | 0 |
+| WGC / HEVC | 1920x1080 | 1,088 | 60.601 | 0 |
+
+AV1 used software decoding; the other rows used Intel VAAPI plus readback.
+The WGC row checks the actual opened backend, so fallback cannot pass it as
+a WGC result. Reports are in `lan-final-results.json`. That earlier workspace
+run passed 198 tests, including 18 native checks, with the desktop active.
+The earlier inactive-desktop DDX failures remain recorded; a later pass does
+not close that condition. The excluded AV1 geometry check independently
+fails all twelve requested SDR/HDR/alignment combinations. NVIDIA execution
+still needs NVIDIA hardware.
+
+The Windows independent receiver also passed 1280x720 HEVC (718/718 pictures,
+60.649 steady FPS), and correctly rejected an intentionally impossible
+1,000 FPS requirement while still decoding 718 pictures without codec errors.
+The final rebuilt host passed a local 3840x2160 HEVC / 60 FPS / 50 Mbps stream:
+985/985 received pictures decoded, 60.585 steady FPS, 6.269 ms mean / 6.6 ms
+p95 host time, and nonzero audio. The whole-run rate was only 54.56 FPS because
+startup recovery consumed part of the 18-second run; 200 initial pictures had
+no sampled luma contrast. Keep that startup defect visible. This source was
+the existing 5120x1440 SDR desktop scaled to 4K, not native 4K motion capture.
+Reports: `local-final-hevc`, `local-rate-gate-negative`, `local-final-4k-hevc`.
+
+Build `tests/build-moonlight-client.sh ARTIFACT_DIRECTORY MOONLIGHT_SOURCE`
+on Linux with CMake, C/C++ compilers and OpenSSL, FFmpeg and Opus development
+packages. Use `BUTTERPOLLO_TEST_HOST` and `BUTTERPOLLO_TEST_PORT` with
+`tests/interop.py` against a test-owned host profile. Optional variables are
+`BUTTERPOLLO_TEST_HW_DECODER=vaapi`,
+`BUTTERPOLLO_TEST_HW_DEVICE=/dev/dri/renderD128`,
+`BUTTERPOLLO_TEST_REQUIRE_PICTURE=1`, `BUTTERPOLLO_TEST_AUDIO_TONE=1`,
+`BUTTERPOLLO_TEST_WARMUP_SECONDS=5` and `BUTTERPOLLO_TEST_MIN_FPS=58.2`
+for a 60 FPS run. The profile must repeat static pictures at the requested
+rate, or a static desktop's deliberately reduced rate will fail this gate.
+Remote clocks are independent, so remote measurements do not subtract the
+sender's QPC timestamps or claim source-to-display latency.
+
+The remaining RX 9070 XT acceptance comparison needs that GPU and client:
+keep the same 3840x2160 / 60 FPS HEVC profile, bitrate, range and game scene
+on both hosts; record the actual AMD driver version, not just "latest".
+Compare idle and loaded runs in alternating order after warmup. On Rust,
+compare compute conversion enabled and disabled without changing quality.
+Repeat the same client once on Ethernet, then on Wi-Fi, to separate encoding
+from delivery. Preserve capture-restart and UDP-drop logs alongside host
+processing, frame age and delivery intervals. No setting from a faster local
+GPU or a wired fixture closes that acceptance check by itself.
+
+## October 5 WGC compute copy and capture startup follow-up
+
+WGC can use the same fenced D3D12 copy and AMF conversion as DDX on supported
+AMD devices with `wgc_compute_copy=true`. It remains opt-in after the production
+repeat-rate comparison below found a loaded cadence tradeoff.
+`gpu_compute_conversion=false` disables compute globally. WGC's graphics-copy
+and polling defaults remain unchanged. Failure to initialize
+compute preserves WGC on D3D11, and a texture-sharing failure now copies the
+**same frame** on D3D11 instead of waiting for another desktop update.
+A native regression test failed before that fallback fix and passes after it.
+
+Before measuring latency, 120 WGC frames at idle and 120 under GPU load were
+compared byte for byte with D3D11 readback of the same source frame. Every
+comparison passed; each run contained 119 actual content changes. The
+candidate was read first so reading the reference could not hide a missing
+synchronization fence. A retained snapshot also remained unchanged after
+capture teardown. These were SDR desktop captures on the local RX 7900 XT.
+
+Eight initial 22-second HEVC streams used graphics/compute/compute/graphics
+order both at idle and beside `gpu_load 45 1000 0 200`. The motion fixture
+temporarily requested 60 Hz on the 5120×1440 SDR display, with a deterministic
+128-pixel moving strip; the stream was 2560×720 at 60 FPS and 20 Mbps. These
+initial runs forced `minimum_fps_target=60`. Scaling by exactly one
+half preserved the timestamp barcode. The first five seconds were excluded.
+All received pictures decoded correctly, with 100% barcode coverage, nonzero
+test-tone audio, and no capture restart. Picture age uses the same PC's QPC
+clock and includes decoding; it excludes scanout and input latency.
+
+| GPU condition | WGC copy/conversion | Host mean | Decoded picture-age mean | Distinct pictures/second |
+| --- | --- | ---: | ---: | ---: |
+| Idle | Graphics | 2.361 ms | 31.432 ms | 46.758 |
+| Idle | Compute | 2.210 ms | 31.835 ms | 50.601 |
+| Loaded | Graphics | 8.557 ms | 49.052 ms | 49.704 |
+| Loaded | Compute | 1.953 ms | 40.630 ms | 50.357 |
+
+Values are the mean of two runs per cell. Under load the host mean fell by
+77% and decoded picture age by 17%; both reversed-order runs agreed. Idle
+picture age did not improve. Transport FPS was 60.425–60.645, which must not
+be confused with distinct-picture FPS. The producer itself slowed to about
+56.7 FPS with the graphics path and 58.8 FPS with compute under this load.
+This is a controlled strip plus offscreen load, not a full game or native 4K.
+
+An initial two-run pilot found fewer distinct frames with compute (50.386
+versus 45.726 FPS). The full alternating comparison above did not reproduce
+that ordering. The deliberately strict 50-distinct-FPS gate still failed on
+both idle graphics runs and one idle compute run, and on both loaded graphics
+runs. Those failures remain recorded; this does not establish perfect 60-FPS
+freshness. Artifacts: `wgc-compute-verification`, `wgc-compute-abba`, and
+`wgc-compute-abba2` under the October 5 artifact directory.
+
+### Fixture correction and production repeat rate
+
+The original motion probe changed physical refresh when passed a numeric
+rate. It now paces animation with a timer and never changes display mode.
+Read-only checks before, during and after its 60-FPS animation confirmed
+5120×1440 at the saved 240 Hz; the three-second probe produced 60.322 FPS.
+The longer fixture produced 7,501 pictures over 125.000 seconds. The Windows
+QPC frequency was independently confirmed as 10 MHz. No restoration was
+needed: current and saved display modes already agreed at the audit.
+
+Four 18-second WGC compute runs, in 60/20/20/60 repeat-rate order, isolated
+the difference between the fixture's forced repeats and production's existing
+`minimum_fps_target=20`. With 60-FPS motion on the unchanged 240-Hz display,
+forced repeats delivered 44.085/45.608 distinct FPS and 21.333/21.094 ms mean
+picture age. Production's repeat rate delivered 59.925/60.002 distinct FPS
+and 11.997/11.805 ms. All pictures decoded, barcode coverage was 100%, and
+there were no capture restarts or late intervals. Thus the earlier repeated
+pictures are partly a fixture artifact. The production repeat default was
+already correct and remains unchanged. Report: `repeat-cadence`.
+
+Final workspace/native validation passes 200 checks, including 20 native
+checks, with the corrected moving fixture on an active desktop. The two
+excluded checks are unavailable NVIDIA execution and the separately reproduced
+AMD AV1 geometry failure. The new same-frame fallback regression and
+WGC compute synchronization test both pass. Report: `capture-native-final`.
+
+Eight further 18-second streams repeated graphics/compute/compute/graphics at
+idle and under the same GPU load, using production's `minimum_fps_target=20`
+and the corrected 60-FPS animation on the unchanged 240-Hz monitor. Each cell
+below averages two runs; five warmup seconds are excluded. Every picture
+decoded, with 100% barcode coverage, nonzero test-tone audio, no capture
+restart and no compute fallback.
+
+| GPU condition | WGC copy/conversion | Host mean | Decoded picture-age mean | Distinct FPS | Transport FPS |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Idle | Graphics | 2.533 ms | 14.789 ms | 59.965 | 59.965 |
+| Idle | Compute | 2.247 ms | 11.455 ms | 60.001 | 60.001 |
+| Loaded | Graphics | 15.326 ms | 52.859 ms | 51.423 | 56.331 |
+| Loaded | Compute | 1.986 ms | 34.603 ms | 49.955 | 55.714 |
+
+The idle runs all pass. All four loaded runs fail the unchanged 58.2-FPS
+transport and freshness gates; decoded-picture correctness alone does not
+make them performance passes. Compute reduces loaded picture age by 35%,
+but distinct delivery also falls by about 3%. Its default activation was
+therefore reverted. The implementation remains available for explicit testing;
+the final default preserves the previous graphics-copy path. This is the third
+rejected default, alongside notifications and the shorter encoder-output wait.
+Do not choose only the favorable host-latency counter. Report:
+`wgc-compute-abba3/results.json`, host SHA-256
+`405f29d01c6ded76877ac8e4c2a3b0917a3172cf2c761201e3d1dbfd414259a9`.
+The final build differs by disabling the default and making the native test
+opt in explicitly. The report's per-run configuration identifies each path.
+
+The retained release build has SHA-256
+`c8341cefcb1cdfc50f8038e735c412175571222a743da5f0ba6ec6a388366959`.
+All workspace binaries build; all-target Clippy with warnings denied,
+formatting and diff checks pass. Its final workspace/native run again passes
+200 checks, including 20 native checks, with the same two exclusions above.
+Report: `retained-native-final`.
+
+Final wired Intel VAAPI/readback runs use 60-FPS motion, the production repeat
+floor and 2560×720 at 60 FPS / 20 Mbps. Every received picture decodes with
+exact geometry, 100% barcode coverage, nonzero audio and no capture restart.
+HDR remains conversion from an SDR desktop; it is not native HDR capture.
+
+| WGC setting / codec | Decoded pictures | Transport FPS | Distinct FPS | Decode failures |
+| --- | ---: | ---: | ---: | ---: |
+| Default / HEVC | 1,077 | 60.000 | 59.922 | 0 |
+| Compute opt-in / HEVC | 1,069 | 60.011 | 60.011 | 0 |
+| Compute opt-in / HEVC Main10 HDR | 1,070 | 60.000 | 60.000 | 0 |
+
+Removing the motion fixture deliberately fails motion validation despite
+724/724 decoded pictures, zero codec errors and 60.606 transport FPS. The
+receiver therefore cannot count a successful static decode as this motion
+test's success. No remote picture-age result is emitted because clocks are
+independent. Report: `retained-lan-final`. Test-owned processes and receiver
+containers are stopped; the installed rc.2 service and its profile are intact.
+
+### Startup diagnosis
+
+The old `ddx_arrival_probe` inserted a zero latency sample when it captured
+nothing, incorrectly printing one frame. It now reports actual acquisitions
+and separate presentation samples. `ddx_startup_probe` compares raw BGRA-first,
+FP16-first and legacy duplication with plain snapshots, configured graphics
+and compute capture, and WGC. It records metadata and sparse pixel ranges,
+without saving desktop pictures or changing display modes.
+
+With Windows explicitly reporting the display off, all six DDX paths returned
+zero frames; WGC returned one cached image. Continuous display requests,
+including a separate system-plus-display request, did not wake this already
+off output. The active-desktop DDX check passes. This narrows the earlier
+standalone failure to an off-display condition on this machine; the request
+still prevents sleep during an already active stream, as measured above.
+
+During a cold stream, a separate raw DDX observer saw the output switch from
+5120×1440 BGRA to 3840×2160 FP16 and back, with an access-loss event at each
+switch. The configuration had display mode/HDR changes disabled. The trace
+identifies the transitions, but not what initiated them. A subsequent warm
+stream had no restart. DDX now logs its actual dimensions, format and API at
+every open, and preserves the modern-API failure when legacy fallback occurs.
+No fixed startup delay or black-pixel heuristic was added. This observation
+does not establish the cause of the RX 9070 XT reporter's restarts.
+
+The Linux receiver also verifies the barcode's increasing frame sequence.
+It deliberately omits absolute picture age because the remote clock is not
+synchronized with Windows QPC.
+
+## October 5 rc.3 selection and capture recovery
+
+The user selected AMD WGC compute as the rc.3 default after reviewing the
+production-repeat comparison above: about 35% lower loaded picture age with
+about 3% fewer fresh pictures. The historical default-reversion record above
+is retained. rc.3 enables `wgc_compute_copy` by default, retains the independent
+off-switch and same-frame graphics fallback, and separates shared captures
+when their compute settings differ. This does not change the backend selection
+policy or make WGC available under SYSTEM.
+
+Capture recovery previously slept 150 ms before every reopen, assuming all
+streams had released the old GPU device. It now publishes a reset generation,
+wakes consumers, and waits for acknowledgements after encoder, image and
+filter teardown. Departing subscriptions stop blocking recovery; new
+subscriptions own no old resources. Reopening starts once all owners release,
+with 150 ms backoff only on failed open attempts and a 30-second deadline.
+Tests cover multiple consumers, a departing/joining consumer, successive
+resets and reset notifications arriving before or during a wait.
+
+The tester can run a candidate when available, but the RX 9070 XT itself is
+not remotely accessible. Keep the 4.7 versus 3.9 ms report open until matched
+measurements arrive. The local fixture is RX 7900 XT and the LAN receiver is
+a wired Intel NUC, not the reported Wi-Fi system. rc.3 artifacts are under
+`C:\Users\ramaz\.codex\artifacts\butterpollo-rc3-20261005`.
+
 ## Limits
 
-This machine validates AMD AMF. Native NVENC now calls the installed NVIDIA driver directly, supports reviewed API versions 11.0–13.0, reference frame invalidation, D3D11 4:2:0/8-bit 4:4:4 and GPU-only CUDA interop for ten-bit 4:4:4. Seven mock-driver tests exercise compatibility, asynchronous ownership, timeout teardown, metadata lifetime, loss recovery and bitrate changes; NVIDIA execution/performance still needs NVIDIA hardware. QSV has native D3D11 imports, and TrueHDR has a shared-device GPU path; these need Intel/NVIDIA hardware respectively. Unsupported native formats, PyroWave and software encoding use CPU compatibility paths. These measurements do not establish network streaming outside loopback, multiple concurrent 4K sessions, dynamic game content, native 4K capture or end-to-end input/display latency. The GPU texture pools and native encoder queues are bounded to eight retained frames; capacity runs may intentionally keep those queues occupied. [PARITY.md](PARITY.md) separates implemented features from native validation.
+This machine validates AMD AMF. Native NVENC now calls the installed NVIDIA driver directly, supports reviewed API versions 11.0–13.0, reference frame invalidation, D3D11 4:2:0/8-bit 4:4:4 and GPU-only CUDA interop for ten-bit 4:4:4. Seven mock-driver tests exercise compatibility, asynchronous ownership, timeout teardown, metadata lifetime, loss recovery and bitrate changes; NVIDIA execution/performance still needs NVIDIA hardware. QSV has native D3D11 imports, and TrueHDR has a shared-device GPU path; these need Intel/NVIDIA hardware respectively. Unsupported native formats, PyroWave and software encoding use CPU compatibility paths. The wired LAN checks above do not establish Wi-Fi performance, multiple concurrent 4K sessions, dynamic game content, native 4K capture or end-to-end input/display latency. The GPU texture pools and native encoder queues are bounded to eight retained frames; capacity runs may intentionally keep those queues occupied. [PARITY.md](PARITY.md) separates implemented features from native validation.
 
-A whole-host C++ A/B performance comparison remains outstanding. The available local C++ executable was an older `butter.2` build, and its startup performed global virtual-display recovery despite the isolated configuration. It was stopped before streaming tests. The controlled FEC comparison above uses the exact baseline sources without starting the C++ host. Original C++ streaming measurements in the parent README remain reference data for that implementation.
+The initial C++ comparison was blocked by an older `butter.2` executable whose startup performed global virtual-display recovery despite the isolated configuration; it was stopped before streaming tests. The October 4 comparison against pinned Vibepollo 2.0 above supersedes that initial limitation. The controlled FEC comparison uses the exact baseline sources without starting the C++ host.

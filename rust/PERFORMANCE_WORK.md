@@ -5,7 +5,170 @@ without reducing features or picture quality. Opus took over from Codex in the
 evening of October 2. Performance acceptance on the customer's own sessions is
 still open; the measured fixture results below are local loopback evidence.
 
-## Current state
+## October 5 rc.3 release continuation
+
+The user approved WGC compute by default for the next test release after
+reviewing the latency/freshness tradeoff below, and authorized publication.
+`wgc_compute_copy=false` and the global compute switch remain available.
+Shared captures now respect those settings. The fixed 150 ms recovery wait
+has been replaced by acknowledgements after each stream releases old GPU
+resources; failed reopen attempts still back off.
+
+The reporter can run the candidate but is only reachable through the user on
+Reddit, with no reply time known. There is no access to the RX 9070 XT. Do not
+close or advertise a fix for the exact 4.7 versus 3.9 ms latency report based
+on local RX 7900 XT/wired tests. Validation and release records follow in
+PERFORMANCE.md; earlier dated records below describe their original state.
+
+## October 5 continuation from OpenCode
+
+The active OpenCode work moved from `vibepollo` into this `butterpollo-rust`
+worktree. Opus shipped rc.2, fixed stream termination on transient UDP send
+errors, compared the DDX path with Vibepollo 2.0, and prepared the launch posts.
+Its final unfinished task was WGC measurement and optimization, followed by
+investigating packet-burst pacing on slower client links.
+
+The last WGC smoke test succeeded as the interactive user but failed under
+SYSTEM at `CreateForMonitor` with `0x80070424`. Opus left additional error
+contexts in `windows/src/capture.rs`; those are preserved. The service's host
+runs as SYSTEM in the interactive session, so this is a host limitation, not
+just an isolated-harness failure.
+
+The continuation on `codex/wgc-capture-recovery` shares the startup/recovery
+fallback to DDX and investigates event-driven WGC wakeups. Explicit capture probes stay
+strict: requesting WGC cannot silently benchmark DDX. Native reconnect testing
+also found that revoking `FrameArrived` after the pool closes aborts inside
+Windows; notification removal now precedes pool closure and is idempotent.
+Pure notification waits improved idle detection but regressed under GPU load,
+so notification registration remains opt-in for the probe; production capture
+keeps polling. These changes are local and unreleased. The installed host remains rc.2.
+
+Validation: all 177 workspace tests pass (19 hardware-specific tests remain
+ignored by the default suite), Clippy passes with warnings denied, and the
+release host builds. The explicit native WGC test passes 16 reconnect/COM
+teardown cycles. An isolated user-mode WGC stream decodes 715/715 HEVC frames
+at 1080p60 with zero failures and nonzero audio. No SYSTEM-context runtime
+retest or installation was performed. The quantitative wakeup experiment and
+its limitations are recorded in [PERFORMANCE.md](PERFORMANCE.md#october-5-wgc-startup-and-notification-experiment).
+
+Follow-up: service-mode WGC needs a capture helper running as the signed-in
+user. DDX fallback does not establish equivalent VRR or generated-frame
+behavior. The subsequent WGC compute-copy follow-up below validates content
+and synchronization independently before measuring full-stream latency.
+The subsequent follow-up adds completion-based packet pacing with wire
+overhead and a cap for known local Ethernet links. A late send no longer
+creates a catch-up burst. Three core tests cover the cap, delayed sends and
+per-datagram overhead. Independent UDP stress tests on the NUC at
+`192.168.4.10` cover integrity, real socket overruns and a separately labeled
+modeled bottleneck. This wired fixture does not reproduce the reporter's Wi-Fi.
+
+The user identifies the reporter's GPU as RX 9070 XT, with the latest driver.
+Their rc.2 log reports one HEVC instance and transient UDP errors 10055/10035.
+The 4.7 versus 3.9 ms comparison remains unresolved. Local 7900 XT tests
+confirm the existing compute conversion helps under GPU load; disabling
+multi-instance encoding has no useful local improvement. An output-wait
+optimization improved component and idle results but regressed loaded LAN
+host mean from 6.102 to 6.501 ms, so it was reverted. Do not promote it based
+only on the favorable component measurement.
+
+A native DDX failure led to finding a missing display-awake request in Rust's
+capture worker. Vibepollo holds this request. The workstation's idle timeout is
+three minutes; the unchanged snapshot test passed once with a temporary
+request, but later failed again even with a moving source and that request.
+Its failure remains unresolved; do not attribute it solely to display sleep.
+The worker now holds a thread-bound guard which preserves and restores prior
+requirements. This does not establish the cause of the reporter's restarts.
+
+The 230-second wired LAN pair crossed the workstation's 180-second display
+timeout. The control recorded no fresh capture claims in all ten samples
+after 180 seconds; the revised worker recorded fresh claims in all ten.
+Both decoded every received picture and the test tone, with zero codec
+failures. Both still required two startup DDX restarts. Preserve that open
+startup issue and the failing standalone DDX test in the handoff.
+
+Before the compute-copy follow-up, the workspace/native run passed 198 checks
+(180 ordinary and 18 native), excluding the known failing AV1 geometry check
+and unavailable NVIDIA hardware. The DDX test passes in that active-desktop
+state; earlier inactive-desktop failures remain open. Final LAN checks pass
+H.264, HEVC HDR, aligned AV1 and explicit WGC at approximately 60 FPS, with
+exact geometry, nonblank pictures, test-tone audio and zero decode errors.
+
+The independent C receiver now runs on Linux as well as Windows, optionally
+uses hardware decoding with readback of every picture, checks pixel contrast,
+and can require a minimum steady frame rate. The NUC passed 1080p60 HEVC but
+could only deliver 27.588 FPS in the 4K60 readback case; that is a failed
+performance gate, not a successful 4K60 test. Exact unaligned AMD AV1 geometry
+was rechecked and still fails for all twelve SDR/HDR/alignment combinations.
+
+Local validation artifacts are in
+`C:\Users\ramaz\.codex\artifacts\butterpollo-wgc-20261005`; the NUC fixtures
+are in `/home/rambo/butterpollo-tests-20261005`. Complete measurements and
+reproduction are in [PERFORMANCE.md](PERFORMANCE.md#october-5-lan-pacing-and-encoder-follow-up).
+
+That earlier release host built and Clippy/format/diff checks passed. Its SHA-256
+is `ff9da9483253a3e5b70737ad7e77006e689effc24ebc4519e0a719dcd66880d2`.
+The final 4K60 HEVC loopback check decodes 985/985 received pictures at 60.585
+steady FPS, but includes startup blank pictures and recovery time. No installed
+service or profile was replaced; test-owned processes and receiver containers
+are stopped. Changes remain uncommitted on `codex/wgc-capture-recovery`.
+`validation-summary.json` records the checks, limitations and source hashes.
+
+### Subsequent WGC compute-copy and startup investigation
+
+The user asked which optimizations were reverted before continuing. The two
+reversions remain default WGC notifications and the shorter encoder-output
+wait. Neither was re-enabled. Supported AMD WGC capture can use DDX's fenced
+compute handoff and compute AMF conversion with `wgc_compute_copy=true`, with
+graceful graphics fallback. Default activation was subsequently reverted after
+the corrected comparison below; the option remains experimental.
+
+Native WGC verification compares the candidate before the reference: 120
+exact frames and 119 changing pictures at idle, then the same under GPU load,
+including a snapshot retained after teardown. Eight complete HEVC streams
+in alternating order found loaded host mean 8.557 → 1.953 ms and decoded
+picture age 49.052 → 40.630 ms. Idle picture age was 31.432 → 31.835 ms.
+The strict distinct-frame gate still fails in several control/candidate runs;
+do not equate approximately 60.6 transport FPS with 60 distinct pictures.
+See the full table and limits in PERFORMANCE.md. This is not a 9070 XT retest.
+
+A second native regression test reproduced compute-sharing fallback losing
+the only available frame. It now copies that same frame through D3D11, and
+the test passes. The original DDX arrival probe also falsely reported one
+frame when it had no samples; actual frame and presentation counts are now
+separate. The new startup probe found no DDX frames while Windows reported
+the display off, while WGC supplied one cached image. During a cold stream,
+raw duplication observed 5120×1440 BGRA → 3840×2160 FP16 → 5120×1440 BGRA,
+coincident with two access-loss events. The initiator remains unidentified;
+display changes were disabled in the fixture. A warm repeat had no restart.
+Do not add a blind delay or reject legitimate dark frames to hide this.
+
+The motion probe's numeric rate previously changed physical refresh. It now
+paces only the animation, with before/during/after checks confirming the
+physical 5120×1440 output remains at 240 Hz. The initial comparison above used
+the old 60-Hz fixture and forced static repeats at 60 FPS. A four-run reversed
+comparison found that using production's existing 20-FPS repeat floor restores
+59.9–60.0 distinct FPS at idle instead of 44–46, without changing production.
+
+Eight further streams with production's repeat floor and the corrected fixture
+found compute reduces loaded picture age from 52.859 to 34.603 ms, but distinct
+FPS drops from 51.423 to 49.955. All four loaded runs fail the 58.2-FPS gates;
+all four idle runs pass. This prompted reverting the compute default too.
+Keep the option available, the failures visible, and the user's RX 9070 XT
+acceptance open. Reports: `repeat-cadence`, `wgc-compute-abba3`.
+
+The moving-desktop workspace/native run passes 200 checks, including 20 native
+checks. The unavailable NVIDIA test and known failing AV1 geometry test remain
+excluded. The final retained build and validation are recorded in
+`validation-summary.json`; the installed service and profile remain unchanged.
+Final retained host SHA-256:
+`c8341cefcb1cdfc50f8038e735c412175571222a743da5f0ba6ec6a388366959`.
+The final run again passes all 200 available tests. Wired default WGC HEVC,
+opt-in compute HEVC and opt-in compute HEVC HDR all deliver approximately 60
+distinct FPS with zero decode errors. An absent-motion negative check correctly
+fails despite decoding all 724 received pictures. Reports: `retained-native-final`
+and `retained-lan-final`. All workspace release binaries and Clippy pass.
+
+## October 3 installed state (historical)
 
 Installed revision: `8db29eee4` (October 3, 07:37 UTC; `butterpollo.exe`
 SHA-256 `DB543650FC4824E0CDA61919E619E6419106E7B5D45A815AD0C541CB816ACA77`,

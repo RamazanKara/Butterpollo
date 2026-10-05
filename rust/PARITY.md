@@ -1,6 +1,6 @@
 # Butterpollo and Vibepollo 2.0
 
-Butterpollo's Rust host is meant to replace Vibepollo 2.0.0 (commit `8a8c4b03a280ab9f567beb380110abb80f5220b8`) on Windows. This file lists what matches, what differs on purpose and what is still missing, as of 2026-10-03. "Same" means the Rust host reads the same settings and files and gives clients the same answers; it does not mean every hardware path has been exercised. Evidence is at the end.
+Butterpollo's Rust host is meant to replace Vibepollo 2.0.0 (commit `8a8c4b03a280ab9f567beb380110abb80f5220b8`) on Windows. This file lists what matches, what differs on purpose and what is still missing, as of 2026-10-05. "Same" means the Rust host reads the same settings and files and gives clients the same answers; it does not mean every hardware path has been exercised. Evidence is at the end.
 
 Left out on purpose: WebRTC streaming, session history and host statistics pages, the ViGEm and SudoVDA fallbacks, and Linux and macOS hosting.
 
@@ -25,7 +25,7 @@ Settings changed in the console are saved at once and most take effect from the 
 | Pairing | Same | PIN and one-time PIN (`/api/otp`), pending requests in the console, per-device permissions and enable switch. |
 | Moonlight endpoints | Same | `serverinfo` extras (virtual display, frame limiter, permissions, server commands), `/applist` with Vibepollo's placeholder for devices without the list permission, `/launch` and `/resume` with `VirtualDisplayDriverReady`, `/unpair` on HTTP and HTTPS, `/bitrate` capped by `max_bitrate` and 500 Mbps, ABR capability reported as client-driven. |
 | Codecs and stream | Same | H.264, HEVC, AV1, HDR, 10-bit SDR, 4:4:4 where the encoder supports it, PyroWave, FEC, reference frame invalidation (AMF and NVENC). |
-| Capture | Same, different default | Desktop Duplication and WGC with recovery; input and capture follow the secure desktop (UAC, lock screen). |
+| Capture | Partial in service mode | Desktop Duplication with recovery; input and capture follow the secure desktop (UAC, lock screen). WGC works in portable user mode on the test PC but cannot open under the service's SYSTEM account (`CreateForMonitor`, `0x80070424`). The unreleased startup fix falls back to Desktop Duplication, as recovery already did. A user-process WGC helper is still needed for service-mode WGC, including VRR and game-frame-generation capture. |
 | Virtual displays | Mostly the same | Per device, shared or off; layouts exclusive, extended, primary, isolated; HDR; permanent count (also the old `dd_vdd_static_monitor_count`). Missing: choosing the GPU that renders the virtual display (`adapter_name` only picks the capture and encode GPU), reclaiming displays after a host restart (driver protocol 3.7), and creating one automatically on a host with no active display. |
 | Display layout | Same | Golden layout restore (skipped while a display it names is disconnected), restore after a stream or crash, mode remapping, the display restore hotkey (`dd_snapshot_restore_hotkey`). `dd_wa_dummy_plug_hdr10` turns VSync off but does not force HDR on. |
 | Device display mode | Same | A device's `display_mode` sets its display's resolution and refresh in place of the host's policies; the stream keeps the client's rate. |
@@ -45,8 +45,9 @@ Settings changed in the console are saved at once and most take effect from the 
 
 ## Evidence
 
-- Workspace tests: 173 pass (`cargo test --locked --release --workspace`), Clippy with warnings denied, and the web console's type check.
+- October 5 final workspace/native run: 200 pass, including 20 opt-in native checks, on an active moving desktop. This includes opt-in WGC compute synchronization and same-frame fallback after a sharing failure. The known failing AMD AV1 geometry check and unavailable NVIDIA hardware check were excluded; AV1 was also run separately and still fails. The standalone DDX snapshot check receives no frame with the display off but passes on the active desktop; the separate cold-start display transitions remain unresolved. Clippy with warnings denied and the web console's type check pass.
 - Native AMD tests on the test PC: GPU colour and letterbox conversion, cursor composition, AMF loss recovery, Opus surround, WGC teardown, and the software encoder letterbox test.
+- Independent wired LAN receiver on the Intel NUC: H.264 and WGC/HEVC at 1080p60, HEVC HDR and aligned AV1 at 720p60, exact decoded geometry, pixel contrast and nonzero Opus audio. A 230-second HEVC stream decoded 13,838/13,838 pictures and continued fresh capture claims beyond the display's idle timeout. The NUC's 4K60 hardware readback test failed the throughput requirement and is not counted as a performance pass. Wi-Fi and the reporter's RX 9070 XT remain unverified.
 - Live on the test PC with the installed service: phone streaming at 1968x2184, 120 Hz, HDR, on a per-device virtual display; two clients streaming at once on their own displays; capture recovery after a lost Desktop Duplication session; OTP pairing; the installer upgrading the Vibepollo installation in place.
 - Steam: discovery of 17 installed apps across three libraries, appinfo names and types, play history, covers (including store downloads), and a sync that adds the apps once and then reports no change.
 - Playnite, against a stand-in that speaks the plugin's protocol (Playnite is not installed on the test PC): plugin install, library sync with a converted cover, a launch that passes the stream's 88 environment variables and ends on `gameStopped`, and closing the app mid-game.
@@ -62,7 +63,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test -p butterpollo-windows --locked -- --ignored --skip native_nvenc_loss_recovery_and_444_hdr_decode --skip native_av1_geometry_and_hdr_are_preserved --test-threads=1 --nocapture
 ```
 
-The native command needs the packaged codec DLLs on `PATH`, an AMD D3D11/AMF adapter and a local network route; it does not change display modes, audio defaults or the installed service. Set `BUTTERPOLLO_TEST_OPUS_ROOT` to the packaged runtime directory, `BUTTERPOLLO_TEST_FFMPEG` to an independent FFmpeg decoder and `BUTTERPOLLO_TEST_RFI_REPORT` to a report file. AMD AV1 exact-size decoding of unaligned sizes (such as 1968x2184) is a driver limitation; HEVC passes the same sizes.
+The native command needs the packaged codec DLLs on `PATH`, an AMD D3D11/AMF adapter, working interactive WGC, a moving desktop and a local network route; it does not change display modes, audio defaults or the installed service. `motion_probe DISPLAY SECONDS REPORT.json current 128` can provide movement on an explicitly selected active output without changing its mode. Set `BUTTERPOLLO_TEST_OPUS_ROOT` to the packaged runtime directory, `BUTTERPOLLO_TEST_FFMPEG` to an independent FFmpeg decoder and `BUTTERPOLLO_TEST_RFI_REPORT` to a report file. AMD AV1 exact-size decoding of unaligned sizes (such as 1968x2184) is a driver limitation; HEVC passes the same sizes.
 
 On an NVIDIA host with a display attached to that adapter:
 

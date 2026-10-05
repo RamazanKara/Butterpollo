@@ -1,6 +1,15 @@
-# Butterpollo 2.0.0-rc.2 for Windows
+# Butterpollo 2.0.0-rc.3 for Windows
 
-Butterpollo's host, service, setup and console are now written in Rust. It replaces Vibepollo 2.0.0 and earlier Butterpollo builds on Windows: run `butterpollo-setup-2.0.0-rc.2.exe` and it upgrades the existing installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+Butterpollo's host, service, setup and console are now written in Rust. It replaces Vibepollo 2.0.0 and earlier Butterpollo builds on Windows: run `butterpollo-setup-2.0.0-rc.3.exe` and it upgrades the existing installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+
+## New in rc.3
+
+- A stream configured for WGC now falls back to Desktop Duplication if WGC cannot open at startup, matching capture recovery. Logs preserve the Windows error and identify the fallback. This keeps the stream available; it does not provide service-mode WGC or establish equivalent VRR/frame-generation capture.
+- **WGC compute copies are now on by default on supported AMD GPUs.** On the RX 7900 XT fixture, mean decoded picture age fell from 14.8 to 11.5 ms at idle and from 52.9 to 34.6 ms under heavy GPU load. Loaded fresh-picture delivery was about 3% lower (51.4 to 50.0 FPS); neither path sustained 60 FPS under that stress. Unsupported sharing falls back to graphics copies. Set `wgc_compute_copy=false` in the configuration, restart the host and reconnect to compare; `gpu_compute_conversion=false` disables all compute copies and conversion. These measurements do not establish the RX 9070 XT result.
+- **Capture recovery no longer adds a fixed 150 ms pause.** Each active stream releases its old encoder, frames and filters before capture reopens. Failed reopen attempts retain a bounded retry delay.
+- If compute cannot share a captured texture, fallback now copies that same frame. Previously a static desktop could stall while waiting for another update. Desktop Duplication also logs its actual format and dimensions on each open to help diagnose restarts.
+- Active capture now keeps the display awake, matching Vibepollo. The request ends with the capture worker and restores the thread's previous power requirements. This addresses capture being starved when Windows turns off an idle display.
+- Video packet pacing no longer produces catch-up bursts after a late send. It accounts for wire overhead and caps known local Ethernet routes at 80% of link speed. A wired host still cannot infer a Wi-Fi client's capacity; the reported RX 9070 XT latency difference remains under investigation.
 
 ## New in rc.2
 
@@ -12,8 +21,8 @@ Butterpollo's host, service, setup and console are now written in Rust. It repla
 
 ## Install
 
-- `butterpollo-setup-2.0.0-rc.2.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
-- For a portable copy, extract `butterpollo-rust-2.0.0-rc.2-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
+- `butterpollo-setup-2.0.0-rc.3.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
+- For a portable copy, extract `butterpollo-rust-2.0.0-rc.3-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
 - These are unsigned test builds. Keep a copy of your configuration and the previous installer for rollback.
 
 ## Lower latency
@@ -36,6 +45,9 @@ Left out on purpose: WebRTC streaming, session history and host statistics pages
 
 ## Known limits
 
+- The RX 9070 XT report of 4.7 versus 3.9 ms on Wi-Fi remains open pending the tester's rc.3 comparison. Packet pacing and recovery fixes address observed problems, but are not proof that this latency difference is resolved.
+- DDX startup from an inactive desktop remains under investigation. Some local tests received blank pictures and required two capture restarts before valid content arrived; a standalone snapshot test can receive no initial picture. Keeping the display awake fixes continued capture through idle time, but does not resolve this startup condition.
+- WGC was found to fail under the installed service's SYSTEM account on the test PC (`CreateForMonitor`, `0x80070424`), while the same capture succeeds as the interactive user. rc.2 can therefore fail to start explicit WGC streams and the automatic WGC paths for VRR or game frame generation. The rc.3 fallback above keeps those streams running through Desktop Duplication; a user-process WGC helper remains outstanding.
 - AMD's AV1 encoder pads some sizes: 1968×2184 decodes as 1984×2186 ([AMF issue 423](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/issues/423)); Vibepollo has the same result. HEVC is exact.
 - Verified on an AMD RX 7900 XT. NVIDIA and Intel encoders, RTX HDR, a real Playnite and Lossless Scaling, the secure desktop during a stream and streaming the sign-in screen after a reboot are not yet verified on hardware. NVIDIA and Intel keep the graphics-queue capture path.
 - Still missing from Vibepollo: choosing the GPU that renders the virtual display, reclaiming virtual displays after a host restart, Playnite focus retries and fullscreen relaunch, `/api/browse`, `/api/apps/{uuid}/icon`, and tray app notifications and state icons.

@@ -49,6 +49,7 @@ fn main() -> anyhow::Result<()> {
             &[DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_B8G8R8A8_UNORM],
         )?;
         let mut latencies = Vec::new();
+        let mut frames = 0u64;
         let mut held = false;
         let started = Instant::now();
         let cpu_start = cpu();
@@ -118,6 +119,7 @@ fn main() -> anyhow::Result<()> {
             {
                 Ok(()) => {
                     held = true;
+                    frames += 1;
                     let mut now = 0;
                     QueryPerformanceCounter(&mut now)?;
                     if info.LastPresentTime != 0 {
@@ -150,25 +152,28 @@ fn main() -> anyhow::Result<()> {
                 );
             }
         }
-        if latencies.is_empty() {
-            latencies.push(0.);
-        }
         latencies.sort_by(f64::total_cmp);
-        let at = |q: f64| latencies[((latencies.len() - 1) as f64 * q) as usize];
+        let at = |q: f64| {
+            latencies
+                .get((latencies.len().saturating_sub(1) as f64 * q) as usize)
+                .copied()
+                .unwrap_or(f64::NAN)
+        };
         println!(
-            "{} {}: frames {} detect mean {:.3} p50 {:.3} p95 {:.3} p99 {:.3} max {:.3} ms, cpu {:.1}% of a core",
+            "{} {}: frames {} present_samples {} detect mean {:.3} p50 {:.3} p95 {:.3} p99 {:.3} max {:.3} ms, cpu {:.1}% of a core",
             if block { "block" } else { "poll" },
             if block {
                 String::new()
             } else {
                 format!("{} us", poll.as_micros())
             },
+            frames,
             latencies.len(),
-            latencies.iter().sum::<f64>() / latencies.len().max(1) as f64,
+            latencies.iter().sum::<f64>() / latencies.len() as f64,
             at(0.5),
             at(0.95),
             at(0.99),
-            latencies.last().copied().unwrap_or(0.),
+            latencies.last().copied().unwrap_or(f64::NAN),
             cpu_ms / started.elapsed().as_secs_f64() / 10.
         );
     }

@@ -6,7 +6,7 @@
 
 <sub>35-second demo. Click it for the full 1080p video.</sub>
 
-**[Download Butterpollo 2.0.0-rc.2](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.2)**: run `butterpollo-setup-2.0.0-rc.2.exe`. It installs fresh or upgrades Vibepollo 2.0 in place, and your settings, paired devices and game library come along.
+**[Download Butterpollo 2.0.0-rc.3](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.3)**: run `butterpollo-setup-2.0.0-rc.3.exe`. It installs fresh or upgrades Vibepollo 2.0 in place, and your settings, paired devices and game library come along.
 
 ## The trick: stay off the game's queue
 
@@ -72,11 +72,11 @@ The host, its Windows service, the installer and the web console's server are wr
 
 ## Install
 
-1. Download `butterpollo-setup-2.0.0-rc.2.exe` from [Releases](https://github.com/RamazanKara/Butterpollo/releases).
+1. Download `butterpollo-setup-2.0.0-rc.3.exe` from [Releases](https://github.com/RamazanKara/Butterpollo/releases).
 2. Run it. It installs the host, service, virtual display and gamepad drivers, or upgrades Vibepollo 2.0 or an earlier Butterpollo in place.
 3. Open the console at `https://localhost:47990`, pair your device and stream.
 
-Prefer a portable copy? Extract `butterpollo-rust-2.0.0-rc.2-windows-x64.zip` and open **Start Butterpollo.exe**; it offers to import your Vibepollo or Apollo profile and leaves the original alone. The builds are unsigned, so keep your previous installer and a copy of your config if you might want to go back.
+Prefer a portable copy? Extract `butterpollo-rust-2.0.0-rc.3-windows-x64.zip` and open **Start Butterpollo.exe**; it offers to import your Vibepollo or Apollo profile and leaves the original alone. The builds are unsigned, so keep your previous installer and a copy of your config if you might want to go back.
 
 ## Where it stands
 

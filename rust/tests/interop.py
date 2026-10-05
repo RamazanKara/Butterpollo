@@ -9,9 +9,11 @@ from cryptography.hazmat.primitives.asymmetric import rsa,padding
 from cryptography.hazmat.primitives.ciphers import Cipher,algorithms,modes
 from cryptography.x509.oid import NameOID
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-artifact=pathlib.Path(sys.argv[1]);client_exe=pathlib.Path(os.environ.get('BUTTERPOLLO_TEST_CLIENT_EXE',artifact/'moonlight-client.exe'));codec=sys.argv[2] if len(sys.argv)>2 else 'h264'
+artifact=pathlib.Path(sys.argv[1]);client_exe=pathlib.Path(os.environ.get('BUTTERPOLLO_TEST_CLIENT_EXE',artifact/('moonlight-client.exe' if os.name=='nt' else 'moonlight-client')));codec=sys.argv[2] if len(sys.argv)>2 else 'h264'
 port=int(os.environ.get('BUTTERPOLLO_TEST_PORT','48123'))
-web=f'https://127.0.0.1:{port+1}';http=f'http://127.0.0.1:{port}';https=f'https://127.0.0.1:{port-5}'
+host=os.environ.get('BUTTERPOLLO_TEST_HOST','127.0.0.1')
+address=f'[{host}]' if ':' in host else host
+web=f'https://{address}:{port+1}';http=f'http://{address}:{port}';https=f'https://{address}:{port-5}'
 session=requests.Session();session.verify=False
 login=session.post(web+'/api/auth/login',json={'username':'test','password':'rust-smoke-only'},timeout=10);login.raise_for_status();csrf=login.json()['csrf_token'];session.headers['X-CSRF-Token']=csrf
 key=rsa.generate_private_key(public_exponent=65537,key_size=2048)
@@ -78,7 +80,8 @@ if os.environ.get('BUTTERPOLLO_TEST_MATCH_DISPLAY')=='1':
     launch_args.update(mode='x'.join(sys.argv[3:6]),hdrMode='1' if codec.endswith('-hdr') else '0')
 launch=ET.fromstring(client.get(https+'/launch',params=launch_args,timeout=10).text);assert launch.attrib['status_code']=='200',ET.tostring(launch)
 url=launch.findtext('sessionUrl0');print('LAUNCH',url,flush=True)
-env=os.environ.copy();env['PATH']=str(artifact/'target/debug')+';C:\\msys64\\ucrt64\\bin;'+env['PATH']
+env=os.environ.copy()
+if os.name=='nt':env['PATH']=str(artifact/'target/debug')+';C:\\msys64\\ucrt64\\bin;'+env['PATH']
 try:
     duration=int(sys.argv[6]) if len(sys.argv)>6 else 0
     command=[str(client_exe),url,codec,*sys.argv[3:]]

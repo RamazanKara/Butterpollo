@@ -311,7 +311,7 @@ const video: Setting[] = [
     key: 'pacing_max_bitrate_kbps',
     label: 'Pacing rate',
     description:
-      "Spreads each frame's packets so they leave no faster than this rate. 0 uses 800 Mbps; a set rate is raised to at least 1.1 times the stream bitrate.",
+      "Spreads each frame's packets so they leave no faster than this rate. 0 uses up to 800 Mbps. A known Ethernet link limits pacing to 80% of its speed. A set rate is raised to at least 1.1 times the stream bitrate, within that link limit.",
     category: 'video',
     group: 'Bitrate and network',
     control: { kind: 'number', min: 0, step: 1, unit: 'Kbps' },

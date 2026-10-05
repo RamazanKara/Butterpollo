@@ -402,19 +402,29 @@ impl Duplication {
         } else {
             &[DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT]
         };
-        let duplicate = unsafe {
+        let (duplicate, api) = unsafe {
             // DuplicateOutput1 needs a per-monitor DPI-aware process; fall back
             // to the legacy call rather than fail where it is refused.
             match output
                 .cast::<IDXGIOutput5>()
                 .and_then(|output| output.DuplicateOutput1(&gpu.device, 0, formats))
             {
-                Ok(duplicate) => duplicate,
-                Err(_) => output
-                    .DuplicateOutput(&gpu.device)
-                    .context("opening Desktop Duplication")?,
+                Ok(duplicate) => (duplicate, "DuplicateOutput1"),
+                Err(error) => {
+                    tracing::warn!(%error, "DuplicateOutput1 unavailable; trying legacy Desktop Duplication");
+                    (
+                        output.DuplicateOutput(&gpu.device).with_context(|| {
+                            format!("opening legacy Desktop Duplication after DuplicateOutput1 failed: {error}")
+                        })?,
+                        "DuplicateOutput",
+                    )
+                }
             }
         };
+        let desc = unsafe { duplicate.GetDesc() };
+        tracing::info!(api, output = %gpu.display.display_name,
+            width = desc.ModeDesc.Width, height = desc.ModeDesc.Height,
+            format = desc.ModeDesc.Format.0, "Desktop Duplication opened");
         Ok(Self {
             gpu,
             duplicate,
@@ -670,13 +680,14 @@ impl GpuPool {
             {
                 Some(Ok(ready)) => Some(ready),
                 Some(Err(error)) => {
-                    // Drop this frame and the shared textures; encoders that
-                    // read them through the compute queue see unshared ones
-                    // next and rebuild for the graphics queue.
+                    // Replace the shared textures and copy this same frame on
+                    // D3D11. Waiting for another update can strand a stream on
+                    // a static desktop. Consumers see an unshared texture and
+                    // rebuild for the graphics queue.
                     tracing::warn!(error = %format!("{error:#}"), "compute copy failed; copying on the graphics queue");
                     self.compute = None;
                     self.textures.clear();
-                    return Ok(None);
+                    return self.copy(gpu, source);
                 }
                 None => {
                     gpu.context.CopyResource(texture.as_ref(), source);
@@ -767,6 +778,7 @@ pub struct Wgc {
     gpu: Device,
     pool: Direct3D11CaptureFramePool,
     session: GraphicsCaptureSession,
+    notifications: Option<(std::sync::Arc<crate::timing::Signal>, i64)>,
     staging: Option<ID3D11Texture2D>,
     owned: GpuPool,
     grid: Option<std::sync::Arc<std::sync::Mutex<ClaimGrid>>>,
@@ -854,9 +866,12 @@ impl Wgc {
                 .map(|space| space == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020)
                 .unwrap_or(hdr);
             let interop: IGraphicsCaptureItemInterop =
-                windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
+                windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()
+                    .context("Windows Graphics Capture is unavailable")?;
             pin_capture_runtime()?;
-            let item: GraphicsCaptureItem = interop.CreateForMonitor(d.Monitor)?;
+            let item: GraphicsCaptureItem = interop
+                .CreateForMonitor(d.Monitor)
+                .context("Windows Graphics Capture cannot capture this display")?;
             let dxgi: IDXGIDevice = gpu.device.cast()?;
             let winrt: IDirect3DDevice = CreateDirect3D11DeviceFromDXGIDevice(&dxgi)?.cast()?;
             let size = item.Size()?;
@@ -869,15 +884,18 @@ impl Wgc {
                 },
                 2,
                 size,
-            )?;
-            let session = pool.CreateCaptureSession(&item)?;
+            )
+            .context("Windows Graphics Capture frame pool")?;
+            let session = pool
+                .CreateCaptureSession(&item)
+                .context("Windows Graphics Capture session")?;
             session.SetIsCursorCaptureEnabled(true)?;
             let _ = session.SetIsBorderRequired(false);
-            session.StartCapture()?;
-            Ok(Self {
+            let capture = Self {
                 gpu,
                 pool,
                 session,
+                notifications: None,
                 staging: None,
                 owned: GpuPool::default(),
                 grid: None,
@@ -888,8 +906,33 @@ impl Wgc {
                 size: (size.Width, size.Height),
                 color_space,
                 color_check: Instant::now() + Duration::from_secs(1),
-            })
+            };
+            // Own the pool/session before starting so failure closes them
+            // just like normal capture teardown.
+            capture
+                .session
+                .StartCapture()
+                .context("Windows Graphics Capture did not start")?;
+            Ok(capture)
         }
+    }
+    fn enable_notifications(&mut self) -> Result<()> {
+        if self.notifications.is_none() {
+            let arrived = std::sync::Arc::new(crate::timing::Signal::new()?);
+            let wake = arrived.clone();
+            // The callback never takes the D3D11 lock or touches capture frames.
+            let token = self
+                .pool
+                .FrameArrived(&windows::Foundation::TypedEventHandler::new(move |_, _| {
+                    let _ = wake.set();
+                    Ok(())
+                }))?;
+            self.notifications = Some((arrived.clone(), token));
+            // Registration may follow the first frame; make the caller check
+            // the pool before waiting for a subsequent notification.
+            arrived.set()?;
+        }
+        Ok(())
     }
     pub fn next_frame(&mut self) -> Result<Option<Image>> {
         self.check_color_space()?;
@@ -962,6 +1005,12 @@ impl Wgc {
         result
     }
     fn try_frame(&self) -> Result<Option<Direct3D11CaptureFrame>> {
+        // Reset before checking the pool: a notification racing the check stays
+        // set, and a frame queued before the reset is found by TryGetNextFrame.
+        // Resetting after an empty result would lose an arriving frame's wakeup.
+        if let Some((arrived, _)) = &self.notifications {
+            arrived.reset()?;
+        }
         // An empty pool returns a successful HRESULT and a null interface. The
         // generated binding requires a non-null frame, so preserve the HRESULT
         // and optional output separately instead of swallowing every error.
@@ -1004,15 +1053,24 @@ impl Wgc {
         }
         Ok(())
     }
-}
-
-impl Drop for Wgc {
-    fn drop(&mut self) {
+    fn close(&mut self) {
+        // Windows can fail-fast instead of returning RO_E_CLOSED when an event
+        // is revoked after pool.Close(). Always revoke first and only once.
+        // An in-flight callback owns its own Arc to the event until it returns.
+        if let Some((_, token)) = self.notifications.take() {
+            let _ = self.pool.RemoveFrameArrived(token);
+        }
         if let Some((frame, _, _)) = self.held.take() {
             let _ = frame.Close();
         }
         let _ = self.session.Close();
         let _ = self.pool.Close();
+    }
+}
+
+impl Drop for Wgc {
+    fn drop(&mut self) {
+        self.close();
     }
 }
 pub enum Capture {
@@ -1023,6 +1081,23 @@ pub enum Capture {
 }
 /// The desktop pointer a lost capture last saw, for the capture replacing it.
 pub struct Pointer(crate::cursor::Carried);
+
+fn open_stream_capture<T>(kind: &str, mut open: impl FnMut(&str) -> Result<T>) -> Result<T> {
+    match open(kind) {
+        Ok(capture) => Ok(capture),
+        Err(error) if kind == "wgc" => {
+            // WGC can be unavailable under SYSTEM or on a secure desktop.
+            // Apply the same fallback at startup and after a capture restart.
+            let capture = open("ddx").with_context(|| {
+                format!("WGC failed ({error:#}); Desktop Duplication fallback also failed")
+            })?;
+            tracing::warn!(error = %format!("{error:#}"), "Windows Graphics Capture unavailable; capturing with Desktop Duplication");
+            Ok(capture)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 impl Capture {
     /// The pointer to hand to the capture that replaces this one.
     pub fn pointer(&self) -> Option<Pointer> {
@@ -1062,6 +1137,37 @@ impl Capture {
             _ => None,
         }
     }
+    /// Opt in to notifications for capture probes. Normal streams keep polling:
+    /// pure event waits measured slower detection under GPU load on the test PC.
+    pub fn enable_frame_notifications(&mut self) -> Result<()> {
+        match self {
+            Self::Wgc(wgc) => wgc.enable_notifications(),
+            _ => bail!("frame notifications require Windows Graphics Capture"),
+        }
+    }
+    /// Wait on an enabled WGC notification or the probe's deadline.
+    pub fn wait_until(&self, timer: &crate::timing::Timer, deadline: Instant) -> Result<()> {
+        if let Self::Wgc(wgc) = self
+            && let Some((arrived, _)) = &wgc.notifications
+        {
+            timer.until_or_signal(deadline, arrived)?;
+        } else {
+            timer.until(deadline);
+        }
+        Ok(())
+    }
+    /// Keep a stream usable when WGC cannot open. Explicit capture probes use
+    /// `new_options` instead, so a WGC benchmark cannot silently measure DDX.
+    pub fn open_for_stream(
+        name: &str,
+        kind: &str,
+        hdr: bool,
+        config: &butterpollo_core::config::Config,
+    ) -> Result<Self> {
+        open_stream_capture(kind, |backend| {
+            Self::new_options(name, backend, hdr, config)
+        })
+    }
     pub fn new(name: &str, kind: &str) -> Result<Self> {
         Self::new_format(name, kind, false)
     }
@@ -1099,10 +1205,31 @@ impl Capture {
             }
             Ok(duplication)
         };
+        let wgc = |gpu: Device| -> Result<Wgc> {
+            let mut capture = Wgc::new_device(gpu, hdr)?;
+            // The pool's textures can be shared with D3D12 on supported AMD
+            // drivers. The same fenced handoff used by DDX keeps the copy and
+            // AMF conversion off a busy graphics queue. Keep an independent
+            // switch for comparisons and drivers that need the D3D11 path.
+            if config.boolean("wgc_compute_copy", true)
+                && crate::compute::enabled(config)
+                && crate::compute::copies_on(&capture.gpu.device)
+            {
+                match crate::compute::Compute::for_device(&capture.gpu.device)
+                    .and_then(|compute| crate::compute::Handoff::new(compute, &capture.gpu))
+                {
+                    Ok(compute) => capture.owned.compute = Some(compute),
+                    Err(error) => {
+                        tracing::warn!(error = %format!("{error:#}"), "WGC compute copies unavailable; copying on the graphics queue")
+                    }
+                }
+            }
+            Ok(capture)
+        };
         match kind {
-            "wgc" => Ok(Self::Wgc(Box::new(Wgc::new_device(gpu, hdr)?))),
+            "wgc" => Ok(Self::Wgc(Box::new(wgc(gpu)?))),
             "ddx" | "dxgi" => Ok(Self::Dxgi(Box::new(duplication(gpu)?))),
-            _ => Wgc::new_device(gpu.clone(), hdr)
+            _ => wgc(gpu.clone())
                 .map(|capture| Self::Wgc(Box::new(capture)))
                 .or_else(|_| duplication(gpu).map(|d| Self::Dxgi(Box::new(d)))),
         }
@@ -1128,8 +1255,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn wgc_startup_failure_uses_the_same_fallback_as_recovery() {
+        let mut attempted = Vec::new();
+        let capture = open_stream_capture("wgc", |kind| {
+            attempted.push(kind.to_owned());
+            match kind {
+                "wgc" => bail!("CreateForMonitor: 0x80070424"),
+                "ddx" => Ok("working duplication"),
+                _ => unreachable!(),
+            }
+        })
+        .unwrap();
+        assert_eq!(capture, "working duplication");
+        assert_eq!(attempted, ["wgc", "ddx"]);
+
+        let error = open_stream_capture::<()>("wgc", |kind| match kind {
+            "wgc" => bail!("CreateForMonitor: 0x80070424"),
+            _ => bail!("DuplicateOutput: access denied"),
+        })
+        .unwrap_err();
+        let detail = format!("{error:#}");
+        assert!(detail.contains("0x80070424"));
+        assert!(detail.contains("DuplicateOutput: access denied"));
+    }
+
+    #[test]
+    fn working_wgc_and_explicit_ddx_do_not_open_another_backend() {
+        for kind in ["wgc", "ddx", "dxgi"] {
+            let mut attempts = 0;
+            open_stream_capture(kind, |backend| {
+                attempts += 1;
+                assert_eq!(backend, kind);
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(attempts, 1);
+        }
+        for kind in ["ddx", "dxgi"] {
+            let mut attempts = 0;
+            let error = open_stream_capture::<()>(kind, |_| {
+                attempts += 1;
+                bail!("duplication lost access")
+            })
+            .unwrap_err();
+            assert_eq!(attempts, 1);
+            assert_eq!(error.to_string(), "duplication lost access");
+        }
+    }
+
+    #[test]
     #[ignore = "requires an interactive Desktop Duplication output"]
     fn ddx_snapshots_survive_reacquisition_and_duplication_teardown() -> Result<()> {
+        enable_dpi_awareness();
+        let _display_awake = crate::timing::DisplayAwake::enter()?;
         let _com = ComGuard::new()?;
         let timer = crate::timing::Timer::new()?;
         for _ in 0..3 {
@@ -1217,6 +1395,105 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires native D3D11/D3D12 sharing and readback"]
+    fn unshareable_frame_falls_back_without_waiting_for_another_desktop_update() -> Result<()> {
+        let _com = ComGuard::new()?;
+        let gpu = Device::new("")?;
+        let expected = [32, 64, 128, 255].repeat(16);
+        let uploaded = GpuImage::upload(
+            &gpu,
+            &Image {
+                width: 4,
+                height: 4,
+                stride: 16,
+                bytes: expected.clone(),
+                captured: Instant::now(),
+                pixel: Pixel::Bgra8,
+            },
+        )?;
+        // A normal D3D11-only snapshot cannot be opened by the compute queue.
+        let source = GpuPool::default().copy(&gpu, &uploaded.texture)?.unwrap();
+        assert!(!crate::compute::shareable(&source.texture));
+        let mut pool = GpuPool {
+            compute: Some(crate::compute::Handoff::new(
+                crate::compute::Compute::for_device(&gpu.device)?,
+                &gpu,
+            )?),
+            ..Default::default()
+        };
+        let frame = pool
+            .copy(&gpu, &source.texture)?
+            .context("fallback must return this frame, even if the desktop never updates again")?;
+        assert!(pool.compute.is_none());
+        assert!(!crate::compute::shareable(&frame.texture));
+        assert!(frame.ready.is_none());
+        drop(pool);
+        assert_eq!(frame.readback(&mut None)?.bytes, expected);
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires a moving desktop, WGC and native AMD D3D12 sharing"]
+    fn wgc_compute_snapshots_match_d3d11_during_motion() -> Result<()> {
+        enable_dpi_awareness();
+        let _com = ComGuard::new()?;
+        let _awake = crate::timing::DisplayAwake::enter()?;
+        let mut capture = Capture::new_options("", "wgc", false, &Default::default())?;
+        let Capture::Wgc(wgc) = &mut capture else {
+            bail!("expected WGC");
+        };
+        anyhow::ensure!(wgc.owned.compute.is_some(), "compute copies unavailable");
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let (mut checked, mut changed) = (0, 0);
+        let mut previous = Vec::new();
+        let mut held = None;
+        let mut reference_staging = None;
+        let mut actual_staging = None;
+        while checked < 120 && Instant::now() < deadline {
+            let Some(frame) = wgc.try_frame()? else {
+                std::thread::sleep(Duration::from_millis(1));
+                continue;
+            };
+            let result = (|| -> Result<()> {
+                wgc.check_size(&frame)?;
+                let surface = frame.Surface()?;
+                let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
+                let source: ID3D11Texture2D = unsafe { access.GetInterface()? };
+                let snapshot = wgc.owned.copy(&wgc.gpu, &source)?.context("copy dropped")?;
+                anyhow::ensure!(snapshot.ready.is_some(), "compute fell back to graphics");
+                // Read the candidate first. Reading the source before submitting
+                // the copy would hide missing producer/consumer synchronization.
+                let actual = snapshot.readback(&mut actual_staging)?;
+                let reference = read_texture(&wgc.gpu, &source, &mut reference_staging)?;
+                anyhow::ensure!(
+                    actual.bytes == reference.bytes,
+                    "WGC compute copy differed on frame {checked}"
+                );
+                if !previous.is_empty() && previous != reference.bytes {
+                    changed += 1;
+                }
+                if held.is_none() {
+                    held = Some((snapshot, reference.bytes.clone()));
+                }
+                previous = reference.bytes;
+                checked += 1;
+                Ok(())
+            })();
+            frame.Close()?;
+            result?;
+        }
+        eprintln!("WGC compute verification: {checked} exact frames, {changed} content changes");
+        anyhow::ensure!(
+            checked >= 30 && changed >= 10,
+            "moving source required; static frames do not validate synchronization"
+        );
+        drop(capture);
+        let (snapshot, expected) = held.context("no retained snapshot")?;
+        assert_eq!(snapshot.readback(&mut None)?.bytes, expected);
+        Ok(())
+    }
+
+    #[test]
     #[ignore = "requires an interactive Windows desktop with WGC support"]
     fn wgc_reconnect_and_com_teardown_keep_the_runtime_loaded() -> Result<()> {
         use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -1224,6 +1501,8 @@ mod tests {
             std::thread::spawn(move || -> Result<()> {
                 let com = ComGuard::new()?;
                 let mut capture = Wgc::new("")?;
+                capture.enable_notifications()?;
+                let timer = crate::timing::Timer::new()?;
                 let until = Instant::now() + Duration::from_secs(5);
                 loop {
                     if let Some(frame) = capture.next_gpu()? {
@@ -1234,9 +1513,9 @@ mod tests {
                         Instant::now() < until,
                         "WGC reconnect {cycle} produced no frame"
                     );
-                    std::thread::sleep(Duration::from_millis(1));
+                    timer.until_or_signal(until, &capture.notifications.as_ref().unwrap().0)?;
                 }
-                capture.pool.Close()?;
+                capture.close();
                 assert!(
                     capture.next_gpu().is_err(),
                     "a closed pool must trigger GPU capture recovery"

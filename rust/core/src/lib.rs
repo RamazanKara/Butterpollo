@@ -18,6 +18,7 @@ pub mod logfile;
 pub mod lossless;
 pub mod ltr;
 pub mod migration;
+pub mod network_pacing;
 pub mod nvenc;
 pub mod packet;
 pub mod pairing;

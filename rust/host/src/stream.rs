@@ -17,9 +17,8 @@ pub(crate) const RTX_KEYS: &[&str] = &[
 ];
 /// How often completed encoder output is collected while a frame is in flight.
 const OUTPUT_POLL: Duration = Duration::from_micros(100);
-/// Time for streams to release a lost capture device before it is re-created.
-/// Streams notice the reset within one 50 ms frame wait.
-const RELEASE_WAIT: Duration = Duration::from_millis(150);
+/// Backoff only after reopening fails; resource release is acknowledged.
+const RECOVERY_RETRY: Duration = Duration::from_millis(150);
 fn rtx_parameters(config: &Config) -> [u32; 4] {
     let peak = config
         .integer("rtx_hdr_peak_brightness", 1000)
@@ -263,9 +262,39 @@ pub struct Media {
     video: Arc<UdpSocket>,
     audio: Arc<UdpSocket>,
     peers: Mutex<HashMap<(String, bool), SocketAddr>>,
-    captures: Mutex<HashMap<String, Weak<Source>>>,
+    captures: Mutex<HashMap<CaptureKey, Weak<Source>>>,
     control_port: u16,
     bind: IpAddr,
+}
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct CaptureKey {
+    kind: String,
+    output: String,
+    hdr: bool,
+    adapter: String,
+    adapter_id: String,
+    phase: String,
+    compute: bool,
+    wgc_compute: bool,
+}
+impl CaptureKey {
+    fn new(kind: &str, output: &str, hdr: bool, config: &Config, phase: &str) -> Self {
+        Self {
+            kind: kind.into(),
+            output: output.into(),
+            hdr,
+            adapter: config.get("adapter_name", "").into(),
+            adapter_id: config.get("adapter_pnp_id", "").into(),
+            phase: if config.boolean("wgc_slot_aligned_publish", false) {
+                phase
+            } else {
+                ""
+            }
+            .into(),
+            compute: config.boolean("gpu_compute_conversion", true),
+            wgc_compute: config.boolean("wgc_compute_copy", true),
+        }
+    }
 }
 impl Media {
     pub fn new(h: Shared, bind: IpAddr) -> Result<Arc<Self>> {
@@ -357,12 +386,7 @@ impl Media {
     ) -> Result<Arc<Source>> {
         let output = prepared.output();
         let aligned = config.boolean("wgc_slot_aligned_publish", false);
-        let key = format!(
-            "{kind}:{output}:{hdr}:{}:{}:{}",
-            config.get("adapter_name", ""),
-            config.get("adapter_pnp_id", ""),
-            if aligned { phase } else { "" },
-        );
+        let key = CaptureKey::new(kind, &output, hdr, config, phase);
         let mut captures = self.captures.lock().unwrap();
         captures.retain(|_, source| source.strong_count() > 0);
         if let Some(existing) = captures.get(&key).and_then(Weak::upgrade)
@@ -388,16 +412,19 @@ impl Media {
                 let result = (|| -> Result<()> {
                     let _com = ComGuard::new()?;
                     let _priority = Priority::new();
+                    let _display_awake = butterpollo_windows::timing::DisplayAwake::enter()
+                        .inspect_err(|error| tracing::warn!(%error, "capture cannot keep the display awake"))
+                        .ok();
                     let timer = butterpollo_windows::timing::Timer::new()?;
                     let mut target = prepared.capture_target();
                     // Duplicate the desktop that is showing, including the secure
                     // desktop of a UAC prompt or the lock screen.
                     butterpollo_windows::input::follow_input_desktop();
                     let mut capture =
-                        match Capture::new_options(&target.0, &kind, hdr, &capture_config) {
+                        match Capture::open_for_stream(&target.0, &kind, hdr, &capture_config) {
                             Ok(c) => c,
                             Err(e) => {
-                                let _ = started_tx.send(Err(e.to_string()));
+                                let _ = started_tx.send(Err(format!("{e:#}")));
                                 return Ok(());
                             }
                         };
@@ -407,17 +434,25 @@ impl Media {
                     // out the stale adapter while anything holds the old device, so
                     // every duplication made then loses access at once (a display
                     // arriving for another client does this). The old capture is
-                    // dropped and consumers are given time to release their frames
+                    // dropped and consumers acknowledge releasing their frames
                     // and encoders before the new device is made.
                     let reopen = |lost: Capture, target: &(String, u64)| -> Result<Capture> {
+                        let recovery_started = Instant::now();
                         // Desktop Duplication reports the pointer's shape only
                         // when it changes; the new capture starts from this one.
                         let mut pointer = lost.pointer();
                         drop(lost);
-                        worker.publish(None)?;
+                        worker.begin_recovery()?;
                         let deadline = Instant::now() + Duration::from_secs(30);
+                        while !worker.consumers_released() {
+                            if worker_stop.load(Ordering::Acquire) {
+                                anyhow::bail!("capture stopped while releasing resources");
+                            }
+                            anyhow::ensure!(Instant::now() < deadline, "streams did not release the lost capture device");
+                            timer.until(Instant::now() + Duration::from_millis(2));
+                        }
+                        let release_ms = recovery_started.elapsed().as_millis();
                         loop {
-                            thread::sleep(RELEASE_WAIT);
                             if worker_stop.load(Ordering::Acquire) {
                                 anyhow::bail!("capture stopped while recovering");
                             }
@@ -425,17 +460,7 @@ impl Media {
                             // A UAC prompt or the lock screen switches the input
                             // desktop; duplication must be made on that desktop.
                             butterpollo_windows::input::follow_input_desktop();
-                            let opened = Capture::new_options(&next.0, &kind, hdr, &capture_config)
-                                .or_else(|error| {
-                                    // WGC cannot capture the secure desktop; Desktop
-                                    // Duplication can until the next restart.
-                                    if matches!(kind.as_str(), "ddx" | "dxgi") {
-                                        return Err(error);
-                                    }
-                                    Capture::new_options(&next.0, "ddx", hdr, &capture_config)
-                                        .inspect(|_| tracing::info!("capturing with Desktop Duplication until the configured capture recovers"))
-                                        .map_err(|_| error)
-                                });
+                            let opened = Capture::open_for_stream(&next.0, &kind, hdr, &capture_config);
                             match opened {
                                 Ok(mut recovered) => {
                                     if next != *target {
@@ -446,10 +471,11 @@ impl Media {
                                     {
                                         tracing::warn!(%error, "the pointer appears once it moves or changes");
                                     }
+                                    tracing::info!(release_ms, elapsed_ms=recovery_started.elapsed().as_millis(), backend=recovered.backend(), "capture reopened after resource release");
                                     return Ok(recovered);
                                 }
                                 Err(error) if Instant::now() >= deadline => return Err(error),
-                                Err(_) => {}
+                                Err(_) => thread::sleep(RECOVERY_RETRY),
                             }
                         }
                     };
@@ -487,7 +513,7 @@ impl Media {
                                 timer.until(capture.publication_deadline().unwrap_or(deadline).min(deadline));
                             }
                             Err(e) => {
-                                tracing::warn!(error=%e, output=%target.0, backend=capture.backend(), "capture restarting");
+                                tracing::warn!(error=%format!("{e:#}"), output=%target.0, backend=capture.backend(), "capture restarting");
                                 let lost = std::mem::replace(&mut capture, Capture::Closed);
                                 capture = match reopen(lost, &target) {
                                     Ok(capture) => capture,
@@ -502,8 +528,8 @@ impl Media {
                     Ok(())
                 })();
                 if let Err(e) = result {
-                    let _ = worker.fail(e.to_string());
-                    tracing::error!(error=%e,"capture worker stopped");
+                    let _ = worker.fail(format!("{e:#}"));
+                    tracing::error!(error=%format!("{e:#}"),"capture worker stopped");
                 }
             })?;
         let latest = Arc::new(Source {
@@ -619,6 +645,8 @@ impl Media {
                     let first = {
                         let deadline = Instant::now() + Duration::from_secs(10);
                         loop {
+                            // No frame, encoder or filter is owned during startup.
+                            latest.release_generation(&capture_wake);
                             if let Some(image) = latest.current()? { break image; }
                             if s.stopping() || h.stop.load(Ordering::Acquire) {
                                 return Ok(());
@@ -680,7 +708,6 @@ impl Media {
                         && butterpollo_core::stream_policy::Pacing::from_config(&c) == butterpollo_core::stream_policy::Pacing::Arrival;
                     let mut pacer = butterpollo_core::stream_policy::Pacer::new(Instant::now(), period);
                     let due = cadence.deadline();
-                    let mut send_due = due;
                     let mut last_stamp = start;
                     let mut live_at = due;
                     let mut rebuild_encoder = false;
@@ -712,6 +739,9 @@ impl Media {
                     // for the per-claim trace.
                     let mut first_seen: Option<(usize, Instant, Option<Duration>, Option<Instant>)> = None;
                     let mut batch = butterpollo_windows::net::Batch::default();
+                    let mut network_pacer = butterpollo_core::network_pacing::Pacer::new(Instant::now());
+                    let mut link = 0;
+                    let mut link_due = Instant::now();
                     let batch_kb = match c.integer("video_max_batch_size_kb", 64) {
                         16 => 16,
                         32 => 32,
@@ -741,19 +771,23 @@ impl Media {
                             let packets = packetizer.encode_recovery(&frame.bytes,frame.idr,frame.after_invalidation,timestamp,processing)?;
                             next_wire_frame.set(u64::from(packetizer.frame));
                             let frame_bytes = packets.iter().map(|p|p.len() as u64).sum();
-                            let bps = c.integer("pacing_max_bitrate_kbps", 0);
-                            let bps = if bps > 0 {
-                                (bps as u64 * 1000)
-                                    .max(u64::from(s.bitrate.load(Ordering::Relaxed)) * 1100)
-                            } else {
-                                800_000_000
-                            };
-                            send_due = send_due.max(Instant::now());
+                            if Instant::now() >= link_due {
+                                link = butterpollo_windows::net::routed_link_bps(peer);
+                                link_due = Instant::now() + Duration::from_secs(2);
+                            }
+                            let bps = butterpollo_core::network_pacing::rate_bps(
+                                c.integer("pacing_max_bitrate_kbps", 0),
+                                s.bitrate.load(Ordering::Relaxed),
+                                link,
+                            );
                             let mut remaining = packets.as_slice();
                             while !remaining.is_empty() {
+                                if s.stopping() || h.stop.load(Ordering::Acquire) {
+                                    return Ok(());
+                                }
                                 let now = Instant::now();
-                                if send_due > now {
-                                    timer.until_precise(send_due);
+                                if network_pacer.due() > now {
+                                    timer.until_precise(network_pacer.due());
                                 }
                                 let budget = (bps / 4000)
                                     .clamp(remaining[0].len() as u64, batch_kb * 1024)
@@ -762,7 +796,7 @@ impl Media {
                                     butterpollo_windows::net::Batch::count(remaining, budget);
                                 let bytes = batch.send(&m.video, &remaining[..count], peer)?;
                                 remaining = &remaining[count..];
-                                send_due += Duration::from_secs_f64(bytes as f64 * 8. / bps as f64);
+                                network_pacer.sent(Instant::now(), bytes, if bytes > 0 { count } else { 0 }, peer.is_ipv6(), bps);
                                 s.stats.packets.fetch_add(count as u64, Ordering::Relaxed);
                                 s.stats.bytes.fetch_add(bytes as u64, Ordering::Relaxed);
                             }
@@ -881,6 +915,7 @@ impl Media {
                                 last_image = None;
                                 truehdr = None;
                                 truehdr_staging = None;
+                                latest.release_generation(&capture_wake);
                                 continue;
                             };
                             // Resolution changes or DXGI loss can recreate the capture device.
@@ -1630,6 +1665,31 @@ fn feedback_packets(id: u16, kind: u16, data: &[u8]) -> Vec<(u16, Vec<u8>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shared_capture_respects_compute_overrides_and_independent_frame_phases() {
+        let config = Config::default();
+        let key =
+            |config: &Config, phase: &str| CaptureKey::new("wgc", "display", false, config, phase);
+        let default = key(&config, "first");
+        assert_eq!(default, key(&config, "second"));
+        let mut changed = config.clone();
+        changed
+            .values
+            .insert("wgc_compute_copy".into(), "false".into());
+        assert_ne!(default, key(&changed, "first"));
+        changed
+            .values
+            .insert("wgc_compute_copy".into(), "true".into());
+        assert_eq!(default, key(&changed, "first"));
+        changed
+            .values
+            .insert("gpu_compute_conversion".into(), "false".into());
+        assert_ne!(default, key(&changed, "first"));
+        changed
+            .values
+            .insert("wgc_slot_aligned_publish".into(), "true".into());
+        assert_ne!(key(&changed, "first"), key(&changed, "second"));
+    }
     #[test]
     fn dualsense_trigger_effects_use_the_moonlight_layout() {
         let mut data = vec![0u8; 32];

@@ -1,6 +1,7 @@
 //! Test-owned moving desktop with a timestamp in the pixels. Not packaged.
 //! Pair with tests/moonlight_client.c to measure picture age independently of
 //! either host's processing counter. Requires an explicitly selected display.
+//! Animation pacing never changes the display's resolution, refresh rate or HDR.
 #[cfg(not(windows))]
 fn main() {
     eprintln!("This probe requires Windows.");
@@ -125,11 +126,11 @@ float4 picture(float4 p : SV_Position) : SV_Target {
     pub fn run() -> Result<()> {
         let mut args = std::env::args().skip(1);
         let display_name = args.next().context(
-            "usage: motion_probe DISPLAY SECONDS [REPORT.json [SOURCE_HZ|current [STRIP_HEIGHT]]]",
+            "usage: motion_probe DISPLAY SECONDS [REPORT.json [ANIMATION_HZ|current [STRIP_HEIGHT]]]",
         )?;
         let seconds: u64 = args.next().context("duration is required")?.parse()?;
         let report = args.next();
-        let source_hz: Option<u32> = args
+        let animation_hz: Option<u32> = args
             .next()
             .filter(|s| s != "current")
             .map(|s| s.parse())
@@ -138,8 +139,8 @@ float4 picture(float4 p : SV_Position) : SV_Target {
         if !(1..=300).contains(&seconds) || args.next().is_some() {
             bail!("duration must be 1..300 seconds");
         }
-        if source_hz.is_some_and(|hz| !(1..=1000).contains(&hz)) {
-            bail!("source refresh must be 1..1000 Hz");
+        if animation_hz.is_some_and(|hz| !(1..=1000).contains(&hz)) {
+            bail!("animation rate must be 1..1000 Hz");
         }
         enable_dpi_awareness();
         let _com = ComGuard::new()?;
@@ -152,14 +153,9 @@ float4 picture(float4 p : SV_Position) : SV_Target {
             bail!("window height must be 128..display height");
         }
         let window_y = display.y + (display.height - window_height) as i32;
-        if let Some(hz) = source_hz {
-            butterpollo_windows::display::set_mode(
-                &display.display_name,
-                display.width,
-                display.height,
-                hz,
-            )?;
-        }
+        let source_mode = butterpollo_windows::display::mode(&display.display_name)?;
+        let timer = butterpollo_windows::timing::Timer::new()?;
+        let interval = animation_hz.map(|hz| Duration::from_secs_f64(1.0 / f64::from(hz)));
         println!("MOTION stage=display name={}", display.display_name);
         if display.width < 640 || display.height < 128 {
             bail!("the motion barcode needs a display of at least 640 by 128");
@@ -289,10 +285,17 @@ float4 picture(float4 p : SV_Position) : SV_Target {
             QueryPerformanceFrequency(&mut frequency)?;
             println!("MOTION stage=render-ready");
             let start = Instant::now();
+            let mut next_frame = start;
             let mut frames = Vec::new();
             while start.elapsed() < Duration::from_secs(seconds) {
                 if WaitForSingleObject(wait.0, 1000) != WAIT_OBJECT_0 {
                     bail!("presentation event timed out");
+                }
+                if let Some(interval) = interval {
+                    timer.until(next_frame);
+                    // Bound catch-up after a stall to one frame. A delayed
+                    // renderer must not manufacture a burst of fresh pictures.
+                    next_frame = (next_frame + interval).max(Instant::now());
                 }
                 let mut message = MSG::default();
                 while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
@@ -317,7 +320,8 @@ float4 picture(float4 p : SV_Position) : SV_Target {
             }
             let data = serde_json::json!({
                 "scope":"render timestamp to independent decode; excludes remote display scanout",
-                "display":display,"requested_source_hz":source_hz,"seconds":start.elapsed().as_secs_f64(),
+                "display":display,"animation_hz":animation_hz,
+                "display_refresh_hz":source_mode.dmDisplayFrequency,"seconds":start.elapsed().as_secs_f64(),
                 "window_height":window_height,"window_y":window_y,
                 "qpc_frequency":frequency,"presented_frames":frames.len(),"frames":frames
             });

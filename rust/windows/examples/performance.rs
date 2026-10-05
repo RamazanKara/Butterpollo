@@ -105,6 +105,8 @@ Repeat-frame throughput excludes capture, network, decoding and display latency.
     {
         bail!("probe settings outside supported bounds");
     }
+    butterpollo_windows::capture::enable_dpi_awareness();
+    let _scope = butterpollo_windows::timing::StreamingScope::enter();
     let _com = ComGuard::new()?;
     let _priority = Priority::new();
     let tuning = if let Some(path) = fields.get("--config") {

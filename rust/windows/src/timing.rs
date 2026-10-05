@@ -1,7 +1,10 @@
 use anyhow::Result;
 use std::time::{Duration, Instant};
 use windows::{
-    Win32::{Foundation::*, System::Threading::*},
+    Win32::{
+        Foundation::*,
+        System::{Power::*, Threading::*},
+    },
     core::PCWSTR,
 };
 
@@ -11,6 +14,42 @@ pub struct Timer(HANDLE);
 /// Each capture consumer owns a separate unnamed event. Resetting it cannot
 /// consume another client's notification, and publishing before a wait is safe.
 pub struct Signal(HANDLE);
+/// Keep capture's display awake, as the C++ host does. The request belongs to
+/// this thread and must be restored on the same thread, after capture ends.
+pub struct DisplayAwake {
+    previous: EXECUTION_STATE,
+    _thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+impl DisplayAwake {
+    pub fn enter() -> Result<Self> {
+        let required = ES_CONTINUOUS | ES_DISPLAY_REQUIRED;
+        let previous = unsafe { SetThreadExecutionState(required) };
+        anyhow::ensure!(
+            previous.0 != 0,
+            "Windows rejected the display-awake request"
+        );
+        let guard = Self {
+            previous,
+            _thread: std::marker::PhantomData,
+        };
+        // Preserve any other requirement already owned by this thread, e.g.
+        // a caller keeping the system awake. Drop also handles this error path.
+        if previous & !required != EXECUTION_STATE(0) {
+            anyhow::ensure!(
+                unsafe { SetThreadExecutionState(previous | required) }.0 != 0,
+                "Windows rejected the combined execution-state request"
+            );
+        }
+        Ok(guard)
+    }
+}
+impl Drop for DisplayAwake {
+    fn drop(&mut self) {
+        unsafe {
+            SetThreadExecutionState(self.previous | ES_CONTINUOUS);
+        }
+    }
+}
 // Windows event operations are thread-safe; ownership keeps the handle alive.
 unsafe impl Send for Signal {}
 unsafe impl Sync for Signal {}
@@ -173,6 +212,27 @@ impl Drop for StreamingScope {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "temporarily keeps the interactive display awake"]
+    fn display_awake_preserves_and_restores_thread_power_requirements() -> Result<()> {
+        let previous = unsafe { SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) };
+        anyhow::ensure!(previous.0 != 0, "cannot set test execution state");
+        let restore = DisplayAwake {
+            previous,
+            _thread: std::marker::PhantomData,
+        };
+        let before = ES_CONTINUOUS | ES_SYSTEM_REQUIRED;
+        let required = before | ES_DISPLAY_REQUIRED;
+        let first = DisplayAwake::enter()?;
+        assert_eq!(unsafe { SetThreadExecutionState(required) }, required);
+        let second = DisplayAwake::enter()?;
+        drop(second);
+        assert_eq!(unsafe { SetThreadExecutionState(required) }, required);
+        drop(first);
+        assert_eq!(unsafe { SetThreadExecutionState(before) }, before);
+        drop(restore);
+        Ok(())
+    }
     #[test]
     fn capture_before_wait_is_retained_and_each_consumer_has_its_own_wake() -> Result<()> {
         let timer = Timer::new()?;

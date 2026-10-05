@@ -1,7 +1,12 @@
 /* Interoperability probe: Moonlight's independent C client validates Rust's wire data.
  * This is a test executable, never linked into the Rust host. */
 #include <Limelight.h>
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <time.h>
+#include <errno.h>
+#endif
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -10,9 +15,11 @@
 #include <math.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/pixdesc.h>
+#include <libavutil/hwcontext.h>
 #include <opus/opus_multistream.h>
-static atomic_int frames, decoded_frames, audio_packets, ended, failures;
+static atomic_int frames, decoded_frames, audio_packets, ended, failures, detailed_frames;
 static AVCodecContext *decoder;
+static enum AVPixelFormat hardware_format=AV_PIX_FMT_NONE;
 static OpusMSDecoder *opus_decoder;
 static int audio_channels;
 static int requested_format;
@@ -31,7 +38,13 @@ static double warmup_seconds=2.0;
 static int barcode_bottom;
 /* The host may scale the source; the barcode is drawn at source pixels. */
 static double barcode_scale=1.0;
+#ifdef _WIN32
 static double clock_ms(void){LARGE_INTEGER n,f;QueryPerformanceCounter(&n);QueryPerformanceFrequency(&f);return (double)n.QuadPart*1000.0/(double)f.QuadPart;}
+static void wait_ms(unsigned milliseconds){Sleep(milliseconds);}
+#else
+static double clock_ms(void){struct timespec n;clock_gettime(CLOCK_MONOTONIC,&n);return (double)n.tv_sec*1000.0+n.tv_nsec/1000000.0;}
+static void wait_ms(unsigned milliseconds){struct timespec n={milliseconds/1000,(milliseconds%1000)*1000000L};while(nanosleep(&n,&n)<0&&errno==EINTR){}}
+#endif
 static int compare_double(const void*a,const void*b){double x=*(const double*)a,y=*(const double*)b;return(x>y)-(x<y);}
 static unsigned luma_sample(const AVFrame *frame,int x,int y){
     const AVPixFmtDescriptor *desc=av_pix_fmt_desc_get(frame->format);
@@ -40,6 +53,11 @@ static unsigned luma_sample(const AVFrame *frame,int x,int y){
     const unsigned char *pixel=frame->data[0]+y*frame->linesize[0]+x*component->step+component->offset;
     unsigned value=pixel[0];if(component->depth>8)value|=(unsigned)pixel[1]<<8;
     return(value>>component->shift)&((1u<<component->depth)-1u);
+}
+static enum AVPixelFormat select_hardware_format(AVCodecContext *context,const enum AVPixelFormat *formats){
+    (void)context;
+    for(const enum AVPixelFormat *format=formats;*format!=AV_PIX_FMT_NONE;format++)if(*format==hardware_format)return *format;
+    fprintf(stderr,"Requested hardware pixel format is unavailable\n");return AV_PIX_FMT_NONE;
 }
 static int picture_timestamp(const AVFrame *frame,uint32_t *sequence,uint64_t *ticks){
     const double s=barcode_scale;
@@ -67,6 +85,19 @@ static int video_setup(int format,int width,int height,int rate,void*context,int
     enum AVCodecID id=(format&VIDEO_FORMAT_MASK_H264)?AV_CODEC_ID_H264:(format&VIDEO_FORMAT_MASK_H265)?AV_CODEC_ID_HEVC:AV_CODEC_ID_AV1;
     const AVCodec *codec=avcodec_find_decoder(id);if(!codec){fprintf(stderr,"Independent decoder unavailable for codec %d\n",id);return -1;}
     decoder=avcodec_alloc_context3(codec);if(!decoder)return -1;
+    const char *hardware=getenv("BUTTERPOLLO_TEST_HW_DECODER");
+    if(hardware){
+        enum AVHWDeviceType type=av_hwdevice_find_type_by_name(hardware);
+        if(type==AV_HWDEVICE_TYPE_NONE)return -1;
+        for(int i=0;;i++){
+            const AVCodecHWConfig *config=avcodec_get_hw_config(codec,i);
+            if(!config){fprintf(stderr,"Decoder does not support %s\n",hardware);return -1;}
+            if(config->device_type==type&&(config->methods&AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX)){hardware_format=config->pix_fmt;break;}
+        }
+        if(av_hwdevice_ctx_create(&decoder->hw_device_ctx,type,getenv("BUTTERPOLLO_TEST_HW_DEVICE"),NULL,0)<0)return -1;
+        decoder->get_format=select_hardware_format;decoder->extra_hw_frames=8;
+        printf("HARDWARE_DECODER type=%s format=%s\n",hardware,av_get_pix_fmt_name(hardware_format));
+    }
     decoder->thread_count=decoder_threads;decoder->thread_type=FF_THREAD_SLICE;decoder->flags|=AV_CODEC_FLAG_LOW_DELAY;
     AVDictionary *options=NULL;
     // FFmpeg's default frame threading buffers several whole pictures. Keep
@@ -79,7 +110,7 @@ static int video_setup(int format,int width,int height,int rate,void*context,int
 static int video_frame(PDECODE_UNIT unit){
     double decode_started=clock_ms();
     uint32_t picture_sequence=0;uint64_t picture_ticks=0;double age_ms=-1;
-    AVPacket *packet=av_packet_alloc();AVFrame *frame=av_frame_alloc();av_new_packet(packet,unit->fullLength);
+    AVPacket *packet=av_packet_alloc();AVFrame *frame=av_frame_alloc(),*decoded=av_frame_alloc();av_new_packet(packet,unit->fullLength);
     int offset=0;for(PLENTRY entry=unit->bufferList;entry;entry=entry->next){memcpy(packet->data+offset,entry->data,entry->length);offset+=entry->length;}
     // Optional first access-unit dump runs before the steady measurement window.
     // It allows an independent bitstream parser to diagnose driver geometry.
@@ -87,7 +118,22 @@ static int video_frame(PDECODE_UNIT unit){
     if(dump&&atomic_load(&frames)==0){FILE *file=fopen(dump,"wb");if(!file||fwrite(packet->data,1,packet->size,file)!=(size_t)packet->size)atomic_fetch_add(&failures,1);if(file)fclose(file);}
     if(avcodec_send_packet(decoder,packet)<0)atomic_fetch_add(&failures,1);
     int received;
-    while((received=avcodec_receive_frame(decoder,frame))==0){
+    while((received=avcodec_receive_frame(decoder,decoded))==0){
+        // Read hardware surfaces back before validating pixels, geometry and
+        // HDR. Decoder timing includes this readback, but excludes scanout.
+        if(hardware_format!=AV_PIX_FMT_NONE){
+            if(decoded->format!=hardware_format||av_hwframe_transfer_data(frame,decoded,0)<0||av_frame_copy_props(frame,decoded)<0){
+                atomic_fetch_add(&failures,1);av_frame_unref(decoded);av_frame_unref(frame);continue;
+            }
+            av_frame_unref(decoded);
+        }else av_frame_move_ref(frame,decoded);
+        unsigned low=65535,high=0;
+        for(int y=1;y<8;y++)for(int x=1;x<12;x++){
+            unsigned value=luma_sample(frame,frame->width*x/12,frame->height*y/8);
+            if(value<low)low=value;if(value>high)high=value;
+        }
+        const AVPixFmtDescriptor *pixel=av_pix_fmt_desc_get(frame->format);
+        if(pixel&&high>low+(16u<<(pixel->comp[0].depth>8?pixel->comp[0].depth-8:0)))atomic_fetch_add(&detailed_frames,1);
         if(frame->width!=requested_width||frame->height!=requested_height)atomic_fetch_add(&failures,1);
         if(requested_hdr){const AVPixFmtDescriptor *desc=av_pix_fmt_desc_get(frame->format);if(!desc||desc->comp[0].depth<10||frame->color_primaries!=AVCOL_PRI_BT2020||frame->color_trc!=AVCOL_TRC_SMPTE2084)atomic_fetch_add(&failures,1);}
         atomic_fetch_add(&decoded_frames,1);if(atomic_load(&decoded_frames)==1)printf("DECODED %dx%d pixel_format=%d primaries=%d transfer=%d\n",frame->width,frame->height,frame->format,frame->color_primaries,frame->color_trc);
@@ -110,16 +156,23 @@ static int video_frame(PDECODE_UNIT unit){
             printf("FRAME_DUMP frame=%d format=%s\n",dump_at,desc?desc->name:"unknown");
         }
         if(picture_timestamp(frame,&picture_sequence,&picture_ticks)){
+            // The sequence validates fresh motion on a remote receiver too.
+            // Absolute picture age needs the renderer's clock: only compare
+            // QPC timestamps on the same Windows machine.
+#ifdef _WIN32
+            if(!getenv("BUTTERPOLLO_TEST_HOST")){
             LARGE_INTEGER frequency;QueryPerformanceFrequency(&frequency);
             age_ms=clock_ms()-(double)picture_ticks*1000.0/(double)frequency.QuadPart;
             // A signature alone must not turn unrelated desktop content into a
             // latency sample. Both processes use the same Windows QPC clock.
             if(age_ms<0||age_ms>3000){picture_sequence=0;age_ms=-1;}
+            }
+#endif
         }
         av_frame_unref(frame);
     }
     if(received!=AVERROR(EAGAIN)&&received!=AVERROR_EOF)atomic_fetch_add(&failures,1);
-    av_packet_free(&packet);av_frame_free(&frame);
+    av_packet_free(&packet);av_frame_free(&frame);av_frame_free(&decoded);
     double decode_ms=clock_ms()-decode_started;
     if(measured_frames<100000){
         host_latency[measured_frames]=unit->frameHostProcessingLatency/10.0;decode_time_ms[measured_frames]=decode_ms;
@@ -147,7 +200,7 @@ int main(int argc,char**argv){
     if(argc<2){fprintf(stderr,"session URL required\n");return 2;}
     setbuf(stdout,NULL);
     SERVER_INFORMATION server;LiInitializeServerInformation(&server);
-    server.address="127.0.0.1";server.serverInfoAppVersion="7.1.431.-1";server.serverInfoGfeVersion="3.23.0.74";server.rtspSessionUrl=argv[1];server.serverCodecModeSupport=0x30301;
+    server.address=getenv("BUTTERPOLLO_TEST_HOST")?getenv("BUTTERPOLLO_TEST_HOST"):"127.0.0.1";server.serverInfoAppVersion="7.1.431.-1";server.serverInfoGfeVersion="3.23.0.74";server.rtspSessionUrl=argv[1];server.serverCodecModeSupport=0x30301;
     STREAM_CONFIGURATION config;LiInitializeStreamConfiguration(&config);config.width=640;config.height=480;config.fps=30;config.bitrate=2000;config.packetSize=1024;config.streamingRemotely=STREAM_CFG_LOCAL;config.audioConfiguration=AUDIO_CONFIGURATION_STEREO;config.supportedVideoFormats=VIDEO_FORMAT_H264;config.encryptionFlags=ENCFLG_ALL;
     if(argc>2){if(strcmp(argv[2],"hevc")==0)config.supportedVideoFormats=VIDEO_FORMAT_H265;else if(strcmp(argv[2],"hevc-hdr")==0)config.supportedVideoFormats=VIDEO_FORMAT_H265_MAIN10;else if(strcmp(argv[2],"av1")==0)config.supportedVideoFormats=VIDEO_FORMAT_AV1_MAIN8;else if(strcmp(argv[2],"av1-hdr")==0)config.supportedVideoFormats=VIDEO_FORMAT_AV1_MAIN10;}
     requested_format=config.supportedVideoFormats;requested_hdr=(requested_format&(VIDEO_FORMAT_H265_MAIN10|VIDEO_FORMAT_AV1_MAIN10))!=0;
@@ -175,41 +228,48 @@ int main(int argc,char**argv){
     int result=LiStartConnection(&server,&config,&listener,&video,&audio,NULL,0,NULL,0);
     if(result){printf("CONNECT FAILED %d\n",result);return 1;}
     double started=clock_ms();
-    for(int i=0;i<(duration?duration*10:100)&&!atomic_load(&ended)&&(duration||atomic_load(&frames)<30);i++)Sleep(100);
+    for(int i=0;i<(duration?duration*10:100)&&!atomic_load(&ended)&&(duration||atomic_load(&frames)<30);i++)wait_ms(100);
     double seconds=(clock_ms()-started)/1000.0;
     int premature=atomic_load(&ended)||(duration&&seconds<duration*0.98);
     LiStopConnection();printf("RESULT frames=%d decoded_frames=%d audio_packets=%d failures=%d\n",atomic_load(&frames),atomic_load(&decoded_frames),atomic_load(&audio_packets),atomic_load(&failures));
+    printf("PICTURE_CONTENT frames_with_luma_contrast=%d\n",atomic_load(&detailed_frames));
     if(timing_csv)fclose(timing_csv);
     printf("AUDIO_SIGNAL samples=%llu peak=%.6f rms=%.6f\n",audio_samples,audio_peak,audio_samples?sqrt(audio_energy/audio_samples):0.0);
     int motion_valid=!getenv("BUTTERPOLLO_TEST_REQUIRE_MOTION");
+    const char *minimum_fps_text=getenv("BUTTERPOLLO_TEST_MIN_FPS");
+    double minimum_fps=minimum_fps_text?atof(minimum_fps_text):0;
+    int rate_valid=!minimum_fps_text;
     if(duration&&measured_frames){
         double host_sum=0,decode_sum=0;for(unsigned i=0;i<measured_frames;i++){host_sum+=host_latency[i];decode_sum+=decode_time_ms[i];}
         static double steady_host[100000],intervals[100000],ages[100000];
-        unsigned steady_count=0,interval_count=0,visual_count=0,repeats=0,skips=0,unique=0,late=0;
+        unsigned steady_count=0,interval_count=0,visual_count=0,age_count=0,repeats=0,skips=0,unique=0,late=0;
         uint32_t last_picture=0;double first_steady=0,last_steady=0;
         for(unsigned i=0;i<measured_frames;i++)if(arrivals[i]>=arrivals[0]+warmup_seconds*1000){
             steady_host[steady_count++]=host_latency[i];
             if(!first_steady)first_steady=arrivals[i];last_steady=arrivals[i];
             if(i){double interval=assembly_times[i]-assembly_times[i-1];intervals[interval_count++]=interval;if(interval>1500.0/config.fps)late++;}
             if(picture_frames[i]){
-                ages[visual_count++]=picture_age[i];
+                visual_count++;if(picture_age[i]>=0)ages[age_count++]=picture_age[i];
                 if(picture_frames[i]==last_picture)repeats++;
                 else{unique++;if(last_picture&&picture_frames[i]>last_picture+1)skips+=picture_frames[i]-last_picture-1;}
                 last_picture=picture_frames[i];
             }
         }
         double steady_seconds=(last_steady-first_steady)/1000;
-        printf("STEADY warmup_seconds=%.3f seconds=%.3f frames=%u fps=%.3f intervals_over_1_5_period=%u\n",warmup_seconds,steady_seconds,steady_count,steady_seconds>0?(steady_count-1)/steady_seconds:0,late);
+        double steady_fps=steady_seconds>0&&steady_count>1?(steady_count-1)/steady_seconds:0;
+        printf("STEADY warmup_seconds=%.3f seconds=%.3f frames=%u fps=%.3f intervals_over_1_5_period=%u\n",warmup_seconds,steady_seconds,steady_count,steady_fps,late);
+        if(minimum_fps_text)rate_valid=isfinite(minimum_fps)&&minimum_fps>0&&steady_fps>=minimum_fps;
         distribution("STEADY_HOST",steady_host,steady_count);distribution("ARRIVAL_INTERVAL",intervals,interval_count);
         if(visual_count){
             printf("VISUAL frames=%u unique=%u repeats=%u skipped_render_frames=%u unique_fps=%.3f coverage=%.6f\n",visual_count,unique,repeats,skips,steady_seconds>0?(unique?unique-1:0)/steady_seconds:0,steady_count?(double)visual_count/steady_count:0);
-            distribution("PICTURE_AGE",ages,visual_count);
+            distribution("PICTURE_AGE",ages,age_count);
             if(steady_count&&visual_count>=steady_count*0.95&&unique>1)motion_valid=1;
         }
         qsort(host_latency,measured_frames,sizeof(double),compare_double);
         printf("PERFORMANCE seconds=%.3f received_fps=%.2f decoded_fps=%.2f host_mean_ms=%.3f host_p50_ms=%.3f host_p95_ms=%.3f decoder_mean_ms=%.3f\n",seconds,atomic_load(&frames)/seconds,atomic_load(&decoded_frames)/seconds,host_sum/measured_frames,host_latency[(measured_frames-1)/2],host_latency[(measured_frames-1)*95/100],decode_sum/measured_frames);
     }
     if(!motion_valid)fprintf(stderr,"Motion measurement failed: missing timestamps or static test content\n");
+    if(!rate_valid)fprintf(stderr,"Stream did not sustain the required %.3f FPS after warmup\n",minimum_fps);
     avcodec_free_context(&decoder);if(opus_decoder)opus_multistream_decoder_destroy(opus_decoder);
-    return !premature&&motion_valid&&atomic_load(&decoded_frames)>=30&&atomic_load(&audio_packets)>0&&atomic_load(&failures)==0&&(!getenv("BUTTERPOLLO_TEST_AUDIO_TONE")||audio_peak>0.01)?0:1;
+    return !premature&&motion_valid&&rate_valid&&atomic_load(&decoded_frames)>=30&&atomic_load(&audio_packets)>0&&atomic_load(&failures)==0&&(!getenv("BUTTERPOLLO_TEST_AUDIO_TONE")||audio_peak>0.01)&&(!getenv("BUTTERPOLLO_TEST_REQUIRE_PICTURE")||atomic_load(&detailed_frames)>0)?0:1;
 }

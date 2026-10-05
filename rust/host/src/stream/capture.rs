@@ -2,7 +2,10 @@
 use anyhow::{Result, bail};
 use butterpollo_windows::timing::{Signal, Timer};
 use std::{
-    sync::{Arc, Mutex, Weak},
+    sync::{
+        Arc, Mutex, Weak,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Instant,
 };
 
@@ -11,6 +14,7 @@ struct State<T> {
     error: Option<String>,
     captured: Option<Instant>,
     cadence: butterpollo_core::capture_policy::Freshness,
+    generation: u64,
 }
 impl<T> State<T> {
     fn check(&self) -> Result<()> {
@@ -20,9 +24,21 @@ impl<T> State<T> {
         Ok(())
     }
 }
+/// Each stream acknowledges a reset only after releasing its encoder, images
+/// and filters. Dropping the subscription removes a departing stream's lease.
+pub(super) struct Consumer {
+    signal: Signal,
+    released: AtomicU64,
+}
+impl std::ops::Deref for Consumer {
+    type Target = Signal;
+    fn deref(&self) -> &Signal {
+        &self.signal
+    }
+}
 pub(super) struct Latest<T> {
     state: Mutex<State<T>>,
-    changed: Mutex<Vec<Weak<Signal>>>,
+    changed: Mutex<Vec<Weak<Consumer>>>,
     origin: Instant,
 }
 impl<T> Latest<T> {
@@ -33,13 +49,19 @@ impl<T> Latest<T> {
                 error: None,
                 captured: None,
                 cadence: Default::default(),
+                generation: 0,
             }),
             changed: Mutex::new(Vec::new()),
             origin: Instant::now(),
         }
     }
-    pub(super) fn subscribe(&self) -> Result<Arc<Signal>> {
-        let signal = Arc::new(Signal::new()?);
+    pub(super) fn subscribe(&self) -> Result<Arc<Consumer>> {
+        let state = self.state.lock().unwrap();
+        let signal = Arc::new(Consumer {
+            signal: Signal::new()?,
+            // A new subscriber owns nothing from an earlier generation.
+            released: AtomicU64::new(state.generation),
+        });
         let mut waiters = self.changed.lock().unwrap();
         waiters.retain(|waiter| waiter.strong_count() > 0);
         waiters.push(Arc::downgrade(&signal));
@@ -53,15 +75,28 @@ impl<T> Latest<T> {
         }
         Ok(())
     }
-    pub(super) fn publish(&self, image: Option<Arc<T>>) -> Result<()> {
+    pub(super) fn begin_recovery(&self) -> Result<()> {
         let mut state = self.state.lock().unwrap();
         state.check()?;
-        state.image = image;
+        state.generation = state.generation.wrapping_add(1);
+        state.image = None;
         state.captured = None;
         state.cadence = Default::default();
-        // Reset, predicate checks and both frame/error notifications share this
-        // lock. A notification cannot be lost immediately before a wait.
         self.notify()
+    }
+    /// Call only after releasing every resource belonging to this capture.
+    pub(super) fn release_generation(&self, consumer: &Consumer) {
+        let state = self.state.lock().unwrap();
+        consumer.released.store(state.generation, Ordering::Release);
+    }
+    pub(super) fn consumers_released(&self) -> bool {
+        let state = self.state.lock().unwrap();
+        self.changed
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .all(|consumer| consumer.released.load(Ordering::Acquire) == state.generation)
     }
     pub(super) fn publish_captured(&self, image: Arc<T>, captured: Instant) -> Result<()> {
         let now = Instant::now();
@@ -118,11 +153,11 @@ impl<T> Latest<T> {
         timer: &Timer,
         wake: &Signal,
         deadline: Instant,
-        predicate: impl FnOnce(Option<&Arc<T>>) -> bool,
+        predicate: impl FnOnce(&State<T>) -> bool,
     ) -> Result<()> {
         let state = self.state.lock().unwrap();
         state.check()?;
-        if predicate(state.image.as_ref()) {
+        if predicate(&state) {
             wake.reset()?;
             drop(state);
             timer.until_or_signal(deadline, wake)?;
@@ -132,10 +167,14 @@ impl<T> Latest<T> {
     pub(super) fn wait_for_frame(
         &self,
         timer: &Timer,
-        wake: &Signal,
+        wake: &Consumer,
         deadline: Instant,
     ) -> Result<Option<Arc<T>>> {
-        self.wait_if(timer, wake, deadline, |image| image.is_none())?;
+        self.wait_if(timer, wake, deadline, |state| {
+            // A reset must release the encoder immediately, not wait another
+            // frame period while the capture worker waits for its release.
+            state.image.is_none() && wake.released.load(Ordering::Acquire) == state.generation
+        })?;
         self.current()
     }
     pub(super) fn wait_if_current(
@@ -145,8 +184,11 @@ impl<T> Latest<T> {
         image: &Arc<T>,
         deadline: Instant,
     ) -> Result<()> {
-        self.wait_if(timer, wake, deadline, |current| {
-            current.is_some_and(|current| Arc::ptr_eq(current, image))
+        self.wait_if(timer, wake, deadline, |state| {
+            state
+                .image
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, image))
         })
     }
 }
@@ -162,7 +204,7 @@ mod tests {
         let first = latest.subscribe()?;
         let second = latest.subscribe()?;
         let old = Arc::new(1u8);
-        latest.publish(Some(old.clone()))?;
+        latest.publish_captured(old.clone(), Instant::now())?;
         latest.wait_if_current(
             &timer,
             &first,
@@ -171,7 +213,7 @@ mod tests {
         )?;
         assert!(timer.until_or_signal(Instant::now() + Duration::from_secs(1), &second)?);
         let new = Arc::new(2u8);
-        latest.publish(Some(new.clone()))?;
+        latest.publish_captured(new.clone(), Instant::now())?;
         latest.wait_if_current(
             &timer,
             &first,
@@ -184,7 +226,7 @@ mod tests {
                 .unwrap(),
             &new
         ));
-        latest.publish(None)?;
+        latest.begin_recovery()?;
         assert!(
             latest
                 .wait_for_frame(&timer, &first, Instant::now() + Duration::from_millis(2))?
@@ -205,13 +247,81 @@ mod tests {
         failed.join().unwrap();
         assert!(error.to_string().contains("device lost"));
         assert!(latest.current().is_err());
-        assert!(latest.publish(Some(Arc::new(3))).is_err());
+        assert!(
+            latest
+                .publish_captured(Arc::new(3), Instant::now())
+                .is_err()
+        );
         let late = latest.subscribe()?;
         assert!(
             latest
                 .wait_for_frame(&timer, &late, Instant::now())
                 .is_err()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_waits_for_all_owners_and_departing_consumers_release_their_lease() -> Result<()> {
+        let latest = Latest::new();
+        let first = latest.subscribe()?;
+        let second = latest.subscribe()?;
+        latest.publish_captured(Arc::new(1u8), Instant::now())?;
+        let held = latest.current()?.unwrap();
+        let old = Arc::downgrade(&held);
+        latest.begin_recovery()?;
+        assert!(latest.current()?.is_none());
+        assert!(!latest.consumers_released());
+        drop(held);
+        latest.release_generation(&first);
+        assert!(old.upgrade().is_none());
+        assert!(!latest.consumers_released());
+        // A stream joining during recovery has no old resources to release.
+        let joining = latest.subscribe()?;
+        drop(second);
+        assert!(latest.consumers_released());
+        latest.publish_captured(Arc::new(2), Instant::now())?;
+        latest.begin_recovery()?;
+        assert!(!latest.consumers_released());
+        latest.release_generation(&first);
+        assert!(!latest.consumers_released());
+        latest.release_generation(&joining);
+        assert!(latest.consumers_released());
+        Ok(())
+    }
+
+    #[test]
+    fn reset_wakes_each_waiter_and_skips_waiting_until_resources_are_released() -> Result<()> {
+        let latest = Arc::new(Latest::<u8>::new());
+        let consumer = latest.subscribe()?;
+        let worker = latest.clone();
+        let timer = Timer::new()?;
+        let reset = std::thread::spawn(move || worker.begin_recovery().unwrap());
+        let start = Instant::now();
+        assert!(
+            latest
+                .wait_for_frame(&timer, &consumer, start + Duration::from_secs(2))?
+                .is_none()
+        );
+        reset.join().unwrap();
+        // An unacknowledged reset must also bypass waits started after notification.
+        assert!(
+            latest
+                .wait_for_frame(&timer, &consumer, start + Duration::from_secs(2))?
+                .is_none()
+        );
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(!latest.consumers_released());
+        latest.release_generation(&consumer);
+        assert!(latest.consumers_released());
+        let frame = Arc::new(2);
+        latest.publish_captured(frame.clone(), Instant::now())?;
+        assert!(Arc::ptr_eq(
+            &frame,
+            &latest
+                .wait_for_frame(&timer, &consumer, Instant::now())?
+                .unwrap()
+        ));
         Ok(())
     }
 }
