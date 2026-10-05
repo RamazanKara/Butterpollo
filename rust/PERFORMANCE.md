@@ -1017,6 +1017,26 @@ Full-screen 120 fresh FPS and the reporter's RX 9070 XT/Wi-Fi comparison
 remain open. The final candidate also still needs an installed-service
 check; a prior installer launch was rejected before execution by tool policy.
 
+## October 5 rc.8 installer firewall repair
+
+The two manual installation attempts at 22:19–22:20 Berlin time copied the
+rate-aware host successfully, then failed when `netsh` rejected the
+`\\?\C:\Program Files\ButterpolloRust\butterpollo.exe` application path.
+The preceding automatic updater had persisted its canonical filesystem path
+in the Windows installation entry; the manual installer reused that path.
+This failure happened after the motion benchmarks and cannot explain their
+loopback fresh-frame loss. An existing private/domain, local-subnet allowance
+remained, and the wired receiver at 192.168.4.10 could still reach serverinfo.
+
+Setup now converts conventional drive/UNC paths at Windows command and
+registration boundaries while retaining canonical filesystem identity checks
+inside the updater. Unsupported namespaces and names that would change meaning
+are rejected before firewall operations. Existing Butterpollo rules are updated
+in place; a missing rule is added. No existing rule is deleted on a failed
+replacement, and legacy-rule cleanup follows a successful Butterpollo rule.
+Regression tests cover canonical paths with spaces and Unicode, UNC paths,
+real-file identity, existing/fresh rules, and failure without deletion.
+
 ## Limits
 
 This machine validates AMD AMF. Native NVENC now calls the installed NVIDIA driver directly, supports reviewed API versions 11.0–13.0, reference frame invalidation, D3D11 4:2:0/8-bit 4:4:4 and GPU-only CUDA interop for ten-bit 4:4:4. Seven mock-driver tests exercise compatibility, asynchronous ownership, timeout teardown, metadata lifetime, loss recovery and bitrate changes; NVIDIA execution/performance still needs NVIDIA hardware. QSV has native D3D11 imports, and TrueHDR has a shared-device GPU path; these need Intel/NVIDIA hardware respectively. Unsupported native formats, PyroWave and software encoding use CPU compatibility paths. The wired LAN checks above do not establish Wi-Fi performance, multiple concurrent 4K sessions, dynamic game content, native 4K capture or end-to-end input/display latency. The GPU texture pools and native encoder queues are bounded to eight retained frames; capacity runs may intentionally keep those queues occupied. [PARITY.md](PARITY.md) separates implemented features from native validation.

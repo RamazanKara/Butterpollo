@@ -1,7 +1,7 @@
 //! Windows facilities setup needs: elevation, commands, services, registry,
 //! processes, firewall rules, shortcuts and folder permissions.
 use crate::log::line;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use std::{
     io::Read,
     os::windows::process::CommandExt,
@@ -605,27 +605,97 @@ pub fn system32(program: &str) -> String {
     let windows = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
     format!("{windows}\\System32\\{program}")
 }
-/// Replace the firewall rule allowing inbound connections to `program`.
+/// Filesystem canonicalization returns verbatim paths. Shell tools and the
+/// firewall require conventional drive/UNC paths instead. Keep file I/O's
+/// canonical paths internal, and reject names whose meaning would change.
+pub fn win32_path(path: &Path) -> Result<PathBuf> {
+    use std::path::{Component, Prefix};
+    let text = path
+        .to_str()
+        .context("the installation path is not valid Unicode")?;
+    if let Some(verbatim) = text.strip_prefix(r"\\?\") {
+        ensure!(
+            !verbatim.contains('/') && !verbatim.split('\\').any(|part| matches!(part, "." | "..")),
+            "the installation path cannot be represented without changing its meaning"
+        );
+    }
+    let path = if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{unc}"))
+    } else if let Some(disk) = text.strip_prefix(r"\\?\") {
+        PathBuf::from(disk)
+    } else {
+        path.to_owned()
+    };
+    ensure!(
+        path.is_absolute()
+            && matches!(path.components().next(), Some(Component::Prefix(prefix))
+                if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::UNC(_, _))),
+        "the installation path must be an absolute drive or network-share path"
+    );
+    for component in path.components() {
+        if let Component::Normal(name) = component {
+            let name = name
+                .to_str()
+                .context("invalid installation path component")?;
+            ensure!(
+                !name.ends_with(['.', ' ']),
+                "the installation path contains a name unsupported by the Windows shell"
+            );
+        }
+    }
+    Ok(path)
+}
+/// Update the inbound application allowance, or create it on a fresh install.
+/// A rejected replacement must leave any existing allowance intact.
 pub fn firewall_allow(rule: &str, program: &Path) -> Result<()> {
-    firewall_remove(rule);
-    let code = run(
-        &system32("netsh.exe"),
-        &[
-            "advfirewall",
-            "firewall",
-            "add",
-            "rule",
-            &format!("name={rule}"),
-            "dir=in",
-            "action=allow",
-            &format!("program={}", program.display()),
-            "enable=yes",
-            "profile=any",
-        ],
-        Duration::from_secs(60),
-    )?;
+    firewall_allow_with(rule, program, |args| {
+        run(&system32("netsh.exe"), args, Duration::from_secs(60))
+    })
+}
+fn firewall_allow_with(
+    rule: &str,
+    program: &Path,
+    mut execute: impl FnMut(&[&str]) -> Result<i32>,
+) -> Result<()> {
+    let program = win32_path(program)?;
+    let name = format!("name={rule}");
+    let application = format!("program={}", program.display());
+    let updated = execute(&[
+        "advfirewall",
+        "firewall",
+        "set",
+        "rule",
+        &name,
+        "dir=in",
+        "new",
+        "action=allow",
+        &application,
+        "enable=yes",
+        "profile=any",
+    ])?;
+    if updated == 0 {
+        return Ok(());
+    }
+    // A missing rule and other netsh errors share a nonzero exit code. Adding
+    // the desired rule handles the former without destroying existing rules
+    // when either operation is denied or its parameters are rejected.
+    let code = execute(&[
+        "advfirewall",
+        "firewall",
+        "add",
+        "rule",
+        &name,
+        "dir=in",
+        "action=allow",
+        &application,
+        "enable=yes",
+        "profile=any",
+    ])?;
     if code != 0 {
-        bail!("adding the firewall rule failed ({code})");
+        bail!(
+            "adding the firewall rule for {} failed ({code}); existing rules were kept; see the setup log",
+            program.display()
+        );
     }
     Ok(())
 }
@@ -719,4 +789,79 @@ pub fn program_data() -> PathBuf {
 }
 pub fn program_files() -> PathBuf {
     PathBuf::from(std::env::var_os("ProgramFiles").unwrap_or_else(|| "C:\\Program Files".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_consumers_receive_drive_and_unc_paths_without_verbatim_prefixes() -> Result<()> {
+        for (input, expected) in [
+            (
+                r"\\?\C:\Program Files\Butterpollo\butterpollo.exe",
+                r"C:\Program Files\Butterpollo\butterpollo.exe",
+            ),
+            (
+                r"\\?\UNC\server\share\Butterpollo ü\butterpollo.exe",
+                r"\\server\share\Butterpollo ü\butterpollo.exe",
+            ),
+            (
+                r"C:\Program Files\Butterpollo",
+                r"C:\Program Files\Butterpollo",
+            ),
+            (r"\\server\share\Butterpollo", r"\\server\share\Butterpollo"),
+        ] {
+            assert_eq!(win32_path(Path::new(input))?, Path::new(expected));
+        }
+        for invalid in [
+            r"relative\host.exe",
+            r"C:host.exe",
+            r"\\.\PhysicalDrive0",
+            r"\\?\GLOBALROOT\Device\host.exe",
+            r"\\?\C:\Folder\..\host.exe",
+            r"\\?\C:\Folder\.\host.exe",
+            r"\\?\C:\Folder.\host.exe",
+            r"\\?\C:\Folder \host.exe",
+        ] {
+            assert!(win32_path(Path::new(invalid)).is_err(), "{invalid}");
+        }
+        let root = tempfile::tempdir()?;
+        let file = root.path().join("Butterpollo ü.exe");
+        std::fs::write(&file, b"fixture")?;
+        let canonical = std::fs::canonicalize(&file)?;
+        assert_eq!(std::fs::canonicalize(win32_path(&canonical)?)?, canonical);
+        Ok(())
+    }
+
+    #[test]
+    fn firewall_updates_or_creates_without_deleting_existing_rules_on_failure() -> Result<()> {
+        for (results, expected_operations, succeeds) in [
+            (vec![0], vec!["set"], true),
+            (vec![1, 0], vec!["set", "add"], true),
+            (vec![1, 1], vec!["set", "add"], false),
+        ] {
+            let mut results = results.into_iter();
+            let mut operations = Vec::new();
+            let result = firewall_allow_with(
+                "Butterpollo",
+                Path::new(r"\\?\C:\Program Files\Butterpollo\butterpollo.exe"),
+                |args| {
+                    assert!(
+                        args.contains(&r"program=C:\Program Files\Butterpollo\butterpollo.exe")
+                    );
+                    assert!(!args.contains(&"delete"));
+                    operations.push(args[2].to_owned());
+                    Ok(results.next().expect("unexpected firewall operation"))
+                },
+            );
+            assert_eq!(result.is_ok(), succeeds);
+            assert_eq!(operations, expected_operations);
+        }
+        firewall_allow_with("Butterpollo", Path::new(r"\\.\PhysicalDrive0"), |_| {
+            panic!("invalid paths must fail before touching firewall rules")
+        })
+        .unwrap_err();
+        Ok(())
+    }
 }

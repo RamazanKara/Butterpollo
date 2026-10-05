@@ -4,13 +4,14 @@ Butterpollo's host, service, setup and console are now written in Rust. It repla
 
 ## New in rc.8 (test candidate)
 
+- Fixes "adding the firewall rule failed" when reinstalling after an automatic update. Internal extended-length paths no longer leak into Windows installation entries or firewall commands. Setup updates an existing rule in place and removes legacy allowances only after Butterpollo's rule succeeds, so a rejected replacement keeps the previous rules.
 - Fixes RTSS automatic startup when Windows requires administrator privileges (error 740 / `0x800702E4`). The installed service first tries a normal user launch, then retries that specific error with the signed-in user's elevated token. RTSS stays in the user's desktop session; the SDK helper remains unelevated.
 - The same startup path is used during limiter recovery, addressing the elevation failure that left restoration pending in the reporter's rc.6 log. Unrelated launch failures do not trigger an elevated retry. Portable hosts report how to start RTSS manually as administrator.
 - Keeps a service-owned RTSS process alive when reconnecting after a failed restoration, and recognizes equivalent installation paths containing dot components or directory junctions.
 - Reduces repeated CPU work in WGC's timing predictor by caching statistics when a new frame arrives. Pacing decisions remain unchanged; this is a small CPU optimization.
 - For WGC streams above 60 FPS, requests a 1 ms capture interval where Windows supports it. This removes an observed ceiling near 60 FPS on the local Windows 11 system. It is deliberately limited to higher rates: enabling it at 60 FPS worsened freshness in a comparison. WGC compute stays enabled by default. Sustained 120 fresh FPS on the physical ultrawide display is not yet established.
 - Corrects a diagnostic timestamp that could describe an older frame after memory-address reuse. Adds optional presentation statistics to the motion probe and a polling comparison without frame notifications; these do not change normal streaming.
-- Reproduced error 740 locally with RTSS 7.3.5, then verified automatic startup through the installed Windows service, a measured 59.94 FPS cap, and restoration to 120 FPS on disconnect while Desktop stayed open. All 206 automated tests passed. Isolated recovery checks cover user edits, absent settings, a pending journal after elevation denial, and reconnection after SDK failure. The final audit build still needs its installed-service check, and confirmation on the reporter's RX 9070 XT is pending; this is an unpublished test candidate.
+- Reproduced error 740 locally with RTSS 7.3.5, then verified automatic startup through the installed Windows service, a measured 59.94 FPS cap, and restoration to 120 FPS on disconnect while Desktop stayed open. All 208 automated tests passed. Isolated recovery checks cover user edits, absent settings, a pending journal after elevation denial, and reconnection after SDK failure. The final audit build still needs its installed-service check, and confirmation on the reporter's RX 9070 XT is pending; this is an unpublished test candidate.
 
 ## New in rc.7
 

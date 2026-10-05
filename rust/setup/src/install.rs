@@ -73,7 +73,7 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
         .context("this setup.exe carries no package; build it with build.ps1 -Package")?;
     let found = detect::scan();
     line(format!("found: {found:#?}"));
-    let install = detect::install_dir(&found, options.install_dir.clone());
+    let install = system::win32_path(&detect::install_dir(&found, options.install_dir.clone()))?;
     let profile = profile();
     let mut notes = Vec::new();
     let mut restart_needed = false;
@@ -218,10 +218,10 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
         "Streams games and the desktop to Moonlight and Artemis clients.",
         &install.join("butterpollo-service.exe"),
     )?;
+    system::firewall_allow("Butterpollo", &install.join("butterpollo.exe"))?;
     for rule in ["Vibepollo", "Vibepollo Service", "Apollo"] {
         system::firewall_remove(rule);
     }
-    system::firewall_allow("Butterpollo", &install.join("butterpollo.exe"))?;
     secure_profile(&profile)?;
 
     if options.display_driver && install.join("drivers\\display\\install.ps1").is_file() {
@@ -413,6 +413,9 @@ fn remove_legacy(product: &crate::detect::Product) -> Result<()> {
     Ok(())
 }
 pub(crate) fn register(install: &Path, entries: &[payload::Entry]) -> Result<()> {
+    // The updater uses canonical paths for file identity and backups. Do not
+    // leak their verbatim prefix into the next manual install or shell entry.
+    let install = system::win32_path(install)?;
     let size_kb: u64 = entries
         .iter()
         .filter_map(|e| std::fs::metadata(install.join(&e.path)).ok())
