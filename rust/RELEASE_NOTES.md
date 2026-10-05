@@ -6,8 +6,9 @@ Butterpollo's host, service, setup and console are now written in Rust. It repla
 
 - Automatic capture now prefers Windows Graphics Capture on physical and virtual displays. Existing explicit capture choices are preserved, including imported `dxgi` and `wgcc` aliases.
 - WGC uses the existing signed-in-user capture worker under the Windows service, with Desktop Duplication fallback when WGC cannot open and during lock/UAC desktop transitions. Compute copies remain enabled by default on supported AMD GPUs.
-- The capture-setting descriptions now explain the new Automatic choice. Frame limiting, display refresh and capture pacing settings are unchanged.
-- This is an unpublished comparison candidate. The public rc.8 release remains unchanged. Controlled WGC-versus-DDX picture-freshness, latency and recovery checks are still required before publishing the new default.
+- Removes the automatic 1 ms WGC update limit above 60 FPS. In the controlled 120 FPS comparison, explicit zero restored approximately 121 FPS delivery and removed long frame gaps; the legacy 1 ms behavior remains available through an explicit override. The full distinct-picture smoothness gate is not yet consistently passing.
+- The capture-setting descriptions now explain the new Automatic choice. Frame limiting, display refresh and encoder pacing are unchanged.
+- This is an unpublished comparison candidate. The public rc.8 release remains unchanged. Controlled WGC-versus-DDX results are recorded in PERFORMANCE.md. Further distinct-picture and recovery checks are still required before publishing the new default.
 
 ## New in rc.8
 

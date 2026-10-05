@@ -55,7 +55,7 @@ And at a phone's 1968×2184 with AV1 10-bit HDR and 120 fps:
 ## Tuned for AMD, end to end
 
 - Native AMF through AMD's C interface, with ultra-low-latency encoding and the `speed` preset by default. No FFmpeg in the AMD path.
-- The public rc.8 release normally selects Desktop Duplication. The rc.9 test candidate makes Automatic prefer WGC with Desktop Duplication fallback; explicit capture choices are retained. The virtual display still defaults to twice the stream rate (240 Hz for a 120 fps stream). The candidate needs a controlled capture comparison before the new default is published.
+- The public rc.8 release normally selects Desktop Duplication. The rc.9 test candidate makes Automatic prefer WGC with Desktop Duplication fallback; explicit capture choices are retained. The virtual display still defaults to twice the stream rate (240 Hz for a 120 fps stream). The controlled comparison is recorded; remaining distinct-picture and recovery checks must pass before the new default is published.
 - Video error correction uses 21-29% less CPU time than the C++ host, with byte-identical output.
 - AV1, HEVC and H.264, HDR10, 10-bit SDR, and PyroWave for very fast wired networks. NVIDIA (NVENC) and Intel (Quick Sync) encoders are included but still need testing on real hardware, and the compute-queue path is AMD-only for now.
 

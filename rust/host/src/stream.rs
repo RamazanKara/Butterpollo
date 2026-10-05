@@ -290,15 +290,14 @@ impl CaptureKey {
         }
     }
 }
-fn capture_config_for_rate(config: &Config, rate: butterpollo_core::framegen::Rate) -> Config {
+fn capture_config(config: &Config) -> Config {
     let mut capture = config.clone();
-    // Keep the effective choice with the shared capture and its helper. A
-    // low-rate session must not reuse a high-rate session's capture policy.
+    // Keep the effective interval choice with the shared capture and its helper.
+    // A 1 ms request skipped updates in the 120 FPS motion comparison; use
+    // explicit zero at every rate unless the user opts into the legacy limit.
     capture.values.insert(
         "wgc_high_rate_capture".into(),
-        config
-            .boolean("wgc_high_rate_capture", rate.0 > 60_000)
-            .to_string(),
+        config.boolean("wgc_high_rate_capture", false).to_string(),
     );
     capture
 }
@@ -392,7 +391,7 @@ impl Media {
     ) -> Result<Arc<Source>> {
         let output = prepared.output();
         let aligned = config.boolean("wgc_slot_aligned_publish", false);
-        let capture_config = capture_config_for_rate(config, rate);
+        let capture_config = capture_config(config);
         let key = CaptureKey::new(kind, &output, hdr, &capture_config, phase);
         let mut captures = self.captures.lock().unwrap();
         captures.retain(|_, source| source.strong_count() > 0);
@@ -1682,52 +1681,38 @@ fn feedback_packets(id: u16, kind: u16, data: &[u8]) -> Vec<(u16, Vec<u8>)> {
 mod tests {
     use super::*;
     #[test]
-    fn high_rate_wgc_policy_tracks_negotiated_rate_and_preserves_overrides() {
-        use butterpollo_core::framegen::Rate;
+    fn wgc_interval_is_unrestricted_by_default_and_preserves_overrides() {
         let default = Config::default();
-        for rate in [30_000, 59_940, 60_000] {
-            assert!(
-                !capture_config_for_rate(&default, Rate(rate))
-                    .boolean("wgc_high_rate_capture", true)
-            );
-        }
-        for rate in [60_001, 119_880, 120_000, 240_000] {
-            assert!(
-                capture_config_for_rate(&default, Rate(rate))
-                    .boolean("wgc_high_rate_capture", false)
-            );
-        }
+        assert!(!capture_config(&default).boolean("wgc_high_rate_capture", true));
         for (setting, expected) in [("true", true), ("false", false)] {
             let config = Config::parse(&format!("wgc_high_rate_capture = {setting}")).unwrap();
-            for rate in [59_940, 60_000, 120_000] {
-                assert_eq!(
-                    capture_config_for_rate(&config, Rate(rate))
-                        .boolean("wgc_high_rate_capture", !expected),
-                    expected
-                );
-            }
+            let original = config.values.clone();
+            assert_eq!(
+                capture_config(&config).boolean("wgc_high_rate_capture", !expected),
+                expected
+            );
+            assert_eq!(config.values, original);
         }
         assert!(!default.values.contains_key("wgc_high_rate_capture"));
     }
     #[test]
-    fn shared_capture_separates_wgc_rate_policies_without_splitting_ddx() {
-        use butterpollo_core::framegen::Rate;
-        let key = |kind, rate| {
+    fn shared_capture_separates_explicit_wgc_intervals_without_splitting_ddx() {
+        let key = |kind, setting: &str| {
             CaptureKey::new(
                 kind,
                 "display",
                 false,
-                &capture_config_for_rate(&Config::default(), Rate(rate)),
+                &capture_config(&Config::parse(setting).unwrap()),
                 "",
             )
         };
         for kind in ["wgc", "auto"] {
-            assert_eq!(key(kind, 59_940), key(kind, 60_000));
-            assert_ne!(key(kind, 60_000), key(kind, 120_000));
-            assert_eq!(key(kind, 120_000), key(kind, 240_000));
+            assert_eq!(key(kind, ""), key(kind, "wgc_high_rate_capture=false"));
+            assert_ne!(key(kind, ""), key(kind, "wgc_high_rate_capture=true"));
         }
         for kind in ["ddx", "dxgi"] {
-            assert_eq!(key(kind, 60_000), key(kind, 120_000));
+            assert_eq!(key(kind, ""), key(kind, "wgc_high_rate_capture=true"));
+            assert_eq!(key(kind, ""), key(kind, "wgc_high_rate_capture=false"));
         }
     }
     #[test]

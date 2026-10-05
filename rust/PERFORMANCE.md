@@ -1115,8 +1115,9 @@ An unset, blank or Automatic capture setting now resolves to WGC before the
 stream opens capture. This uses the existing signed-in user helper when running
 as a service, together with the existing Desktop Duplication fallback at startup
 and recovery. Explicit capture choices retain their previous normalized value.
-Compute-copy defaults, capture intervals, stream rates, display refresh policy
-and frame limiting are unchanged by this candidate.
+The initial candidate preserved compute-copy defaults, capture intervals,
+stream rates, display refresh policy and frame limiting. The follow-up below
+removes its automatic high-rate WGC interval limit.
 
 The selection regression matrix covers physical/virtual displays, fractional
 and integer frame rates, VRR, frame generation and legacy capture aliases.
@@ -1124,18 +1125,52 @@ The fallback regression starts from the default policy and injects a WGC open
 failure, verifying that Desktop Duplication is attempted next. These are policy
 and error-path checks, not new hardware or performance measurements.
 
-Verification: 210 ordinary tests passed; the default run skipped 23 hardware
+Initial-candidate verification: 210 ordinary tests passed; the default run skipped 23 hardware
 checks and one network check. Formatting, Clippy with warnings denied, the
 release workspace build, and the web build passed. The web type check reported
 zero errors and warnings. These checks ran without starting capture or changing
 the installed service.
 
+After the game closed and the user made the screen available, eight controlled
+full-screen motion cases compared Automatic WGC/helper/compute with explicit
+DDX on the unchanged 5120x1440, 240 Hz display. Each independently decoded
+AV1 stream requested 2560x720 at 20 Mbps for 20 seconds, with a five-second
+warmup and 14.3-14.8 measured seconds. The fixture rendered at the requested
+stream rate; its recorded cadence was approximately 60 or 120 FPS. The test
+used isolated loopback profiles, without display/RTSS changes or an audio tone.
+
+| Stream target | Capture | Delivered FPS, two runs | Distinct-picture FPS, two runs |
+| --- | --- | --- | --- |
+| 60 | Automatic WGC | 60.602 / 60.586 | 56.203 / 57.495 |
+| 60 | DDX | 60.594 / 60.591 | 54.454 / 53.844 |
+| 120 | Automatic WGC, 1 ms | 107.272 / 109.162 | 100.344 / 101.478 |
+| 120 | DDX | 121.196 / 121.206 | 113.908 / 113.850 |
+
+All frames decoded without errors, all barcodes were readable, and the expected
+backend opened without capture recovery or compute fallback. None of these
+eight cases met the unchanged 97% distinct-picture gate. Fixed-grid WGC pacing
+made 120 FPS delivery worse (99.271 FPS, 93.097 distinct); direct WGC without
+the helper also failed (106.636 delivered, 100.157 distinct). These results do
+not justify changing the default pacing mode or blaming the user helper.
+
+Two follow-ups changed only the isolated profile's WGC interval override to
+explicit zero. The helper/compute path then delivered 121.213/121.190 FPS,
+with no intervals above 1.5 frame periods, versus 232/227 long intervals in
+the default 1 ms cases. Distinct-picture rates rose to 116.274/116.663 FPS:
+one narrowly missed the unchanged 116.4 FPS gate, and one passed. Mean decoded
+picture age was 9.301/9.255 ms versus 8.983/9.230 ms with 1 ms, so this is a
+delivery improvement, not evidence of reduced picture age. Mean host processing
+remained about 1.85 ms. The revised default uses explicit zero at every rate;
+an explicit wgc_high_rate_capture=true retains the 1 ms diagnostic option.
+
 The candidate remains unpublished and is not installed over the running service.
-A controlled WGC-versus-DDX comparison of distinct decoded pictures, source age,
-latency and reconnect behavior remains pending while the user's game is open.
-The earlier failed motion checks and the limits of the short rc.8 background
-measurements above still apply; this default change does not establish a new
-performance improvement.
+The revised executable still needs confirmation without a profile override.
+Distinct-picture acceptance is not yet consistent; the 60 FPS gate, longer
+runs, reconnect/secure-desktop recovery, HDR and the reporter's RX 9070 XT/Wi-Fi
+case remain open. No failed case is relabelled as a pass. Logs, renderer reports,
+independent per-frame CSVs and comparison summaries are retained under
+D:\\CodexArtifacts\\butterpollo-wgc-default-20261006 alongside the initial
+candidate package and its exact-source hashes.
 
 ## Limits
 
