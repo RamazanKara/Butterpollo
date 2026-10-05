@@ -114,16 +114,43 @@ pub fn start(root: &Path) -> Result<Option<Process>> {
         return Ok(None);
     }
     let executable = executable(root).context("RTSS executable is missing")?;
-    let process = Process::spawn(
-        &executable,
-        &[],
-        Some(root),
-        Target::User { elevated: false },
-        &BTreeMap::new(),
-        true,
-    )?;
+    let process = start_with_elevation(crate::process::is_system(), |elevated| {
+        Process::spawn(
+            &executable,
+            &[],
+            Some(root),
+            Target::User { elevated },
+            &BTreeMap::new(),
+            true,
+        )
+    })
+    .with_context(|| format!("start RTSS at {}", executable.display()))?;
     std::thread::sleep(Duration::from_millis(300));
     Ok(Some(process))
+}
+fn start_with_elevation<T>(service: bool, mut spawn: impl FnMut(bool) -> Result<T>) -> Result<T> {
+    use windows::{Win32::Foundation::ERROR_ELEVATION_REQUIRED, core::HRESULT};
+    match spawn(false) {
+        Err(error)
+            if error
+                .downcast_ref::<windows::core::Error>()
+                .is_some_and(|e| e.code() == HRESULT::from_win32(ERROR_ELEVATION_REQUIRED.0)) =>
+        {
+            if !service {
+                return Err(error).context(
+                    "RTSS requires administrator privileges. Start RTSS manually as administrator before streaming, or run Butterpollo through its installed Windows service",
+                );
+            }
+            // RTSS can require elevation in its manifest or compatibility
+            // settings. Use only the signed-in user's linked admin token;
+            // RTSS must keep that user's session, profile and desktop.
+            tracing::info!("RTSS requires elevation; retrying as the signed-in administrator");
+            spawn(true).context(
+                "RTSS could not start as the signed-in administrator. Start RTSS manually as administrator before streaming",
+            )
+        }
+        result => result,
+    }
 }
 pub fn read(root: &Path) -> Result<String> {
     let path = root.join("Profiles/Global");
@@ -423,6 +450,97 @@ pub fn wait_ready(root: &Path) -> Result<Reply> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows::{Win32::Foundation::*, core::HRESULT};
+
+    fn launch_error(code: WIN32_ERROR) -> anyhow::Error {
+        windows::core::Error::from_hresult(HRESULT::from_win32(code.0)).into()
+    }
+
+    #[test]
+    fn service_retries_elevation_required_with_the_user_admin_token() {
+        let mut attempts = Vec::new();
+        let result = start_with_elevation(true, |elevated| {
+            attempts.push(elevated);
+            if elevated {
+                Ok(42)
+            } else {
+                Err(launch_error(ERROR_ELEVATION_REQUIRED).context("CreateProcessAsUserW"))
+            }
+        });
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(attempts, [false, true]);
+    }
+
+    #[test]
+    fn ordinary_launches_and_unrelated_errors_never_request_elevation() {
+        for service in [false, true] {
+            let mut attempts = Vec::new();
+            start_with_elevation(service, |elevated| {
+                attempts.push(elevated);
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(attempts, [false]);
+            for code in [
+                ERROR_ACCESS_DENIED,
+                ERROR_FILE_NOT_FOUND,
+                ERROR_PRIVILEGE_NOT_HELD,
+            ] {
+                attempts.clear();
+                let error = start_with_elevation::<()>(service, |elevated| {
+                    attempts.push(elevated);
+                    Err(launch_error(code))
+                })
+                .unwrap_err();
+                assert_eq!(attempts, [false]);
+                assert_eq!(
+                    error.downcast_ref::<windows::core::Error>().unwrap().code(),
+                    HRESULT::from_win32(code.0)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn portable_elevation_required_has_actionable_guidance_without_retrying() {
+        let mut attempts = Vec::new();
+        let error = start_with_elevation::<()>(false, |elevated| {
+            attempts.push(elevated);
+            Err(launch_error(ERROR_ELEVATION_REQUIRED))
+        })
+        .unwrap_err();
+        assert_eq!(attempts, [false]);
+        assert!(
+            error
+                .to_string()
+                .contains("Start RTSS manually as administrator")
+        );
+        assert_eq!(
+            error.downcast_ref::<windows::core::Error>().unwrap().code(),
+            HRESULT::from_win32(ERROR_ELEVATION_REQUIRED.0)
+        );
+    }
+
+    #[test]
+    fn failed_elevated_retry_preserves_the_error_and_does_not_retry_again() {
+        let mut attempts = Vec::new();
+        let error = start_with_elevation::<()>(true, |elevated| {
+            attempts.push(elevated);
+            Err(launch_error(if elevated {
+                ERROR_ACCESS_DENIED
+            } else {
+                ERROR_ELEVATION_REQUIRED
+            }))
+        })
+        .unwrap_err();
+        assert_eq!(attempts, [false, true]);
+        assert!(error.to_string().contains("signed-in administrator"));
+        assert_eq!(
+            error.downcast_ref::<windows::core::Error>().unwrap().code(),
+            HRESULT::from_win32(ERROR_ACCESS_DENIED.0)
+        );
+    }
+
     #[test]
     fn profile_updates_preserve_other_sections_and_remove_absent_originals() {
         let original = "; user\r\n[Hooking]\r\nEnable=1\r\n[Framerate]\r\nLimit=60\r\nCustom=keep\r\n[OSD]\r\nColor=red\r\n";
