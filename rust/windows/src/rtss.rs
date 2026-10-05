@@ -360,7 +360,18 @@ pub fn write_profile(root: &Path, values: &BTreeMap<String, Option<u32>>) -> Res
         "unknown RTSS property"
     );
     let path = root.join("Profiles/Global");
-    let content = replace(&read(root)?, values)?;
+    let original = read(root)?;
+    let current = properties(&original)?;
+    // A failed application may leave only already-original properties to
+    // restore. Do not require write/delete access or claim pending recovery
+    // for a profile that never changed.
+    if values
+        .iter()
+        .all(|(key, value)| current.get(key) == Some(value))
+    {
+        return Ok(());
+    }
+    let content = replace(&original, values)?;
     if let Err(error) = butterpollo_core::state::atomic_write(&path, content.as_bytes()) {
         // RTSS's UI opens the selected profile without delete sharing. It
         // still permits writing the file; keep unknown fields and truncate
@@ -449,6 +460,30 @@ mod tests {
         write_profile(directory.path(), &values)?;
         assert_eq!(properties(&read(directory.path())?)?, values);
         write_profile(directory.path(), &properties(original)?)?;
+        assert_eq!(read(directory.path())?, original);
+        Ok(())
+    }
+    #[test]
+    fn unchanged_profile_restores_without_write_or_delete_access() -> Result<()> {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows::Win32::Storage::FileSystem::FILE_SHARE_READ;
+        let directory = tempfile::tempdir()?;
+        std::fs::create_dir(directory.path().join("Profiles"))?;
+        let path = directory.path().join("Profiles/Global");
+        let original = "[Framerate]\nLimit=120\nLimitDenominator=1\nSyncLimiter=1\nCustom=keep\n";
+        std::fs::write(&path, original)?;
+        let _lock = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ.0)
+            .open(&path)?;
+        write_profile(directory.path(), &properties(original)?)?;
+        assert!(
+            write_profile(
+                directory.path(),
+                &BTreeMap::from([("Limit".into(), Some(60))])
+            )
+            .is_err()
+        );
         assert_eq!(read(directory.path())?, original);
         Ok(())
     }
