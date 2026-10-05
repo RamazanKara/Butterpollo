@@ -56,9 +56,18 @@ fn main() -> Result<()> {
         return Ok(());
     }
     ensure!(
-        args.len() == 2 && args[0] == "--exercise",
-        "usage: rtss_probe [--root RTSS_DIRECTORY] [--exercise NEW_REPORT_DIRECTORY]"
+        args.len() == 2 && matches!(args[0].as_str(), "--exercise" | "--exercise-recovery"),
+        "usage: rtss_probe [--root RTSS_DIRECTORY] [--exercise NEW_REPORT_DIRECTORY | --exercise-recovery NEW_REPORT_DIRECTORY]"
     );
+    let retry_recovery = args[0] == "--exercise-recovery";
+    if retry_recovery {
+        ensure!(
+            std::fs::read_to_string(root.join(".butterpollo-fixture"))?
+                == "isolated RTSS SDK fixture"
+                && !rtss::running(&root),
+            "recovery fault injection requires a stopped, isolated RTSS fixture"
+        );
+    }
     let directory = PathBuf::from(&args[1]);
     std::fs::create_dir(&directory).context("use a new, empty report directory")?;
     let original = rtss::read(&root)?;
@@ -99,7 +108,34 @@ fn main() -> Result<()> {
             "fractional lease failed"
         );
         println!("{}", serde_json::json!({"lease":during,"status":status}));
-        drop(lease);
+        if retry_recovery {
+            ensure!(rtss::running(&root), "the lease did not start RTSS");
+            let fault = root.join("crash");
+            std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&fault)?;
+            drop(lease);
+            std::fs::remove_file(&fault)?;
+            let journal: serde_json::Value = serde_json::from_slice(&std::fs::read(
+                directory.join("frame-limiter-recovery.json"),
+            )?)?;
+            ensure!(!journal["rtss"].is_null(), "failed restoration was lost");
+            ensure!(
+                rtss::running(&root),
+                "RTSS ownership was lost after failure"
+            );
+            let lease = limiter::Lease::acquire(&directory, &config, &policy)?;
+            let during = rtss::query(&root)?;
+            ensure!(
+                rtss::running(&root) && during.values["Limit"] == Some(2997),
+                "reacquiring the lease killed its still-owned RTSS process"
+            );
+            println!("{}", serde_json::json!({"recovered_and_reacquired":true}));
+            drop(lease);
+        } else {
+            drop(lease);
+        }
         let after = rtss::query(&root)?;
         ensure!(
             after.values == before.values && after.flags == before.flags,

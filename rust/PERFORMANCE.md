@@ -896,6 +896,37 @@ the test requested no limiter changes. RTSS was stopped afterward to restore
 its prior process state. Optional codec detection also completed with the
 same capability flags as rc.5. These checks do not claim an rc.6 latency gain.
 
+## October 5 rc.8 capture polling and RTSS audit
+
+The WGC freshness predictor now caches its median and polling window when a
+new frame updates the history. Polling no longer sorts two identical arrays
+between frames. A regression test compares the cached decisions against the
+previous calculation across stable and changing cadence, short intervals,
+duplicate timestamps and capture resets.
+
+Seven alternating local release-mode microbenchmarks each ran two million
+polls, with one observation every eight polls and identical output checksums.
+Median time fell from 84.79 ms to 14.32 ms (5.92 times faster for this small
+calculation). This is a small CPU saving; it does not establish a whole-stream
+latency or FPS improvement. Evidence and both implementations are under
+`C:\Users\ramaz\.codex\artifacts\butterpollo-rtss-autostart-20261005\qa`.
+
+The first rc.8 candidate was installed through the normal update transaction.
+Settings, pairings and app-library hashes remained unchanged. With RTSS fully
+closed, the service retried Windows error 740 using the signed-in administrator,
+applied 2997/50 FPS, and restored 120/1 FPS on disconnect while Desktop remained
+retained. A 120 FPS renderer measured 59.941 FPS during the cap and 119.996 FPS
+afterward. WGC compute remained active and all 831 AV1 frames decoded. Warhammer
+3 was running, so these are functional checks with a background game, not an
+idle comparison. A preceding run recovered from two display-resolution changes;
+its disrupted timing result was rejected.
+
+Fault injection also reproduced a reconnect bug: after failed SDK restoration,
+replacing a retained process owner with `None` killed RTSS during the next lease.
+The owner now survives a successful recovery and reacquisition. A separate
+fixture reproduced missed process detection for a directory ending in `\.`;
+directory identity is now normalized before comparison.
+
 ## Limits
 
 This machine validates AMD AMF. Native NVENC now calls the installed NVIDIA driver directly, supports reviewed API versions 11.0–13.0, reference frame invalidation, D3D11 4:2:0/8-bit 4:4:4 and GPU-only CUDA interop for ten-bit 4:4:4. Seven mock-driver tests exercise compatibility, asynchronous ownership, timeout teardown, metadata lifetime, loss recovery and bitrate changes; NVIDIA execution/performance still needs NVIDIA hardware. QSV has native D3D11 imports, and TrueHDR has a shared-device GPU path; these need Intel/NVIDIA hardware respectively. Unsupported native formats, PyroWave and software encoding use CPU compatibility paths. The wired LAN checks above do not establish Wi-Fi performance, multiple concurrent 4K sessions, dynamic game content, native 4K capture or end-to-end input/display latency. The GPU texture pools and native encoder queues are bounded to eight retained frames; capacity runs may intentionally keep those queues occupied. [PARITY.md](PARITY.md) separates implemented features from native validation.

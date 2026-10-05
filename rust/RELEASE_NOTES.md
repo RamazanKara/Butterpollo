@@ -6,7 +6,9 @@ Butterpollo's host, service, setup and console are now written in Rust. It repla
 
 - Fixes RTSS automatic startup when Windows requires administrator privileges (error 740 / `0x800702E4`). The installed service first tries a normal user launch, then retries that specific error with the signed-in user's elevated token. RTSS stays in the user's desktop session; the SDK helper remains unelevated.
 - The same startup path is used during limiter recovery, addressing the elevation failure that left restoration pending in the reporter's rc.6 log. Unrelated launch failures do not trigger an elevated retry. Portable hosts report how to start RTSS manually as administrator.
-- Reproduced error 740 locally with RTSS 7.3.5. The reporter's log also confirms a successful 60 FPS cap while RTSS was already running, pointing to host startup permissions rather than client compatibility. All 203 automated tests passed. Isolated recovery checks verified preservation of user edits, restoration of absent settings, and a pending journal after a real elevation denial that clears on a successful retry. A live service cold-start check and confirmation on the reporter's PC are still pending; this is an unpublished test candidate.
+- Keeps a service-owned RTSS process alive when reconnecting after a failed restoration, and recognizes equivalent installation paths containing dot components or directory junctions.
+- Reduces repeated CPU work in WGC's timing predictor by caching statistics when a new frame arrives. Pacing decisions remain unchanged; this is a small CPU optimization.
+- Reproduced error 740 locally with RTSS 7.3.5, then verified automatic startup through the installed Windows service, a measured 59.94 FPS cap, and restoration to 120 FPS on disconnect while Desktop stayed open. All 204 automated tests passed. Isolated recovery checks cover user edits, absent settings, a pending journal after elevation denial, and reconnection after SDK failure. Confirmation on the reporter's RX 9070 XT is still pending; this is an unpublished test candidate.
 
 ## New in rc.7
 

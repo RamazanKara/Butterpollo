@@ -16,41 +16,22 @@ pub struct Freshness {
     delays: [u64; 16],
     count: usize,
     next: usize,
+    median: Option<u64>,
+    polling_window: Option<(u64, u64)>,
 }
 impl Freshness {
-    fn stable_period(&self) -> Option<u64> {
-        if self.count < 8 {
-            return None;
-        }
-        let mut intervals = self.intervals;
-        intervals[..self.count].sort_unstable();
-        let source = intervals[self.count / 2];
-        (intervals[0] >= source.saturating_mul(7) / 8
-            && intervals[self.count - 1] <= source.saturating_mul(9) / 8)
-            .then_some(source)
-    }
     /// The median interval between recent source frames, once a few are known.
     /// The capture worker observes every frame, so this is the source cadence
     /// even when a consumer only looks at some of them.
     pub fn median_interval(&self) -> Option<u64> {
-        if self.count < 4 {
-            return None;
-        }
-        let mut intervals = self.intervals;
-        intervals[..self.count].sort_unstable();
-        Some(intervals[self.count / 2])
+        self.median
     }
     /// Use a short polling window around one predicted publication. Once that
     /// window passes, a source that becomes static returns to the normal wait.
     pub fn poll_wait(&self, age: u64, normal: u64) -> u64 {
-        let Some(source) = self.stable_period().filter(|source| *source >= 3_000_000) else {
+        let Some((early, late)) = self.polling_window else {
             return normal;
         };
-        let mut delays = self.delays;
-        delays[..self.count].sort_unstable();
-        let expected = source.saturating_add(delays[(self.count - 1) / 10]);
-        let early = expected.saturating_sub(1_000_000);
-        let late = expected.saturating_add(500_000);
         if age < early {
             normal.min(early - age)
         } else if age <= late {
@@ -73,6 +54,29 @@ impl Freshness {
             }
         }
         self.last = Some(captured);
+        // Polling reads the same history many times between frames. Recompute
+        // its statistics only when that history changes, outside the wait loop.
+        self.median = None;
+        self.polling_window = None;
+        if self.count >= 4 {
+            let mut intervals = self.intervals;
+            intervals[..self.count].sort_unstable();
+            let source = intervals[self.count / 2];
+            self.median = Some(source);
+            if self.count >= 8
+                && source >= 3_000_000
+                && intervals[0] >= source.saturating_mul(7) / 8
+                && intervals[self.count - 1] <= source.saturating_mul(9) / 8
+            {
+                let mut delays = self.delays;
+                delays[..self.count].sort_unstable();
+                let expected = source.saturating_add(delays[(self.count - 1) / 10]);
+                self.polling_window = Some((
+                    expected.saturating_sub(1_000_000),
+                    expected.saturating_add(500_000),
+                ));
+            }
+        }
     }
 }
 impl Intervals {
@@ -129,6 +133,60 @@ mod tests {
             cadence.observe(frame * interval, 500_000);
         }
         cadence
+    }
+    #[test]
+    fn cached_statistics_match_the_original_policy_across_cadence_changes_and_resets() {
+        fn reference(cadence: &Freshness, age: u64, normal: u64) -> u64 {
+            if cadence.count < 8 {
+                return normal;
+            }
+            let mut intervals = cadence.intervals;
+            intervals[..cadence.count].sort_unstable();
+            let source = intervals[cadence.count / 2];
+            if source < 3_000_000
+                || intervals[0] < source.saturating_mul(7) / 8
+                || intervals[cadence.count - 1] > source.saturating_mul(9) / 8
+            {
+                return normal;
+            }
+            let mut delays = cadence.delays;
+            delays[..cadence.count].sort_unstable();
+            let expected = source.saturating_add(delays[(cadence.count - 1) / 10]);
+            let early = expected.saturating_sub(1_000_000);
+            if age < early {
+                normal.min(early - age)
+            } else if age <= expected.saturating_add(500_000) {
+                normal.min(100_000)
+            } else {
+                normal
+            }
+        }
+        let mut cadence = Freshness::default();
+        let mut captured = 1_000_000_000u64;
+        for frame in 0..2000u64 {
+            let period = [16_666_667, 8_333_333, 2_000_000, 20_000_000][(frame / 40 % 4) as usize];
+            captured = match frame % 97 {
+                0 => captured.saturating_sub(50_000_000),
+                1 => captured,
+                2 => captured + 600_000_000,
+                _ => captured + period + (frame % 5) * 10_000,
+            };
+            cadence.observe(captured, (frame % 17) * 100_000);
+            let mut intervals = cadence.intervals;
+            intervals[..cadence.count].sort_unstable();
+            assert_eq!(
+                cadence.median_interval(),
+                (cadence.count >= 4).then(|| intervals[cadence.count / 2])
+            );
+            for age in [0, period - 1_000_000, period, period + 2_000_000, u64::MAX] {
+                for normal in [50_000, 1_000_000, 10_000_000] {
+                    assert_eq!(
+                        cadence.poll_wait(age, normal),
+                        reference(&cadence, age, normal)
+                    );
+                }
+            }
+        }
     }
     #[test]
     fn predictive_polling_is_bounded_and_static_or_irregular_sources_use_normal_waits() {

@@ -55,6 +55,9 @@ pub fn running(root: &Path) -> bool {
         System::{Diagnostics::ToolHelp::*, Threading::*},
     };
     use windows::core::PWSTR;
+    // Configured paths may contain a trailing separator, dot components or a
+    // directory junction. Compare the actual directory, not its spelling.
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     unsafe {
         let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
             return false;
@@ -94,7 +97,9 @@ pub fn running(root: &Path) -> bool {
                 {
                     let path = PathBuf::from(String::from_utf16_lossy(&path[..size as usize]));
                     found = path.parent().is_some_and(|p| {
-                        p.to_string_lossy()
+                        std::fs::canonicalize(p)
+                            .unwrap_or_else(|_| p.to_path_buf())
+                            .to_string_lossy()
                             .eq_ignore_ascii_case(&root.to_string_lossy())
                     });
                 }

@@ -44,7 +44,7 @@ struct State {
     users: usize,
     active: String,
     directory: PathBuf,
-    process: Option<crate::process::Process>,
+    process: Option<(PathBuf, crate::process::Process)>,
     message: String,
 }
 fn state() -> &'static Mutex<State> {
@@ -284,12 +284,25 @@ impl Lease {
         }
         let mut journal = load(directory)?;
         let root = rtss::root(config);
-        if policy.enabled
+        let use_rtss = policy.enabled
             && matches!(policy.provider, Provider::Auto | Provider::Rtss)
-            && rtss::available(&root)
+            && rtss::available(&root);
+        if !use_rtss
+            || state
+                .process
+                .as_ref()
+                .is_some_and(|(owned_root, _)| owned_root != &root)
         {
+            state.process.take();
+        }
+        if use_rtss {
             let applied = (|| -> Result<()> {
-                state.process = rtss::start(&root)?;
+                // A failed restoration retains our process until recovery
+                // succeeds. start() returns None for that still-running RTSS;
+                // replacing its owner with None would kill it on reconnect.
+                if let Some(process) = rtss::start(&root)? {
+                    state.process = Some((root.clone(), process));
+                }
                 let reply = rtss::wait_ready(&root)?;
                 let text = rtss::read(&root)?;
                 let (numerator, denominator) = policy.rate.rational();
