@@ -2,6 +2,12 @@
 
 Butterpollo's host, service, setup and console are now written in Rust. It replaces Vibepollo 2.0.0 and earlier Butterpollo builds on Windows: run `butterpollo-setup-2.0.0-rc.9-wgc-default-test.exe` and it upgrades the existing installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
 
+## Source follow-up after the rc.9 test package
+
+- Handles Moonlight PC 6.2.0's extended-key modifier, distinguishing keypad Enter from ordinary Enter through key holds, repeats, release and disconnect cleanup. Existing key remaps and older clients retain their behavior. This source change is not included in the previously built rc.9 test installer.
+- Standard streaming protocol compatibility with Moonlight PC 6.2.0 has been reviewed. Testing its exact released application, including hardware rendering and HDR, remains pending. Separate handling of a controller's second touchpad is not implemented.
+- All 215 ordinary workspace tests pass, including five new keyboard tests without input injection. Formatting and Clippy with warnings denied pass. The 24 hardware/network checks were not selected, and no new installer was built or installed for this source follow-up.
+
 ## New in rc.9 (test candidate)
 
 - Automatic capture now prefers Windows Graphics Capture on physical and virtual displays. Existing explicit capture choices are preserved, including imported `dxgi` and `wgcc` aliases.

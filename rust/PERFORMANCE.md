@@ -18,7 +18,7 @@ Each case uses 40 actual waits in the same release process. These measurements e
 
 An unchanged desktop image also no longer consumes the next encode slot. Fresh content arriving after a waiting deadline can be submitted immediately, while encoding submissions retain the configured cadence. Resuming after a longer static interval starts a new cadence without a catch-up burst. Tests cover scheduler overshoot, static resumes, capture arriving before a wait, independent capture consumers and timer reuse.
 
-The session API and five-second host log samples now report capture-to-packetization host processing separately from encoder latency. This uses the same duration written into Moonlight's frame header, without resetting fresh capture timestamps or reducing resolution, refresh rate, HDR or bitrate. Full-stream idle-desktop comparisons are recorded below; a dynamic game and the customer's client remain separate acceptance checks.
+These October 2 session API and five-second host log samples reported capture-to-packetization host processing separately from encoder latency. The current implementation instead writes encoder-claim-to-pre-packetization processing into Moonlight's frame header and reports capture age separately. Neither definition includes client scanout or input latency; compare only measurements using the same definition. Full-stream idle-desktop comparisons are recorded below; a dynamic game and the customer's client remain separate acceptance checks.
 
 Independent encrypted Moonlight decoding captured the existing native 1968×2184 HDR display, with HEVC Main10, a requested 40 Mbps, 20-second requested runs and the default 20 FPS static repeat target. The actual negotiated encoder bitrate was 30,988 kbps. Display changes were disabled in the isolated loopback profiles; the installed service stayed running without a client during these comparisons. Both builds decoded all four runs without a reported failure.
 
@@ -1179,6 +1179,39 @@ case remain open. No failed case is relabelled as a pass. Logs, renderer reports
 independent per-frame CSVs and comparison summaries are retained under
 D:\\CodexArtifacts\\butterpollo-wgc-default-20261006 alongside the initial
 candidate package and its exact-source hashes.
+
+## October 6 offline latency audit
+
+Analysis of the same final two 120 FPS WGC runs, without new capture or changes
+to the installed host, separates the latency counter from picture age:
+
+| Stage or outcome | Run A / Run B |
+| --- | --- |
+| Host processing (claim to before packetization) | 1.864 / 1.865 ms mean |
+| Capture timestamp to encoder claim | 1.378 / 1.548 ms mean; 4.616 / 5.119 ms p95 |
+| Independent software decoder callback | 3.254 / 3.371 ms mean |
+| Render timestamp to decoded picture | 9.084 / 9.339 ms mean |
+| Distinct-picture rate | 116.289 / 116.595 FPS |
+
+The software decoder cost is specific to the test fixture, not Moonlight Qt's
+hardware decoder. These values exclude client display scanout and input latency.
+At 60 FPS the WGC frame-claim wait averages roughly 4 ms, making frame selection
+and pacing a stronger next investigation than further encoder preset changes.
+Shortening that wait is not automatically beneficial: selecting an older picture
+can worsen picture age even while lowering a host counter.
+
+All fourteen source fixtures recorded render submissions, but none enabled the
+existing optional DXGI actual-presentation statistics. The next comparison should
+enable those statistics and trace picture identity through capture and encoding
+before attributing the remaining repeated pictures to either stage. Compute
+versus graphics copies also need a comparison using the corrected zero interval.
+The exact workload and distinct-picture acceptance threshold should stay fixed.
+
+Static review found two additional hypotheses, with no measured gain yet: drain
+the two-buffer native WGC pool to the newest frame before copying after a stall;
+and compare the helper's process scheduling settings with the host's streaming
+scope under load. The helper already uses MMCSS and a high-resolution timer.
+No capture, pacing, encoder or scheduling defaults were changed by this audit.
 
 ## Limits
 

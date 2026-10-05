@@ -81,7 +81,7 @@ pub struct Gamepads {
     last_feedback: BTreeMap<u16, (u16, Vec<u8>)>,
 }
 static SLOTS: std::sync::Mutex<[bool; 16]> = std::sync::Mutex::new([false; 16]);
-static HELD: std::sync::Mutex<BTreeMap<(bool, u16), usize>> =
+static HELD: std::sync::Mutex<BTreeMap<(bool, u32), usize>> =
     std::sync::Mutex::new(BTreeMap::new());
 
 pub fn capabilities(config: &butterpollo_core::config::Config) -> u32 {
@@ -400,7 +400,7 @@ impl Drop for Gamepads {
     }
 }
 pub struct Injector {
-    keys: BTreeSet<u16>,
+    keys: BTreeSet<u32>,
     buttons: BTreeSet<u8>,
     touches: BTreeMap<u32, POINTER_TOUCH_INFO>,
     touch_device: Option<HSYNTHETICPOINTERDEVICE>,
@@ -411,9 +411,9 @@ pub struct Injector {
     pub gamepads: Option<Gamepads>,
     rect: RECT,
     policy: butterpollo_core::input_policy::Policy,
-    key_flags: BTreeMap<u16, u8>,
+    key_flags: BTreeMap<u32, u8>,
     /// Repeating key, its flags, the modifiers it adds and when it repeats.
-    repeat: Option<(u16, u8, u8, std::time::Instant)>,
+    repeat: Option<(u32, u8, u8, std::time::Instant)>,
     scroll: [i32; 2],
     haptics: bool,
 }
@@ -494,7 +494,7 @@ impl Injector {
                         KEYEVENTF_KEYUP
                     }) | if unicode {
                         KEYEVENTF_UNICODE
-                    } else if matches!(key, 0x21..=0x2e | 0xa3 | 0xa5 | 0x5b | 0x5c | 0x5d | 0x6f) {
+                    } else if legacy_extended_key(key) {
                         KEYEVENTF_EXTENDEDKEY
                     } else {
                         KEYBD_EVENT_FLAGS(0)
@@ -504,13 +504,21 @@ impl Injector {
             },
         }
     }
-    fn key_scan(&self, key: u16, down: bool, flags: u8) -> INPUT {
+    fn key_scan(&self, key: u32, down: bool, flags: u8) -> INPUT {
+        Self::keyboard_input(key, down, flags, self.policy.always_send_scancodes)
+    }
+    fn keyboard_input(key: u32, down: bool, flags: u8, always_send_scancodes: bool) -> INPUT {
+        let extended = key & EXPLICIT_EXTENDED_KEY != 0;
+        let key = key as u16;
         let mut input = Self::key(key, down, false);
+        if extended {
+            unsafe { input.Anonymous.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY };
+        }
         // Normalized Moonlight VKs always use the fixed US table. Non-normalized
         // keys follow the host's layout only when the administrator asks for it.
         let scan = if flags & 1 == 0 {
             crate::keylayout::SCANCODES[(key & 255) as usize] as u16
-        } else if self.policy.always_send_scancodes && !matches!(key, 0x5b | 0x5c | 0x13) {
+        } else if always_send_scancodes && !matches!(key, 0x5b | 0x5c | 0x13) {
             unsafe { MapVirtualKeyW(u32::from(key), MAPVK_VK_TO_VSC) as u16 }
         } else {
             0
@@ -841,7 +849,7 @@ impl Injector {
                 let owned = self.buttons.contains(button);
                 Self::held(
                     false,
-                    u16::from(*button),
+                    u32::from(*button),
                     *down,
                     owned,
                     Self::button(*button, *down),
@@ -879,7 +887,7 @@ impl Injector {
                 flags,
                 modifiers,
             } => {
-                let key = self.policy.key(*key);
+                let key = mapped_keyboard_identity(&self.policy, *key, *modifiers);
                 let owned = self.keys.contains(&key);
                 let flags = if *down {
                     *flags
@@ -962,15 +970,12 @@ impl Injector {
     }
     /// Modifiers in a key-down packet that neither this client nor another
     /// holds as keys (Moonlight reports Shift/Ctrl/Alt both ways).
-    fn synthetic_modifiers(&self, key: u16, reported: u8) -> u8 {
+    fn synthetic_modifiers(&self, key: u32, reported: u8) -> u8 {
         if is_modifier(key) {
             return 0;
         }
         let held = HELD.lock().unwrap();
-        let pressed = |keys: [u16; 3]| {
-            keys.iter()
-                .any(|k| self.keys.contains(k) || held.contains_key(&(true, *k)))
-        };
+        let pressed = |keys: [u32; 3]| modifier_held(&self.keys, &held, keys);
         let mut synthetic = 0;
         for (mask, keys) in [
             (MODIFIER_SHIFT, [0x10, 0xa0, 0xa1]),
@@ -1004,22 +1009,38 @@ impl Injector {
         }
         inputs
     }
-    fn held(keyboard: bool, id: u16, down: bool, owned: bool, input: INPUT) -> Result<()> {
-        let mut held = HELD.lock().unwrap();
-        let count = held.get(&(keyboard, id)).copied().unwrap_or(0);
+    fn held(keyboard: bool, id: u32, down: bool, owned: bool, input: INPUT) -> Result<()> {
+        Self::update_held(
+            &mut HELD.lock().unwrap(),
+            (keyboard, id),
+            down,
+            owned,
+            input,
+            Self::send,
+        )
+    }
+    fn update_held(
+        held: &mut BTreeMap<(bool, u32), usize>,
+        identity: (bool, u32),
+        down: bool,
+        owned: bool,
+        input: INPUT,
+        send: impl FnOnce(&[INPUT]) -> Result<()>,
+    ) -> Result<()> {
+        let count = held.get(&identity).copied().unwrap_or(0);
         if down {
             if count == 0 || owned {
-                Self::send(&[input])?;
+                send(&[input])?;
             }
             if !owned {
-                held.insert((keyboard, id), count + 1);
+                held.insert(identity, count + 1);
             }
         } else if owned {
             if count <= 1 {
-                Self::send(&[input])?;
-                held.remove(&(keyboard, id));
+                send(&[input])?;
+                held.remove(&identity);
             } else {
-                held.insert((keyboard, id), count - 1);
+                held.insert(identity, count - 1);
             }
         }
         Ok(())
@@ -1063,11 +1084,48 @@ unsafe fn inject_pointer(
         }
     }
 }
+// Moonlight 6.2 adds MODIFIER_EXTENDED (0x10) for keys such as keypad
+// Enter that share a VK with a non-extended key. Keep this identity through
+// held-key ownership, repeats and disconnect cleanup without changing the VK.
+const MODIFIER_EXTENDED: u8 = 0x10;
+const EXPLICIT_EXTENDED_KEY: u32 = 1 << 16;
+fn legacy_extended_key(key: u16) -> bool {
+    matches!(key, 0x21..=0x2e | 0xa3 | 0xa5 | 0x5b | 0x5c | 0x5d | 0x6f)
+}
+fn mapped_keyboard_identity(
+    policy: &butterpollo_core::input_policy::Policy,
+    key: u16,
+    modifiers: u8,
+) -> u32 {
+    let mapped = policy.key(key);
+    // A remapping chooses the destination key's identity; do not turn it
+    // into an extended key merely because the source was.
+    keyboard_identity(mapped, if mapped == key { modifiers } else { 0 })
+}
+fn keyboard_identity(key: u16, modifiers: u8) -> u32 {
+    u32::from(key)
+        | if modifiers & MODIFIER_EXTENDED != 0 && !legacy_extended_key(key) {
+            EXPLICIT_EXTENDED_KEY
+        } else {
+            0
+        }
+}
 const MODIFIER_SHIFT: u8 = 0x01;
 const MODIFIER_CTRL: u8 = 0x02;
 const MODIFIER_ALT: u8 = 0x04;
-fn is_modifier(key: u16) -> bool {
-    matches!(key, 0x10..=0x12 | 0xa0..=0xa5 | 0x5b | 0x5c)
+fn is_modifier(key: u32) -> bool {
+    matches!(key as u16, 0x10..=0x12 | 0xa0..=0xa5 | 0x5b | 0x5c)
+}
+fn modifier_held(
+    keys: &BTreeSet<u32>,
+    held: &BTreeMap<(bool, u32), usize>,
+    alternatives: [u32; 3],
+) -> bool {
+    keys.iter()
+        .any(|key| alternatives.contains(&(key & 0xffff)))
+        || held
+            .keys()
+            .any(|(keyboard, key)| *keyboard && alternatives.contains(&(key & 0xffff)))
 }
 impl Drop for Injector {
     fn drop(&mut self) {
@@ -1083,7 +1141,7 @@ impl Drop for Injector {
         for button in &self.buttons {
             let _ = Self::held(
                 false,
-                u16::from(*button),
+                u32::from(*button),
                 false,
                 true,
                 Self::button(*button, false),
@@ -1126,5 +1184,171 @@ fn pointer_event(p: &mut POINTER_INFO, event: u8, location: POINT) {
     };
     if matches!(event, 0 | 1 | 3) {
         p.ptPixelLocation = location;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn keyboard(key: u32, down: bool, flags: u8) -> KEYBDINPUT {
+        // No input injection or layout API calls: normalized scan codes come
+        // from the static US table; non-normalized keys retain their VK.
+        unsafe {
+            Injector::keyboard_input(key, down, flags, false)
+                .Anonymous
+                .ki
+        }
+    }
+
+    #[test]
+    fn moonlight_keypad_enter_retains_its_identity_for_press_repeat_and_release() {
+        let enter = keyboard_identity(0x0d, 0);
+        let keypad = keyboard_identity(0x0d, MODIFIER_EXTENDED);
+        assert_ne!(enter, keypad);
+        assert_eq!(
+            keyboard_identity(0x0d, MODIFIER_EXTENDED | MODIFIER_SHIFT),
+            keypad
+        );
+        for flags in [0, 1] {
+            for down in [true, true, false] {
+                let ordinary = keyboard(enter, down, flags);
+                let extended = keyboard(keypad, down, flags);
+                assert_eq!(ordinary.wVk, extended.wVk);
+                assert_eq!(ordinary.wScan, extended.wScan);
+                assert_eq!(
+                    ordinary.dwFlags & KEYEVENTF_EXTENDEDKEY,
+                    KEYBD_EVENT_FLAGS(0)
+                );
+                assert_eq!(extended.dwFlags, ordinary.dwFlags | KEYEVENTF_EXTENDEDKEY);
+                assert_eq!(
+                    extended.dwFlags & KEYEVENTF_KEYUP,
+                    if down {
+                        KEYBD_EVENT_FLAGS(0)
+                    } else {
+                        KEYEVENTF_KEYUP
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn simultaneous_enter_keys_and_shared_clients_release_independently() {
+        let enter = keyboard_identity(0x0d, 0);
+        let keypad = keyboard_identity(0x0d, MODIFIER_EXTENDED);
+        let mut held = BTreeMap::new();
+        let mut sent = Vec::new();
+        for (key, down, owned) in [
+            (enter, true, false),
+            (keypad, true, false),
+            (keypad, true, true), // Repeating does not acquire another hold.
+            (enter, true, false), // A second client also holds ordinary Enter.
+            (enter, false, true), // First client must not release that key yet.
+            (keypad, false, true),
+            (enter, false, true),
+        ] {
+            Injector::update_held(
+                &mut held,
+                (true, key),
+                down,
+                owned,
+                Injector::keyboard_input(key, down, 0, false),
+                |inputs| {
+                    sent.extend(
+                        inputs
+                            .iter()
+                            .map(|input| unsafe { input.Anonymous.ki.dwFlags }),
+                    );
+                    Ok(())
+                },
+            )
+            .unwrap();
+        }
+        assert!(held.is_empty());
+        assert_eq!(
+            sent,
+            vec![
+                KEYEVENTF_SCANCODE,
+                KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY,
+                KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY,
+                KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP,
+                KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP,
+            ]
+        );
+    }
+
+    #[test]
+    fn key_remapping_uses_the_destination_extension_and_legacy_vk_width() {
+        let config =
+            butterpollo_core::config::Config::parse("keybindings=[13,65,66,163,67,4660]\n")
+                .unwrap();
+        let policy = butterpollo_core::input_policy::Policy::resolve(&config).unwrap();
+        assert_eq!(
+            mapped_keyboard_identity(&policy, 0x0d, MODIFIER_EXTENDED),
+            0x41
+        );
+        let right_ctrl = mapped_keyboard_identity(&policy, 0x42, 0);
+        assert_eq!(
+            keyboard(right_ctrl, true, 0).dwFlags & KEYEVENTF_EXTENDEDKEY,
+            KEYEVENTF_EXTENDEDKEY
+        );
+        assert_eq!(
+            mapped_keyboard_identity(&policy, 0x43, MODIFIER_EXTENDED),
+            0x1234
+        );
+        assert_eq!(keyboard_identity(0x1234, MODIFIER_EXTENDED) as u16, 0x1234);
+    }
+
+    #[test]
+    fn modifier_tracking_ignores_the_internal_extension_bit() {
+        let ctrl = keyboard_identity(0x11, MODIFIER_EXTENDED);
+        assert!(is_modifier(ctrl));
+        let alternatives = [0x11, 0xa2, 0xa3];
+        let empty_keys = BTreeSet::new();
+        let empty_held = BTreeMap::new();
+        assert!(modifier_held(
+            &BTreeSet::from([ctrl]),
+            &empty_held,
+            alternatives
+        ));
+        assert!(modifier_held(
+            &empty_keys,
+            &BTreeMap::from([((true, ctrl), 1)]),
+            alternatives
+        ));
+        assert!(!modifier_held(
+            &empty_keys,
+            &BTreeMap::from([((false, ctrl), 1)]),
+            alternatives
+        ));
+        assert!(!modifier_held(
+            &BTreeSet::from([keyboard_identity(0x0d, MODIFIER_EXTENDED)]),
+            &empty_held,
+            alternatives
+        ));
+    }
+
+    #[test]
+    fn new_extended_modifier_preserves_legacy_navigation_and_right_modifier_identity() {
+        for key in [
+            0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2c, 0x2d, 0x2e, 0xa3, 0xa5, 0x5b,
+            0x5c, 0x5d, 0x6f,
+        ] {
+            let legacy = keyboard_identity(key, 0);
+            assert_eq!(legacy, keyboard_identity(key, MODIFIER_EXTENDED));
+            for down in [true, false] {
+                assert_eq!(
+                    keyboard(legacy, down, 0).dwFlags & KEYEVENTF_EXTENDEDKEY,
+                    KEYEVENTF_EXTENDEDKEY
+                );
+            }
+        }
+        for key in [0x0d, 0x41, 0xa0, 0xa1, 0xa2, 0xa4] {
+            assert_eq!(
+                keyboard(keyboard_identity(key, 0), true, 0).dwFlags & KEYEVENTF_EXTENDEDKEY,
+                KEYBD_EVENT_FLAGS(0)
+            );
+        }
     }
 }
