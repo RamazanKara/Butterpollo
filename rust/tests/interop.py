@@ -78,7 +78,12 @@ key_id = '-2147483525' if os.environ.get('BUTTERPOLLO_TEST_SIGNED_KEY_ID') == '1
 launch_args={'appid':app.findtext('ID'),'rikey':bytes(range(16)).hex(),'rikeyid':key_id,'corever':'1'}
 if os.environ.get('BUTTERPOLLO_TEST_MATCH_DISPLAY')=='1':
     launch_args.update(mode='x'.join(sys.argv[3:6]),hdrMode='1' if codec.endswith('-hdr') else '0')
+limiter_lifecycle = None
+if os.environ.get('BUTTERPOLLO_TEST_RTSS_PROFILE'):
+    from rtss_lifecycle import Lifecycle
+    limiter_lifecycle = Lifecycle(os.environ['BUTTERPOLLO_TEST_RTSS_PROFILE'], session, http, web, artifact)
 launch=ET.fromstring(client.get(https+'/launch',params=launch_args,timeout=10).text);assert launch.attrib['status_code']=='200',ET.tostring(launch)
+if limiter_lifecycle: limiter_lifecycle.launched()
 url=launch.findtext('sessionUrl0');print('LAUNCH',url,flush=True)
 env=os.environ.copy()
 if os.name=='nt':env['PATH']=str(artifact/'target/debug')+';C:\\msys64\\ucrt64\\bin;'+env['PATH']
@@ -111,6 +116,7 @@ try:
     (artifact/f'stream-{codec}-{width}x{height}-{fps}-threads{threads}.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
     print('HOST_STEADY_FPS',steady_fps,flush=True)
     print(result.stdout,flush=True);(artifact/'moonlight-interop.log').write_text(result.stdout,encoding='utf-8');assert result.returncode==0
+    if limiter_lifecycle: limiter_lifecycle.reconnect_and_expire(client, https, launch_args, command, env)
 except subprocess.TimeoutExpired as error:
     output=error.stdout or b''
     if isinstance(output,bytes):output=output.decode('utf-8',errors='replace')

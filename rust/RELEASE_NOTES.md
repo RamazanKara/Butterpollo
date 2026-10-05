@@ -6,8 +6,9 @@ Butterpollo's host, service, setup and console are now written in Rust. It repla
 
 - Fixes RTSS helper communication in service installations. The helper runs as the signed-in user and could not write its reply into the service's protected configuration folder. It now exchanges bounded messages over a private local pipe, with both process identities checked. The service retains responsibility for writing the RTSS profile; no folder permissions or helper privileges are changed.
 - RTSS profile updates and restoration can proceed while the RTSS window holds the profile open without delete sharing. Unknown profile settings and keys that were originally absent are preserved. A failed write no longer leaves recovery pending when the profile never changed. Failures now log their actual cause and RTSS path, instead of only reporting that no limiter provider was available.
+- Limiter ownership now follows pending and connected streams, independently of retained game displays. Disconnecting the final stream restores the original cap even when the desktop remains available to resume. Reconnecting reapplies the cap before streaming starts; an abandoned launch also releases its changes when it expires.
 - Display logs now record the client's virtual-display request, selected display and layout. A capture startup timeout identifies the selected display and suggests a virtual display when streaming with the physical monitor off. The reported Artemide monitor wake-up issue remains under investigation; these diagnostics do not claim to fix it.
-- The RTSS process/transaction fixture verifies fractional limits, restoration, unrelated enable flags, helper crashes and a bounded timeout for a stalled SDK. Read-only queries against the installed RTSS succeed. A live FPS cap through the installed SYSTEM service still needs verification.
+- Verified the installed SYSTEM service applying a 59.94 FPS RTSS cap on an RX 7900 XT. A separate SDK reader confirmed the fractional profile and enabled limiter, and a renderer requesting 240 FPS on a 120 Hz virtual display presented about 59.94 FPS. The service also captured a native HDR AV1 stream through the WGC user helper with compute enabled. The RTSS fixture additionally covers restoration, unrelated flags, helper crashes and a bounded timeout for a stalled SDK.
 
 ## New in rc.4
 
@@ -59,6 +60,7 @@ Left out on purpose: WebRTC streaming, session history and host statistics pages
 
 ## Known limits
 
+- One portable startup during the rc.5 AV1 checks crashed in the Vulkan loader with RTSS hooks loaded; subsequent starts and installed-service HDR streaming succeeded. The cause remains unconfirmed. Portable AV1 motion checks with RTSS running measured 56.6-57.5 fresh FPS for rc.5 and 58.1 for rc.4 at a 60 FPS target, with no decode errors. These checks did not meet the 58.2 fresh-FPS threshold and are not performance passes.
 - The RX 9070 XT report of 4.7 versus 3.9 ms on Wi-Fi remains open pending the tester's comparison. Packet pacing and recovery fixes address observed problems, but are not proof that this latency difference is resolved.
 - DDX startup from an inactive desktop remains under investigation. Some local tests received blank pictures and required two capture restarts before valid content arrived; a standalone snapshot test can receive no initial picture. Keeping the display awake fixes continued capture through idle time, but does not resolve this startup condition.
 - WGC lock/UAC transitions and the new helper's performance under heavy GPU load are not yet verified. Installed-service WGC and native HDR capture have been confirmed on the RX 7900 XT; that does not establish the RX 9070 XT result.

@@ -616,21 +616,22 @@ impl Media {
                         .lock()
                         .unwrap()
                         .take()
-                        .map(|p| p.downcast::<Arc<crate::display_session::Ready>>())
+                        .map(|p| p.downcast::<crate::display_session::StreamPreparation>())
                         .transpose()
                         .map_err(|_| anyhow::anyhow!("invalid launch preparation"))?;
-                    let prepared = match initial {
-                        Some(p) if p.matches(&s.config) => *p,
+                    let stream_preparation = match initial {
+                        Some(p) if p.display.matches(&s.config) => *p,
                         previous => {
                             drop(previous);
                             h.app_display.lock().unwrap().remove(&s.launch.client.uuid);
-                            crate::display_session::Ready::new(
+                            crate::display_session::Ready::prepare(
                                 crate::display_session::Prepared::create(
                                     &h, &s.launch, &s.config, &c,
                                 )?,
                             )?
                         }
                     };
+                    let prepared = stream_preparation.display.clone();
                     if s.launch.role == Role::Stream {
                         h.app_display
                             .lock()

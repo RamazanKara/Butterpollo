@@ -18,6 +18,13 @@ use std::sync::{
 };
 use std::time::Duration;
 
+/// Only pending and connected streams own limiter changes. The retained game
+/// display must not keep a global frame cap active after transport disconnects.
+pub struct StreamPreparation {
+    pub display: Arc<Ready>,
+    _limiter: limiter::Lease,
+}
+
 /// A game may keep its display across transport disconnects. The heartbeat
 /// owns the resources, not the Ready Arc, so final teardown cannot form a cycle.
 pub struct Ready {
@@ -26,15 +33,15 @@ pub struct Ready {
     _state: Arc<Mutex<Prepared>>,
     target: CaptureTarget,
     mode: (u32, u32, u32, bool),
-    capture: String,
+    framegen: Policy,
     stop: Arc<AtomicBool>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 impl Ready {
-    pub fn new(prepared: Prepared) -> Result<Arc<Self>> {
+    pub fn prepare((prepared, limiter): (Prepared, limiter::Lease)) -> Result<StreamPreparation> {
         let target = CaptureTarget::new(prepared.capture_target());
         let mode = prepared.mode;
-        let capture = prepared.framegen.capture.clone();
+        let framegen = prepared.framegen.clone();
         let state = Arc::new(Mutex::new(prepared));
         let stop = Arc::new(AtomicBool::new(false));
         let worker_state = state.clone();
@@ -57,14 +64,29 @@ impl Ready {
                     std::thread::sleep(Duration::from_millis(100));
                 }
             })?;
-        Ok(Arc::new(Self {
+        let display = Arc::new(Self {
             _state: state,
             target,
             mode,
-            capture,
+            framegen,
             stop,
             worker: Some(worker),
-        }))
+        });
+        Ok(StreamPreparation {
+            display,
+            _limiter: limiter,
+        })
+    }
+    pub fn resume(
+        self: Arc<Self>,
+        directory: &std::path::Path,
+        config: &Config,
+    ) -> Result<StreamPreparation> {
+        let limiter = limiter::Lease::acquire(directory, config, &self.framegen)?;
+        Ok(StreamPreparation {
+            display: self,
+            _limiter: limiter,
+        })
     }
     pub fn matches(&self, stream: &Negotiated) -> bool {
         self.mode
@@ -82,7 +104,7 @@ impl Ready {
         self.target.current()
     }
     pub fn capture(&self) -> String {
-        self.capture.clone()
+        self.framegen.capture.clone()
     }
 }
 
@@ -119,7 +141,6 @@ pub struct Prepared {
     _activation: Option<display_arrangement::Activation>,
     _profile: Option<hdr_profile::Lease>,
     _retained: Option<Arc<Retained>>,
-    _limiter: limiter::Lease,
     _vulkan: Option<vulkan::Lease>,
     _golden: Option<GoldenLease>,
     mode: (u32, u32, u32, bool),
@@ -183,7 +204,7 @@ impl Prepared {
         launch: &Launch,
         stream: &Negotiated,
         config: &Config,
-    ) -> Result<Self> {
+    ) -> Result<(Self, limiter::Lease)> {
         let app = h
             .apps
             .read()
@@ -592,31 +613,33 @@ impl Prepared {
             .as_ref()
             .map(|p| hdr_profile::Lease::acquire(&output, p))
             .transpose()?;
-        Ok(Self {
-            display,
-            output,
-            framegen,
-            _arrangement: arrangement,
-            _activation: activation,
-            _profile: profile,
-            _retained: retained,
-            _limiter: limiter,
-            _vulkan: vulkan,
-            _golden: golden,
-            mode: (
-                stream.width,
-                stream.height,
-                stream.fps_millihz(),
-                stream.hdr,
-            ),
-            revision: 0,
-            recovery_pending: false,
-            recovery_due: std::time::Instant::now(),
-            recovery_scale: config.integer("dd_virtual_display_scale", 0),
-            recovery_dimensions: (width, height),
-            recovery_profile,
-            host: Arc::downgrade(h),
-        })
+        Ok((
+            Self {
+                display,
+                output,
+                framegen,
+                _arrangement: arrangement,
+                _activation: activation,
+                _profile: profile,
+                _retained: retained,
+                _vulkan: vulkan,
+                _golden: golden,
+                mode: (
+                    stream.width,
+                    stream.height,
+                    stream.fps_millihz(),
+                    stream.hdr,
+                ),
+                revision: 0,
+                recovery_pending: false,
+                recovery_due: std::time::Instant::now(),
+                recovery_scale: config.integer("dd_virtual_display_scale", 0),
+                recovery_dimensions: (width, height),
+                recovery_profile,
+                host: Arc::downgrade(h),
+            },
+            limiter,
+        ))
     }
 }
 impl Drop for Prepared {

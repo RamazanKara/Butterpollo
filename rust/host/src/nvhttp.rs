@@ -902,7 +902,7 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
         }
         h.sessions.lock().unwrap().queue(launch.clone())?;
         if role != Role::InputOnly {
-            let prepared = (|| -> Result<std::sync::Arc<crate::display_session::Ready>> {
+            let prepared = (|| -> Result<crate::display_session::StreamPreparation> {
                 let config = crate::stream::effective_config(&h, &launch)?;
                 let mode = args
                     .get("mode")
@@ -941,11 +941,11 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
                     if let Some(lease) = retained
                         && lease.matches(&stream)
                     {
-                        return Ok(lease);
+                        return lease.resume(&h.directory, &config);
                     }
                     h.app_display.lock().unwrap().remove(&launch.client.uuid);
                 }
-                crate::display_session::Ready::new(crate::display_session::Prepared::create(
+                crate::display_session::Ready::prepare(crate::display_session::Prepared::create(
                     &h, &launch, &stream, &config,
                 )?)
             })();
@@ -1019,10 +1019,8 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
                 .lock()
                 .unwrap()
                 .as_ref()
-                .and_then(|lease| {
-                    lease.downcast_ref::<std::sync::Arc<crate::display_session::Ready>>()
-                })
-                .cloned()
+                .and_then(|lease| lease.downcast_ref::<crate::display_session::StreamPreparation>())
+                .map(|prepared| prepared.display.clone())
             {
                 h.app_display
                     .lock()
