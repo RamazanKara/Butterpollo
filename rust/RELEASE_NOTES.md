@@ -1,14 +1,14 @@
-# Butterpollo 2.0.0-rc.7 candidate for Windows
+# Butterpollo 2.0.0-rc.7 for Windows
 
 Butterpollo's host, service, setup and console are now written in Rust. It replaces Vibepollo 2.0.0 and earlier Butterpollo builds on Windows: run `butterpollo-setup-2.0.0-rc.7.exe` and it upgrades the existing installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
 
-## New in rc.7 (candidate)
+## New in rc.7
 
 - Updates notify first by default. Maintenance offers **Install when idle**, with automatic installation available as an opt-in under General settings. Release candidates follow the existing prerelease setting.
 - The host downloads only the exact official Windows installer and verifies its size and GitHub SHA-256 digest. Downloads yield to new sessions; installation waits for one minute without streams, pending connections, remote monitors or host apps. New connections are held off during the installation handoff.
 - The service updater stages and verifies the package, backs up replaced files, checks that the requested host version starts, and restores the previous package files after ordinary copying or startup failures. Settings, devices and drivers stay in place. Failed versions are not retried automatically.
 - The update panel now displays release candidates correctly, along with download progress, cancellation and the last installation result. The basic HTML console also exposes update actions.
-- Local validation covers idle/session admission, cancellation, official HTTPS downloads, checksum failures, authentication and CSRF, isolated file recovery, and desktop/mobile UI states. A full live service upgrade still needs validation. This candidate has not been published as a release.
+- Validation covers idle/session admission, cancellation, official HTTPS downloads, checksum failures, authentication and CSRF, isolated file recovery, and desktop/mobile UI states. The 199 ordinary automated tests and a separate official-download test passed. A full live service upgrade still needs validation; automatic installation remains opt-in.
 
 ## New in rc.6
 
