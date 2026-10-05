@@ -113,6 +113,15 @@ const general: Setting[] = [
     default: 86400,
   },
   {
+    key: 'auto_update',
+    label: 'Install updates automatically',
+    description: 'Download verified releases and install after one minute without streams, pending connections or running host apps. Requires the Windows service. Off by default.',
+    category: 'general',
+    group: 'Updates',
+    control: { kind: 'toggle' },
+    default: false,
+  },
+  {
     key: 'notify_pre_releases',
     label: 'Include pre-releases',
     description: 'Also offer pre-release versions when checking for updates. They get fixes sooner but may have more bugs.',

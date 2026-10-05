@@ -14,6 +14,7 @@ mod state;
 mod steam;
 mod stream;
 mod tls;
+mod updater;
 mod web;
 mod web_sessions;
 

@@ -1,6 +1,14 @@
-# Butterpollo 2.0.0-rc.6 for Windows
+# Butterpollo 2.0.0-rc.7 candidate for Windows
 
-Butterpollo's host, service, setup and console are now written in Rust. It replaces Vibepollo 2.0.0 and earlier Butterpollo builds on Windows: run `butterpollo-setup-2.0.0-rc.6.exe` and it upgrades the existing installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+Butterpollo's host, service, setup and console are now written in Rust. It replaces Vibepollo 2.0.0 and earlier Butterpollo builds on Windows: run `butterpollo-setup-2.0.0-rc.7.exe` and it upgrades the existing installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+
+## New in rc.7 (candidate)
+
+- Updates notify first by default. Maintenance offers **Install when idle**, with automatic installation available as an opt-in under General settings. Release candidates follow the existing prerelease setting.
+- The host downloads only the exact official Windows installer and verifies its size and GitHub SHA-256 digest. Downloads yield to new sessions; installation waits for one minute without streams, pending connections, remote monitors or host apps. New connections are held off during the installation handoff.
+- The service updater stages and verifies the package, backs up replaced files, checks that the requested host version starts, and restores the previous package files after ordinary copying or startup failures. Settings, devices and drivers stay in place. Failed versions are not retried automatically.
+- The update panel now displays release candidates correctly, along with download progress, cancellation and the last installation result. The basic HTML console also exposes update actions.
+- Local validation covers idle/session admission, cancellation, official HTTPS downloads, checksum failures, authentication and CSRF, isolated file recovery, and desktop/mobile UI states. A full live service upgrade still needs validation. This candidate has not been published as a release.
 
 ## New in rc.6
 
@@ -42,8 +50,8 @@ Butterpollo's host, service, setup and console are now written in Rust. It repla
 
 ## Install
 
-- `butterpollo-setup-2.0.0-rc.6.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
-- For a portable copy, extract `butterpollo-rust-2.0.0-rc.6-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
+- `butterpollo-setup-2.0.0-rc.7.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
+- For a portable copy, extract `butterpollo-rust-2.0.0-rc.7-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
 - These are unsigned test builds. Keep a copy of your configuration and the previous installer for rollback.
 
 ## Lower latency

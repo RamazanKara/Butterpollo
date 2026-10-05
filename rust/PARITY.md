@@ -40,7 +40,7 @@ Settings changed in the console are saved at once and most take effect from the 
 | Web console | Rebuilt | A new console (Svelte) covers overview, library (with Steam and Playnite), devices, settings, logs, maintenance and API tokens, and per-app Lossless Scaling. Missing endpoints: `/api/browse`, `/api/apps/{uuid}/icon`. |
 | Service and setup | Same | `setup.exe` upgrades a Vibepollo installation in place (drivers, service, firewall, shortcuts) and can uninstall it. The service restarts the host after a crash. `--creds` sets the console sign-in. The service's credentials folder is limited to SYSTEM and Administrators at every start. |
 | Tray | Mostly the same | Open, disconnect, restart and quit; notifications for pairing requests, paired devices and new versions. Missing: app started or stopped notifications, state icons and force-closing the app. |
-| Updates | Same | Checks releases (not during a stream), compares versions including pre-releases and notifies once per new version. |
+| Updates | Implemented | Notifies first by default, with opt-in automatic installation. Downloads the exact Windows installer from the official GitHub release, verifies its size and SHA-256 digest, waits for one minute without active/pending sessions, remote monitors or host apps, and upgrades through the installed service. Failed copying/startup restores previous package files. Portable builds retain release-page downloads. Release candidates follow the existing prerelease opt-in. |
 | Logs and support | Same | Rotating logs (`log_path`), live tail in the console, crash dumps and support bundle. |
 
 ## Evidence

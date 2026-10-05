@@ -17,13 +17,9 @@ pub fn trigger_update(h: &Shared) {
     let h = h.clone();
     tokio::spawn(async move {
         let result = async {
-            let client = reqwest::Client::builder()
-                .https_only(true)
-                .timeout(Duration::from_secs(35))
-                .user_agent("Butterpollo-Rust")
-                .build()?;
+            let client = crate::updater::client(Duration::from_secs(35))?;
             let mut response = client
-                .get("https://api.github.com/repos/RamazanKara/Butterpollo/releases?per_page=30")
+                .get(crate::updater::RELEASES)
                 .send()
                 .await?
                 .error_for_status()?;
@@ -74,8 +70,10 @@ pub fn trigger_update(h: &Shared) {
                     .max_by(|a, b| {
                         if newer(a, b) {
                             std::cmp::Ordering::Greater
-                        } else {
+                        } else if newer(b, a) {
                             std::cmp::Ordering::Less
+                        } else {
+                            std::cmp::Ordering::Equal
                         }
                     })
                     .map(str::to_owned);
@@ -83,12 +81,20 @@ pub fn trigger_update(h: &Shared) {
                 state["update_available"] = json!(latest.is_some());
                 state["latest_version"] = json!(latest);
                 state["releases"] = json!(releases);
+                state["check_error"] = Value::Null;
                 drop(state);
                 if let Some(latest) = latest {
                     announce(&h, &latest);
+                    let automatic = h.config.read().unwrap().boolean("auto_update", false);
+                    if automatic && let Err(error) = crate::updater::queue(&h, true) {
+                        tracing::warn!(%error, "automatic update could not be queued");
+                    }
                 }
             }
-            Err(error) => tracing::warn!(%error,"release check failed"),
+            Err(error) => {
+                state["check_error"] = json!(error.to_string());
+                tracing::warn!(%error,"release check failed");
+            }
         }
     });
 }

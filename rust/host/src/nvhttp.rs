@@ -656,6 +656,13 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
         }
     };
     let _transition = h.launch_transition.lock().unwrap();
+    if crate::updater::installing(&h) {
+        return xml(
+            503,
+            &[],
+            Some("Butterpollo is installing an update. Reconnect shortly.".into()),
+        );
+    }
     match control {
         Some(Control::Terminate) => {
             let Some(game) = remote_game(&h) else {

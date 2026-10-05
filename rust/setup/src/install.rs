@@ -271,7 +271,7 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
     if options.start {
         progress.set("Starting Butterpollo…");
         system::start_service(SERVICE)?;
-        wait_ready(web_port - 1)?;
+        wait_ready(web_port - 1, Some(env!("CARGO_PKG_VERSION")))?;
     }
     let _ = std::fs::remove_dir_all(&staging);
     Ok(Outcome {
@@ -326,7 +326,7 @@ fn copy_package(staging: &Path, install: &Path, entries: &[payload::Entry]) -> R
     }
     Ok(())
 }
-fn replace_file(source: &Path, target: &Path) -> Result<()> {
+pub(crate) fn replace_file(source: &Path, target: &Path) -> Result<()> {
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -412,7 +412,7 @@ fn remove_legacy(product: &crate::detect::Product) -> Result<()> {
     }
     Ok(())
 }
-fn register(install: &Path, entries: &[payload::Entry]) -> Result<()> {
+pub(crate) fn register(install: &Path, entries: &[payload::Entry]) -> Result<()> {
     let size_kb: u64 = entries
         .iter()
         .filter_map(|e| std::fs::metadata(install.join(&e.path)).ok())
@@ -449,7 +449,7 @@ fn register(install: &Path, entries: &[payload::Entry]) -> Result<()> {
     )
 }
 /// Wait until the host answers serverinfo as a Rust host.
-fn wait_ready(port: u16) -> Result<()> {
+pub(crate) fn wait_ready(port: u16, version: Option<&str>) -> Result<()> {
     use std::io::{Read, Write};
     let deadline = Instant::now() + Duration::from_secs(90);
     while Instant::now() < deadline {
@@ -463,7 +463,12 @@ fn wait_ready(port: u16) -> Result<()> {
             );
             let mut response = String::new();
             let _ = socket.read_to_string(&mut response);
-            if response.contains("<RustHostVersion>") {
+            if version.map_or_else(
+                || response.contains("<RustHostVersion>"),
+                |version| {
+                    response.contains(&format!("<RustHostVersion>{version}</RustHostVersion>"))
+                },
+            ) {
                 line("the host is answering");
                 return Ok(());
             }

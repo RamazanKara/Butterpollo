@@ -382,8 +382,19 @@ export interface UpdatesState {
   status: true;
   checking: boolean;
   check_failed: boolean;
+  check_error?: string | null;
   checked_at: number;
   releases: Release[];
+  update_available?: boolean;
+  latest_version?: string | null;
+  install_supported: boolean;
+  auto_update: boolean;
+  phase?: 'idle' | 'waiting' | 'downloading' | 'ready' | 'installing' | 'failed';
+  queued_version?: string | null;
+  downloaded_bytes?: number;
+  download_size?: number;
+  error?: string | null;
+  last_install?: { version: string; phase: string; error?: string } | null;
 }
 export interface LogChunk {
   status: true;
@@ -499,6 +510,8 @@ export const api = {
   updates: {
     state: () => get<UpdatesState>('/api/updates'),
     check: () => post<Ok>('/api/updates/check'),
+    install: () => post<Ok>('/api/updates/install'),
+    cancel: () => post<Ok>('/api/updates/cancel'),
   },
   tokens: {
     list: () => get<{ status: true; tokens: ApiToken[] }>('/api/tokens'),

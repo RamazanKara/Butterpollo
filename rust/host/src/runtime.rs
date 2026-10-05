@@ -166,7 +166,7 @@ pub async fn maintain(
                 .unwrap()
                 .integer("update_check_interval", 86400);
             // Not during a stream, as in Vibepollo; try again in a minute.
-            let streaming = !h.sessions.lock().unwrap().active.is_empty();
+            let streaming = crate::updater::busy(&h);
             if interval > 0 && !streaming {
                 maintenance::trigger_update(&h);
             }
@@ -177,6 +177,7 @@ pub async fn maintain(
                     60
                 });
         }
+        crate::updater::poll(&h);
         start_deferred(&h);
         if application_finished(&h) {
             h.sessions.lock().unwrap().stop_role(Role::Stream, None);

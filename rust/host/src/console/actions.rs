@@ -58,6 +58,8 @@ pub(crate) fn route(fields: &Fields) -> Result<(Method, String), String> {
         "vdd-terminate" => (Method::POST, "/api/display/terminate_virtual"),
         "crash-dismiss" => (Method::POST, "/api/health/crashdump/dismiss"),
         "check-update" => (Method::POST, "/api/updates/check"),
+        "install-update" => (Method::POST, "/api/updates/install"),
+        "cancel-update" => (Method::POST, "/api/updates/cancel"),
         "restart" => (Method::POST, "/api/restart"),
         _ => return Err("unknown console action".into()),
     };

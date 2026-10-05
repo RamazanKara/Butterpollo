@@ -370,6 +370,10 @@ pub fn games(h: &Shared, appid: Option<u32>) -> Result<Value> {
 }
 /// `/api/steam/launch`: start an installed game on this PC through Steam.
 pub fn launch(h: &Shared, appid: u32) -> Result<Value> {
+    let _transition = h.launch_transition.lock().unwrap();
+    if crate::updater::installing(h) {
+        bail!("Butterpollo is installing an update");
+    }
     let settings = Settings::from_config(&h.config.read().unwrap());
     let (_, games) = catalog(&settings)?;
     let Some(game) = games.iter().find(|g| g.appid == appid && g.installed) else {

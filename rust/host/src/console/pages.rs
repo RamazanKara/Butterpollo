@@ -804,7 +804,24 @@ pub(super) async fn render(
                     "",
                     "",
                     "Check for updates",
-                ) + &format!("<pre>{}</pre>", pretty(&updates))),
+                ) + &button(
+                    "install-update",
+                    csrf,
+                    "/maintenance",
+                    "",
+                    "",
+                    "Install when idle",
+                ) + &button(
+                    "cancel-update",
+                    csrf,
+                    "/maintenance",
+                    "",
+                    "",
+                    "Cancel queued update",
+                ) + &format!(
+                    "<p>Updates wait until streams and host apps stop. Automatic installation is off by default; enable it in Settings.</p><pre>{}</pre>",
+                    pretty(&updates)
+                )),
             );
             let mut crash_content = format!("<pre>{}</pre>", pretty(&crash));
             if crash["available"] == true && crash["dismissed"] != true {

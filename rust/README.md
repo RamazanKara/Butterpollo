@@ -87,3 +87,13 @@ The Rust implementation now also includes NVIDIA power/presentation/HAGS policy 
 See [the baseline feature inventory and validation matrix](PARITY.md). Platform code is implemented, but full production parity is not certified: display activation/DPI/recreation needs a privileged host and the compatible VDD driver; NVIDIA/Intel/TrueHDR/VHF operations need their respective hardware. The legacy `src`, CMake and installer sources remain as migration references; this Rust build does not compile them.
 
 Useful probes: `--diagnostics`, `--capture-smoke --hdr`, `--encoder-smoke amf --codec hevc --hdr` and `--encoder-smoke pyrowave --codec pyrowave --encoder-output frame.bin`. Display recovery journals only changes owned by the host and restores them after parent-process death, provided the user has not subsequently changed that setting.
+
+## Updates
+
+Maintenance → Updates checks the official Butterpollo releases and offers **Install when idle**. Updates notify first; **Settings → General → Install updates automatically** is off by default. The existing **Include pre-releases** setting controls whether release candidates are offered. Setting the check interval to zero disables automatic checks and installation; manual checks and installation still work.
+
+Installation requires the normal Windows service. Butterpollo verifies the installer against GitHub's SHA-256 digest and advertised size, then waits until streams, pending connections, remote monitors and host apps have stopped for one minute. A disconnected Desktop session can retain an app: quit it from the client or console to let the update proceed. A new connection defers an in-progress download until the host is idle again. A queued download can be cancelled before installation begins. The console reconnects after the restart.
+
+Updates preserve settings, paired devices, apps and existing drivers. Setup backs up replaced package files, verifies that the requested host version starts, and restores those files if copying or startup fails. A failed version is not retried automatically; Maintenance shows the result and offers a manual retry. Backups of a failed installation stay under the service profile's `updates` folder. This recovery covers ordinary installation/startup errors, not every possible power loss or configuration migration failure.
+
+The installers are still unsigned. The updater's integrity check uses the digest returned over HTTPS by the fixed official GitHub repository; it is not an Authenticode signature. Portable hosts continue to use the release-page download.

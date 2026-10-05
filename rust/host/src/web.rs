@@ -133,6 +133,8 @@ fn token_catalog() -> Vec<auth::Scope> {
         ("/api/reset-display-device-persistence", &["POST"][..]),
         ("/api/updates", &["GET"][..]),
         ("/api/updates/check", &["POST"][..]),
+        ("/api/updates/install", &["POST"][..]),
+        ("/api/updates/cancel", &["POST"][..]),
         ("/api/covers/upload", &["POST"][..]),
         ("/api/covers/[0-9]+", &["GET"][..]),
         ("/api/logs", &["GET"][..]),
@@ -950,7 +952,9 @@ pub(crate) async fn api(
         let path = uri.path();
         let text = |k: &str| data.get(k).and_then(Value::as_str).unwrap_or("");
         Ok(match (method.as_str(), path) {
-            ("GET", "/api/updates") => h.updates.lock().unwrap().clone(),
+            ("GET", "/api/updates") => crate::updater::status(&h),
+            ("POST", "/api/updates/install") => { crate::updater::queue(&h, false)?; json!({"status":true}) },
+            ("POST", "/api/updates/cancel") => { crate::updater::cancel(&h)?; json!({"status":true}) },
             ("POST", "/api/updates/check") => {
                 crate::maintenance::trigger_update(&h);
                 json!({"status":true})
@@ -1215,6 +1219,8 @@ pub(crate) async fn api(
                 json!({"status":true})
             }
             ("POST", "/api/apps/launch") => {
+                let _transition = h.launch_transition.lock().unwrap();
+                if crate::updater::installing(&h) { anyhow::bail!("Butterpollo is installing an update"); }
                 let uuid = text("uuid");
                 let app = h
                     .apps

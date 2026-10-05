@@ -13,6 +13,7 @@ mod payload;
 mod system;
 mod ui;
 mod uninstall;
+mod update;
 
 use std::path::PathBuf;
 
@@ -21,6 +22,7 @@ const TITLE: &str = "Butterpollo setup";
 #[derive(Default)]
 struct Arguments {
     quiet: bool,
+    update: bool,
     uninstall: bool,
     help: bool,
     install_dir: Option<PathBuf>,
@@ -41,6 +43,7 @@ fn arguments() -> Result<Arguments, String> {
         match arg.to_ascii_lowercase().as_str() {
             "--quiet" | "/quiet" | "/s" | "/qn" => parsed.quiet = true,
             "--uninstall" | "/uninstall" => parsed.uninstall = true,
+            "--update" => parsed.update = true,
             "--help" | "-h" | "/?" => parsed.help = true,
             "--install-dir" => {
                 parsed.install_dir = Some(PathBuf::from(
@@ -111,7 +114,24 @@ fn main() {
         std::process::exit(system::relaunch_elevated().unwrap_or(1));
     }
     log::open();
-    let code = if args.uninstall {
+    let code = if args.update {
+        match args.install_dir.as_ref() {
+            Some(folder) if args.quiet && !args.uninstall => {
+                let folder = folder.clone();
+                match ui::progress(TITLE, "Updating Butterpollo", true, move |progress| {
+                    update::run(&folder, &progress)
+                }) {
+                    Ok(()) => 0,
+                    Err(error) => failed(true, "Butterpollo could not be updated", &error),
+                }
+            }
+            _ => failed(
+                true,
+                "Invalid update arguments",
+                &anyhow::anyhow!("--update requires --quiet and --install-dir"),
+            ),
+        }
+    } else if args.uninstall {
         run_uninstall(&args)
     } else {
         run_install(&args)

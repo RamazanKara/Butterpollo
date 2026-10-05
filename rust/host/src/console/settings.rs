@@ -160,6 +160,7 @@ pub const GLOBAL: &[Setting] = settings! {
         "hide_tray_controls", "Hide tray shutdown controls", Bool;
         "min_log_level", "Log level (0 verbose, 1 debug, 2 info, 3 warning, 4 error, 6 off)", Number;
         "log_path", "Log file path", Text;
+        "auto_update", "Install updates automatically when idle", Bool;
         "notify_pre_releases", "Include prerelease updates", Bool;
         "update_check_interval", "Update check interval (seconds; 0 disables)", Number;
         "legacy_ordering", "Use legacy application ordering", Bool;
