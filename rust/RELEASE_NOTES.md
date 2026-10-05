@@ -1,8 +1,8 @@
-# Butterpollo 2.0.0-rc.8 test candidate for Windows
+# Butterpollo 2.0.0-rc.8 for Windows
 
-Butterpollo's host, service, setup and console are now written in Rust. It replaces Vibepollo 2.0.0 and earlier Butterpollo builds on Windows: run `butterpollo-setup-2.0.0-rc.8-rtss-test.exe` and it upgrades the existing installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+Butterpollo's host, service, setup and console are now written in Rust. It replaces Vibepollo 2.0.0 and earlier Butterpollo builds on Windows: run `butterpollo-setup-2.0.0-rc.8.exe` and it upgrades the existing installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
 
-## New in rc.8 (test candidate)
+## New in rc.8
 
 - Fixes "adding the firewall rule failed" when reinstalling after an automatic update. Internal extended-length paths no longer leak into Windows installation entries or firewall commands. Setup updates an existing rule in place and removes legacy allowances only after Butterpollo's rule succeeds, so a rejected replacement keeps the previous rules.
 - Fixes RTSS automatic startup when Windows requires administrator privileges (error 740 / `0x800702E4`). The installed service first tries a normal user launch, then retries that specific error with the signed-in user's elevated token. RTSS stays in the user's desktop session; the SDK helper remains unelevated.
@@ -11,7 +11,7 @@ Butterpollo's host, service, setup and console are now written in Rust. It repla
 - Reduces repeated CPU work in WGC's timing predictor by caching statistics when a new frame arrives. Pacing decisions remain unchanged; this is a small CPU optimization.
 - Removes an unintended WGC capture throttle at 60 FPS and below by explicitly setting a zero minimum update interval. The untouched Windows default measured 16 ms and delivered only 55–57 capture updates/sec; explicit zero delivered about 217 in the same native background comparison. A brief AV1 background stream then passed the delivery-rate check at 60.585 FPS, versus 58.039 before, with zero decode errors. These checks do not establish distinct-picture delivery or reduced latency. Streams above 60 FPS retain the tested 1 ms request, and WGC compute stays enabled by default. Full motion acceptance for the revised low-rate path remains pending.
 - Corrects a diagnostic timestamp that could describe an older frame after memory-address reuse. Adds optional presentation statistics to the motion probe and a polling comparison without frame notifications; these do not change normal streaming.
-- Reproduced error 740 locally with RTSS 7.3.5, then verified automatic startup through the installed Windows service, a measured 59.94 FPS cap, and restoration to 120 FPS on disconnect while Desktop stayed open. All 208 automated tests passed. Isolated recovery checks cover user edits, absent settings, a pending journal after elevation denial, and reconnection after SDK failure. The final audit build still needs its installed-service check, and confirmation on the reporter's RX 9070 XT is pending; this is an unpublished test candidate.
+- Reproduced error 740 locally with RTSS 7.3.5, then verified an earlier rc.8 candidate's automatic startup through the installed Windows service, a measured 59.94 FPS cap, and restoration to 120 FPS on disconnect while Desktop stayed open. All 208 ordinary automated tests and the explicitly selected native WGC interval test passed. Isolated recovery checks cover user edits, absent settings, a pending journal after elevation denial, and reconnection after SDK failure. The final executable is now installed locally: its hash matches the tested candidate, setup completed successfully, the service reports rc.8, and the firewall rule targets the correct executable. The final build's complete limiter lifecycle and confirmation on the reporter's RX 9070 XT remain pending.
 
 ## New in rc.7
 
@@ -61,8 +61,8 @@ Butterpollo's host, service, setup and console are now written in Rust. It repla
 
 ## Install
 
-- `butterpollo-setup-2.0.0-rc.8-rtss-test.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
-- For a portable copy, extract `butterpollo-rust-2.0.0-rc.8-rtss-test-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
+- `butterpollo-setup-2.0.0-rc.8.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
+- For a portable copy, extract `butterpollo-rust-2.0.0-rc.8-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
 - These are unsigned test builds. Keep a copy of your configuration and the previous installer for rollback.
 
 ## Lower latency

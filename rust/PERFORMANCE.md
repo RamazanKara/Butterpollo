@@ -1102,8 +1102,12 @@ tests were skipped by default, the new native WGC interval regression passed
 when selected explicitly, Clippy passed with warnings denied, and the release
 workspace built successfully. The running game's process/start time and all
 three installed host profile hashes were unchanged after the background tests.
-The candidate is not installed or published, and the full smoothness acceptance
-gate remains pending.
+The full smoothness acceptance gate remains pending. After these measurements,
+the user installed the final candidate. Read-only checks confirmed the tested
+host hash, service version 2.0.0-rc.8, successful setup completion, a conventional
+installation path and an enabled inbound firewall allowance for that executable.
+This confirms installation and service startup; it does not substitute for a
+complete limiter lifecycle, controlled motion check or automatic-update handoff.
 
 ## Limits
 

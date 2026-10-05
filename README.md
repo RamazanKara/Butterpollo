@@ -6,9 +6,9 @@
 
 <sub>35-second demo. Click it for the full 1080p video.</sub>
 
-**[Download Butterpollo 2.0.0-rc.7](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.7)**: run `butterpollo-setup-2.0.0-rc.7.exe`. It installs fresh or upgrades Vibepollo 2.0 in place, and your settings, paired devices and game library come along.
+**[Download Butterpollo 2.0.0-rc.8](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.8)**: run `butterpollo-setup-2.0.0-rc.8.exe`. It installs fresh or upgrades Vibepollo 2.0 in place, and your settings, paired devices and game library come along.
 
-rc.7 adds updates from the web console: notifications come first, and automatic installation is opt-in. Updates wait until streaming and host apps have stopped. See the [release notes and validation limits](rust/RELEASE_NOTES.md#new-in-rc7).
+rc.8 fixes RTSS startup when administrator privileges are needed, removes an unintended WGC capture throttle, and repairs firewall setup after updates. Updates still notify first, with automatic installation available as an opt-in. See the [release notes and validation limits](rust/RELEASE_NOTES.md#new-in-rc8).
 
 ## The trick: stay off the game's queue
 
@@ -74,11 +74,11 @@ The host, its Windows service, the installer and the web console's server are wr
 
 ## Install
 
-1. Download `butterpollo-setup-2.0.0-rc.3.exe` from [Releases](https://github.com/RamazanKara/Butterpollo/releases).
+1. Download `butterpollo-setup-2.0.0-rc.8.exe` from [Releases](https://github.com/RamazanKara/Butterpollo/releases).
 2. Run it. It installs the host, service, virtual display and gamepad drivers, or upgrades Vibepollo 2.0 or an earlier Butterpollo in place.
 3. Open the console at `https://localhost:47990`, pair your device and stream.
 
-Prefer a portable copy? Extract `butterpollo-rust-2.0.0-rc.3-windows-x64.zip` and open **Start Butterpollo.exe**; it offers to import your Vibepollo or Apollo profile and leaves the original alone. The builds are unsigned, so keep your previous installer and a copy of your config if you might want to go back.
+Prefer a portable copy? Extract `butterpollo-rust-2.0.0-rc.8-windows-x64.zip` and open **Start Butterpollo.exe**; it offers to import your Vibepollo or Apollo profile and leaves the original alone. The builds are unsigned, so keep your previous installer and a copy of your config if you might want to go back.
 
 ## Where it stands
 
