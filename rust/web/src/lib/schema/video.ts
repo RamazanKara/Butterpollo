@@ -136,12 +136,11 @@ const video: Setting[] = [
     key: 'gpu_compute_conversion',
     label: 'Copy and convert on a compute queue',
     description:
-      'With Desktop Duplication on an AMD GPU, copies each frame and converts its colours on compute queues that run beside a game, instead of waiting behind the game on the graphics queue. Turn off only to troubleshoot.',
+      'On supported AMD GPUs, copies Desktop Duplication and Windows Graphics Capture frames and converts their colours on compute queues beside a game. Unsupported capture textures fall back to the graphics queue. Turn off to compare or troubleshoot.',
     category: 'video',
     group: 'Capture',
     control: { kind: 'toggle' },
     default: true,
-    visibleWhen: (values) => !['wgc', 'wgcc'].includes(capture(values)),
     advanced: true,
   },
   {
