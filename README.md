@@ -6,7 +6,9 @@
 
 <sub>35-second demo. Click it for the full 1080p video.</sub>
 
-**[Download Butterpollo 2.0.0-rc.3](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.3)**: run `butterpollo-setup-2.0.0-rc.3.exe`. It installs fresh or upgrades Vibepollo 2.0 in place, and your settings, paired devices and game library come along.
+**[Download Butterpollo 2.0.0-rc.7](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.7)**: run `butterpollo-setup-2.0.0-rc.7.exe`. It installs fresh or upgrades Vibepollo 2.0 in place, and your settings, paired devices and game library come along.
+
+rc.7 adds updates from the web console: notifications come first, and automatic installation is opt-in. Updates wait until streaming and host apps have stopped. See the [release notes and validation limits](rust/RELEASE_NOTES.md#new-in-rc7).
 
 ## The trick: stay off the game's queue
 
