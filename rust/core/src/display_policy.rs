@@ -1,6 +1,39 @@
 use crate::topology::{Node, Position};
 use anyhow::{Result, bail};
 
+/// A client request can enable a virtual display; a zero/absent request leaves
+/// the host, app and device settings in control (as in the GameStream host).
+#[derive(Default)]
+pub struct VirtualDisplayRequest<'a> {
+    pub client_requested: bool,
+    pub client_forced: bool,
+    pub app_requested: bool,
+    pub configured: bool,
+    pub output_override: Option<&'a str>,
+    pub configured_output: &'a str,
+}
+impl VirtualDisplayRequest<'_> {
+    pub fn explicit(&self) -> bool {
+        self.client_requested || self.client_forced || self.app_requested
+    }
+    pub fn output_virtual(&self) -> bool {
+        matches!(
+            self.output_override
+                .unwrap_or(self.configured_output)
+                .trim()
+                .to_ascii_lowercase()
+                .as_str(),
+            "sunshine:virtual_display" | "virtual" | "virtual_display" | "virtual-display"
+        )
+    }
+    pub fn requested(&self) -> bool {
+        self.client_requested
+            || self.client_forced
+            || self.output_virtual()
+            || (self.output_override.is_none() && (self.app_requested || self.configured))
+    }
+}
+
 /// The physical display mode to apply for a stream, given the modes the display
 /// supports as (width, height, refresh Hz), the requested resolution and refresh
 /// (millihertz), and the current mode.

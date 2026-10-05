@@ -177,17 +177,6 @@ pub(crate) fn effective_config(
             Err(error) => tracing::debug!(%error, %selection, "HDR calibration peak unavailable"),
         }
     }
-    if let Some(value) = launch.options.get("virtualDisplay") {
-        config.values.insert(
-            "virtual_display_mode".into(),
-            if value == "0" {
-                "disabled"
-            } else {
-                "per_client"
-            }
-            .into(),
-        );
-    }
     Ok(config)
 }
 fn apply_overrides(

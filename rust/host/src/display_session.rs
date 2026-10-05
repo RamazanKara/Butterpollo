@@ -227,10 +227,6 @@ impl Prepared {
         let output = output_override
             .unwrap_or(config.get("output_name", ""))
             .trim();
-        let output_virtual = matches!(
-            output.to_ascii_lowercase().as_str(),
-            "sunshine:virtual_display" | "virtual" | "virtual_display" | "virtual-display"
-        );
         let golden = if launch.role == Role::Stream
             && config.boolean("dd_always_restore_from_golden", true)
         {
@@ -269,27 +265,24 @@ impl Prepared {
             .options
             .get("virtualDisplay")
             .map(|value| value != "0");
-        let explicit = client_virtual == Some(true)
-            || launch
+        let display_request = butterpollo_core::display_policy::VirtualDisplayRequest {
+            client_requested: client_virtual == Some(true),
+            client_forced: launch
                 .client
                 .extra
                 .get("always_use_virtual_display")
-                .is_some_and(|v| v == true || v == "true")
-            || app.as_ref().is_some_and(|a| {
+                .is_some_and(|v| v == true || v == "true"),
+            app_requested: app.as_ref().is_some_and(|a| {
                 crate::process::app_bool(a, "virtual-display", false)
                     || crate::process::app_bool(a, "virtual-screen", false)
-            });
-        let inherited_virtual = explicit
-            || (client_virtual != Some(false)
-                && (mode != "disabled" || config.boolean("dd_activate_virtual_display", false)));
-        let virtual_requested = client_virtual == Some(true)
-            || match output_override {
-                Some(_) => output_virtual,
-                None => inherited_virtual || output_virtual,
-            };
-        let virtual_mode = virtual_requested
-            && (explicit
-                || output_virtual
+            }),
+            configured: mode != "disabled" || config.boolean("dd_activate_virtual_display", false),
+            output_override,
+            configured_output: config.get("output_name", ""),
+        };
+        let virtual_mode = display_request.requested()
+            && (display_request.explicit()
+                || display_request.output_virtual()
                 || butterpollo_windows::display::virtual_display_available());
         let generation = option("frame-generation-mode")
             .or_else(|| option("frame-generation-provider"))

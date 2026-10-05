@@ -1,6 +1,12 @@
-# Butterpollo 2.0.0-rc.5 for Windows
+# Butterpollo 2.0.0-rc.6 for Windows
 
-Butterpollo's host, service, setup and console are now written in Rust. It replaces Vibepollo 2.0.0 and earlier Butterpollo builds on Windows: run `butterpollo-setup-2.0.0-rc.5.exe` and it upgrades the existing installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+Butterpollo's host, service, setup and console are now written in Rust. It replaces Vibepollo 2.0.0 and earlier Butterpollo builds on Windows: run `butterpollo-setup-2.0.0-rc.6.exe` and it upgrades the existing installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+
+## New in rc.6
+
+- A client's `virtualDisplay=0` request now inherits the host's virtual-display setting, matching Vibepollo. Previously it disabled the configured virtual display, leaving the physical monitor active or failing capture when that monitor was off. A positive request also preserves the configured shared-display mode. Explicit app display choices still apply, and the device's "Always use a virtual display" option takes precedence.
+- Optional PyroWave capability checks now run in a separate user process. A crash or stall there leaves H.264, HEVC and AV1 available; the worker has a 15-second deadline and is cleaned up on failure. This contains the startup failure investigated in an rc.5 dump: RTSS called into the Vulkan loader during a Wallpaper Engine window callback after the probe's Vulkan modules had unloaded. It does not modify either overlay.
+- The earlier AV1 fresh-frame shortfall occurred while Warhammer 3 occupied 92–99% of the GPU. With the game closed, the released rc.5 build delivered 59.84 fresh FPS at a 60 FPS target, decoding all 1,047 received frames without errors. This corrects the earlier performance finding; the RX 9070 XT tester's separate latency comparison remains unverified.
 
 ## New in rc.5
 
@@ -36,8 +42,8 @@ Butterpollo's host, service, setup and console are now written in Rust. It repla
 
 ## Install
 
-- `butterpollo-setup-2.0.0-rc.5.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
-- For a portable copy, extract `butterpollo-rust-2.0.0-rc.5-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
+- `butterpollo-setup-2.0.0-rc.6.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
+- For a portable copy, extract `butterpollo-rust-2.0.0-rc.6-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
 - These are unsigned test builds. Keep a copy of your configuration and the previous installer for rollback.
 
 ## Lower latency
@@ -60,7 +66,7 @@ Left out on purpose: WebRTC streaming, session history and host statistics pages
 
 ## Known limits
 
-- One portable startup during the rc.5 AV1 checks crashed in the Vulkan loader with RTSS hooks loaded; subsequent starts and installed-service HDR streaming succeeded. The cause remains unconfirmed. Portable AV1 motion checks with RTSS running measured 56.6-57.5 fresh FPS for rc.5 and 58.1 for rc.4 at a 60 FPS target, with no decode errors. These checks did not meet the 58.2 fresh-FPS threshold and are not performance passes.
+- The Artemide reporter's phone and RX 9070 XT are unavailable locally. The virtual-display precedence fix addresses a reproduced protocol bug, but confirmation on that phone is still needed.
 - The RX 9070 XT report of 4.7 versus 3.9 ms on Wi-Fi remains open pending the tester's comparison. Packet pacing and recovery fixes address observed problems, but are not proof that this latency difference is resolved.
 - DDX startup from an inactive desktop remains under investigation. Some local tests received blank pictures and required two capture restarts before valid content arrived; a standalone snapshot test can receive no initial picture. Keeping the display awake fixes continued capture through idle time, but does not resolve this startup condition.
 - WGC lock/UAC transitions and the new helper's performance under heavy GPU load are not yet verified. Installed-service WGC and native HDR capture have been confirmed on the RX 7900 XT; that does not establish the RX 9070 XT result.

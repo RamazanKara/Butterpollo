@@ -70,6 +70,10 @@ struct Args {
     rtss_worker: Option<String>,
     #[arg(long, hide = true, requires = "rtss_worker")]
     rtss_parent: Option<u32>,
+    #[arg(long, hide = true, requires = "codec_probe_parent")]
+    codec_probe_worker: Option<String>,
+    #[arg(long, hide = true, requires = "codec_probe_worker")]
+    codec_probe_parent: Option<u32>,
     #[arg(long, hide = true)]
     open_web: Option<u16>,
     #[arg(long, hide = true, requires = "wgc_parent")]
@@ -81,6 +85,9 @@ struct Args {
 async fn main() -> Result<()> {
     butterpollo_windows::capture::enable_dpi_awareness();
     let args = Args::parse();
+    if let Some(pipe) = &args.codec_probe_worker {
+        return butterpollo_windows::codec_probe::worker(pipe, args.codec_probe_parent.unwrap());
+    }
     if let Some(pipe) = &args.wgc_worker {
         return butterpollo_windows::capture::run_wgc_worker(pipe, args.wgc_parent.unwrap());
     }

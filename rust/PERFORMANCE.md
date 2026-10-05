@@ -863,6 +863,27 @@ measurements arrive. The local fixture is RX 7900 XT and the LAN receiver is
 a wired Intel NUC, not the reported Wi-Fi system. rc.3 artifacts are under
 `C:\Users\ramaz\.codex\artifacts\butterpollo-rc3-20261005`.
 
+## October 5 AV1 idle recheck
+
+The rc.5 follow-up initially recorded 56.6–57.5 fresh AV1 pictures per second
+at a 60 FPS target. A subsequent GPU check found Warhammer 3 using 92–99%
+of the graphics engine. After the user closed it, the same released rc.5
+executable (`9c3bb28832e68cada56d637142b2e8b2527b745c6e9c6224db29cdc5500806a8`)
+passed the idle motion check: 59.843 fresh FPS, 60.004 steady received FPS,
+and all 1,047 received frames decoded without errors. Steady decoded picture
+age averaged 10.562 ms (p95 11.512 ms, p99 12.620 ms); host time averaged
+1.907 ms. The earlier loaded measurements remain valid observations, but
+are not evidence of an idle AV1 regression or an RTSS cap failure.
+
+This local check used an RX 7900 XT, WGC's user helper with both compute
+paths enabled, a 2560×1440 physical desktop at 120 Hz, a 60 FPS moving strip,
+and a 1280×720 AV1 stream at 20 Mbps. RTSS and Wallpaper Engine remained
+running. A low-priority, two-job build was also running. The updated harness
+lets the source renderer finish and retains its frame timestamps alongside
+the receiver's barcode and timing records. Picture age stops at decode,
+excluding client scanout and input latency. Evidence is under
+`C:\Users\ramaz\.codex\artifacts\butterpollo-monitor-av1-20261005\rc5-idle-av1-strip`.
+
 ## Limits
 
 This machine validates AMD AMF. Native NVENC now calls the installed NVIDIA driver directly, supports reviewed API versions 11.0–13.0, reference frame invalidation, D3D11 4:2:0/8-bit 4:4:4 and GPU-only CUDA interop for ten-bit 4:4:4. Seven mock-driver tests exercise compatibility, asynchronous ownership, timeout teardown, metadata lifetime, loss recovery and bitrate changes; NVIDIA execution/performance still needs NVIDIA hardware. QSV has native D3D11 imports, and TrueHDR has a shared-device GPU path; these need Intel/NVIDIA hardware respectively. Unsupported native formats, PyroWave and software encoding use CPU compatibility paths. The wired LAN checks above do not establish Wi-Fi performance, multiple concurrent 4K sessions, dynamic game content, native 4K capture or end-to-end input/display latency. The GPU texture pools and native encoder queues are bounded to eight retained frames; capacity runs may intentionally keep those queues occupied. [PARITY.md](PARITY.md) separates implemented features from native validation.

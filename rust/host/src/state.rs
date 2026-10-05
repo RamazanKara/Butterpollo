@@ -303,22 +303,9 @@ impl Host {
                 (1, true, true, 0x100000),
                 (2, false, true, 0x200000),
                 (2, true, true, 0x400000),
-                (3, false, false, 0x800000),
-                (3, false, true, 0x1000000),
-                (3, true, false, 0x2000000),
-                (3, true, true, 0x4000000),
             ] {
-                if codec == 3 {
-                    // Publish standard codecs as a complete set before the
-                    // optional PyroWave checks. A partial set can make clients
-                    // permanently disable HDR in their cached app list.
-                    h.video_codecs_ready.send_replace(true);
-                }
                 let mode = config.integer(if codec == 1 { "hevc_mode" } else { "av1_mode" }, 0);
                 if matches!(codec, 1 | 2) && (mode == 1 || (hdr && mode == 2)) {
-                    continue;
-                }
-                if codec == 3 && !config.boolean("pyrowave", true) {
                     continue;
                 }
                 let base = match (codec, hdr) {
@@ -328,7 +315,7 @@ impl Host {
                     (2, false) => 0x10000,
                     _ => 0x20000,
                 };
-                if codec != 3 && yuv444 && flags & base == 0 {
+                if yuv444 && flags & base == 0 {
                     continue;
                 }
                 if h.stop.load(std::sync::atomic::Ordering::Acquire) {
@@ -352,7 +339,7 @@ impl Host {
                 ) {
                     // A 4:4:4 stream must not quietly fall back to software
                     // encoding; advertise it only from a hardware encoder.
-                    Ok(encoder) if codec != 3 && yuv444 && !software && !encoder.hardware() => {
+                    Ok(encoder) if yuv444 && !software && !encoder.hardware() => {
                         tracing::debug!(
                             codec,
                             hdr,
@@ -387,6 +374,20 @@ impl Host {
                     }
                     Err(error) => {
                         tracing::warn!(%error, codec, hdr, "encoder capability initialization failed")
+                    }
+                }
+            }
+            // Publish standard codecs together before the optional Vulkan
+            // probe. A driver/overlay failure in that child cannot kill them.
+            h.codecs.store(flags, std::sync::atomic::Ordering::Release);
+            h.video_codecs_ready.send_replace(true);
+            if config.boolean("pyrowave", true)
+                && !h.stop.load(std::sync::atomic::Ordering::Acquire)
+            {
+                match butterpollo_windows::codec_probe::pyrowave(&config) {
+                    Ok(optional) => flags |= optional,
+                    Err(error) => {
+                        tracing::warn!(error = %format!("{error:#}"), "optional PyroWave probe failed; standard codecs remain available")
                     }
                 }
             }

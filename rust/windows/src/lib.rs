@@ -12,6 +12,8 @@ pub mod capture;
 #[cfg(windows)]
 pub mod clipboard;
 #[cfg(windows)]
+pub mod codec_probe;
+#[cfg(windows)]
 pub mod color;
 #[cfg(windows)]
 pub mod compute;
