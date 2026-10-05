@@ -287,6 +287,7 @@ float4 picture(float4 p : SV_Position) : SV_Target {
             let start = Instant::now();
             let mut next_frame = start;
             let mut frames = Vec::new();
+            let presentation_stats = std::env::var_os("BUTTERPOLLO_TEST_PRESENT_STATS").is_some();
             while start.elapsed() < Duration::from_secs(seconds) {
                 if WaitForSingleObject(wait.0, 1000) != WAIT_OBJECT_0 {
                     bail!("presentation event timed out");
@@ -316,7 +317,23 @@ float4 picture(float4 p : SV_Position) : SV_Target {
                 if frame == 1 {
                     println!("MOTION stage=first-present");
                 }
-                frames.push(serde_json::json!({"frame":frame,"qpc":ticks}));
+                let mut sample = serde_json::json!({"frame":frame,"qpc":ticks});
+                if presentation_stats {
+                    sample["present_id"] = serde_json::json!(swap.GetLastPresentCount().ok());
+                    let mut stats = DXGI_FRAME_STATISTICS::default();
+                    sample["displayed"] = swap.GetFrameStatistics(&mut stats).ok().map_or(
+                        serde_json::Value::Null,
+                        |()| {
+                            serde_json::json!({
+                                "present_id": stats.PresentCount,
+                                "refresh_count": stats.PresentRefreshCount,
+                                "sync_refresh_count": stats.SyncRefreshCount,
+                                "sync_qpc": stats.SyncQPCTime,
+                            })
+                        },
+                    );
+                }
+                frames.push(sample);
             }
             let data = serde_json::json!({
                 "scope":"render timestamp to independent decode; excludes remote display scanout",

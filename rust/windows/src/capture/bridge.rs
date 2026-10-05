@@ -116,6 +116,7 @@ fn capture_config(config: &Config) -> Config {
         "adapter_pnp_id",
         "gpu_compute_conversion",
         "wgc_compute_copy",
+        "wgc_high_rate_capture",
         "nvenc_realtime_hags",
     ];
     Config {
@@ -556,7 +557,11 @@ fn worker(pipe: &Pipe) -> Result<()> {
         "WGC output disappeared before helper startup"
     );
     let _ = crate::gpu_priority::configure(&gpu, &config);
-    let mut capture = Wgc::new_device(gpu.clone(), hdr)?;
+    let mut capture = Wgc::new_device(
+        gpu.clone(),
+        hdr,
+        config.boolean("wgc_high_rate_capture", false),
+    )?;
     let mut first = loop {
         if let Some(frame) = next_native(&mut capture)? {
             break Some(frame);
@@ -755,11 +760,12 @@ mod tests {
     }
     #[test]
     fn helper_receives_only_capture_settings_and_no_host_secrets_or_commands() {
-        let source = Config::parse("adapter_name = AMD\ngpu_compute_conversion = false\ncredentials_file = secret\nprep_cmd = run-something\nport = 47989\nwgc_user_helper = true\n").unwrap();
+        let source = Config::parse("adapter_name = AMD\ngpu_compute_conversion = false\nwgc_high_rate_capture = true\ncredentials_file = secret\nprep_cmd = run-something\nport = 47989\nwgc_user_helper = true\n").unwrap();
         let filtered = capture_config(&source);
-        assert_eq!(filtered.values.len(), 2);
+        assert_eq!(filtered.values.len(), 3);
         assert_eq!(filtered.get("adapter_name", ""), "AMD");
         assert!(!filtered.boolean("gpu_compute_conversion", true));
+        assert!(filtered.boolean("wgc_high_rate_capture", false));
         let message = Request::Start {
             version: VERSION,
             name: "display".into(),

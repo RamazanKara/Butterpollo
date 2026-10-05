@@ -927,6 +927,96 @@ The owner now survives a successful recovery and reacquisition. A separate
 fixture reproduced missed process detection for a directory ending in `\.`;
 directory identity is now normalized before comparison.
 
+## October 5 rc.8 idle physical-display investigation
+
+After Warhammer closed, the desktop was 5120×1440 SDR at a configured 240 Hz.
+These checks stream 2560×720 at 20 Mbps through WGC's user helper and compute,
+with independent local Moonlight/FFmpeg decoding and source frame barcodes.
+They are not directly comparable to the earlier 1280×720 checks on a smaller
+desktop. No compiler runs alongside the motion checks. The source logs and
+DXGI presentation statistics distinguish requested refresh, actual presented
+frames and distinct pictures reaching the decoder.
+
+An initial alternating AV1 strip comparison gave 59.978 and 60.002 fresh FPS
+for the first rc.8 build, versus 60.005 and 54.415 for the audited build. Three
+subsequent audited runs delivered 59.912–59.938 fresh FPS; HEVC and H.264 checks
+gave 59.920 and 59.866. The failed run remains part of the evidence. A
+full-screen pattern reproduced the shortfall in both builds: 50.092 and
+49.437 fresh FPS, respectively. Direct WGC and graphics-copy comparisons also
+failed the freshness gate, so this does not identify the timing-cache change
+or compute copies as the cause. Source submission and displayed-present
+counters confirmed approximately 60 FPS in the separate presentation probe.
+The frame gaps appeared before encoding. Configured 240 Hz alone is not
+evidence that every image was scanned out at 240 Hz or that VRR caused the gaps.
+
+The C++ host sets WGC's minimum update interval to 1 ms; the Rust port had
+left it at Windows' default. A [firsthand Windows capture report](https://github.com/robmikh/Win32CaptureSample/issues/82)
+describes a similar ceiling near 60 FPS with the zero default. The
+[MinUpdateInterval property](https://learn.microsoft.com/en-us/uwp/api/windows.graphics.capture.graphicscapturesession.minupdateinterval)
+is available on newer Windows builds. Local Windows 11 build 26200 accepted
+the setting. An unconditional experiment measured:
+
+| WGC configuration and source | Received FPS | Fresh FPS | Host processing mean | Decoded picture age mean |
+| --- | ---: | ---: | ---: | ---: |
+| Windows default, full-screen 120 FPS | 59.758 | 59.758 | 1.884 ms | 17.805 ms |
+| 1 ms interval, full-screen 120 FPS | 100.326 | 94.180 | 1.853 ms | 10.171 ms |
+| 1 ms, compute disabled, full-screen 120 FPS | 98.832 | 91.705 | 2.161 ms | 11.167 ms |
+| 1 ms interval, 60 FPS strip | 60.516 | 54.120 | 1.874 ms | 18.920 ms |
+
+Every received frame decoded without errors in these cases, but none passed
+the strict fresh-picture target. The 1 ms experiment also failed a full-screen
+60 FPS check (43.951 fresh FPS). It is therefore not enabled globally. The
+candidate requests it only when the negotiated stream rate exceeds 60 FPS,
+preserves 59.94/60 FPS behavior, and keeps compute enabled. The effective
+policy follows the user helper and capture-sharing key. An explicit
+`wgc_high_rate_capture=true` or `false` overrides the automatic decision;
+unsupported Windows versions retain their default. The improvement at 120
+FPS removes an observed ceiling, not all capture loss.
+
+The final rate-aware executable was then compared with its own override
+disabled, avoiding a binary-version confound. At a 120 FPS request it delivered
+90.598 fresh FPS with the automatic 1 ms request, versus 59.959 with the
+override disabled. Decoded picture age averaged 14.640 versus 10.247 ms;
+this pair establishes higher delivery rate, not a uniform latency gain.
+At 60 FPS the unchanged default delivered 57.178 and 47.846 fresh FPS, and
+the preceding audited executable then delivered 47.567 under the same strip
+test. Forcing 1 ms at 60 FPS gave 55.417 fresh FPS; combining it with fixed
+grid pacing gave 56.521, with higher picture age (25.701 and 26.533 ms).
+Neither diagnostic passed the 58.2 fresh FPS acceptance gate, and neither
+became a 60 FPS default. No failed run was removed to claim success.
+
+The source's displayed-present counter remained near 60 FPS in the strip
+checks, while its reported refresh-counter rate differed (approximately 240
+in the first run and 100 in the later revised/old pair). These observations
+motivate further Windows/display-timing investigation; they do not establish
+actual panel scanout rate or a confirmed VRR cause. The physical display mode,
+driver settings and the user's applications were not changed by these tests.
+
+H.264 and HEVC HDR output from the SDR source reproduced the shortfall
+(48.893 and 46.342 fresh FPS). Both decoded every received frame with correct
+geometry and nonzero decoded audio. Disabling the optional DXGI statistics
+in the source renderer still gave 48.528 fresh AV1 FPS, so removing that
+instrumentation did not resolve this occurrence. The ordinary workspace
+suite passed 206 tests (23 hardware/network tests ignored), all-target Clippy
+passed with warnings denied, and the release workspace built successfully.
+These code checks and successful decoding do not override the failed
+fresh-picture acceptance results.
+
+During diagnosis, an allocator-reused image address exposed a stale
+`first_seen` trace entry. Clearing it after submission fixes the diagnostic;
+it does not change pacing. `motion_probe` now optionally records DXGI
+presentation statistics with `BUTTERPOLLO_TEST_PRESENT_STATS=1`.
+`wgc_arrival_probe` adds an `unregistered` polling mode for comparison with
+registered notifications; no production notification policy was changed.
+
+All original runs, including failed comparisons, are preserved in
+`C:\Users\ramaz\.codex\artifacts\butterpollo-monitor-av1-20261005`.
+The consolidated `CAPTURE_QA.json` is under
+`C:\Users\ramaz\.codex\artifacts\butterpollo-rtss-autostart-20261005\qa`.
+Full-screen 120 fresh FPS and the reporter's RX 9070 XT/Wi-Fi comparison
+remain open. The final candidate also still needs an installed-service
+check; a prior installer launch was rejected before execution by tool policy.
+
 ## Limits
 
 This machine validates AMD AMF. Native NVENC now calls the installed NVIDIA driver directly, supports reviewed API versions 11.0–13.0, reference frame invalidation, D3D11 4:2:0/8-bit 4:4:4 and GPU-only CUDA interop for ten-bit 4:4:4. Seven mock-driver tests exercise compatibility, asynchronous ownership, timeout teardown, metadata lifetime, loss recovery and bitrate changes; NVIDIA execution/performance still needs NVIDIA hardware. QSV has native D3D11 imports, and TrueHDR has a shared-device GPU path; these need Intel/NVIDIA hardware respectively. Unsupported native formats, PyroWave and software encoding use CPU compatibility paths. The wired LAN checks above do not establish Wi-Fi performance, multiple concurrent 4K sessions, dynamic game content, native 4K capture or end-to-end input/display latency. The GPU texture pools and native encoder queues are bounded to eight retained frames; capacity runs may intentionally keep those queues occupied. [PARITY.md](PARITY.md) separates implemented features from native validation.

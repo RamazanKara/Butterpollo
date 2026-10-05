@@ -1,6 +1,6 @@
 //! Compare WGC frame detection with polling and FrameArrived notifications.
 //! Captures the selected desktop without saving pictures or changing displays.
-//! usage: wgc_arrival_probe DISPLAY SECONDS poll|notify|hybrid [POLL_US]
+//! usage: wgc_arrival_probe DISPLAY SECONDS poll|unregistered|notify|hybrid [POLL_US]
 #[cfg(windows)]
 mod support;
 #[cfg(not(windows))]
@@ -31,8 +31,8 @@ fn main() -> anyhow::Result<()> {
     let poll_us: u64 = args.next().map_or(Ok(500), |s| s.parse())?;
     ensure!((1..=300).contains(&seconds), "seconds must be 1..300");
     ensure!(
-        matches!(mode.as_str(), "poll" | "notify" | "hybrid"),
-        "expected poll, notify or hybrid"
+        matches!(mode.as_str(), "poll" | "unregistered" | "notify" | "hybrid"),
+        "expected poll, unregistered, notify or hybrid"
     );
     ensure!(
         (100..=1000).contains(&poll_us),
@@ -45,7 +45,9 @@ fn main() -> anyhow::Result<()> {
     let timer = Timer::new()?;
     // Strict open: this probe must fail if WGC is unavailable, never measure DDX.
     let mut capture = Capture::new(&display, "wgc")?;
-    capture.enable_frame_notifications()?;
+    if mode != "unregistered" {
+        capture.enable_frame_notifications()?;
+    }
     let cpu = || -> anyhow::Result<f64> {
         let (mut created, mut exited, mut kernel, mut user) = Default::default();
         unsafe {
@@ -81,7 +83,7 @@ fn main() -> anyhow::Result<()> {
             }
         } else {
             empty += 1;
-            if mode != "poll" {
+            if !matches!(mode.as_str(), "poll" | "unregistered") {
                 let interval = if mode == "hybrid" {
                     Duration::from_micros(poll_us)
                 } else {

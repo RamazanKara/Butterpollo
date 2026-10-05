@@ -266,6 +266,7 @@ struct CaptureKey {
     compute: bool,
     wgc_compute: bool,
     wgc_user_helper: bool,
+    wgc_high_rate: bool,
 }
 impl CaptureKey {
     fn new(kind: &str, output: &str, hdr: bool, config: &Config, phase: &str) -> Self {
@@ -284,8 +285,22 @@ impl CaptureKey {
             compute: config.boolean("gpu_compute_conversion", true),
             wgc_compute: config.boolean("wgc_compute_copy", true),
             wgc_user_helper: config.boolean("wgc_user_helper", false),
+            wgc_high_rate: !matches!(kind, "ddx" | "dxgi")
+                && config.boolean("wgc_high_rate_capture", false),
         }
     }
+}
+fn capture_config_for_rate(config: &Config, rate: butterpollo_core::framegen::Rate) -> Config {
+    let mut capture = config.clone();
+    // Keep the effective choice with the shared capture and its helper. A
+    // low-rate session must not reuse a high-rate session's capture policy.
+    capture.values.insert(
+        "wgc_high_rate_capture".into(),
+        config
+            .boolean("wgc_high_rate_capture", rate.0 > 60_000)
+            .to_string(),
+    );
+    capture
 }
 impl Media {
     pub fn new(h: Shared, bind: IpAddr) -> Result<Arc<Self>> {
@@ -377,7 +392,8 @@ impl Media {
     ) -> Result<Arc<Source>> {
         let output = prepared.output();
         let aligned = config.boolean("wgc_slot_aligned_publish", false);
-        let key = CaptureKey::new(kind, &output, hdr, config, phase);
+        let capture_config = capture_config_for_rate(config, rate);
+        let key = CaptureKey::new(kind, &output, hdr, &capture_config, phase);
         let mut captures = self.captures.lock().unwrap();
         captures.retain(|_, source| source.strong_count() > 0);
         if let Some(existing) = captures.get(&key).and_then(Weak::upgrade)
@@ -395,7 +411,6 @@ impl Media {
         }));
         let worker_grid = grid.clone();
         let kind = kind.to_owned();
-        let capture_config = config.clone();
         let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
         let thread = thread::Builder::new()
             .name("capture".into())
@@ -1082,6 +1097,9 @@ impl Media {
                                 latest.grid.lock().unwrap().anchor = cadence.deadline();
                             }
                             last_image = Some(image);
+                            // An allocation can later reuse this image's address;
+                            // its trace observation belongs only to this submission.
+                            first_seen = None;
                             send_frames(output, peer, call_latency)?;
                         }
                         Ok(())
@@ -1663,6 +1681,55 @@ fn feedback_packets(id: u16, kind: u16, data: &[u8]) -> Vec<(u16, Vec<u8>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn high_rate_wgc_policy_tracks_negotiated_rate_and_preserves_overrides() {
+        use butterpollo_core::framegen::Rate;
+        let default = Config::default();
+        for rate in [30_000, 59_940, 60_000] {
+            assert!(
+                !capture_config_for_rate(&default, Rate(rate))
+                    .boolean("wgc_high_rate_capture", true)
+            );
+        }
+        for rate in [60_001, 119_880, 120_000, 240_000] {
+            assert!(
+                capture_config_for_rate(&default, Rate(rate))
+                    .boolean("wgc_high_rate_capture", false)
+            );
+        }
+        for (setting, expected) in [("true", true), ("false", false)] {
+            let config = Config::parse(&format!("wgc_high_rate_capture = {setting}")).unwrap();
+            for rate in [59_940, 60_000, 120_000] {
+                assert_eq!(
+                    capture_config_for_rate(&config, Rate(rate))
+                        .boolean("wgc_high_rate_capture", !expected),
+                    expected
+                );
+            }
+        }
+        assert!(!default.values.contains_key("wgc_high_rate_capture"));
+    }
+    #[test]
+    fn shared_capture_separates_wgc_rate_policies_without_splitting_ddx() {
+        use butterpollo_core::framegen::Rate;
+        let key = |kind, rate| {
+            CaptureKey::new(
+                kind,
+                "display",
+                false,
+                &capture_config_for_rate(&Config::default(), Rate(rate)),
+                "",
+            )
+        };
+        for kind in ["wgc", "auto"] {
+            assert_eq!(key(kind, 59_940), key(kind, 60_000));
+            assert_ne!(key(kind, 60_000), key(kind, 120_000));
+            assert_eq!(key(kind, 120_000), key(kind, 240_000));
+        }
+        for kind in ["ddx", "dxgi"] {
+            assert_eq!(key(kind, 60_000), key(kind, 120_000));
+        }
+    }
     #[test]
     fn shared_capture_respects_compute_overrides_and_independent_frame_phases() {
         let config = Config::default();

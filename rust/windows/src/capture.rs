@@ -851,9 +851,9 @@ impl Wgc {
         Self::new_format(name, false)
     }
     pub fn new_format(name: &str, hdr: bool) -> Result<Self> {
-        Self::new_device(Device::new(name)?, hdr)
+        Self::new_device(Device::new(name)?, hdr, false)
     }
-    fn new_device(gpu: Device, hdr: bool) -> Result<Self> {
+    fn new_device(gpu: Device, hdr: bool, high_rate: bool) -> Result<Self> {
         unsafe {
             let output = gpu.output()?.clone();
             let d = output.GetDesc()?;
@@ -891,6 +891,19 @@ impl Wgc {
                 .context("Windows Graphics Capture session")?;
             session.SetIsCursorCaptureEnabled(true)?;
             let _ = session.SetIsBorderRequired(false);
+            // Some Windows 11 builds cap high-rate capture near 60 FPS with
+            // the zero default. Use Vibepollo's 1 ms workaround only above
+            // 60 FPS: lower-rate streams kept fresher cadence without it.
+            if high_rate {
+                match session
+                    .SetMinUpdateInterval(windows::Foundation::TimeSpan { Duration: 10_000 })
+                {
+                    Ok(()) => tracing::info!("WGC minimum update interval set to 1 ms"),
+                    Err(error) => {
+                        tracing::debug!(%error, "WGC minimum update interval unavailable; using the Windows default")
+                    }
+                }
+            }
             let capture = Self {
                 gpu,
                 pool,
@@ -1225,7 +1238,8 @@ impl Capture {
             Ok(duplication)
         };
         let wgc = |gpu: Device| -> Result<Wgc> {
-            let mut capture = Wgc::new_device(gpu, hdr)?;
+            let mut capture =
+                Wgc::new_device(gpu, hdr, config.boolean("wgc_high_rate_capture", false))?;
             // The pool's textures can be shared with D3D12 on supported AMD
             // drivers. The same fenced handoff used by DDX keeps the copy and
             // AMF conversion off a busy graphics queue. Keep an independent
