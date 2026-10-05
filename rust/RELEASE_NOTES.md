@@ -2,11 +2,12 @@
 
 Butterpollo's host, service, setup and console are now written in Rust. It replaces Vibepollo 2.0.0 and earlier Butterpollo builds on Windows: run `butterpollo-setup-2.0.0-rc.4.exe` and it upgrades the existing installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
 
-## New in rc.4 (candidate validation)
+## New in rc.4
 
 - WGC selected by the installed service now runs capture in a hidden process belonging to the signed-in user. This addresses the `CreateForMonitor` error `0x80070424` observed when SYSTEM tried to open the per-user Windows capture broker. Three synchronized GPU textures transfer frames to the host without CPU readback; compute copies remain enabled on supported AMD GPUs.
 - The helper has bounded frame queues, peer identity checks and automatic cleanup. A helper exit reopens capture through the existing recovery path. Lock and UAC desktops select Desktop Duplication, with WGC retried when the normal desktop returns. Logs distinguish requested capture from the actual backend.
-- Portable helper validation on the RX 7900 XT passed seven local 720p60 motion cases, including HEVC, AV1, HDR output from an SDR source, and compute disabled. Each sustained 60 fresh pictures per second with no decode errors. Forced helper termination recovered WGC in 357 ms and all 1,249 received pictures decoded successfully. These results do not establish performance under GPU load, native HDR capture, or the installed SYSTEM service; those checks remain pending for this candidate.
+- Verified through the installed SYSTEM service on an RX 7900 XT: a signed-in-user helper captured a native HDR virtual display at 2184×1968 for an AV1 120 FPS session, with compute enabled at both ends. The client confirmed correct pictures and responsive input. This confirms the service fix; it is not a controlled 120 FPS performance measurement.
+- Portable helper validation passed seven local 720p60 motion cases, including HEVC, AV1, HDR output from an SDR source, and compute disabled. Each sustained 60 fresh pictures per second with no decode errors. Forced helper termination recovered WGC in 357 ms and all 1,249 received pictures decoded successfully. The helper's performance under heavy GPU load remains to be measured.
 
 ## New in rc.3
 
@@ -53,7 +54,7 @@ Left out on purpose: WebRTC streaming, session history and host statistics pages
 
 - The RX 9070 XT report of 4.7 versus 3.9 ms on Wi-Fi remains open pending the tester's comparison. Packet pacing and recovery fixes address observed problems, but are not proof that this latency difference is resolved.
 - DDX startup from an inactive desktop remains under investigation. Some local tests received blank pictures and required two capture restarts before valid content arrived; a standalone snapshot test can receive no initial picture. Keeping the display awake fixes continued capture through idle time, but does not resolve this startup condition.
-- The rc.4 WGC helper still needs validation through the installed SYSTEM service, on a native HDR virtual display, and across lock/UAC transitions. Portable helper tests cover GPU transfer, codec output and recovery but cannot prove those privileged session paths.
+- WGC lock/UAC transitions and the new helper's performance under heavy GPU load are not yet verified. Installed-service WGC and native HDR capture have been confirmed on the RX 7900 XT; that does not establish the RX 9070 XT result.
 - AMD's AV1 encoder pads some sizes: 1968×2184 decodes as 1984×2186 ([AMF issue 423](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/issues/423)); Vibepollo has the same result. HEVC is exact.
 - Verified on an AMD RX 7900 XT. NVIDIA and Intel encoders, RTX HDR, a real Playnite and Lossless Scaling, the secure desktop during a stream and streaming the sign-in screen after a reboot are not yet verified on hardware. NVIDIA and Intel keep the graphics-queue capture path.
 - Still missing from Vibepollo: choosing the GPU that renders the virtual display, reclaiming virtual displays after a host restart, Playnite focus retries and fullscreen relaunch, `/api/browse`, `/api/apps/{uuid}/icon`, and tray app notifications and state icons.
