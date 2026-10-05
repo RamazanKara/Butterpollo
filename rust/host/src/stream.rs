@@ -660,7 +660,7 @@ impl Media {
                                 return Ok(());
                             }
                             if Instant::now() >= deadline {
-                                anyhow::bail!("capture produced no GPU frame");
+                                anyhow::bail!("capture produced no GPU frame on {} using {} within 10 seconds; check that the selected display is powered on, or select a virtual display for headless streaming", prepared.output(), prepared.capture());
                             }
                             if let Some(image) = latest.wait_for_frame(&timer, &capture_wake, (Instant::now() + Duration::from_millis(50)).min(deadline))? { break image; }
                         }

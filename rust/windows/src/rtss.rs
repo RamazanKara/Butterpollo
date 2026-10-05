@@ -1,7 +1,10 @@
 //! RTSS SDK calls run in a short-lived Rust worker, keeping a stalled third-party
 //! message loop outside the streaming process. The profile's unknown fields survive.
-use crate::process::{Process, Target};
-use anyhow::{Context, Result, bail};
+use crate::{
+    ipc::Pipe,
+    process::{Process, Target},
+};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -9,6 +12,8 @@ use std::{
     time::{Duration, Instant},
 };
 pub const KEYS: [&str; 3] = ["Limit", "LimitDenominator", "SyncLimiter"];
+const PIPE_PREFIX: &str = r"\\.\pipe\Butterpollo.Rtss.";
+const TIMEOUT: Duration = Duration::from_secs(2);
 pub fn root(config: &butterpollo_core::config::Config) -> PathBuf {
     let configured = config.get("rtss_install_path", config.get("rtss_path", ""));
     let path = PathBuf::from(if configured.is_empty() {
@@ -199,54 +204,107 @@ pub fn replace(text: &str, values: &BTreeMap<String, Option<u32>>) -> Result<Str
     Ok(result.join(newline) + newline)
 }
 #[derive(Serialize, Deserialize)]
-pub struct Request {
-    pub root: PathBuf,
+#[serde(deny_unknown_fields)]
+struct Request {
+    root: PathBuf,
     /// Only the limiter-disable bit is touched; other RTSS flags are retained.
-    pub disabled: Option<bool>,
+    disabled: Option<bool>,
+    reload: bool,
 }
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Reply {
     pub flags: u32,
     pub values: BTreeMap<String, Option<u32>>,
 }
-pub fn call(root: &Path, directory: &Path, disabled: Option<bool>) -> Result<Reply> {
-    let name = format!(
-        "rtss-worker-{:x}.json",
-        u64::from_le_bytes(butterpollo_core::crypto::random())
-    );
-    let request = directory.join(name);
-    let response = request.with_extension("reply.json");
-    butterpollo_core::state::write_json(
-        &request,
-        &Request {
-            root: root.into(),
-            disabled,
-        },
-    )?;
-    let result = (|| -> Result<Reply> {
-        let worker = Process::spawn(
-            &std::env::current_exe()?,
-            &["--rtss-worker".into(), request.as_os_str().into()],
-            None,
-            Target::User { elevated: false },
-            &BTreeMap::new(),
-            true,
-        )?;
-        let code = worker.wait(Duration::from_secs(2))?;
-        if code != 0 {
-            bail!("RTSS worker exited with {code}");
-        }
-        serde_json::from_slice(&std::fs::read(&response)?).context("invalid RTSS response")
-    })();
-    let _ = std::fs::remove_file(request);
-    let _ = std::fs::remove_file(response);
-    result
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", deny_unknown_fields)]
+enum Response {
+    Done { reply: Reply },
+    Error { message: String },
 }
-pub fn worker(path: &Path) -> Result<()> {
-    if std::fs::metadata(path)?.len() > 32768 {
-        bail!("invalid RTSS request size");
+fn call(request: &Request) -> Result<Reply> {
+    // The user helper cannot write the service's config directory. Keep that
+    // directory private and exchange bounded messages over an owned pipe.
+    let (pipe, name) = Pipe::server(PIPE_PREFIX)?;
+    let program = std::env::current_exe()?;
+    let worker = Process::spawn(
+        &program,
+        &[
+            "--rtss-worker".into(),
+            name.into(),
+            "--rtss-parent".into(),
+            std::process::id().to_string().into(),
+        ],
+        program.parent(),
+        Target::User { elevated: false },
+        &BTreeMap::new(),
+        true,
+    )
+    .context("start RTSS helper in the signed-in user's session")?;
+    let deadline = Instant::now() + TIMEOUT;
+    let check = || -> Result<()> {
+        ensure!(
+            worker.exit_code()?.is_none(),
+            "RTSS helper exited before replying"
+        );
+        ensure!(
+            Instant::now() < deadline,
+            "RTSS helper timed out; RTSS may be unresponsive"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+        Ok(())
+    };
+    while !pipe.connected(worker.pid)? {
+        check()?;
     }
-    let request: Request = serde_json::from_slice(&std::fs::read(path)?)?;
+    pipe.send(request)?;
+    let response = loop {
+        if let Some(response) = pipe.receive::<Response>()? {
+            break response;
+        }
+        check()?;
+    };
+    // Let the helper close only after the reply has been read. Closing a named
+    // pipe with unread data can discard the result, even on successful exit.
+    pipe.send(&())?;
+    ensure!(
+        worker.wait(Duration::from_millis(500))? == 0,
+        "RTSS helper failed during shutdown"
+    );
+    match response {
+        Response::Done { reply } => Ok(reply),
+        Response::Error { message } => bail!("RTSS helper: {message}"),
+    }
+}
+pub fn worker(name: &str, parent: u32) -> Result<()> {
+    let pipe = Pipe::client(name, parent, PIPE_PREFIX)?;
+    let deadline = Instant::now() + TIMEOUT;
+    let request = loop {
+        if let Some(request) = pipe.receive::<Request>()? {
+            break request;
+        }
+        ensure!(Instant::now() < deadline, "RTSS request timed out");
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    let response = match execute(&request) {
+        Ok(reply) => Response::Done { reply },
+        Err(error) => Response::Error {
+            message: format!("{error:#}").chars().take(700).collect(),
+        },
+    };
+    pipe.send(&response)?;
+    let deadline = Instant::now() + TIMEOUT;
+    while pipe.receive::<()>()?.is_none() {
+        ensure!(
+            Instant::now() < deadline,
+            "RTSS reply acknowledgement timed out"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    Ok(())
+}
+fn execute(request: &Request) -> Result<Reply> {
     let library =
         unsafe { libloading::Library::new(hooks(&request.root).context("RTSS hooks missing")?)? };
     unsafe {
@@ -257,32 +315,94 @@ pub fn worker(path: &Path) -> Result<()> {
         let get = library.get::<unsafe extern "C" fn(*const i8, *mut u32, u32) -> i32>(
             b"GetProfileProperty\0",
         )?;
+        // RTSS's SDK identifies the global profile with an empty string.
+        load(c"".as_ptr());
+        if request.reload {
+            update();
+        }
         if let Some(disabled) = request.disabled {
             set_flags(!4, if disabled { 4 } else { 0 });
         }
-        load(c"Global".as_ptr());
-        update();
         let mut values = BTreeMap::new();
-        for (key, property) in KEYS.into_iter().zip([
-            c"FramerateLimit",
-            c"FramerateLimitDenominator",
-            c"SyncLimiter",
-        ]) {
+        for (key, property) in KEYS.into_iter().zip(PROPERTIES) {
             let mut value = 0;
             let exists = get(property.as_ptr(), &mut value, 4) != 0;
             values.insert(key.into(), exists.then_some(value));
         }
-        let reply = Reply {
+        Ok(Reply {
             flags: flags(),
             values,
-        };
-        butterpollo_core::state::write_json(&path.with_extension("reply.json"), &reply)
+        })
     }
 }
-pub fn wait_ready(root: &Path, directory: &Path) -> Result<Reply> {
+const PROPERTIES: [&std::ffi::CStr; 3] = [
+    c"FramerateLimit",
+    c"FramerateLimitDenominator",
+    c"SyncLimiter",
+];
+pub fn query(root: &Path) -> Result<Reply> {
+    call(&Request {
+        root: root.into(),
+        disabled: None,
+        reload: false,
+    })
+}
+pub fn reload(root: &Path, disabled: Option<bool>) -> Result<Reply> {
+    call(&Request {
+        root: root.into(),
+        disabled,
+        reload: true,
+    })
+}
+pub fn write_profile(root: &Path, values: &BTreeMap<String, Option<u32>>) -> Result<()> {
+    ensure!(
+        values.keys().all(|key| KEYS.contains(&key.as_str())),
+        "unknown RTSS property"
+    );
+    let path = root.join("Profiles/Global");
+    let content = replace(&read(root)?, values)?;
+    if let Err(error) = butterpollo_core::state::atomic_write(&path, content.as_bytes()) {
+        // RTSS's UI opens the selected profile without delete sharing. It
+        // still permits writing the file; keep unknown fields and truncate
+        // only after the complete replacement has been written successfully.
+        let locked = error
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|e| matches!(e.raw_os_error(), Some(5 | 32)));
+        if !locked {
+            return Err(error);
+        }
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .context("open RTSS Global profile for update")?;
+        file.write_all(content.as_bytes())?;
+        file.set_len(content.len() as u64)?;
+        file.sync_all()?;
+    }
+    Ok(())
+}
+/// Called only after the limiter has durably saved its originals. The service
+/// writes the protected profile; the user helper reloads and verifies it. SDK
+/// setters reject some rational numerators, so retain the complete file values.
+pub fn apply(
+    root: &Path,
+    values: &BTreeMap<String, Option<u32>>,
+    disabled: Option<bool>,
+) -> Result<Reply> {
+    ensure!(
+        values.keys().all(|key| KEYS.contains(&key.as_str())),
+        "unknown RTSS property"
+    );
+    if !values.is_empty() {
+        write_profile(root, values).context("write RTSS Global profile")?;
+    }
+    reload(root, disabled)
+}
+pub fn wait_ready(root: &Path) -> Result<Reply> {
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
-        match call(root, directory, None) {
+        match query(root) {
             Ok(reply) => return Ok(reply),
             Err(e) if Instant::now() >= deadline => return Err(e),
             Err(_) => std::thread::sleep(Duration::from_millis(100)),
@@ -307,5 +427,29 @@ mod tests {
         assert!(properties("[Framerate]\nLimit=1\nlimit=2").is_err());
         assert!(applied.contains("Custom=keep\r\n"));
         assert!(applied.contains("[OSD]\r\nColor=red\r\n"));
+    }
+    #[test]
+    fn profile_restore_survives_rtss_ui_file_lock_and_preserves_user_fields() -> Result<()> {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+        let directory = tempfile::tempdir()?;
+        std::fs::create_dir(directory.path().join("Profiles"))?;
+        let path = directory.path().join("Profiles/Global");
+        let original = "[Framerate]\r\nLimit=60\r\nCustom=keep\r\n[OSD]\r\nColor=red\r\n";
+        std::fs::write(&path, original)?;
+        let _lock = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0)
+            .open(&path)?;
+        let values = BTreeMap::from([
+            ("Limit".into(), Some(60000)),
+            ("LimitDenominator".into(), Some(1001)),
+            ("SyncLimiter".into(), Some(2)),
+        ]);
+        write_profile(directory.path(), &values)?;
+        assert_eq!(properties(&read(directory.path())?)?, values);
+        write_profile(directory.path(), &properties(original)?)?;
+        assert_eq!(read(directory.path())?, original);
+        Ok(())
     }
 }

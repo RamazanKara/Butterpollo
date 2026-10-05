@@ -5,9 +5,10 @@
 //! identity for input, display recovery and credentials. A private local pipe
 //! carries metadata. Three unnamed keyed textures carry pixels, never the CPU.
 use super::*;
+use crate::ipc::Pipe;
 use anyhow::ensure;
 use butterpollo_core::config::Config;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, VecDeque},
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
@@ -15,18 +16,12 @@ use std::{
 };
 use windows::Win32::{
     Foundation::*,
-    Security::{
-        Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW, PSECURITY_DESCRIPTOR,
-        SECURITY_ATTRIBUTES,
-    },
-    Storage::FileSystem::*,
-    System::{Com::CoCreateGuid, Pipes::*, StationsAndDesktops::*, Threading::GetCurrentProcessId},
+    System::{StationsAndDesktops::*, Threading::GetCurrentProcessId},
 };
-use windows::core::{BOOL, HRESULT, PCWSTR};
+use windows::core::HRESULT;
 
 const VERSION: u32 = 1;
 const SLOTS: usize = 3;
-const MESSAGE_LIMIT: usize = 4096;
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 const PIPE_PREFIX: &str = r"\\.\pipe\Butterpollo.Wgc.";
 
@@ -35,9 +30,6 @@ fn owned(handle: HANDLE) -> OwnedHandle {
 }
 fn raw(handle: &OwnedHandle) -> HANDLE {
     HANDLE(handle.as_raw_handle())
-}
-fn utf16(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain([0]).collect()
 }
 
 #[derive(Serialize, Deserialize)]
@@ -78,139 +70,6 @@ enum Reply {
     ComputeFallback {
         message: String,
     },
-}
-
-struct Descriptor(PSECURITY_DESCRIPTOR);
-impl Drop for Descriptor {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = LocalFree(Some(HLOCAL(self.0.0)));
-        }
-    }
-}
-struct Pipe(OwnedHandle);
-impl Pipe {
-    fn server() -> Result<(Self, String)> {
-        let sid = crate::process::user_sid().context("WGC needs a signed-in user")?;
-        // The only client is the signed-in user. No anonymous/network access;
-        // a PID check below also rejects another process under that same user.
-        let sddl = utf16(&format!("D:P(A;;GA;;;SY)(A;;GRGW;;;{sid})"));
-        let mut descriptor = Descriptor(PSECURITY_DESCRIPTOR::default());
-        unsafe {
-            ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                PCWSTR(sddl.as_ptr()),
-                1,
-                &mut descriptor.0,
-                None,
-            )?;
-            let name = format!("{PIPE_PREFIX}{:?}", CoCreateGuid()?);
-            let wide = utf16(&name);
-            let security = SECURITY_ATTRIBUTES {
-                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-                lpSecurityDescriptor: descriptor.0.0,
-                bInheritHandle: BOOL(0),
-            };
-            let handle = CreateNamedPipeW(
-                PCWSTR(wide.as_ptr()),
-                PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
-                PIPE_TYPE_MESSAGE
-                    | PIPE_READMODE_MESSAGE
-                    | PIPE_NOWAIT
-                    | PIPE_REJECT_REMOTE_CLIENTS,
-                1,
-                16 * 1024,
-                16 * 1024,
-                0,
-                Some(&security),
-            );
-            ensure!(
-                !handle.is_invalid(),
-                "create WGC pipe: {}",
-                windows::core::Error::from_thread()
-            );
-            Ok((Self(owned(handle)), name))
-        }
-    }
-    fn client(name: &str, parent: u32) -> Result<Self> {
-        ensure!(
-            name.starts_with(PIPE_PREFIX) && name.len() < 128 && !name.contains('\0'),
-            "invalid WGC pipe name"
-        );
-        let name = utf16(name);
-        unsafe {
-            let pipe = Self(owned(CreateFileW(
-                PCWSTR(name.as_ptr()),
-                GENERIC_READ.0 | GENERIC_WRITE.0,
-                FILE_SHARE_MODE(0),
-                None,
-                OPEN_EXISTING,
-                FILE_FLAGS_AND_ATTRIBUTES(0),
-                None,
-            )?));
-            let mut actual = 0;
-            GetNamedPipeServerProcessId(raw(&pipe.0), &mut actual)?;
-            ensure!(
-                actual == parent && parent != 0,
-                "WGC pipe server identity mismatch"
-            );
-            SetNamedPipeHandleState(
-                raw(&pipe.0),
-                Some(&(PIPE_READMODE_MESSAGE | PIPE_NOWAIT)),
-                None,
-                None,
-            )?;
-            Ok(pipe)
-        }
-    }
-    fn connected(&self, expected_pid: u32) -> Result<bool> {
-        unsafe {
-            if let Err(error) = ConnectNamedPipe(raw(&self.0), None) {
-                if error.code() == HRESULT::from_win32(ERROR_PIPE_LISTENING.0) {
-                    return Ok(false);
-                }
-                if error.code() != HRESULT::from_win32(ERROR_PIPE_CONNECTED.0) {
-                    return Err(error.into());
-                }
-            }
-            let mut actual = 0;
-            GetNamedPipeClientProcessId(raw(&self.0), &mut actual)?;
-            ensure!(
-                actual == expected_pid && expected_pid != 0,
-                "WGC pipe client identity mismatch"
-            );
-            Ok(true)
-        }
-    }
-    fn send(&self, message: &impl Serialize) -> Result<()> {
-        let bytes = serde_json::to_vec(message)?;
-        ensure!(
-            bytes.len() <= MESSAGE_LIMIT,
-            "WGC message exceeds its bound"
-        );
-        let mut written = 0;
-        unsafe {
-            WriteFile(raw(&self.0), Some(&bytes), Some(&mut written), None)?;
-        }
-        // Nonblocking message writes either fit in full or fail. Never block a
-        // capture/teardown thread if the peer stalls or exits.
-        ensure!(written as usize == bytes.len(), "WGC pipe is full");
-        Ok(())
-    }
-    fn receive<T: DeserializeOwned>(&self) -> Result<Option<T>> {
-        let mut size = 0;
-        unsafe {
-            PeekNamedPipe(raw(&self.0), None, 0, None, None, Some(&mut size))?;
-            if size == 0 {
-                return Ok(None);
-            }
-            ensure!(size as usize <= MESSAGE_LIMIT, "oversized WGC message");
-            let mut bytes = vec![0; size as usize];
-            let mut read = 0;
-            ReadFile(raw(&self.0), Some(&mut bytes), Some(&mut read), None)?;
-            ensure!(read == size, "incomplete WGC message");
-            Ok(Some(serde_json::from_slice(&bytes)?))
-        }
-    }
 }
 
 /// No desktop mutation. A user capture cannot show Winlogon/UAC; the SYSTEM
@@ -383,7 +242,7 @@ impl Session {
             config.get("adapter_pnp_id", ""),
         )?;
         let _ = crate::gpu_priority::configure(&gpu, config);
-        let (pipe, pipe_name) = Pipe::server()?;
+        let (pipe, pipe_name) = Pipe::server(PIPE_PREFIX)?;
         let program = std::env::current_exe()?;
         let args = [
             "--wgc-worker".into(),
@@ -645,7 +504,7 @@ fn native_texture(frame: &NativeFrame) -> Result<ID3D11Texture2D> {
 /// Internal entry point. It runs before the host opens credentials, listeners,
 /// virtual displays or the tray, and never needs administrator privileges.
 pub fn run_worker(pipe: &str, parent: u32) -> Result<()> {
-    let pipe = Pipe::client(pipe, parent)?;
+    let pipe = Pipe::client(pipe, parent, PIPE_PREFIX)?;
     let result = worker(&pipe);
     if let Err(error) = &result {
         let _ = pipe.send(&Reply::Error {
@@ -843,14 +702,14 @@ mod tests {
     }
     #[test]
     fn private_pipe_checks_peers_bounds_messages_and_reports_disconnect() -> Result<()> {
-        let (server, name) = Pipe::server()?;
+        let (server, name) = Pipe::server(PIPE_PREFIX)?;
         let pid = unsafe { GetCurrentProcessId() };
-        assert!(Pipe::client(&name, pid.wrapping_add(1)).is_err());
+        assert!(Pipe::client(&name, pid.wrapping_add(1), PIPE_PREFIX).is_err());
         // The rejected client closes its endpoint; use a fresh single-instance
         // server, just as failed capture startup does.
         drop(server);
-        let (server, name) = Pipe::server()?;
-        let client = Pipe::client(&name, pid)?;
+        let (server, name) = Pipe::server(PIPE_PREFIX)?;
+        let client = Pipe::client(&name, pid, PIPE_PREFIX)?;
         assert!(server.connected(pid)?);
         assert!(server.connected(pid.wrapping_add(1)).is_err());
         assert!(server.receive::<Request>()?.is_none());
@@ -873,7 +732,7 @@ mod tests {
                 qpc: 1234
             })
         ));
-        assert!(client.send(&"x".repeat(MESSAGE_LIMIT)).is_err());
+        assert!(client.send(&"x".repeat(crate::ipc::MESSAGE_LIMIT)).is_err());
         assert!(server.receive::<Request>()?.is_none());
         drop(client);
         assert!(server.receive::<Request>().is_err());
@@ -908,7 +767,7 @@ mod tests {
             config: filtered,
         };
         let encoded = serde_json::to_vec(&message).unwrap();
-        assert!(encoded.len() < MESSAGE_LIMIT);
+        assert!(encoded.len() < crate::ipc::MESSAGE_LIMIT);
         let decoded: Request = serde_json::from_slice(&encoded).unwrap();
         assert!(matches!(decoded, Request::Start { hdr: true, .. }));
         assert!(

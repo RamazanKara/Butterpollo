@@ -567,6 +567,16 @@ impl Prepared {
             }
             _ => None,
         };
+        tracing::info!(
+            client = %launch.client.name,
+            client_virtual_display = ?client_virtual,
+            virtual_display_mode = mode,
+            output_override = ?output_override,
+            virtual_display = virtual_mode,
+            output = %output,
+            layout = selection,
+            "stream display selection"
+        );
         let recovery_profile = if stream.hdr {
             launch
                 .client

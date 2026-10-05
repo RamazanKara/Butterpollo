@@ -1,6 +1,13 @@
-# Butterpollo 2.0.0-rc.4 for Windows
+# Butterpollo 2.0.0-rc.5 for Windows
 
-Butterpollo's host, service, setup and console are now written in Rust. It replaces Vibepollo 2.0.0 and earlier Butterpollo builds on Windows: run `butterpollo-setup-2.0.0-rc.4.exe` and it upgrades the existing installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+Butterpollo's host, service, setup and console are now written in Rust. It replaces Vibepollo 2.0.0 and earlier Butterpollo builds on Windows: run `butterpollo-setup-2.0.0-rc.5.exe` and it upgrades the existing installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+
+## New in rc.5
+
+- Fixes RTSS helper communication in service installations. The helper runs as the signed-in user and could not write its reply into the service's protected configuration folder. It now exchanges bounded messages over a private local pipe, with both process identities checked. The service retains responsibility for writing the RTSS profile; no folder permissions or helper privileges are changed.
+- RTSS profile updates and restoration can proceed while the RTSS window holds the profile open without delete sharing. Unknown profile settings and keys that were originally absent are preserved. Failures now log their actual cause and RTSS path, instead of only reporting that no limiter provider was available.
+- Display logs now record the client's virtual-display request, selected display and layout. A capture startup timeout identifies the selected display and suggests a virtual display when streaming with the physical monitor off. The reported Artemide monitor wake-up issue remains under investigation; these diagnostics do not claim to fix it.
+- The RTSS process/transaction fixture verifies fractional limits, restoration, unrelated enable flags, helper crashes and a bounded timeout for a stalled SDK. Read-only queries against the installed RTSS succeed. A live FPS cap through the installed SYSTEM service still needs verification.
 
 ## New in rc.4
 
@@ -28,8 +35,8 @@ Butterpollo's host, service, setup and console are now written in Rust. It repla
 
 ## Install
 
-- `butterpollo-setup-2.0.0-rc.4.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
-- For a portable copy, extract `butterpollo-rust-2.0.0-rc.4-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
+- `butterpollo-setup-2.0.0-rc.5.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
+- For a portable copy, extract `butterpollo-rust-2.0.0-rc.5-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
 - These are unsigned test builds. Keep a copy of your configuration and the previous installer for rollback.
 
 ## Lower latency

@@ -44,6 +44,8 @@ pub mod image;
 #[cfg(windows)]
 pub mod input;
 #[cfg(windows)]
+mod ipc;
+#[cfg(windows)]
 mod keylayout;
 #[cfg(windows)]
 pub mod launcher;

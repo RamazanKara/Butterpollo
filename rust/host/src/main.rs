@@ -66,8 +66,10 @@ struct Args {
     service_stop_source: Option<String>,
     #[arg(long, hide = true)]
     display_watch: Option<u32>,
-    #[arg(long, hide = true)]
-    rtss_worker: Option<PathBuf>,
+    #[arg(long, hide = true, requires = "rtss_parent")]
+    rtss_worker: Option<String>,
+    #[arg(long, hide = true, requires = "rtss_worker")]
+    rtss_parent: Option<u32>,
     #[arg(long, hide = true)]
     open_web: Option<u16>,
     #[arg(long, hide = true, requires = "wgc_parent")]
@@ -85,8 +87,8 @@ async fn main() -> Result<()> {
     if let Some(source) = &args.import_config {
         return butterpollo_core::migration::import(source, args.config_dir.as_ref().unwrap());
     }
-    if let Some(path) = &args.rtss_worker {
-        return butterpollo_windows::rtss::worker(path);
+    if let Some(pipe) = &args.rtss_worker {
+        return butterpollo_windows::rtss::worker(pipe, args.rtss_parent.unwrap());
     }
     if let Some(port) = args.open_web {
         return butterpollo_windows::tray::open_web(port);

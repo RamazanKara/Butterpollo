@@ -2,7 +2,7 @@
 
 The Windows host, protocol implementation, native helpers, service and setup are written in Rust. The executables do not link the previous Butterpollo C++ host. The console is a Svelte app (`rust/web`) built into the package; the host serves it and keeps server-rendered pages as a fallback. Codec libraries, device drivers and GPU SDKs remain external dependencies.
 
-**Windows release candidate 2.0.0-rc.4.** This Rust replacement ports the Windows streaming changes in Vibepollo 2.0.0 (`8a8c4b03a280ab9f567beb380110abb80f5220b8`) onto the previous Butterpollo baseline. See [what changed for players](RELEASE_NOTES.md), [feature evidence](PARITY.md) and [Rust performance measurements](PERFORMANCE.md). The retained C++ measurements in the parent README are separate.
+**Windows release candidate 2.0.0-rc.5.** This Rust replacement ports the Windows streaming changes in Vibepollo 2.0.0 (`8a8c4b03a280ab9f567beb380110abb80f5220b8`) onto the previous Butterpollo baseline. See [what changed for players](RELEASE_NOTES.md), [feature evidence](PARITY.md) and [Rust performance measurements](PERFORMANCE.md). The retained C++ measurements in the parent README are separate.
 
 ## Start streaming
 

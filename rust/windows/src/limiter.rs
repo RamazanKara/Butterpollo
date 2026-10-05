@@ -87,21 +87,20 @@ pub fn recover(directory: &Path) -> Result<()> {
                 restore.insert(key.into(), change.before.get(key).copied().flatten());
             }
         }
+        // Restore the durable profile even if RTSS's message loop is stalled.
+        // Keep the journal until the helper also confirms the live state.
         if !restore.is_empty() {
-            butterpollo_core::state::atomic_write(
-                &change.root.join("Profiles/Global"),
-                rtss::replace(&text, &restore)?.as_bytes(),
-            )?;
+            rtss::write_profile(&change.root, &restore)?;
         }
         if rtss::available(&change.root) {
             let _process = rtss::start(&change.root)?;
-            let before = rtss::wait_ready(&change.root, directory)?;
+            let before = rtss::wait_ready(&change.root)?;
             let disabled = if before.flags & 4 == 0 {
                 Some(change.disabled)
             } else {
                 None
             };
-            let restored = rtss::call(&change.root, directory, disabled)?;
+            let restored = rtss::reload(&change.root, disabled)?;
             for (key, value) in &restore {
                 if let Some(value) = value
                     && restored.values.get(key) != Some(&Some(*value))
@@ -278,7 +277,8 @@ impl Lease {
         state.message.clear();
         if let Err(error) = recover(directory) {
             state.active = "rtss".into();
-            state.message = error.to_string();
+            state.message = format!("{error:#}");
+            tracing::warn!(error = %state.message, "frame limiter recovery remains pending; retaining exclusive limiter ownership");
             state.users = 1;
             return Ok(Self);
         }
@@ -290,7 +290,7 @@ impl Lease {
         {
             let applied = (|| -> Result<()> {
                 state.process = rtss::start(&root)?;
-                let reply = rtss::wait_ready(&root, directory)?;
+                let reply = rtss::wait_ready(&root)?;
                 let text = rtss::read(&root)?;
                 let (numerator, denominator) = policy.rate.rational();
                 let change = RtssChange {
@@ -305,20 +305,20 @@ impl Lease {
                 };
                 journal.rtss = Some(change.clone());
                 persist(directory, &journal)?;
-                butterpollo_core::state::atomic_write(
-                    &root.join("Profiles/Global"),
-                    rtss::replace(&text, &change.applied)?.as_bytes(),
-                )?;
-                let reply = rtss::call(&root, directory, Some(false))?;
+                let reply = rtss::apply(&root, &change.applied, Some(false))?;
                 if reply.flags & 4 != 0 || reply.values != change.applied {
                     bail!("RTSS did not confirm the requested rational frame limit");
                 }
                 Ok(())
             })();
             match applied {
-                Ok(()) => state.active = "rtss".into(),
+                Ok(()) => {
+                    state.active = "rtss".into();
+                    tracing::info!(rate = ?policy.rate.rational(), sync_limiter = policy.sync_limiter, "RTSS frame limit applied and verified");
+                }
                 Err(error) => {
-                    state.message = error.to_string();
+                    state.message = format!("{error:#}");
+                    tracing::warn!(root = %root.display(), error = %state.message, "RTSS frame limiter could not be applied");
                     if journal.rtss.is_some() && recover(directory).is_err() {
                         state.active = "rtss".into();
                     } else {
@@ -346,7 +346,7 @@ impl Lease {
             }
         }
         if state.active == "none" && policy.enabled {
-            tracing::warn!("frame limiter has no available provider");
+            tracing::warn!(provider = policy.provider.name(), rtss_root = %root.display(), rtss_available = rtss::available(&root), error = %state.message, "frame limiter has no available provider");
         }
         if Drs::open().is_ok()
             && let Err(error) = apply_preferences(directory, &mut journal, config)
