@@ -1109,6 +1109,34 @@ installation path and an enabled inbound firewall allowance for that executable.
 This confirms installation and service startup; it does not substitute for a
 complete limiter lifecycle, controlled motion check or automatic-update handoff.
 
+## October 6 rc.9 WGC-first test candidate
+
+An unset, blank or Automatic capture setting now resolves to WGC before the
+stream opens capture. This uses the existing signed-in user helper when running
+as a service, together with the existing Desktop Duplication fallback at startup
+and recovery. Explicit capture choices retain their previous normalized value.
+Compute-copy defaults, capture intervals, stream rates, display refresh policy
+and frame limiting are unchanged by this candidate.
+
+The selection regression matrix covers physical/virtual displays, fractional
+and integer frame rates, VRR, frame generation and legacy capture aliases.
+The fallback regression starts from the default policy and injects a WGC open
+failure, verifying that Desktop Duplication is attempted next. These are policy
+and error-path checks, not new hardware or performance measurements.
+
+Verification: 210 ordinary tests passed; the default run skipped 23 hardware
+checks and one network check. Formatting, Clippy with warnings denied, the
+release workspace build, and the web build passed. The web type check reported
+zero errors and warnings. These checks ran without starting capture or changing
+the installed service.
+
+The candidate remains unpublished and is not installed over the running service.
+A controlled WGC-versus-DDX comparison of distinct decoded pictures, source age,
+latency and reconnect behavior remains pending while the user's game is open.
+The earlier failed motion checks and the limits of the short rc.8 background
+measurements above still apply; this default change does not establish a new
+performance improvement.
+
 ## Limits
 
 This machine validates AMD AMF. Native NVENC now calls the installed NVIDIA driver directly, supports reviewed API versions 11.0–13.0, reference frame invalidation, D3D11 4:2:0/8-bit 4:4:4 and GPU-only CUDA interop for ten-bit 4:4:4. Seven mock-driver tests exercise compatibility, asynchronous ownership, timeout teardown, metadata lifetime, loss recovery and bitrate changes; NVIDIA execution/performance still needs NVIDIA hardware. QSV has native D3D11 imports, and TrueHDR has a shared-device GPU path; these need Intel/NVIDIA hardware respectively. Unsupported native formats, PyroWave and software encoding use CPU compatibility paths. The wired LAN checks above do not establish Wi-Fi performance, multiple concurrent 4K sessions, dynamic game content, native 4K capture or end-to-end input/display latency. The GPU texture pools and native encoder queues are bounded to eight retained frames; capacity runs may intentionally keep those queues occupied. [PARITY.md](PARITY.md) separates implemented features from native validation.

@@ -2,7 +2,7 @@
 
 The Windows host, protocol implementation, native helpers, service and setup are written in Rust. The executables do not link the previous Butterpollo C++ host. The console is a Svelte app (`rust/web`) built into the package; the host serves it and keeps server-rendered pages as a fallback. Codec libraries, device drivers and GPU SDKs remain external dependencies.
 
-**Windows release candidate 2.0.0-rc.8.** This Rust replacement ports the Windows streaming changes in Vibepollo 2.0.0 (`8a8c4b03a280ab9f567beb380110abb80f5220b8`) onto the previous Butterpollo baseline. See [what changed for players](RELEASE_NOTES.md), [feature evidence](PARITY.md) and [Rust performance measurements](PERFORMANCE.md). The retained C++ measurements in the parent README are separate.
+**Windows test candidate 2.0.0-rc.9.** This Rust replacement ports the Windows streaming changes in Vibepollo 2.0.0 (`8a8c4b03a280ab9f567beb380110abb80f5220b8`) onto the previous Butterpollo baseline. See [what changed for players](RELEASE_NOTES.md), [feature evidence](PARITY.md) and [Rust performance measurements](PERFORMANCE.md). The retained C++ measurements in the parent README are separate.
 
 ## Start streaming
 
@@ -49,6 +49,8 @@ The launcher imports into `%LOCALAPPDATA%\ButterpolloRust\config`, and refuses t
 Configured identity/state/library files are copied into owned paths, and existing PNG covers are copied by content. Credentials, certificates, app UUIDs, permissions and unknown fields are retained. Game paths and preparation commands keep their existing meaning. Missing configured identity files, links/junctions or excessive profile sizes abort the import without committing the new profile. Imported legacy clients and booleans are normalized on load. State writes replace files atomically.
 
 The service uses `ApolloService` for compatibility and `%PROGRAMDATA%\Butterpollo\config`. The setup installs it; `service.ps1` manages a portable installation and refuses to alter a service belonging to another executable. Running or building the host never installs the service.
+
+In the rc.9 test candidate, an unset, blank or Automatic capture setting prefers WGC on physical and virtual displays. An explicit WGC, Desktop Duplication or legacy `dxgi`/`wgcc` choice is retained. WGC startup failures use the existing Desktop Duplication fallback, including service and capture-recovery paths. This selection change is awaiting controlled WGC-versus-DDX motion and latency comparison before a public default change.
 
 When the service selects WGC, it starts a hidden capture worker as the signed-in user: Windows cannot open the per-user WGC broker directly as SYSTEM (`0x80070424`). Three shared GPU textures carry frames to the host through keyed synchronization; a local pipe carries bounded metadata and checks both process identities. The worker receives capture settings only, and its owned job closes with the capture session. Lock/UAC desktops use Desktop Duplication, with WGC retried when the normal desktop returns. Other WGC startup failures retain the logged DDX fallback. `wgc_user_helper=true` forces this worker path in a portable host for validation; it does not change automatic backend selection. Check the `capture backend opened` log for the actual backend, separately from `requested_capture` in the stream settings.
 

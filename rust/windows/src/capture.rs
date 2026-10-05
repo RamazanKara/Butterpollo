@@ -1295,8 +1295,19 @@ mod tests {
 
     #[test]
     fn wgc_startup_failure_uses_the_same_fallback_as_recovery() {
+        let policy = butterpollo_core::framegen::Policy::resolve(
+            &Default::default(),
+            butterpollo_core::framegen::Rate(60000),
+            false,
+            "none",
+            false,
+            false,
+            true,
+            false,
+        )
+        .unwrap();
         let mut attempted = Vec::new();
-        let capture = open_stream_capture("wgc", |kind| {
+        let capture = open_stream_capture(&policy.capture, |kind| {
             attempted.push(kind.to_owned());
             match kind {
                 "wgc" => bail!("CreateForMonitor: 0x80070424"),

@@ -1,6 +1,13 @@
-# Butterpollo 2.0.0-rc.8 for Windows
+# Butterpollo 2.0.0-rc.9 test candidate for Windows
 
-Butterpollo's host, service, setup and console are now written in Rust. It replaces Vibepollo 2.0.0 and earlier Butterpollo builds on Windows: run `butterpollo-setup-2.0.0-rc.8.exe` and it upgrades the existing installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+Butterpollo's host, service, setup and console are now written in Rust. It replaces Vibepollo 2.0.0 and earlier Butterpollo builds on Windows: run `butterpollo-setup-2.0.0-rc.9-wgc-default-test.exe` and it upgrades the existing installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+
+## New in rc.9 (test candidate)
+
+- Automatic capture now prefers Windows Graphics Capture on physical and virtual displays. Existing explicit capture choices are preserved, including imported `dxgi` and `wgcc` aliases.
+- WGC uses the existing signed-in-user capture worker under the Windows service, with Desktop Duplication fallback when WGC cannot open and during lock/UAC desktop transitions. Compute copies remain enabled by default on supported AMD GPUs.
+- The capture-setting descriptions now explain the new Automatic choice. Frame limiting, display refresh and capture pacing settings are unchanged.
+- This is an unpublished comparison candidate. The public rc.8 release remains unchanged. Controlled WGC-versus-DDX picture-freshness, latency and recovery checks are still required before publishing the new default.
 
 ## New in rc.8
 
@@ -61,8 +68,8 @@ Butterpollo's host, service, setup and console are now written in Rust. It repla
 
 ## Install
 
-- `butterpollo-setup-2.0.0-rc.8.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
-- For a portable copy, extract `butterpollo-rust-2.0.0-rc.8-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
+- `butterpollo-setup-2.0.0-rc.9-wgc-default-test.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
+- For a portable copy, extract `butterpollo-rust-2.0.0-rc.9-wgc-default-test-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
 - These are unsigned test builds. Keep a copy of your configuration and the previous installer for rollback.
 
 ## Lower latency

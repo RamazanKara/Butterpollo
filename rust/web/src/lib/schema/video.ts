@@ -73,7 +73,7 @@ const video: Setting[] = [
     key: 'capture',
     label: 'Capture method',
     description:
-      'Automatic uses Desktop Duplication, or Windows Graphics Capture on a virtual display when the stream uses VRR or game frame generation. Choose a method only to work around a capture problem.',
+      'Automatic prefers Windows Graphics Capture and falls back to Desktop Duplication if it cannot start. Choose a specific method only to troubleshoot a capture problem.',
     category: 'video',
     group: 'Capture',
     control: {

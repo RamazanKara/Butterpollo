@@ -561,7 +561,7 @@ pub(super) async fn render(
                 "Screen capture",
                 &value("capture", "auto"),
                 &[
-                    ("auto", "Automatic"),
+                    ("auto", "Automatic (prefer Windows Graphics Capture)"),
                     ("wgc", "Windows Graphics Capture"),
                     ("dxgi", "Desktop Duplication"),
                 ],

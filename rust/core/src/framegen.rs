@@ -205,11 +205,9 @@ impl Policy {
             }
         };
         let capture = if requested_capture.is_empty() || requested_capture == "auto" {
-            if virtual_display && generation == "game-provided" {
-                "wgc"
-            } else {
-                "ddx"
-            }
+            // Resolve Auto before opening capture so the normal WGC path,
+            // including the service's user helper and DDX fallback, is used.
+            "wgc"
         } else {
             &requested_capture
         }
@@ -247,6 +245,71 @@ impl Policy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn automatic_capture_prefers_wgc_on_physical_and_virtual_displays() {
+        for text in ["", "capture=", "capture=auto", "capture= Auto "] {
+            let config = Config::parse(text).unwrap();
+            let original = config.values.clone();
+            for virtual_display in [false, true] {
+                for generation in ["none", "game-provided", "nvidia-smooth-motion"] {
+                    for rate in [Rate(59940), Rate(60000), Rate(120000)] {
+                        for vrr in [false, true] {
+                            let policy = Policy::resolve(
+                                &config,
+                                rate,
+                                virtual_display,
+                                generation,
+                                false,
+                                false,
+                                true,
+                                false,
+                            )
+                            .unwrap()
+                            .with_vrr(&config, virtual_display, vrr);
+                            assert_eq!(policy.capture, "wgc", "{text}, {generation}");
+                            assert_eq!(policy.rate, rate);
+                        }
+                    }
+                }
+            }
+            assert_eq!(config.values, original);
+        }
+    }
+    #[test]
+    fn explicit_capture_choices_survive_virtual_display_and_framegen_policy() {
+        for (setting, expected) in [
+            ("ddx", "ddx"),
+            (" DDX ", "ddx"),
+            ("dxgi", "dxgi"),
+            ("DXGI", "dxgi"),
+            ("wgc", "wgc"),
+            ("WGC", "wgc"),
+            ("wgcc", "wgc"),
+        ] {
+            let config = Config::parse(&format!("capture={setting}")).unwrap();
+            let original = config.values.clone();
+            for virtual_display in [false, true] {
+                for generation in ["none", "game-provided", "nvidia-smooth-motion"] {
+                    for vrr in [false, true] {
+                        let policy = Policy::resolve(
+                            &config,
+                            Rate(59940),
+                            virtual_display,
+                            generation,
+                            true,
+                            true,
+                            false,
+                            false,
+                        )
+                        .unwrap()
+                        .with_vrr(&config, virtual_display, vrr);
+                        assert_eq!(policy.capture, expected, "{setting}, {generation}");
+                    }
+                }
+            }
+            assert_eq!(config.values, original);
+        }
+    }
     #[test]
     fn vrr_virtual_display_uses_fixed_1000_hz_without_changing_stream_rate() {
         let c = Config::default();
