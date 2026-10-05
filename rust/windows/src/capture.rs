@@ -891,17 +891,21 @@ impl Wgc {
                 .context("Windows Graphics Capture session")?;
             session.SetIsCursorCaptureEnabled(true)?;
             let _ = session.SetIsBorderRequired(false);
-            // Some Windows 11 builds cap high-rate capture near 60 FPS with
-            // the zero default. Use Vibepollo's 1 ms workaround only above
-            // 60 FPS: lower-rate streams kept fresher cadence without it.
-            if high_rate {
-                match session
-                    .SetMinUpdateInterval(windows::Foundation::TimeSpan { Duration: 10_000 })
-                {
-                    Ok(()) => tracing::info!("WGC minimum update interval set to 1 ms"),
-                    Err(error) => {
-                        tracing::debug!(%error, "WGC minimum update interval unavailable; using the Windows default")
-                    }
+            // Leaving this property untouched is not equivalent to zero:
+            // Windows build 26200 reports a 16 ms default, which can deliver
+            // only 50-57 updates/sec when quantized to compositor ticks.
+            // Explicitly remove that throttle for <=60 FPS streams. Keep
+            // the separately tested 1 ms workaround for higher rates.
+            let interval = windows::Foundation::TimeSpan {
+                Duration: if high_rate { 10_000 } else { 0 },
+            };
+            match session.SetMinUpdateInterval(interval) {
+                Ok(()) => tracing::info!(
+                    interval_us = interval.Duration / 10,
+                    "WGC minimum update interval configured"
+                ),
+                Err(error) => {
+                    tracing::debug!(%error, "WGC minimum update interval unavailable; using the Windows default")
                 }
             }
             let capture = Self {
@@ -1336,6 +1340,19 @@ mod tests {
             assert_eq!(attempts, 1);
             assert_eq!(error.to_string(), "duplication lost access");
         }
+    }
+
+    #[test]
+    #[ignore = "opens brief WGC sessions; requires Windows MinUpdateInterval support"]
+    fn wgc_low_rate_explicitly_disables_the_windows_capture_throttle() -> Result<()> {
+        enable_dpi_awareness();
+        let _com = ComGuard::new()?;
+        let gpu = Device::new("")?;
+        for (high_rate, ticks) in [(false, 0), (true, 10_000), (false, 0)] {
+            let capture = Wgc::new_device(gpu.clone(), false, high_rate)?;
+            assert_eq!(capture.session.MinUpdateInterval()?.Duration, ticks);
+        }
+        Ok(())
     }
 
     #[test]

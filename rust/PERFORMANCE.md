@@ -951,7 +951,9 @@ evidence that every image was scanned out at 240 Hz or that VRR caused the gaps.
 
 The C++ host sets WGC's minimum update interval to 1 ms; the Rust port had
 left it at Windows' default. A [firsthand Windows capture report](https://github.com/robmikh/Win32CaptureSample/issues/82)
-describes a similar ceiling near 60 FPS with the zero default. The
+describes a similar ceiling near 60 FPS with values below 1 ms. That report
+does not establish the untouched property's value on this PC; the native
+measurement below later found 16 ms. The
 [MinUpdateInterval property](https://learn.microsoft.com/en-us/uwp/api/windows.graphics.capture.graphicscapturesession.minupdateinterval)
 is available on newer Windows builds. Local Windows 11 build 26200 accepted
 the setting. An unconditional experiment measured:
@@ -966,8 +968,8 @@ the setting. An unconditional experiment measured:
 Every received frame decoded without errors in these cases, but none passed
 the strict fresh-picture target. The 1 ms experiment also failed a full-screen
 60 FPS check (43.951 fresh FPS). It is therefore not enabled globally. The
-candidate requests it only when the negotiated stream rate exceeds 60 FPS,
-preserves 59.94/60 FPS behavior, and keeps compute enabled. The effective
+first rate-aware candidate requested it only when the negotiated stream rate
+exceeded 60 FPS, preserved the previous 59.94/60 FPS behavior, and kept compute enabled. The effective
 policy follows the user helper and capture-sharing key. An explicit
 `wgc_high_rate_capture=true` or `false` overrides the automatic decision;
 unsupported Windows versions retain their default. The improvement at 120
@@ -1036,6 +1038,72 @@ in place; a missing rule is added. No existing rule is deleted on a failed
 replacement, and legacy-rule cleanup follows a successful Butterpollo rule.
 Regression tests cover canonical paths with spaces and Unicode, UNC paths,
 real-file identity, existing/fresh rules, and failure without deletion.
+
+## October 5 rc.8 explicit WGC interval correction
+
+A native background probe isolated WGC from the encoder, texture copies and
+network. Each case opened a new capture session, left the first second out,
+and read `MinUpdateInterval` plus frame timestamps. Warhammer remained open;
+the probe created no visible window, changed no display/input/RTSS settings,
+and saved no pictures. On Windows build 26200, the untouched property returned
+160,000 100-ns units: **16 ms**, not zero.
+
+| Fresh session setting | Property value | Native capture updates/sec |
+| --- | ---: | ---: |
+| Untouched, first control | 16 ms | 55.384 |
+| Explicit zero | 0 ms | 216.968 |
+| Explicit 1 ms | 1 ms | 216.569 |
+| Untouched, final control | 16 ms | 57.493 |
+
+A separate comparison rebuilt the previous capture implementation from
+`ba784a5dba6b063605f22dc1691028ae2e76307e` and the corrected source with the
+same build command. Two alternating three-second checks of direct WGC plus
+the production GPU-copy path measured 59.489/58.000 capture updates/sec before
+and 246.923/234.999 after, excluding each first second. These short checks ran
+against the existing game picture without a test window or encoder. They
+confirm removal of the capture ceiling, not a whole-stream FPS improvement.
+The prior saved probe lacked source provenance and was excluded as a baseline;
+its measurements remain in the artifacts. Exact-source results and binary
+hashes are in `qa\explicit-zero-exact-source-comparison\results.json`.
+
+This identifies a throttle before encoding and explains why simply omitting
+the API call can miss a 60 FPS target. The low-rate path now explicitly sets
+zero; the higher-rate path retains its 1 ms request. Both direct capture and
+the user helper use the same constructor. Unsupported API versions keep the
+existing nonfatal fallback. Capture sharing and compute-copy policy are
+unchanged. `wgc_high_rate_capture=false` now selects explicit zero, rather than
+leaving the property untouched.
+
+The native counts do not establish game render FPS, distinct decoded picture
+FPS, input latency, or zero performance impact on the game. Earlier failed
+barcode checks remain failed historical evidence. A controlled motion check
+of this revised executable is still required before claiming the full
+smoothness acceptance gate passes. The probe and timestamp records are under
+`C:\Users\ramaz\.codex\artifacts\butterpollo-rtss-autostart-20261005\qa\native-cadence-fresh-session.json`.
+
+Two further eight-second background AV1 checks used the real user-helper and
+compute path at 2560x720, 60 FPS and 20 Mbps, with an independent local decoder.
+They captured the existing game picture without a test window, audio tone,
+input, display changes or frame limiter. After the five-second warmup, the
+short measured windows were 2.102/2.146 seconds. The previous build delivered
+58.039 FPS and missed the unchanged 58.2 FPS delivery gate; the corrected build
+delivered 60.585 FPS and passed. All 412/435 received frames decoded, with zero
+errors. Intervals over 1.5 frame periods fell from one to zero in those windows.
+The final host samples reported mean source-frame ages of 0.681/3.419 ms and
+mean present-to-send times of 2.526/5.252 ms; this is not evidence of reduced
+latency. The game was uncontrolled and the sample was brief. Distinct-picture
+cadence and sustained latency still require the controlled motion check.
+The raw cases are `butterpollo-monitor-av1-20261005\wgc-zero-background-before`
+and `wgc-zero-background-after`; the comparison is preserved separately from
+the failed historical motion checks.
+
+Verification of this revision: 208 ordinary tests passed, 24 environment
+tests were skipped by default, the new native WGC interval regression passed
+when selected explicitly, Clippy passed with warnings denied, and the release
+workspace built successfully. The running game's process/start time and all
+three installed host profile hashes were unchanged after the background tests.
+The candidate is not installed or published, and the full smoothness acceptance
+gate remains pending.
 
 ## Limits
 
