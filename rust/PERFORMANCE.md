@@ -877,12 +877,24 @@ are not evidence of an idle AV1 regression or an RTSS cap failure.
 
 This local check used an RX 7900 XT, WGC's user helper with both compute
 paths enabled, a 2560×1440 physical desktop at 120 Hz, a 60 FPS moving strip,
-and a 1280×720 AV1 stream at 20 Mbps. RTSS and Wallpaper Engine remained
-running. A low-priority, two-job build was also running. The updated harness
+and a 1280×720 AV1 stream at 20 Mbps. Overlay process lifetime was not recorded
+throughout this check. A low-priority, two-job build was also running. The updated harness
 lets the source renderer finish and retains its frame timestamps alongside
 the receiver's barcode and timing records. Picture age stops at decode,
 excluding client scanout and input latency. Evidence is under
 `C:\Users\ramaz\.codex\artifacts\butterpollo-monitor-av1-20261005\rc5-idle-av1-strip`.
+
+The rc.6 runtime delivered 59.925 fresh FPS in the same idle strip check,
+decoding all 1,116 received frames. A final process inventory found RTSS
+stopped, so the earlier checks do not establish continuous overlay coverage.
+With RTSS explicitly started and verified alive through a separate rc.6
+check, all 1,054 received frames decoded; the steady window contained 752
+distinct frames with no repeats or skips, at 60.001 fresh FPS. Decoded picture
+age averaged 13.795 ms (p95 14.383 ms), and host time averaged 1.796 ms.
+The existing RTSS global profile remained at 120/1 FPS with SyncLimiter=1;
+the test requested no limiter changes. RTSS was stopped afterward to restore
+its prior process state. Optional codec detection also completed with the
+same capability flags as rc.5. These checks do not claim an rc.6 latency gain.
 
 ## Limits
 
