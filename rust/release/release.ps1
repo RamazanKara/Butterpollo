@@ -1,0 +1,189 @@
+#Requires -Version 7
+<#
+.SYNOPSIS
+Build, verify, install and publish a Butterpollo release in one run.
+
+.DESCRIPTION
+1. Checks out -Ref in a Windows (NTFS) checkout; building over \\wsl.localhost
+   is several times slower.
+2. Formatting, then tests + clippy and the release build in parallel, each in
+   its own target directory.
+3. Packages from the previous published release: only the rebuilt binaries,
+   documentation, lock file and versions change (package.py).
+4. Streams H.264, HEVC and AV1 through the packaged host with the independent
+   moonlight-common-c client, and runs the protocol checks (e2e.py, protocol.py).
+5. One UAC prompt: the display self-test as SYSTEM and a quiet install over the
+   running host (elevated.ps1).
+6. Records the results (finalize.py), tags the commit and publishes without
+   waiting for CI, which verifies the same commit; then downloads every asset
+   and checks it against SHA256SUMS.
+
+The release notes come from the "## New in <rc>" section of
+rust/RELEASE_NOTES.md unless -Notes names a file.
+
+.EXAMPLE
+pwsh rust/release/release.ps1
+.EXAMPLE
+pwsh rust/release/release.ps1 -NoInstall -NoPublish
+#>
+param(
+    [string] $Ref = 'origin/main',
+    [string] $Checkout = 'C:\src\butterpollo',
+    [string] $Work = (Join-Path $env:LOCALAPPDATA 'Butterpollo\release'),
+    # Machine settings, dot-sourced: the Rust build environment (PATH, FFmpeg,
+    # PyroWave, ...), BUTTERPOLLO_TEST_CLIENT_EXE and BUTTERPOLLO_TEST_PYTHON.
+    [string] $Settings = (Join-Path $env:LOCALAPPDATA 'Butterpollo\release\settings.ps1'),
+    [string] $Notes,
+    [string] $Scope,
+    [switch] $NoInstall,
+    [switch] $NoPublish
+)
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
+$repo = 'RamazanKara/Butterpollo'
+$started = Get-Date
+function Step($name) { Write-Host ('[{0:mm\:ss}] {1}' -f ((Get-Date) - $started), $name) -ForegroundColor Cyan }
+
+if (Test-Path $Settings) { . $Settings }
+$python = if ($env:BUTTERPOLLO_TEST_PYTHON) { $env:BUTTERPOLLO_TEST_PYTHON } else { 'python' }
+$client = $env:BUTTERPOLLO_TEST_CLIENT_EXE
+if (-not $client -or -not (Test-Path $client)) {
+    throw 'Set BUTTERPOLLO_TEST_CLIENT_EXE to the moonlight-common-c test client (rust/tests/moonlight_client.c).'
+}
+
+Step "checkout $Ref"
+if (-not (Test-Path $Checkout)) { git clone --quiet --filter=blob:none "https://github.com/$repo.git" $Checkout }
+git -C $Checkout fetch --quiet --tags origin
+git -C $Checkout checkout --quiet --detach $Ref
+if (git -C $Checkout status --porcelain) { throw "$Checkout has local changes" }
+$sha = git -C $Checkout rev-parse HEAD
+$version = [regex]::Match((Get-Content "$Checkout\Cargo.toml" -Raw), '(?m)^version = "([^"]+)"').Groups[1].Value
+if (-not $NoPublish -and (git -C $Checkout ls-remote --tags origin "refs/tags/$version")) { throw "$version is already tagged; bump the version first." }
+$label = if ($version -match '-(rc\.\d+)$') { $Matches[1] } else { $version }
+$tools = "$Checkout\rust\release"
+$run = Join-Path $Work $version
+$out = "$run\release"
+$qa = "$run\qa"
+$target = "$Checkout\target"
+New-Item -ItemType Directory -Force $qa | Out-Null
+Write-Host "  $version at $sha"
+
+$previous = gh release list -R $repo --exclude-drafts --limit 20 --json tagName --jq '.[].tagName' |
+    Where-Object { $_ -ne $version } | Select-Object -First 1
+$baseline = Join-Path $Work "baseline-$previous"
+$baselineZip = "$baseline\butterpollo-rust-$previous-windows-x64.zip"
+if (-not (Test-Path $baselineZip)) {
+    Step "baseline $previous"
+    gh release download $previous -R $repo -D $baseline --clobber -p (Split-Path $baselineZip -Leaf) -p SHA256SUMS
+}
+
+Step 'formatting'
+cargo fmt --all --manifest-path "$Checkout\Cargo.toml" -- --check *> "$qa\fmt.log"
+
+Step 'tests + clippy and release build, in parallel'
+# Below normal priority so the desktop stays usable; restored before streaming.
+$self = [Diagnostics.Process]::GetCurrentProcess()
+$self.PriorityClass = 'BelowNormal'
+$manifest = "$Checkout\Cargo.toml"
+$jobs = @(
+    Start-ThreadJob -Name checks -ArgumentList $manifest, "$target\qa", $qa {
+        param($manifest, $dir, $qa)
+        cargo test --workspace --locked --manifest-path $manifest --target-dir $dir *> "$qa\tests.log"
+        if ($LASTEXITCODE) { return 'tests failed: ' + "$qa\tests.log" }
+        cargo clippy --workspace --all-targets --locked --manifest-path $manifest --target-dir $dir -- -D warnings *> "$qa\clippy.log"
+        if ($LASTEXITCODE) { return 'clippy failed: ' + "$qa\clippy.log" }
+    }
+    Start-ThreadJob -Name release -ArgumentList $manifest, "$target\ship", $qa {
+        param($manifest, $dir, $qa)
+        cargo build --release --workspace --locked --manifest-path $manifest --target-dir $dir *> "$qa\build.log"
+        if ($LASTEXITCODE) { return 'release build failed: ' + "$qa\build.log" }
+    }
+)
+$failures = $jobs | Wait-Job | Receive-Job
+$jobs | Remove-Job
+$self.PriorityClass = 'Normal'
+if ($failures) { throw ($failures -join "`n") }
+$tests = Select-String -Path "$qa\tests.log" -Pattern 'test result: ok\. (\d+) passed' |
+    ForEach-Object { [int]$_.Matches[0].Groups[1].Value } | Measure-Object -Sum
+Write-Host "  $($tests.Sum) tests passed"
+
+Step "package from $previous"
+& $python "$tools\package.py" --repo $Checkout --build "$target\ship\release" --baseline-zip $baselineZip `
+    --baseline-sums "$baseline\SHA256SUMS" --qa $qa --out $out | Out-Null
+$package = "$out\butterpollo-rust-release"
+
+foreach ($codec in 'h264', 'hevc', 'av1') {
+    Step "stream $codec"
+    & $python "$tools\e2e.py" --package $package --work $run --client $client --codec $codec
+}
+Step 'protocol checks'
+& $python "$tools\protocol.py" --package $package --work $run
+
+if (-not $NoInstall) {
+    Step 'display self-test as SYSTEM and install (UAC prompt)'
+    Remove-Item -Recurse -Force "$run\elevated" -ErrorAction SilentlyContinue
+    $arguments = '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$tools\elevated.ps1`"",
+        '-Package', "`"$package`"", '-Installer', "`"$out\butterpollo-setup-$version.exe`"",
+        '-Version', $version, '-Work', "`"$run`""
+    Start-Process powershell -Verb RunAs -WindowStyle Hidden -ArgumentList $arguments
+    $deadline = (Get-Date).AddMinutes(15)
+    while (-not (Test-Path "$run\elevated\done.txt")) {
+        if ((Get-Date) -gt $deadline) { throw 'The elevated step did not finish; was the UAC prompt declined?' }
+        Start-Sleep -Seconds 2
+    }
+    $selfTest = "$run\elevated\display-self-test.json"
+    if (Test-Path $selfTest) {
+        $report = Get-Content $selfTest -Raw | ConvertFrom-Json
+        Write-Host "  display self-test passed: $($report.passed)"
+        if (-not $report.passed) { Write-Warning "Display self-test failed: $selfTest" }
+    }
+}
+
+Step 'record results'
+git -C $Checkout log --format=%s "$previous..$sha" | Set-Content "$run\changes.txt"
+gh run list -R $repo --commit $sha --workflow rust-windows.yml --limit 1 --json status,conclusion,url,headSha --jq '.[0]' |
+    Set-Content "$run\ci.json"
+if (-not $Scope) {
+    $gpu = (Get-CimInstance Win32_VideoController | Where-Object Name -NotMatch 'Virtual|Basic|Idd' | Select-Object -First 1).Name
+    $Scope = "End-to-end streams, protocol checks$(if (-not $NoInstall) { ', display self-test and install' }) on the " +
+        "release workstation ($gpu, Windows $([Environment]::OSVersion.Version.Build)). Other hardware was not tested."
+}
+$finalize = @('--out', $out, '--work', $run, '--changes', "$run\changes.txt", '--ci', "$run\ci.json", '--scope', $Scope)
+if (-not $NoInstall) { $finalize += '--installed' }
+& $python "$tools\finalize.py" @finalize
+
+if (-not $Notes) {
+    $history = Get-Content "$Checkout\rust\RELEASE_NOTES.md" -Raw
+    $section = [regex]::Match($history, "(?ms)^## New in $([regex]::Escape($label))\s*\r?\n(.*?)(?=^## )")
+    if (-not $section.Success) { throw "rust/RELEASE_NOTES.md has no '## New in $label' section." }
+    # Links relative to rust/ point at the tagged source.
+    $text = [regex]::Replace($section.Groups[1].Value.Trim(), '\]\((?!https?:|#)([^)]+)\)',
+        { param($m) "](https://github.com/$repo/blob/$version/rust/$($m.Groups[1].Value))" })
+    $body = (Get-Content "$tools\body.md" -Raw).Replace('{version}', $version).Replace('{label}', $label).Replace('{notes}', $text)
+    $Notes = "$run\body.md"
+    Set-Content $Notes $body -NoNewline
+}
+
+if ($NoPublish) {
+    Step "done, not published: $out"
+    return
+}
+Step "publish $version"
+# An annotated tag through the API: the checkout needs no push credentials.
+$tag = gh api "repos/$repo/git/tags" -f tag=$version -f "message=Butterpollo $version" -f object=$sha -f type=commit --jq .sha
+gh api "repos/$repo/git/refs" -f "ref=refs/tags/$version" -f sha=$tag | Out-Null
+$flags = @('--verify-tag', '--title', "Butterpollo $version", '--notes-file', $Notes)
+if ($version -match '-') { $flags += '--prerelease' }
+$assets = "butterpollo-setup-$version.exe", "butterpollo-rust-$version-windows-x64.zip", 'SHA256SUMS',
+    'BUILD_PROVENANCE.json', 'VALIDATION.json', 'SOURCE-MANIFEST.json' | ForEach-Object { "$out\$_" }
+gh release create $version -R $repo @flags @assets | Out-Null
+
+Step 'verify the published assets'
+$verify = "$run\verify"
+Remove-Item -Recurse -Force $verify -ErrorAction SilentlyContinue
+gh release download $version -R $repo -D $verify
+foreach ($line in Get-Content "$verify\SHA256SUMS") {
+    $hash, $name = $line -split '\s+', 2
+    if ((Get-FileHash "$verify\$name" -Algorithm SHA256).Hash -ne $hash) { throw "$name does not match SHA256SUMS" }
+}
+Step "released https://github.com/$repo/releases/tag/$version"
