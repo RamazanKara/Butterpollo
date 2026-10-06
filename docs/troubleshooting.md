@@ -84,6 +84,14 @@ When all streams have ended, use **Maintenance → Displays** to inspect whether
 
 rc.10 has a brief startup guard for a reproduced case where creating a virtual display reactivated a dormant monitor. That guard is not continuous enforcement and does not establish that every phone/client display report is fixed. Record the client, chosen layout, active monitors and log time when reporting another case.
 
+## "Virtual display did not become active before the deadline"
+
+Up to rc.10, a launch failed with this error when Windows left the new virtual display switched off, typically because it recalled a layout saved for the other connected displays (two TVs in duplicate mode, for example). rc.11 switches the display on itself after a second, without changing the other displays, and logs `Windows left the new virtual display switched off; switched it on beside the current displays`. Update before trying workarounds such as unplugging the TVs. If a launch still fails, the error says whether Windows reported the display as connected; include that line and the log around it in the report.
+
+## The stream disconnects after a second with "os error 10035"
+
+`video sender stopped: A non-blocking socket operation could not be completed immediately. (os error 10035)` comes from rc.1, which ended the stream when the Windows send buffer was momentarily full. Since rc.2 the host waits briefly, drops only those packets and keeps streaming, as Vibepollo does; the log then shows `UDP send failed; packets dropped` at most every five seconds. Install the current release. Frequent drop warnings mean the network cannot carry the bitrate: lower it, or use a standard codec rather than PyroWave over Wi-Fi.
+
 ## An update stays queued
 
 In **Maintenance → Updates**, read the current phase and any error. Installation needs the installed Windows service and one minute without streams, pending connections, remote monitors or host apps. Quit a retained Desktop/game session as well as disconnecting its video. A new connection defers the update.
