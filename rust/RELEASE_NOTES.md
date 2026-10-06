@@ -9,6 +9,12 @@ Butterpollo's host, native helpers, service and setup are written in Rust, with 
 ## New in rc.12
 
 - **Fixes HEVC on Radeon RX 6000 cards** ([#5](https://github.com/RamazanKara/Butterpollo/issues/5)). The RX 6800 XT's HEVC encoder rejects the input colour-range property, which the host treated as fatal: AMF was dropped and the stream stayed black. The range properties are now optional; limited range is AMF's default, and a full-range stream logs a warning if the driver refuses them. This affected every release since rc.1.
+- **Fixes doubled and repeating input** reported on rc.10:
+  - `key_repeat_delay = 0`, which a Vibepollo profile uses to turn host key repeat off, made the host repeat a key immediately, so one tap typed two or three characters. 0 now turns repeat off and a negative value keeps the 500 ms default, as in Vibepollo.
+  - A repeated press of a key or button that is already held is no longer sent to Windows again; with the host's own repeat it doubled the repeat rate, and a second button-down could become a double-click.
+  - A key released without the extended-key flag it was pressed with is now released, instead of staying down and repeating.
+  - An Xbox controller stays an Xbox pad even when it reports motion sensors or a touchpad, as in Vibepollo. A PlayStation pad is also claimed by Steam Input, so games could see the controller twice.
+  - rc.11 already stopped discarding delayed key releases as replays.
 - Input that arrives before capture starts is no longer dropped when the stream's display is selected by device ID, as the console stores it.
 - Other devices' requests no longer wait for a launch to finish preparing its display, audio and app.
 - Adds a display self-test for support and development: run as SYSTEM, `butterpollo-service.exe --display-self-test REPORT.json` creates virtual displays, switches one off and back on, duplicates two of the driver's permanent displays as stand-in TVs, starts a stream display beside them, restores a cloned layout, and then puts the desktop back.
