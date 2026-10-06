@@ -118,7 +118,7 @@ async fn main() -> Result<()> {
         println!(
             "{}",
             serde_json::to_string_pretty(
-                &serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"displays":butterpollo_windows::capture::displays()?,"monitors":butterpollo_windows::display::monitors()?,"virtual_display_driver":butterpollo_windows::display::virtual_display_available(),"virtual_display_status":butterpollo_windows::display::virtual_display_status()})
+                &serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"displays":butterpollo_windows::capture::displays()?,"monitors":butterpollo_windows::display::monitors()?,"virtual_display_driver":butterpollo_windows::display::virtual_display_available(),"virtual_display_status":butterpollo_windows::display::virtual_display_status(),"firewall":std::env::current_exe().map_err(anyhow::Error::from).and_then(|exe| butterpollo_windows::firewall::problems(&exe)).unwrap_or_else(|error| vec![format!("firewall rules could not be read: {error:#}")])})
             )?
         );
         return Ok(());
@@ -294,6 +294,24 @@ async fn main() -> Result<()> {
         web_port = ports.web,
         "Butterpollo Rust host started"
     );
+    // A block rule, left when Windows' "allow access" prompt was dismissed,
+    // overrides the installer's allow rule: say so rather than leave users to
+    // open ports by hand. Only a host listening on the network is affected.
+    if bind.is_unspecified() {
+        std::thread::spawn(|| {
+            let Ok(program) = std::env::current_exe() else {
+                return;
+            };
+            match butterpollo_windows::firewall::problems(&program) {
+                Ok(problems) => {
+                    for problem in problems {
+                        tracing::warn!(program = %program.display(), "{problem}");
+                    }
+                }
+                Err(error) => tracing::debug!(%error, "Windows Firewall rules could not be read"),
+            }
+        });
+    }
     let outcome: Result<()> = tokio::select! {
         signal=tokio::signal::ctrl_c()=>signal.context("waiting for shutdown"),
         task=tasks.join_next()=>{
