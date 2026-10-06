@@ -17,7 +17,7 @@ Before running it, bump the workspace version in `Cargo.toml`, add a `## New in 
 | Stream H.264, HEVC and AV1 through the packaged host on an isolated profile with the independent moonlight-common-c client, then the pairing and launch protocol checks | `e2e.py`, `protocol.py` |
 | One UAC prompt: the display self-test as SYSTEM, then a quiet install over the running host | `elevated.ps1` |
 | Record the results in `VALIDATION.json` and `BUILD_PROVENANCE.json`, write `SHA256SUMS` | `finalize.py` |
-| Tag through the GitHub API and publish without waiting for CI (CI verifies the same commit), then download every asset and check it | `release.ps1` |
+| Tag through the GitHub API and publish without waiting for CI: the tag's own CI run verifies the same commit and later pushes to `main` cannot cancel it. Then download every asset and check it | `release.ps1` |
 
 Machine settings live outside the repository in `%LOCALAPPDATA%\Butterpollo\release\settings.ps1`, which is dot-sourced: the Rust build environment (MSYS2 UCRT64 on `PATH`, `BUTTERPOLLO_FFMPEG_ROOT`, `BUTTERPOLLO_PYROWAVE_ROOT`, ...), `BUTTERPOLLO_TEST_CLIENT_EXE` (built from `rust/tests/moonlight_client.c`) and `BUTTERPOLLO_TEST_PYTHON` (a Python with `requests` and `cryptography`). Work files go to `%LOCALAPPDATA%\Butterpollo\release\<version>`.
 

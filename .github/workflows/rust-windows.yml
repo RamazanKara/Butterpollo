@@ -3,6 +3,8 @@ permissions: {}
 on:
   push:
     branches: [main]
+    # A release tag gets its own run, which later pushes to main cannot cancel.
+    tags: ['2.*']
   pull_request:
     paths: ['rust/**', 'Cargo.*', 'rust-toolchain.toml', '.cargo/**', 'scripts/build_pyrowave.sh', 'src_assets/common/assets/*.png', 'src_assets/common/assets/*.ico', 'src_assets/common/assets/web/public/assets/locale/**', '.github/workflows/rust-windows.yml']
   workflow_dispatch:

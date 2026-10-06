@@ -58,7 +58,13 @@ git -C $Checkout checkout --quiet --detach $Ref
 if (git -C $Checkout status --porcelain) { throw "$Checkout has local changes" }
 $sha = git -C $Checkout rev-parse HEAD
 $version = [regex]::Match((Get-Content "$Checkout\Cargo.toml" -Raw), '(?m)^version = "([^"]+)"').Groups[1].Value
-if (-not $NoPublish -and (git -C $Checkout ls-remote --tags origin "refs/tags/$version")) { throw "$version is already tagged; bump the version first." }
+$releases = gh release list -R $repo --exclude-drafts --limit 50 --json tagName --jq '.[].tagName'
+# A run that failed after tagging can be repeated; a published version cannot.
+$tagged = git -C $Checkout ls-remote --tags origin "refs/tags/$version" "refs/tags/$version^{}"
+$taggedAt = (@($tagged | Where-Object { $_ -like '*^{}' }) + @($tagged) | Select-Object -First 1) -replace '\s.*'
+if (-not $NoPublish -and ($releases -contains $version -or ($taggedAt -and $taggedAt -ne $sha))) {
+    throw "$version is already released or tagged at another commit; bump the version first."
+}
 $label = if ($version -match '-(rc\.\d+)$') { $Matches[1] } else { $version }
 $tools = "$Checkout\rust\release"
 $run = Join-Path $Work $version
@@ -68,8 +74,7 @@ $target = "$Checkout\target"
 New-Item -ItemType Directory -Force $qa | Out-Null
 Write-Host "  $version at $sha"
 
-$previous = gh release list -R $repo --exclude-drafts --limit 20 --json tagName --jq '.[].tagName' |
-    Where-Object { $_ -ne $version } | Select-Object -First 1
+$previous = $releases | Where-Object { $_ -ne $version } | Select-Object -First 1
 $baseline = Join-Path $Work "baseline-$previous"
 $baselineZip = "$baseline\butterpollo-rust-$previous-windows-x64.zip"
 if (-not (Test-Path $baselineZip)) {
@@ -139,10 +144,25 @@ if (-not $NoInstall) {
     }
 }
 
+if (-not $NoPublish -and -not $taggedAt) {
+    Step "tag $version"
+    # An annotated tag through the API: the checkout needs no push credentials.
+    $tag = gh api "repos/$repo/git/tags" -f tag=$version -f "message=Butterpollo $version" -f object=$sha -f type=commit --jq .sha
+    gh api "repos/$repo/git/refs" -f "ref=refs/tags/$version" -f sha=$tag | Out-Null
+}
+
 Step 'record results'
 git -C $Checkout log --format=%s "$previous..$sha" | Set-Content "$run\changes.txt"
-gh run list -R $repo --commit $sha --workflow rust-windows.yml --limit 1 --json status,conclusion,url,headSha --jq '.[0]' |
-    Set-Content "$run\ci.json"
+# Published without waiting for CI. The tag's own run verifies the commit and
+# cannot be cancelled by later pushes to main; a dry run records main's run.
+$ci = $null
+$deadline = (Get-Date).AddSeconds($(if ($NoPublish) { 0 } else { 60 }))
+do {
+    if (-not $NoPublish) { Start-Sleep -Seconds 3 }
+    $ci = gh run list -R $repo --workflow rust-windows.yml --branch $(if ($NoPublish) { 'main' } else { $version }) `
+        --commit $sha --limit 1 --json status,conclusion,url,headSha --jq '.[0]'
+} until ($ci -or (Get-Date) -gt $deadline)
+Set-Content "$run\ci.json" "$ci"
 if (-not $Scope) {
     $gpu = (Get-CimInstance Win32_VideoController | Where-Object Name -NotMatch 'Virtual|Basic|Idd' | Select-Object -First 1).Name
     $Scope = "End-to-end streams, protocol checks$(if (-not $NoInstall) { ', display self-test and install' }) on the " +
@@ -169,9 +189,6 @@ if ($NoPublish) {
     return
 }
 Step "publish $version"
-# An annotated tag through the API: the checkout needs no push credentials.
-$tag = gh api "repos/$repo/git/tags" -f tag=$version -f "message=Butterpollo $version" -f object=$sha -f type=commit --jq .sha
-gh api "repos/$repo/git/refs" -f "ref=refs/tags/$version" -f sha=$tag | Out-Null
 $flags = @('--verify-tag', '--title', "Butterpollo $version", '--notes-file', $Notes)
 if ($version -match '-') { $flags += '--prerelease' }
 $assets = "butterpollo-setup-$version.exe", "butterpollo-rust-$version-windows-x64.zip", 'SHA256SUMS',
