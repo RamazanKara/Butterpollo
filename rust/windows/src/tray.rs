@@ -9,6 +9,8 @@ use windows::{
     },
     core::{PCWSTR, w},
 };
+/// Retries adding the icon while the taskbar does not accept it yet.
+const RETRY_TIMER: usize = 1;
 #[derive(Clone, Copy)]
 pub enum Action {
     Open,
@@ -36,8 +38,15 @@ unsafe extern "system" fn window(
         let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut State;
         if !state.is_null() {
             let s = &mut *state;
-            if message == s.taskbar {
-                let _ = Shell_NotifyIconW(NIM_ADD, &s.icon);
+            // Explorer announces a new taskbar (at sign-in, or after it
+            // restarts); until the icon is in, retry every few seconds.
+            if message == s.taskbar || (message == WM_TIMER && wparam.0 == RETRY_TIMER) {
+                if Shell_NotifyIconW(NIM_ADD, &s.icon).as_bool() {
+                    let _ = KillTimer(Some(hwnd), RETRY_TIMER);
+                } else if message == s.taskbar {
+                    SetTimer(Some(hwnd), RETRY_TIMER, 3000, None);
+                }
+                return LRESULT(0);
             }
             if message == WM_APP + 1 {
                 match (lparam.0 & 0xffff) as u32 {
@@ -168,7 +177,17 @@ impl Tray {
                         Some((&mut *state as *mut State).cast()),
                     )?;
                     state.icon.hWnd = hwnd;
-                    let _ = Shell_NotifyIconW(NIM_ADD, &state.icon);
+                    // The service starts the host elevated, and Windows keeps
+                    // Explorer's messages from an elevated window unless they
+                    // are allowed: the TaskbarCreated broadcast after sign-in
+                    // never arrived, so an icon that the not-yet-ready taskbar
+                    // refused at boot never appeared.
+                    for message in [state.taskbar, WM_APP + 1] {
+                        let _ = ChangeWindowMessageFilterEx(hwnd, message, MSGFLT_ALLOW, None);
+                    }
+                    if !Shell_NotifyIconW(NIM_ADD, &state.icon).as_bool() {
+                        SetTimer(Some(hwnd), RETRY_TIMER, 3000, None);
+                    }
                     *SHOWN.lock().unwrap() = Some(hwnd.0 as isize);
                     let _ = ready.send(Ok(GetCurrentThreadId()));
                     let mut message = MSG::default();
