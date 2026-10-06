@@ -866,8 +866,13 @@ pub fn shell_command(command: &str) -> String {
     };
     format!("start \"\" /wait \"{target}\"{rest}")
 }
+/// The current time on the clock of [`creation_time`] (100 ns since 1601).
+pub fn now() -> u64 {
+    let time = unsafe { windows::Win32::System::SystemInformation::GetSystemTimeAsFileTime() };
+    u64::from(time.dwHighDateTime) << 32 | u64::from(time.dwLowDateTime)
+}
 /// A process's creation time (100 ns since 1601), 0 when it cannot be read.
-fn creation_time(pid: u32) -> u64 {
+pub fn creation_time(pid: u32) -> u64 {
     unsafe {
         let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
             return 0;

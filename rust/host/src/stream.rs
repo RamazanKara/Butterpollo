@@ -775,6 +775,10 @@ impl Media {
                     let mut runtime_config = c.clone();
                     let mut profiles = None;
                     let mut foreground = None;
+                    // The fullscreen game on this display, for quitting a game
+                    // that a store client started outside the app's processes.
+                    let mut quit_scan: Option<butterpollo_windows::foreground::Tracker> = None;
+                    let mut quit_scan_due = Instant::now() + Duration::from_secs(1);
                     let mut profile_due = Instant::now();
                     let mut metadata_due = Instant::now() + Duration::from_secs(1);
                     let mut timing_due = Instant::now() + Duration::from_secs(5);
@@ -1065,6 +1069,17 @@ impl Media {
                                 let profiles = profiles.get_or_insert_with(butterpollo_windows::rtx_profiles::Profiles::new);
                                 runtime_config = butterpollo_core::rtx_policy::resolve(&runtime_config, visible.is_some(), profiles.poll(visible.as_deref()));
                                 if let Some(filter) = truehdr.as_mut() { filter.set_parameters(rtx_parameters(&runtime_config)); }
+                            }
+                            if s.launch.role == Role::Stream && Instant::now() >= quit_scan_due {
+                                quit_scan_due = Instant::now() + Duration::from_secs(1);
+                                // The scan runs on its own thread; this reads its last result.
+                                if let Some((program, pid)) = quit_scan
+                                    .get_or_insert_with(butterpollo_windows::foreground::Tracker::default)
+                                    .poll_process(&[], &image.gpu.display)
+                                    && let Some(app) = h.current_app.lock().unwrap().as_mut()
+                                {
+                                    app.observe_foreground(pid, &program);
+                                }
                             }
                             let rebuilt = rebuild_encoder;
                             if rebuild_encoder {

@@ -12,7 +12,8 @@ struct Request {
 }
 struct Snapshot {
     request: Request,
-    selected: Option<String>,
+    /// The selected window's program and process.
+    selected: Option<(String, u32)>,
 }
 /// Window enumeration and process image queries never run on the encode thread.
 pub struct Tracker {
@@ -41,6 +42,10 @@ impl Default for Tracker {
 }
 impl Tracker {
     pub fn poll(&self, owned: &[u32], display: &Display) -> Option<String> {
+        self.poll_process(owned, display).map(|(exe, _)| exe)
+    }
+    /// The program and process of the selected window, as of the last scan.
+    pub fn poll_process(&self, owned: &[u32], display: &Display) -> Option<(String, u32)> {
         let request = Request {
             owned: owned.to_vec(),
             rect: [
@@ -122,10 +127,10 @@ fn fullscreen(rect: RECT, capture: [i32; 4], framed: bool) -> bool {
         && rect.right >= capture[2].saturating_sub(2)
         && rect.bottom >= capture[3].saturating_sub(2)
 }
-fn visible_executable(request: &Request) -> Option<String> {
+fn visible_executable(request: &Request) -> Option<(String, u32)> {
     struct Scan<'a> {
         request: &'a Request,
-        selected: Option<String>,
+        selected: Option<(String, u32)>,
         count: usize,
     }
     unsafe extern "system" fn visit(window: HWND, context: LPARAM) -> BOOL {
@@ -253,7 +258,7 @@ fn visible_executable(request: &Request) -> Option<String> {
                 attributed,
             ) {
                 Decision::Select => {
-                    scan.selected = exe;
+                    scan.selected = exe.map(|exe| (exe, pid));
                     false.into()
                 }
                 Decision::Block if !attributed => false.into(),

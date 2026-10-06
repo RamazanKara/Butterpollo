@@ -151,6 +151,14 @@ pub struct RunningApp {
     playnite_fullscreen: bool,
     /// Lossless Scaling for the game.
     lossless: Option<crate::lossless::Session>,
+    /// Whether the app starts a program, and when it was launched (100 ns
+    /// since 1601, as process creation times).
+    launches: bool,
+    launched_at: u64,
+    /// Fullscreen games on the stream's display that another program, such
+    /// as a store client, started after the launch (pid → creation time).
+    /// Quitting closes them like the app's own processes.
+    foreign: BTreeMap<u32, u64>,
 }
 /// The folder of the program an app starts, as Vibepollo uses when the app
 /// has no working directory: games often load files relative to it.
@@ -213,6 +221,14 @@ impl RunningApp {
             playnite: None,
             playnite_fullscreen: false,
             lossless: None,
+            launches: !app.cmd.trim().is_empty()
+                || app
+                    .extra
+                    .get("detached")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|commands| !commands.is_empty()),
+            launched_at: butterpollo_windows::process::now(),
+            foreign: BTreeMap::new(),
             exit_timeout: Duration::from_secs(
                 app.extra
                     .get("exit-timeout")
@@ -365,6 +381,10 @@ impl RunningApp {
         if let Some(tracker) = self.steam.take() {
             butterpollo_windows::process::stop_processes(&tracker.tracked, self.exit_timeout);
         }
+        let foreign = std::mem::take(&mut self.foreign);
+        if !foreign.is_empty() {
+            butterpollo_windows::process::stop_processes(&foreign, self.exit_timeout);
+        }
         if let Some(launch) = self.playnite.take() {
             launch.stop(self.exit_timeout);
         }
@@ -444,6 +464,34 @@ impl RunningApp {
         }
         Ok(!self.wait_all || child.active_processes()? == 0)
     }
+    /// A fullscreen window on the stream's display belongs to process `pid`.
+    /// A store client (Xbox, Epic, EA, Ubisoft, Battle.net) starts its games
+    /// itself, outside the processes this app owns, so quitting never closed
+    /// them. Such a game is remembered when the app launched a program, no
+    /// Steam or Playnite tracking covers it, and its process started after the
+    /// launch; quitting the plain desktop never closes what a user opened.
+    pub fn observe_foreground(&mut self, pid: u32, program: &str) {
+        if !self.launches
+            || self.steam.is_some()
+            || self.playnite.is_some()
+            || self.foreign.contains_key(&pid)
+            || self.foreign.len() >= 8
+            || pid == std::process::id()
+            || self
+                .child
+                .as_ref()
+                .and_then(|child| child.process_ids().ok())
+                .is_some_and(|owned| owned.contains(&pid))
+        {
+            return;
+        }
+        let created = butterpollo_windows::process::creation_time(pid);
+        if !foreign_game(program, created, self.launched_at) {
+            return;
+        }
+        tracing::info!(app = %self.name, program, pid, "game started by another program; quitting the app closes it");
+        self.foreign.insert(pid, created);
+    }
     /// Return true when the last game transport leaves an app that closes on pause.
     pub fn connection_state(&mut self, connected: bool) -> bool {
         if self.connected == connected {
@@ -458,6 +506,34 @@ impl RunningApp {
         }
         false
     }
+}
+/// Whether a fullscreen `program`, created at `created`, is a game a store
+/// client started for an app launched at `launched_at`. The store clients
+/// themselves never are: quitting a Big Picture app that started Steam must
+/// not close Steam.
+fn foreign_game(program: &str, created: u64, launched_at: u64) -> bool {
+    const CLIENTS: [&str; 14] = [
+        "steam.exe",
+        "steamwebhelper.exe",
+        "epicgameslauncher.exe",
+        "eadesktop.exe",
+        "eabackgroundservice.exe",
+        "upc.exe",
+        "ubisoftconnect.exe",
+        "battle.net.exe",
+        "xboxpcapp.exe",
+        "gamingservices.exe",
+        "galaxyclient.exe",
+        "playnite.fullscreenapp.exe",
+        "playnite.desktopapp.exe",
+        "butterpollo.exe",
+    ];
+    let name = program.rsplit(['/', '\\']).next().unwrap_or(program);
+    created != 0
+        && created >= launched_at
+        && !CLIENTS
+            .iter()
+            .any(|client| name.eq_ignore_ascii_case(client))
 }
 pub fn app_bool(app: &App, name: &str, default: bool) -> bool {
     app.extra.get(name).map_or(default, |v| match v {
@@ -808,6 +884,23 @@ impl Drop for RunningApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn quitting_closes_a_store_launched_game_but_not_the_store_or_older_programs() {
+        let launched = 1_000;
+        let game = r"C:\XboxGames\Forza Horizon 5\Content\ForzaHorizon5.exe";
+        assert!(foreign_game(game, launched + 1, launched));
+        // A program that was already running before the launch stays open.
+        assert!(!foreign_game(game, launched - 1, launched));
+        // So does a process whose creation time cannot be read.
+        assert!(!foreign_game(game, 0, launched));
+        for client in [
+            r"C:\Program Files (x86)\Steam\steam.exe",
+            r"C:\Program Files (x86)\Epic Games\Launcher\Portal\Binaries\Win64\EpicGamesLauncher.exe",
+            r"C:\Program Files\Butterpollo\butterpollo.exe",
+        ] {
+            assert!(!foreign_game(client, launched + 1, launched), "{client}");
+        }
+    }
     #[test]
     fn existing_environment_syntax_is_case_insensitive_and_checked() {
         let env = BTreeMap::from([("PATH".into(), "C:\\tools".into())]);
