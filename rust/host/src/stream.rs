@@ -1285,12 +1285,14 @@ impl Media {
         );
         let frames = 48 * usize::from(s.config.audio_packet_ms);
         let start = Instant::now();
-        let mut next = Instant::now();
         let interval = Duration::from_millis(u64::from(s.config.audio_packet_ms));
+        // When audio last arrived, and when an idle endpoint's next silence is due.
+        let mut heard = Instant::now();
+        let mut next = Instant::now();
         let timer = butterpollo_windows::timing::Timer::new()?;
         let silence = vec![0.; frames * s.config.audio_channels as usize];
         while !s.stopping() && !h.stop.load(Ordering::Acquire) {
-            timer.until(next);
+            timer.until(Instant::now() + Duration::from_millis(1));
             if !muted && Instant::now() >= audio_check {
                 audio_check = Instant::now() + Duration::from_secs(1);
                 if route.is_none() {
@@ -1364,28 +1366,43 @@ impl Media {
                 .unwrap()
                 .get(&(s.launch.id.clone(), true))
                 .copied();
-            let samples = match capture.as_mut().map(|capture| capture.read(frames)) {
-                Some(Ok(value)) => value,
-                Some(Err(error)) => {
-                    tracing::warn!(%error, "audio endpoint changed; reopening WASAPI");
-                    capture = None;
-                    capture_failed = true;
-                    None
+            // Every whole packet the endpoint has delivered goes out at once, as
+            // Sunshine sends them. On a fixed tick each waited up to a packet,
+            // and a tick just before a late chunk sent silence in its place.
+            let mut packets = Vec::new();
+            while let Some(capturing) = capture.as_mut() {
+                match capturing.read(frames) {
+                    Ok(Some(samples)) => packets.push(samples),
+                    Ok(None) => break,
+                    Err(error) => {
+                        tracing::warn!(%error, "audio endpoint changed; reopening WASAPI");
+                        capture = None;
+                        capture_failed = true;
+                    }
                 }
-                None => None,
-            };
+            }
+            let now = Instant::now();
+            if !packets.is_empty() {
+                heard = now;
+                next = now + interval;
+            } else if now >= next && now.saturating_duration_since(heard) >= interval * 2 {
+                // An idle or missing endpoint still sends steady silence.
+                packets.push(silence.clone());
+                next += interval;
+                if next < now {
+                    next = now + interval;
+                }
+            }
             if let Some(peer) = peer {
-                for packet in p.encode(&opus.encode(samples.as_deref().unwrap_or(&silence))?)? {
-                    // A lost audio packet is concealed by the client; only a
-                    // broken socket stops the audio.
-                    butterpollo_windows::net::send_datagram(&self.audio, &packet, peer)?;
+                for samples in &packets {
+                    for packet in p.encode(&opus.encode(samples)?)? {
+                        // A lost audio packet is concealed by the client; only a
+                        // broken socket stops the audio.
+                        butterpollo_windows::net::send_datagram(&self.audio, &packet, peer)?;
+                    }
                 }
             } else if start.elapsed() > crate::network::ping_timeout(&config) {
                 anyhow::bail!("client audio ping timed out");
-            }
-            next += interval;
-            if next < Instant::now() {
-                next = Instant::now() + interval;
             }
         }
         Ok(())
