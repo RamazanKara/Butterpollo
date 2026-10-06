@@ -298,17 +298,21 @@ impl Drop for Lease {
         }
         let state = leases.remove(&self.identity).unwrap();
         let result = (|| {
-            if let Some(monitor) = crate::display::monitors()?
-                .iter()
+            // Windows keeps the profile with the display. One that is off or
+            // unplugged now keeps its journal entry for the next recovery.
+            let Some(monitor) = crate::display::monitors()?
+                .into_iter()
                 .find(|m| m.device_id == self.identity)
-            {
-                restore(
-                    monitor,
-                    state.previous.as_deref(),
-                    &state.applied,
-                    state.system,
-                )?;
-            }
+            else {
+                tracing::info!(display = %self.identity, "display is gone; its colour profile is restored when it returns");
+                return Ok(());
+            };
+            restore(
+                &monitor,
+                state.previous.as_deref(),
+                &state.applied,
+                state.system,
+            )?;
             crate::display_recovery::release_profile(&self.identity)
         })();
         if let Err(error) = result {

@@ -492,6 +492,18 @@ impl Prepared {
                 .integer("rtx_hdr_peak_brightness", 1000)
                 .clamp(400, 2000) as u32,
         };
+        // The layout to return to after the stream, taken before the virtual
+        // display exists: Windows can switch other displays on or off, change
+        // the primary or retime one when it arrives.
+        let original = if virtual_mode && retained.is_none() && launch.role == Role::Stream {
+            butterpollo_windows::display::Snapshot::capture()
+                .inspect_err(|error| {
+                    tracing::warn!(error = %format!("{error:#}"), "display layout before the virtual display could not be read")
+                })
+                .ok()
+        } else {
+            None
+        };
         let display = if retained.is_none() {
             Some(Guard::new_virtual_options(
                 output,
@@ -577,6 +589,7 @@ impl Prepared {
                     parsed,
                     &retained,
                     virtual_mode && display.is_some(),
+                    original,
                 )?)
             }
             _ => None,

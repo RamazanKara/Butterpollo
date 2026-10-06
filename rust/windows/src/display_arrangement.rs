@@ -20,6 +20,17 @@ fn state() -> &'static Mutex<State> {
     STATE.get_or_init(Mutex::default)
 }
 pub fn matches(nodes: &[Node], applied: &[Node]) -> bool {
+    matches_connected(nodes, applied, None)
+}
+/// Like `matches`, but a display that is no longer connected (a TV switched
+/// off at the wall, an unplugged monitor) does not count as a change by the
+/// user: the rest of the layout is still the one the stream applied.
+fn matches_connected(
+    nodes: &[Node],
+    applied: &[Node],
+    connected: Option<&std::collections::BTreeSet<String>>,
+) -> bool {
+    let present = |id: &str| connected.is_none_or(|c| c.contains(id));
     let active: std::collections::BTreeSet<_> = nodes
         .iter()
         .filter(|n| n.active)
@@ -27,7 +38,7 @@ pub fn matches(nodes: &[Node], applied: &[Node]) -> bool {
         .collect();
     let expected: std::collections::BTreeSet<_> = applied
         .iter()
-        .filter(|n| n.active)
+        .filter(|n| n.active && present(&n.device_id))
         .map(|n| n.device_id.as_str())
         .collect();
     active == expected
@@ -36,6 +47,16 @@ pub fn matches(nodes: &[Node], applied: &[Node]) -> bool {
                 .iter()
                 .any(|a| a.device_id == n.device_id && a.desired_position == n.desired_position)
         })
+}
+/// Whether the displays still have the layout a stream applied.
+pub fn unchanged(applied: &[Node]) -> Result<bool> {
+    let current = Topology::query()?.nodes()?;
+    let connected = Topology::query_all()?
+        .monitors()
+        .into_iter()
+        .map(|m| m.device_id)
+        .collect();
+    Ok(matches_connected(&current, applied, Some(&connected)))
 }
 fn active_ids(nodes: &[Node]) -> std::collections::BTreeSet<String> {
     nodes
@@ -122,12 +143,15 @@ pub struct Lease {
 }
 impl Lease {
     /// `virtual_target`: the streamed display is a virtual display made for
-    /// streaming, so the user's own layout does not include it.
+    /// streaming, so the user's own layout does not include it. `original`:
+    /// the layout taken before that display was created; what Windows
+    /// changed when it arrived is then undone with the rest.
     pub fn acquire(
         output: &str,
         arrangement: Arrangement,
         retained: &[String],
         virtual_target: bool,
+        original: Option<Snapshot>,
     ) -> Result<Self> {
         let mut state = state().lock().unwrap();
         let monitors = crate::display::monitors()?;
@@ -175,7 +199,7 @@ impl Lease {
         let current = Snapshot::capture()?;
         let desired = arrangement.compose(&current.nodes, &target_id, &retained)?;
         let before = if virtual_target {
-            original_layout(current.clone(), &target_id)
+            original_layout(original.unwrap_or_else(|| current.clone()), &target_id)
         } else {
             current.clone()
         };
@@ -255,10 +279,7 @@ impl Drop for Lease {
             // Other streams continue: lay out their displays without this one.
             if left {
                 let arrangement = state.arrangement.unwrap_or(self.arrangement);
-                let unchanged = Topology::query()
-                    .and_then(|t| t.nodes())
-                    .is_ok_and(|current| matches(&current, &state.applied));
-                let result = if unchanged {
+                let result = if unchanged(&state.applied).unwrap_or(false) {
                     apply(&mut state, arrangement, Some(&target))
                 } else {
                     // The user changed the layout; only stop expecting this display.
@@ -274,8 +295,7 @@ impl Drop for Lease {
             return;
         }
         let restored = (|| -> Result<()> {
-            let current = settled(|| Topology::query()?.nodes())?;
-            if matches(&current, &state.applied)
+            if settled(|| unchanged(&state.applied))?
                 && let Some(before) = &state.before
             {
                 settled(|| before.restore())?;
@@ -370,7 +390,7 @@ impl Drop for Activation {
             return;
         }
         let restored = (|| -> Result<()> {
-            if matches(&Topology::query()?.nodes()?, &state.applied)
+            if unchanged(&state.applied)?
                 && let Some(before) = &state.before
             {
                 before.restore()?;
@@ -415,6 +435,21 @@ mod tests {
             clone_groups: vec![],
             nodes,
         }
+    }
+    #[test]
+    fn an_unplugged_display_does_not_keep_the_layout_from_being_restored() {
+        let mut tv = node("tv", true, false);
+        tv.desired_position = Position { x: 1920, y: 0 };
+        let applied = vec![node("monitor", true, true), tv];
+        let current = vec![node("monitor", true, true)];
+        let without_tv: std::collections::BTreeSet<String> = ["monitor".to_string()].into();
+        assert!(matches_connected(&current, &applied, Some(&without_tv)));
+        // Still connected but switched off: the user changed the layout.
+        let with_tv: std::collections::BTreeSet<String> =
+            ["monitor".to_string(), "tv".to_string()].into();
+        assert!(!matches_connected(&current, &applied, Some(&with_tv)));
+        assert!(!matches(&current, &applied));
+        assert!(matches(&applied, &applied));
     }
     #[test]
     fn the_original_layout_leaves_out_the_streams_virtual_display() {

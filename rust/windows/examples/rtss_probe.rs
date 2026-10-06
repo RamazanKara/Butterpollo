@@ -81,7 +81,9 @@ fn main() -> Result<()> {
         &directory.join("before.json"),
         &serde_json::json!({"profile":original,"reply":before}),
     )?;
-    display_recovery::initialize(&directory)?;
+    if let Some(error) = display_recovery::initialize(&directory)? {
+        eprintln!("display recovery incomplete: {error:#}");
+    }
     let result = (|| -> Result<()> {
         // The watchdog can restore if the probe itself crashes.
         let policy = Policy {

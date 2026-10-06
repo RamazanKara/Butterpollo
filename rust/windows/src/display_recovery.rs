@@ -119,19 +119,24 @@ fn identity(pid: u32) -> Result<Option<u64>> {
         ))
     }
 }
-pub fn initialize(directory: &Path) -> Result<()> {
+/// Take the journal and undo what an interrupted host left behind. An
+/// incomplete recovery is returned for the log rather than as an error: a
+/// display that cannot take back a setting must not stop the host from
+/// starting, as it did on every start while the journal stayed pending.
+pub fn initialize(directory: &Path) -> Result<Option<anyhow::Error>> {
     let path = directory.join("display-recovery.json");
     let _guard = lock(&path)?;
+    let mut incomplete = None;
     if path.exists() {
         let journal: Journal = serde_json::from_slice(&std::fs::read(&path)?)?;
         if identity(journal.pid)? == Some(journal.started) && journal.pid != std::process::id() {
             bail!("another host owns this display recovery journal");
         }
-        recover(&path)?;
+        incomplete = recover(&path).err();
     }
     PATH.set(path)
         .map_err(|_| anyhow::anyhow!("display recovery already initialized"))?;
-    Ok(())
+    Ok(incomplete)
 }
 fn watch(path: &Path) -> Result<()> {
     use std::os::windows::process::CommandExt;
@@ -179,14 +184,26 @@ fn change(id: &str, output: &str, update: impl FnOnce(&mut Entry)) -> Result<()>
     }
     Ok(())
 }
+// A pending entry's original value wins over a newer "before": an entry kept
+// for a display that was away holds the value to restore, and a later stream
+// would otherwise record the changed value as the original.
 pub fn mode(id: &str, output: &str, before: Mode, applied: Mode) -> Result<()> {
-    change(id, output, |e| e.mode = Some((before, applied)))
+    change(id, output, |e| {
+        e.mode = Some((e.mode.map_or(before, |(original, _)| original), applied))
+    })
 }
 pub fn mode_rate(id: &str, output: &str, before: Mode, applied: Mode) -> Result<()> {
-    change(id, output, |e| e.mode_rate = Some((before, applied)))
+    change(id, output, |e| {
+        e.mode_rate = Some((
+            e.mode_rate.map_or(before, |(original, _)| original),
+            applied,
+        ))
+    })
 }
 pub fn hdr(id: &str, output: &str, before: bool, applied: bool) -> Result<()> {
-    change(id, output, |e| e.hdr = Some((before, applied)))
+    change(id, output, |e| {
+        e.hdr = Some((e.hdr.map_or(before, |(original, _)| original), applied))
+    })
 }
 pub fn external(pending: bool) -> Result<()> {
     change("external-limiter", "", |e| e.external = pending)
@@ -260,7 +277,8 @@ pub fn profile(
     system: bool,
 ) -> Result<()> {
     change(id, output, |e| {
-        e.profile = Some((before, applied.into(), system))
+        let original = e.profile.take().map_or(before, |(original, ..)| original);
+        e.profile = Some((original, applied.into(), system))
     })
 }
 pub fn release_profile(id: &str) -> Result<()> {
@@ -275,94 +293,161 @@ pub fn release_profile(id: &str) -> Result<()> {
     journal.entries.retain(|_, e| e.pending());
     butterpollo_core::state::write_json(path, &journal)
 }
+/// Undo what an interrupted host changed. Every step is attempted even when
+/// an earlier one fails, and the failures are reported together. A display
+/// that is not connected now, such as a TV that was switched off, keeps its
+/// own HDR, colour profile, mode and position entries for a later recovery:
+/// Windows remembers those settings per display, so they would otherwise
+/// stay changed. Layout entries are attempted once.
 fn recover(path: &Path) -> Result<()> {
     if !path.exists() {
         return Ok(());
     }
     let journal: Journal = serde_json::from_slice(&std::fs::read(path)?)?;
+    let directory = path.parent().context("journal directory missing")?;
+    let mut failures = Vec::new();
+    let mut step = |what: &str, result: Result<()>| {
+        if let Err(error) = result {
+            failures.push(format!("{what}: {error:#}"));
+        }
+    };
     if journal.entries.values().any(|e| e.external) {
-        crate::limiter::recover(path.parent().context("journal directory missing")?)?;
+        step("frame limiter", crate::limiter::recover(directory));
     }
     if journal.entries.values().any(|e| e.audio) {
-        crate::audio_route::recover(path.parent().context("journal directory missing")?)?;
+        step("audio routing", crate::audio_route::recover(directory));
     }
     for entry in journal.entries.values() {
         if let Some((before, applied)) = &entry.arrangement {
-            let current = crate::display::Topology::query()?.nodes()?;
-            if crate::display_arrangement::matches(&current, applied) {
-                before.restore()?;
-            }
+            step(
+                "display arrangement",
+                crate::display_arrangement::unchanged(applied).and_then(|unchanged| {
+                    if unchanged { before.restore() } else { Ok(()) }
+                }),
+            );
         }
     }
-    let monitors = crate::display::monitors()?;
+    let monitors = crate::display::monitors().unwrap_or_else(|error| {
+        step("display list", Err(error));
+        Vec::new()
+    });
+    let mut kept = Journal::default();
     for (id, entry) in &journal.entries {
         let Some(m) = monitors.iter().find(|m| &m.device_id == id) else {
+            let display = Entry {
+                output: entry.output.clone(),
+                profile: entry.profile.clone(),
+                hdr: entry.hdr,
+                mode: entry.mode,
+                mode_rate: entry.mode_rate,
+                position: entry.position,
+                ..Default::default()
+            };
+            // Each setting is restored later only if the display still has
+            // the value the stream applied.
+            if display.pending() {
+                kept.entries.insert(id.clone(), display);
+            }
             continue;
         };
+        let what = |setting: &str| format!("{} {setting}", m.display_name);
         if let Some((previous, applied, system)) = &entry.profile {
-            crate::hdr_profile::restore(m, previous.as_deref(), applied, *system)?;
+            step(
+                &what("colour profile"),
+                crate::hdr_profile::restore(m, previous.as_deref(), applied, *system),
+            );
         }
         if let Some((previous, applied)) = entry.hdr
             && m.hdr_enabled == applied
         {
-            crate::display::set_hdr(m, previous)?;
+            step(&what("HDR"), crate::display::set_hdr(m, previous));
         }
         if let Some((previous, applied)) = entry.mode {
-            let current = crate::display::mode(&m.display_name)?;
-            if (
-                current.dmPelsWidth,
-                current.dmPelsHeight,
-                current.dmDisplayFrequency,
-            ) == applied
-            {
-                crate::display::set_mode(&m.display_name, previous.0, previous.1, previous.2)?;
-            }
+            step(
+                &what("mode"),
+                crate::display::mode(&m.display_name).and_then(|current| {
+                    if (
+                        current.dmPelsWidth,
+                        current.dmPelsHeight,
+                        current.dmDisplayFrequency,
+                    ) == applied
+                    {
+                        crate::display::set_mode(
+                            &m.display_name,
+                            previous.0,
+                            previous.1,
+                            previous.2,
+                        )
+                    } else {
+                        Ok(())
+                    }
+                }),
+            );
         }
         if let Some((previous, applied)) = entry.mode_rate {
-            let current = crate::display::mode(&m.display_name)?;
-            let rate = crate::display::Topology::query()?.refresh(id)?;
-            if (current.dmPelsWidth, current.dmPelsHeight, rate.0) == applied {
-                crate::display::Topology::set_mode_rate(
-                    &m.display_name,
-                    previous.0,
-                    previous.1,
-                    butterpollo_core::framegen::Rate(previous.2),
-                )?;
-            }
+            step(
+                &what("mode and refresh"),
+                (|| {
+                    let current = crate::display::mode(&m.display_name)?;
+                    let rate = crate::display::Topology::query()?.refresh(id)?;
+                    if (current.dmPelsWidth, current.dmPelsHeight, rate.0) == applied {
+                        crate::display::Topology::set_mode_rate(
+                            id,
+                            previous.0,
+                            previous.1,
+                            butterpollo_core::framegen::Rate(previous.2),
+                        )?;
+                    }
+                    Ok(())
+                })(),
+            );
         }
     }
-    let mut topology = crate::display::Topology::query()?;
-    let nodes = topology.nodes()?;
-    let positions = journal
-        .entries
-        .iter()
-        .filter_map(|(id, entry)| {
-            let (before, applied) = entry.position?;
-            nodes
+    step(
+        "display positions",
+        (|| {
+            let mut topology = crate::display::Topology::query()?;
+            let nodes = topology.nodes()?;
+            let positions = journal
+                .entries
                 .iter()
-                .find(|n| &n.device_id == id && n.desired_position == applied)
-                .map(|_| (id.clone(), before))
-        })
-        .collect::<BTreeMap<_, _>>();
-    if !positions.is_empty() {
-        topology.set_positions(&positions)?;
-    }
+                .filter_map(|(id, entry)| {
+                    let (before, applied) = entry.position?;
+                    nodes
+                        .iter()
+                        .find(|n| &n.device_id == id && n.desired_position == applied)
+                        .map(|_| (id.clone(), before))
+                })
+                .collect::<BTreeMap<_, _>>();
+            if !positions.is_empty() {
+                topology.set_positions(&positions)?;
+            }
+            Ok(())
+        })(),
+    );
     for entry in journal.entries.values() {
-        if let Some((before, applied)) = &entry.activation
-            && (applied.is_empty()
-                || crate::display_arrangement::matches(
-                    &crate::display::Topology::query()?.nodes()?,
-                    applied,
-                ))
-        {
-            before.restore()?;
+        if let Some((before, applied)) = &entry.activation {
+            step(
+                "display activation",
+                (|| {
+                    if applied.is_empty() || crate::display_arrangement::unchanged(applied)? {
+                        before.restore()?;
+                    }
+                    Ok(())
+                })(),
+            );
         }
         if let Some((snapshot, excluded)) = &entry.baseline {
-            snapshot.restore_excluding(excluded)?;
+            step("saved display layout", snapshot.restore_excluding(excluded));
         }
     }
-    // Keep a valid empty document so interrupted reads never see partial JSON.
-    butterpollo_core::state::write_json(path, &Journal::default())
+    // Keep a valid document so interrupted reads never see partial JSON. The
+    // kept entries have no owner until the next host records a change.
+    butterpollo_core::state::write_json(path, &kept)?;
+    if !failures.is_empty() {
+        bail!("display recovery incomplete: {}", failures.join("; "));
+    }
+    Ok(())
 }
 pub fn wait_and_recover(pid: u32, directory: &Path) -> Result<()> {
     let path = directory.join("display-recovery.json");

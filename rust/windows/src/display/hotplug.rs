@@ -246,6 +246,11 @@ impl Protection {
         Ok(true)
     }
 
+    /// Whether the enforcement window that the first settle opened is over.
+    pub(super) fn expired(&self) -> bool {
+        self.deadline.is_some_and(|limit| Instant::now() >= limit)
+    }
+
     pub(super) fn settle(&mut self, owned: &Monitor, stage: &str) -> Result<()> {
         if self.dormant.is_empty() {
             return Ok(());

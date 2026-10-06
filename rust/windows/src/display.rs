@@ -232,6 +232,22 @@ fn extended_paths(
     }
     Ok(chosen.into_iter().flatten().collect())
 }
+/// Chosen routes with the mode indices of those already active, so their
+/// displays keep timing and position; newly switched-on routes get none.
+fn keep_active_modes(paths: &[DISPLAYCONFIG_PATH_INFO]) -> Vec<DISPLAYCONFIG_PATH_INFO> {
+    paths
+        .iter()
+        .map(|path| {
+            let mut path = *path;
+            if path.flags & DISPLAYCONFIG_PATH_ACTIVE == 0 {
+                path.sourceInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+                path.targetInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+            }
+            path.flags = DISPLAYCONFIG_PATH_ACTIVE;
+            path
+        })
+        .collect()
+}
 /// The active paths plus one route that switches `target` on, or None while
 /// the target is not connected. Active paths keep their mode indices, so the
 /// other displays keep their timings, positions and clone groups; Windows
@@ -665,21 +681,27 @@ impl Topology {
             }
         }
         let mut paths = extended_paths(&candidates_by_target)?;
+        if paths.is_empty() {
+            bail!("no saved display targets are currently connected");
+        }
+        let flags = SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES;
+        // Displays that stay on their current source keep their timing and
+        // position, such as a retained remote monitor that a restore must
+        // leave alone; Windows chooses for the displays it switches on.
+        // Windows can refuse that mix, so fall back to choosing every mode.
+        let kept = keep_active_modes(&paths);
+        if kept.iter().any(|p| unsafe { p.sourceInfo.Anonymous.modeInfoIdx }
+            != DISPLAYCONFIG_PATH_MODE_IDX_INVALID)
+            && unsafe { SetDisplayConfig(Some(&kept), Some(&topology.modes), flags) } == 0
+        {
+            return Ok(());
+        }
         for path in &mut paths {
             path.flags = DISPLAYCONFIG_PATH_ACTIVE;
             path.sourceInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
             path.targetInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
         }
-        if paths.is_empty() {
-            bail!("no saved display targets are currently connected");
-        }
-        unsafe {
-            check(SetDisplayConfig(
-                Some(&paths),
-                None,
-                SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES,
-            ))
-        }
+        unsafe { check(SetDisplayConfig(Some(&paths), None, flags)) }
     }
     pub fn monitors(&self) -> Vec<Monitor> {
         let primary = crate::capture::displays()
@@ -1058,18 +1080,10 @@ impl Snapshot {
                 step(&format!("scale {percent}%"), set_dpi_scale(m, *percent));
             }
         }
+        // set_active gave every display its own desktop source. Join clone
+        // groups first: placing their members separately would put two
+        // desktops at the same origin.
         let mut topology = Topology::query()?;
-        topology
-            .set_positions(
-                &self
-                    .nodes
-                    .iter()
-                    .filter(|n| !preserve(&n.device_id))
-                    .map(|n| (n.device_id.clone(), n.desired_position))
-                    .collect(),
-            )
-            .context("cannot restore the display positions")?;
-        topology = Topology::query()?;
         topology
             .restore_clone_groups(
                 &self
@@ -1080,8 +1094,20 @@ impl Snapshot {
                     .collect::<Vec<_>>(),
             )
             .context("cannot restore the cloned displays")?;
+        topology = Topology::query()?;
+        topology
+            .set_positions(
+                &self
+                    .nodes
+                    .iter()
+                    .filter(|n| !preserve(&n.device_id))
+                    .map(|n| (n.device_id.clone(), n.desired_position))
+                    .collect(),
+            )
+            .context("cannot restore the display positions")?;
         // Moving displays can renegotiate a display's timing (a TV at 120 Hz
-        // came back at 60 Hz), so check every rate again.
+        // came back at 60 Hz), so check every rate again. A clone member's
+        // GDI name changed when it joined its group; find it by device.
         for n in self.nodes.iter().filter(|n| !preserve(&n.device_id)) {
             let Some(m) = monitors.iter().find(|m| m.device_id == n.device_id) else {
                 continue;
@@ -1093,7 +1119,7 @@ impl Snapshot {
                 continue;
             }
             if let Err(error) = Topology::set_mode_rate(
-                &m.display_name,
+                &n.device_id,
                 n.mode.width,
                 n.mode.height,
                 butterpollo_core::framegen::Rate((n.mode.refresh_hz * 1000.0).round() as u32),
@@ -1771,10 +1797,20 @@ impl VirtualDisplay {
     fn finish_hotplug(&mut self, stage: &str) -> Result<()> {
         if self.startup_protection.is_some() {
             let owned = self.hotplug_monitor()?.clone();
-            self.startup_protection
-                .as_mut()
-                .unwrap()
-                .settle(&owned, stage)?;
+            let protection = self.startup_protection.as_mut().unwrap();
+            if let Err(error) = protection.settle(&owned, stage) {
+                // Before the deadline the next feed retries. After it, every
+                // retry fails the same way and recovery would never finish:
+                // the guard covers startup only, so end it and keep streaming.
+                if !protection.expired() {
+                    return Err(error);
+                }
+                tracing::warn!(
+                    error = format!("{error:#}"),
+                    stage,
+                    "virtual display startup protection ended before the layout settled"
+                );
+            }
             self.refresh_name()?;
             self.startup_protection = None;
         }
@@ -2081,12 +2117,16 @@ impl Guard {
                             requested,
                         )?;
                         settings.mode = Some((previous, previous_rate, requested));
-                        Topology::set_mode_rate(
+                        let applied = Topology::set_mode_rate(
                             &guard.output,
                             width,
                             height,
                             butterpollo_core::framegen::Rate(fps),
-                        )?;
+                        );
+                        // Record what the display has now even when the rate
+                        // was refused: a TV can take the resolution and keep
+                        // its old rate, and teardown restores only the mode
+                        // it finds recorded.
                         let actual = mode(&guard.output)?;
                         let actual_rate = Topology::query()?.refresh(&guard.identity)?;
                         let actual_mode = (actual.dmPelsWidth, actual.dmPelsHeight, actual_rate.0);
@@ -2097,6 +2137,7 @@ impl Guard {
                             actual_mode,
                         )?;
                         settings.mode = Some((previous, previous_rate, actual_mode));
+                        applied?;
                     }
                 }
             }
@@ -2195,6 +2236,17 @@ impl Drop for Guard {
         }
         let settings = all.remove(&self.identity).unwrap();
         let mut restored = true;
+        // A physical display that is off or unplugged now keeps its journal
+        // entry: Windows remembers HDR and modes per display, and the next
+        // host start restores them once it is back.
+        let present = monitors().is_ok_and(|all| all.iter().any(|m| m.device_id == self.identity));
+        if !present
+            && self.virtual_display.is_none()
+            && (settings.color.is_some() || settings.mode.is_some())
+        {
+            restored = false;
+            tracing::info!(output = %self.output, "display is gone; its settings are restored when it returns");
+        }
         if let Some((monitor, previous, applied)) = settings.color
             && monitors().is_ok_and(|all| {
                 all.iter()
@@ -2401,6 +2453,30 @@ mod tests {
         assert_eq!(result[0].sourceInfo.id, 1);
         assert_eq!(result[1].sourceInfo.id, 0);
         assert!(extended_paths(&[vec![path(0, 10)], vec![path(0, 20)]]).is_err());
+    }
+    #[test]
+    fn displays_that_stay_on_keep_their_modes_when_the_layout_changes() {
+        let path = |source, target, mode: u32, active: bool| {
+            let mut path = DISPLAYCONFIG_PATH_INFO::default();
+            path.sourceInfo.id = source;
+            path.targetInfo.id = target;
+            path.sourceInfo.Anonymous.modeInfoIdx = mode;
+            path.targetInfo.Anonymous.modeInfoIdx = mode + 1;
+            path.flags = if active { DISPLAYCONFIG_PATH_ACTIVE } else { 0 };
+            path
+        };
+        let kept = keep_active_modes(&[path(0, 10, 4, true), path(1, 11, 6, false)]);
+        assert!(kept.iter().all(|p| p.flags == DISPLAYCONFIG_PATH_ACTIVE));
+        assert_eq!(unsafe { kept[0].sourceInfo.Anonymous.modeInfoIdx }, 4);
+        assert_eq!(unsafe { kept[0].targetInfo.Anonymous.modeInfoIdx }, 5);
+        assert_eq!(
+            unsafe { kept[1].sourceInfo.Anonymous.modeInfoIdx },
+            DISPLAYCONFIG_PATH_MODE_IDX_INVALID
+        );
+        assert_eq!(
+            unsafe { kept[1].targetInfo.Anonymous.modeInfoIdx },
+            DISPLAYCONFIG_PATH_MODE_IDX_INVALID
+        );
     }
     #[test]
     fn switching_on_a_virtual_display_keeps_duplicated_tvs_and_their_modes() {

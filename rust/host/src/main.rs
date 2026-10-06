@@ -172,7 +172,7 @@ async fn main() -> Result<()> {
     let directory = args.config_dir.unwrap_or_else(default_directory);
     let h = state::Host::load(directory, assets, args.port)?;
     butterpollo_windows::crash::initialize(&h.directory)?;
-    butterpollo_windows::display_recovery::initialize(&h.directory)?;
+    let display_recovery = butterpollo_windows::display_recovery::initialize(&h.directory)?;
     let log_path = h
         .config
         .read()
@@ -195,6 +195,12 @@ async fn main() -> Result<()> {
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
+    if let Some(error) = display_recovery {
+        tracing::warn!(
+            error = format!("{error:#}"),
+            "display settings from an interrupted stream were not all restored"
+        );
+    }
     // The service's keys: SYSTEM and Administrators only, also after a
     // profile was copied in or restored from a backup.
     let credentials = h.directory.join("credentials");

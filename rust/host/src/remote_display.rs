@@ -166,9 +166,18 @@ pub fn disconnect(h: &Shared, client: Option<&str>) {
         .unwrap()
         .stop_role(Role::RemoteMonitor, client);
     let mut monitors = h.monitors.lock().unwrap();
-    monitors.retain(|id, _| client.is_some_and(|c| c != id));
+    let (kept, removed): (
+        std::collections::BTreeMap<_, _>,
+        std::collections::BTreeMap<_, _>,
+    ) = std::mem::take(&mut *monitors)
+        .into_iter()
+        .partition(|(id, _)| client.is_some_and(|c| c != id));
+    *monitors = kept;
     let empty = monitors.is_empty();
     drop(monitors);
+    // Dropping the last lease joins its feeder, whose recovery callback takes
+    // the monitors lock to lay out the displays: never drop one under it.
+    drop(removed);
     let result = if empty {
         display::restore_positions()
     } else {
