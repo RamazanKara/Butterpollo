@@ -20,3 +20,11 @@ https://github.com/Themaister/pyrowave together with the parts of Granite
 (https://github.com/Themaister/Granite) and volk (https://github.com/zeux/volk) it
 links. All three are MIT licensed; their license texts are installed under
 licenses/pyrowave next to the application.
+
+Foundation Sunshine
+
+The AMD encoder's opt-in treatment of the low-latency mode, the input queue size
+and the AV1 encoding latency mode (rust/core/src/encoder_policy.rs), and the
+reasoning behind it, are derived from Foundation Sunshine: AlkaidLab/foundation-sunshine
+commit 3340d28 ("feat(amf): align AMD aggressive defaults with FFmpeg amfenc",
+AlkaidLab/foundation-sunshine#666) by qiin2333. Both projects are licensed under GPLv3.
