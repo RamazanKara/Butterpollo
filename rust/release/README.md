@@ -11,7 +11,7 @@ Before running it, bump the version with `python rust/release/bump.py 2.0.0-rc.N
 
 | Step | Script |
 | --- | --- |
-| Check out the commit in an NTFS checkout (`C:\src\butterpollo`); building over `\\wsl.localhost` is several times slower | `release.ps1` |
+| Check out the commit in the Windows checkout (`C:\src\butterpollo`, where development happens; building over `\\wsl.localhost` is several times slower). A clean checkout already at the commit stays on its branch | `release.ps1` |
 | Formatting, then tests + clippy and the release build in parallel, each in its own target directory | `release.ps1` |
 | Package from the previous published release: only the rebuilt binaries, documentation, lock file and versions change, and every retained file is checked against the baseline's manifest | `package.py` |
 | Stream H.264, HEVC and AV1 through the packaged host on an isolated profile with the independent moonlight-common-c client, then the pairing and launch protocol checks | `e2e.py`, `protocol.py` |

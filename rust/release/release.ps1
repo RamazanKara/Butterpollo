@@ -54,8 +54,11 @@ if (-not $client -or -not (Test-Path $client)) {
 Step "checkout $Ref"
 if (-not (Test-Path $Checkout)) { git clone --quiet --filter=blob:none "https://github.com/$repo.git" $Checkout }
 git -C $Checkout fetch --quiet --tags origin
-git -C $Checkout checkout --quiet --detach $Ref
 if (git -C $Checkout status --porcelain) { throw "$Checkout has local changes" }
+# The checkout is also where development happens: stay on the branch when it
+# is already at the commit being released.
+$wanted = git -C $Checkout rev-parse "$Ref^{commit}"
+if ((git -C $Checkout rev-parse HEAD) -ne $wanted) { git -C $Checkout checkout --quiet --detach $wanted }
 $sha = git -C $Checkout rev-parse HEAD
 $version = [regex]::Match((Get-Content "$Checkout\Cargo.toml" -Raw), '(?m)^version = "([^"]+)"').Groups[1].Value
 $releases = gh release list -R $repo --exclude-drafts --limit 50 --json tagName --jq '.[].tagName'
