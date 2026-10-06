@@ -20,6 +20,29 @@ const OUTPUT_POLL: Duration = Duration::from_micros(100);
 /// How long an encoder that fails mid-stream is recreated before the session
 /// gives up: a GPU busy with a game or a driver reset costs frames, not the stream.
 const ENCODER_RECOVERY: Duration = Duration::from_secs(5);
+/// Output the encoder has finished. An encoder that fails to deliver it is
+/// dropped, so the next frame recreates it and asks for a keyframe, as after
+/// a failed submission; only failures lasting [`ENCODER_RECOVERY`] end the stream.
+fn collect(
+    encoder: &mut Option<Encoder>,
+    failing: &mut Option<Instant>,
+) -> Result<Vec<butterpollo_windows::encoder::Encoded>> {
+    let Some(active) = encoder.as_mut() else {
+        return Ok(vec![]);
+    };
+    match active.poll() {
+        Ok(output) => Ok(output),
+        Err(error) => {
+            let since = *failing.get_or_insert_with(Instant::now);
+            if since.elapsed() >= ENCODER_RECOVERY {
+                return Err(error.context("the encoder kept failing"));
+            }
+            tracing::warn!(error = %format!("{error:#}"), "collecting encoder output failed; recreating the encoder");
+            *encoder = None;
+            Ok(vec![])
+        }
+    }
+}
 /// Backoff only after reopening fails; resource release is acknowledged.
 const RECOVERY_RETRY: Duration = Duration::from_millis(150);
 fn rtx_parameters(config: &Config) -> [u32; 4] {
@@ -720,6 +743,13 @@ impl Media {
                         &first,
                         &c,
                     )?);
+                    // A rebuilt encoder keeps the hardware family the stream
+                    // started with: while a GPU recovers, "auto" would fall
+                    // through to a software encoder and stay there.
+                    let pinned_backend = encoder
+                        .as_ref()
+                        .filter(|e| e.hardware())
+                        .map(Encoder::backend);
                     tracing::info!(width=s.config.width,height=s.config.height,fps=f64::from(s.config.fps_millihz())/1000.,codec=s.config.codec,hdr=s.config.hdr,full_range=s.config.full_range(),color_matrix=s.config.color_matrix(),vrr=s.config.vrr_low_latency,requested_capture=%prepared.capture(),encoder=c.get("encoder","auto"),source_width=first.width,source_height=first.height,source_pixel=?first.pixel,"stream configured");
                     let metadata = first.gpu.hdr_metadata();
                     *s.hdr_metadata.write().unwrap() = metadata;
@@ -974,7 +1004,7 @@ impl Media {
                             if !s.config.vrr_low_latency && !arrival_pacing && now < due {
                                 while Instant::now() < due {
                                     if encoder.as_ref().is_some_and(Encoder::pending) {
-                                        send_frames(encoder.as_mut().map_or(Ok(vec![]), Encoder::poll)?, peer, Duration::ZERO)?;
+                                        send_frames(collect(&mut encoder, &mut encoder_failing)?, peer, Duration::ZERO)?;
                                         if encoder.as_ref().is_some_and(Encoder::pending) {
                                             timer.until(
                                                 (Instant::now() + OUTPUT_POLL)
@@ -1030,7 +1060,7 @@ impl Media {
                                 if encoder.as_ref().is_some_and(Encoder::pending)
                                     && deadline.saturating_duration_since(Instant::now()) >= Duration::from_millis(1)
                                 {
-                                    send_frames(encoder.as_mut().map_or(Ok(vec![]), Encoder::poll)?, peer, Duration::ZERO)?;
+                                    send_frames(collect(&mut encoder, &mut encoder_failing)?, peer, Duration::ZERO)?;
                                 }
                                 let until = if encoder.as_ref().is_some_and(Encoder::pending) {
                                     deadline.min(Instant::now() + OUTPUT_POLL)
@@ -1054,7 +1084,7 @@ impl Media {
                                     .is_some_and(|previous| Arc::ptr_eq(previous, &image))
                                 && Instant::now() < repeat_due
                             {
-                                if encoder.as_ref().is_some_and(Encoder::pending) { send_frames(encoder.as_mut().map_or(Ok(vec![]), Encoder::poll)?, peer, Duration::ZERO)?; }
+                                if encoder.as_ref().is_some_and(Encoder::pending) { send_frames(collect(&mut encoder, &mut encoder_failing)?, peer, Duration::ZERO)?; }
                                 let wait = if encoder.as_ref().is_some_and(Encoder::pending) { OUTPUT_POLL } else { period };
                                 latest.wait_if_current(&timer, &capture_wake, &image, Instant::now() + wait.min(repeat_due.saturating_duration_since(Instant::now())))?;
                                 continue;
@@ -1084,11 +1114,18 @@ impl Media {
                             let rebuilt = rebuild_encoder;
                             if rebuild_encoder {
                                 encoder = None;
+                                // After a failure, convert on the graphics queue:
+                                // some drivers accept the compute path at creation
+                                // and fail on it later, every time.
+                                let mut tuning = c.clone();
+                                if encoder_failing.is_some() {
+                                    tuning.values.insert("gpu_compute_conversion".into(), "false".into());
+                                }
                                 match Encoder::new_gpu_options(
                                     &s.config,
-                                    c.get("encoder", "auto"),
+                                    pinned_backend.unwrap_or(c.get("encoder", "auto")),
                                     &image,
-                                    &c,
+                                    &tuning,
                                 ) {
                                     Ok(created) => encoder = Some(created),
                                     Err(error) => {
