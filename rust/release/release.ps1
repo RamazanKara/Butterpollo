@@ -12,8 +12,8 @@ Build, verify, install and publish a Butterpollo release in one run.
    documentation, lock file and versions change (package.py).
 4. Streams H.264, HEVC and AV1 through the packaged host with the independent
    moonlight-common-c client, and runs the protocol checks (e2e.py, protocol.py).
-5. One UAC prompt: the display self-test as SYSTEM and a quiet install over the
-   running host (elevated.ps1).
+5. One UAC prompt, or none once elevation.ps1 has been run: the display
+   self-test as SYSTEM and a quiet install over the running host (elevated.ps1).
 6. Records the results (finalize.py), tags the commit and publishes without
    waiting for CI, which verifies the same commit; then downloads every asset
    and checks it against SHA256SUMS.
@@ -134,12 +134,28 @@ Step 'protocol checks'
 & $python "$tools\protocol.py" --package $package --work $run
 
 if (-not $NoInstall) {
-    Step 'display self-test as SYSTEM and install (UAC prompt)'
     Remove-Item -Recurse -Force "$run\elevated" -ErrorAction SilentlyContinue
-    $arguments = '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$tools\elevated.ps1`"",
-        '-Package', "`"$package`"", '-Installer', "`"$out\butterpollo-setup-$version.exe`"",
-        '-Version', $version, '-Work', "`"$run`""
-    Start-Process powershell -Verb RunAs -WindowStyle Hidden -ArgumentList $arguments
+    # elevation.ps1 installs a task that runs this step without a prompt. It
+    # is used while its scripts match this checkout's and -Work is the default.
+    $taskHome = 'C:\ProgramData\ButterpolloRelease'
+    $task = $false
+    try { schtasks /Query /TN ButterpolloReleaseElevated *> $null; $task = $true } catch { }
+    $current = $task -and $Work -eq (Join-Path $env:LOCALAPPDATA 'Butterpollo\release') -and
+        @('elevated.ps1', 'elevated-task.ps1' | Where-Object {
+            -not (Test-Path "$taskHome\$_") -or (Get-FileHash "$taskHome\$_").Hash -ne (Get-FileHash "$tools\$_").Hash
+        }).Count -eq 0
+    if ($current) {
+        Step 'display self-test as SYSTEM and install'
+        @{ version = $version } | ConvertTo-Json | Set-Content (Join-Path $Work 'request.json')
+        schtasks /Run /TN ButterpolloReleaseElevated | Out-Null
+    } else {
+        if ($task) { Write-Warning 'The release elevation task is out of date; run rust/release/elevation.ps1 as administrator again.' }
+        Step 'display self-test as SYSTEM and install (UAC prompt)'
+        $arguments = '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$tools\elevated.ps1`"",
+            '-Package', "`"$package`"", '-Installer', "`"$out\butterpollo-setup-$version.exe`"",
+            '-Version', $version, '-Work', "`"$run`""
+        Start-Process powershell -Verb RunAs -WindowStyle Hidden -ArgumentList $arguments
+    }
     $deadline = (Get-Date).AddMinutes(15)
     while (-not (Test-Path "$run\elevated\done.txt")) {
         if ((Get-Date) -gt $deadline) { throw 'The elevated step did not finish; was the UAC prompt declined?' }

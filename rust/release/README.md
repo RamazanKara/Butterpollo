@@ -21,4 +21,9 @@ Before running it, bump the workspace version in `Cargo.toml`, add a `## New in 
 
 Machine settings live outside the repository in `%LOCALAPPDATA%\Butterpollo\release\settings.ps1`, which is dot-sourced: the Rust build environment (MSYS2 UCRT64 on `PATH`, `BUTTERPOLLO_FFMPEG_ROOT`, `BUTTERPOLLO_PYROWAVE_ROOT`, ...), `BUTTERPOLLO_TEST_CLIENT_EXE` (built from `rust/tests/moonlight_client.c`) and `BUTTERPOLLO_TEST_PYTHON` (a Python with `requests` and `cryptography`). Work files go to `%LOCALAPPDATA%\Butterpollo\release\<version>`.
 
+## No prompts
+
+- **UAC.** Run `rust/release/elevation.ps1` once from an elevated PowerShell. It copies `elevated.ps1` and `elevated-task.ps1` to `C:\ProgramData\ButterpolloRelease` (writable only by administrators and SYSTEM) and registers the on-demand task `ButterpolloReleaseElevated`, which runs them with highest privileges for you. `release.ps1` starts that task instead of asking, as long as the installed scripts match the checkout; after they change it asks once more and says to run `elevation.ps1` again. The trade-off: any program running as you can start the task, which installs the setup and runs the self-test from `%LOCALAPPDATA%\Butterpollo\release\<version>` with administrator rights. `elevation.ps1 -Remove` uninstalls it.
+- **Firewall.** The release's test hosts listen on 127.0.0.1 only, and no unit test listens beyond loopback, so Windows Firewall has nothing to ask about.
+
 The installed host must be idle: the stream checks start a second host on ports 48518-48544 and do not touch displays, HDR or audio.
