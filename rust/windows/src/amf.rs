@@ -45,6 +45,9 @@ pub struct Encoder {
     index: i64,
     gpu_convert: Option<crate::amf_gpu::Converter>,
     in_flight: std::collections::VecDeque<Submission>,
+    /// A frame AMF never returned may have been a reference: the next frame
+    /// is a keyframe, or the client decodes damaged pictures until one comes.
+    recover: bool,
     bitrate: u32,
     references: butterpollo_core::ltr::References,
     ownership: Box<crate::amf_gpu::Ownership>,
@@ -207,6 +210,7 @@ impl Encoder {
                 index: 0,
                 gpu_convert: None,
                 in_flight: std::collections::VecDeque::new(),
+                recover: false,
                 bitrate: config.bitrate_kbps,
                 references: Default::default(),
                 ownership: crate::amf_gpu::Ownership::new(),
@@ -298,6 +302,12 @@ impl Encoder {
             )?;
             e.property("TargetBitrate", int(i64::from(config.bitrate_kbps) * 1000))?;
             let _ = e.property("BPicturesPattern", int(0));
+            if config.codec == 0 {
+                // Keyframes only when asked, as the original backend sets it:
+                // the usage preset's periodic IDRs are large, can overflow
+                // FEC at high bitrates and are not tracked for recovery.
+                let _ = e.property("IDRPeriod", int(0));
+            }
             if config.codec == 1 {
                 // Request keyframes and headers per surface: finite GOPs stall
                 // recent VCN drivers, as established by the original backend.
@@ -356,8 +366,23 @@ impl Encoder {
                 ("ColorTransferChar", transfer),
                 ("ColorPrimaries", primaries),
             ] {
-                e.property_raw(&format!("{prefix}{input}{suffix}"), int(value))?;
-                e.property_raw(&format!("{prefix}{output}{suffix}"), int(value))?;
+                // The input description only informs AMF's own converter, and
+                // the original backend never set it; a driver that rejects it,
+                // as the RX 6800 XT rejected the input range (issue #5), must
+                // not cost the encoder.
+                let name = format!("{prefix}{input}{suffix}");
+                if let Err(error) = e.property_raw(&name, int(value)) {
+                    tracing::debug!(error = %format!("{error:#}"), property = name, "AMF input colour property unavailable");
+                }
+                // The output description reaches the bitstream, which an HDR
+                // stream depends on.
+                let name = format!("{prefix}{output}{suffix}");
+                if let Err(error) = e.property_raw(&name, int(value)) {
+                    if config.hdr {
+                        return Err(error);
+                    }
+                    tracing::warn!(error = %format!("{error:#}"), property = name, "AMF output colour property unavailable");
+                }
             }
             let full = AMFVariantStruct {
                 type_: AMF_VARIANT_TYPE_AMF_VARIANT_BOOL,
@@ -778,10 +803,13 @@ impl Encoder {
                 },
                 int(if self.codec == 2 { 1 } else { 2 }),
             )?;
+            // A requested keyframe must start a fresh decoder: a client that
+            // reset its decoder otherwise stays frozen. AV1 repeats its
+            // sequence header only when asked, as the original backend did.
             let headers: &[&str] = match self.codec {
                 0 => &["InsertSPS", "InsertPPS"],
                 1 => &["HevcInsertHeader"],
-                _ => &[],
+                _ => &["Av1ForceInsertSequenceHeader"],
             };
             for header in headers {
                 apply(header, crate::amf_gpu::boolean(true))?;
@@ -800,8 +828,9 @@ impl Encoder {
             let stale = self.in_flight.pop_front();
             tracing::warn!(
                 pts = stale.map(|s| s.pts),
-                "AMF returned no output for a frame"
+                "AMF returned no output for a frame; the next frame is a keyframe"
             );
+            self.recover = true;
         }
         unsafe {
             let mut output = vec![];
@@ -872,6 +901,7 @@ impl Encoder {
     }
     pub fn encode(&mut self, image: &Image, idr: bool, bitrate: u32) -> Result<Vec<Encoded>> {
         let started = Instant::now();
+        let idr = idr || std::mem::take(&mut self.recover);
         self.set_bitrate(bitrate)?;
         if self.convert.is_none() {
             // Native GPU sessions never allocate a CPU YUV frame or swscale
@@ -1001,7 +1031,13 @@ impl Encoder {
 impl Encoder {
     fn set_bitrate(&mut self, bitrate: u32) -> Result<()> {
         if bitrate != self.bitrate {
-            self.property("TargetBitrate", int(i64::from(bitrate) * 1000))?;
+            if let Err(error) = self.property("TargetBitrate", int(i64::from(bitrate) * 1000)) {
+                // A rate the driver refuses keeps the current one: every frame
+                // failed on it until the stream ended.
+                tracing::warn!(error = %format!("{error:#}"), bitrate, "AMF kept its current bitrate");
+                self.bitrate = bitrate;
+                return Ok(());
+            }
             for suffix in ["PeakBitrate", "VBVBufferSize", "MaxAUSize"] {
                 let prefix = match self.codec {
                     0 => "",
@@ -1074,6 +1110,7 @@ impl Encoder {
     ) -> Result<Vec<Encoded>> {
         let started = Instant::now();
         let mut output = self.wait_capacity()?;
+        let idr = idr || std::mem::take(&mut self.recover);
         if self._device.device.as_raw() != image.gpu.device.as_raw() {
             bail!("GPU frame and encoder must use the same D3D11 device");
         }

@@ -174,11 +174,14 @@ pub fn amf(config: &Config, stream: &Negotiated) -> Result<Vec<Property>> {
         Value::Boolean(config.boolean("amd_enforce_hrd", false)),
         config.values.contains_key("amd_enforce_hrd"),
     );
+    // Only on request, as the original backend and FFmpeg do: forcing a queue
+    // of one for every VRR client exposed an RDNA4 driver freeze
+    // (AlkaidLab/foundation-sunshine#666), video stalling while audio plays.
     let queue = config.integer("amd_input_queue_size", 0).clamp(0, 32);
-    if queue > 0 || stream.vrr_low_latency {
+    if queue > 0 {
         add(
             format!("{prefix}InputQueueSize"),
-            Value::Integer(if queue == 0 { 1 } else { queue }),
+            Value::Integer(queue),
             true,
         );
     }
