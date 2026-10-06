@@ -1827,7 +1827,16 @@ impl VirtualDisplay {
     }
     fn check_hotplug(&mut self, stage: &str) -> Result<()> {
         if let Some(protection) = &self.startup_protection {
-            protection.check(self.hotplug_monitor()?, stage)?;
+            if let Err(error) = protection.check(self.hotplug_monitor()?, stage) {
+                // Keeping another display off is a courtesy; a stream that
+                // cannot start is worse than one that leaves it on.
+                tracing::warn!(
+                    error = format!("{error:#}"),
+                    stage,
+                    "could not keep inactive displays off; streaming without startup protection"
+                );
+                self.startup_protection = None;
+            }
             self.refresh_name()?;
         }
         Ok(())
@@ -1839,12 +1848,8 @@ impl VirtualDisplay {
             let owned = self.hotplug_monitor()?.clone();
             let protection = self.startup_protection.as_mut().unwrap();
             if let Err(error) = protection.settle(&owned, stage) {
-                // Before the deadline the next feed retries. After it, every
-                // retry fails the same way and recovery would never finish:
-                // the guard covers startup only, so end it and keep streaming.
-                if !protection.expired() {
-                    return Err(error);
-                }
+                // The guard covers startup only and is a courtesy to the other
+                // displays: end it and keep streaming rather than fail.
                 tracing::warn!(
                     error = format!("{error:#}"),
                     stage,

@@ -224,12 +224,27 @@ impl Protection {
         );
         // This temporary, strict apply cannot import a saved topology, update
         // the database, or silently retime the displays that remain active.
-        unsafe {
-            check(SetDisplayConfig(
-                Some(&topology.paths),
-                Some(&topology.modes),
-                SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG,
-            ))?;
+        let flags = SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG;
+        let strict =
+            unsafe { SetDisplayConfig(Some(&topology.paths), Some(&topology.modes), flags) };
+        if strict != 0 {
+            // Windows can refuse the exact layout while it is still placing the
+            // new display (ERROR_INVALID_PARAMETER). Letting it adjust modes can
+            // retime the remaining displays; the stream's layout restore puts
+            // them back.
+            unsafe {
+                check(SetDisplayConfig(
+                    Some(&topology.paths),
+                    Some(&topology.modes),
+                    flags | SDC_ALLOW_CHANGES,
+                ))
+            }
+            .with_context(|| {
+                format!(
+                    "exact layout refused: {}",
+                    std::io::Error::from_raw_os_error(strict)
+                )
+            })?;
         }
         let after = Topology::query()?;
         let after_names = identities(&after.paths)?;
@@ -244,11 +259,6 @@ impl Protection {
             "Windows kept an inactive display enabled after hotplug protection"
         );
         Ok(true)
-    }
-
-    /// Whether the enforcement window that the first settle opened is over.
-    pub(super) fn expired(&self) -> bool {
-        self.deadline.is_some_and(|limit| Instant::now() >= limit)
     }
 
     pub(super) fn settle(&mut self, owned: &Monitor, stage: &str) -> Result<()> {
