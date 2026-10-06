@@ -1766,6 +1766,49 @@ system-context/hdr-4edd39d9a9d441bb8f179768b3ee1d8f/coordinator-result.json (AV1
 Their matching hdr-virtual case directories retain raw host/receiver logs,
 pixel dumps, color results, topology samples and before/after snapshots.
 
+#### Repeat HDR runs and four-run totals
+
+Two further runs repeated AV1 and then HEVC with the same final executable,
+1280x720/60 native FP16 virtual display, 22-second duration, five-second warmup
+and unchanged freshness/color gates. Together with the original pair above,
+the recorded order is HEVC/AV1/AV1/HEVC.
+
+| Repeat codec | Received/decoded frames | Steady distinct FPS | Unique pictures in steady window | Repeats / skipped IDs | Wire intervals above 25 ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| AV1 Main10 HDR | 1,288 / 1,288 | 59.999 | 989 / 989 | 0 / 0 | 0 |
+| HEVC Main10 HDR | 1,302 / 1,302 | 60.001 | 999 / 999 | 0 / 0 | 0 |
+
+| Repeat codec | Luma MAE, 10-bit codes | Chroma MAE, 10-bit codes | Contrast slope | Saturation ratio |
+| --- | ---: | ---: | ---: | ---: |
+| AV1 Main10 HDR | 0.401 | 0.503 | 0.9984 | 0.9976 |
+| HEVC Main10 HDR | 0.374 | 0.434 | 0.9995 | 1.0057 |
+
+Both repeats passed their independent pixel checks, all 11 during-stream
+topology samples, the pre-cancel topology check and complete restoration.
+The installed service remained running and its configuration hash was unchanged.
+Across all four HDR runs, **5,173 received frames decoded successfully** with
+zero decoder errors, and **44 during-stream topology samples passed**, plus
+four pre-cancel checks. Adding the final SDR check's 1,169 decoded frames gives
+**6,342 clean decodes across five rc.10 runs**. These are whole-run decode totals;
+the fresh-picture counts in the tables cover only the steady windows.
+
+The four independently decoded reference frames have luma MAE 0.374–0.401
+and chroma MAE 0.404–0.503 in 10-bit code values. Both recorded mean-error
+metrics stay below 0.51 code values; this describes those four pixel dumps,
+not a per-pixel maximum or a color analysis of all 5,173 frames.
+
+The first AV1 run's 31 long arrival intervals remain in the original table.
+The repeat adds an observation with zero intervals above 25 ms without replacing
+that uneven run or establishing universally even cadence. All source, scope
+and physical-panel limitations above remain unchanged.
+
+The [published rc.10 validation record](https://github.com/RamazanKara/Butterpollo/releases/download/2.0.0-rc.10/VALIDATION.json)
+contains all four cases in current_validation.native_hdr.fixtures. Repeat raw
+results are system-context/hdr-88d67d5ef35c450da7e4badb41d069d5/
+coordinator-result.json (AV1) and
+system-context/hdr-f87e34f8d65c44cfa13e2c8d4b7d5d52/coordinator-result.json (HEVC),
+with full evidence in their matching hdr-virtual case directories.
+
 ### Native controller and Moonlight 6.2 command checks
 
 One explicitly selected native HID test passed with the installed signed
@@ -1826,6 +1869,6 @@ and client-scanout validation.
 
 ## Limits
 
-This machine validates AMD AMF. Native NVENC now calls the installed NVIDIA driver directly, supports reviewed API versions 11.0–13.0, reference frame invalidation, D3D11 4:2:0/8-bit 4:4:4 and GPU-only CUDA interop for ten-bit 4:4:4. Seven mock-driver tests exercise compatibility, asynchronous ownership, timeout teardown, metadata lifetime, loss recovery and bitrate changes; NVIDIA execution/performance still needs NVIDIA hardware. QSV has native D3D11 imports, and TrueHDR has a shared-device GPU path; these need Intel/NVIDIA hardware respectively. Unsupported native formats, PyroWave and software encoding use CPU compatibility paths. The wired LAN checks above do not establish Wi-Fi performance, multiple concurrent 4K sessions, dynamic game content, native 4K capture or end-to-end input/display latency. The GPU texture pools and native encoder queues are bounded to eight retained frames; capacity runs may intentionally keep those queues occupied. [PARITY.md](PARITY.md) separates implemented features from native validation.
+This machine validates AMD AMF. Native NVENC now calls the installed NVIDIA driver directly, supports reviewed API versions 11.0–13.0, reference frame invalidation, D3D11 4:2:0/8-bit 4:4:4 and GPU-only CUDA interop for ten-bit 4:4:4. Seven mock-driver tests exercise compatibility, asynchronous ownership, timeout teardown, metadata lifetime, loss recovery and bitrate changes; NVIDIA execution/performance still needs NVIDIA hardware. QSV has native D3D11 imports, and TrueHDR has a shared-device GPU path; these need Intel/NVIDIA hardware respectively. PyroWave uses shared D3D11/Vulkan planar GPU inputs and reads back only the encoded bitstream. Unsupported native formats and software encoding use CPU compatibility paths. The wired LAN checks above do not establish Wi-Fi performance, multiple concurrent 4K sessions, dynamic game content, native 4K capture or end-to-end input/display latency. The GPU texture pools and native encoder queues are bounded to eight retained frames; capacity runs may intentionally keep those queues occupied. [PARITY.md](PARITY.md) separates implemented features from native validation.
 
 The initial C++ comparison was blocked by an older `butter.2` executable whose startup performed global virtual-display recovery despite the isolated configuration; it was stopped before streaming tests. The October 4 comparison against pinned Vibepollo 2.0 above supersedes that initial limitation. The controlled FEC comparison uses the exact baseline sources without starting the C++ host.
