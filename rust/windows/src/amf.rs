@@ -365,17 +365,27 @@ impl Encoder {
                     boolValue: u8::from(config.full_range()),
                 },
             };
-            e.property_raw(&format!("{prefix}InputFullRangeColor"), full)?;
+            // Not every driver has the range properties: the RX 6800 XT's HEVC
+            // encoder rejects the input range (AMF_INVALID_ARG), and the stream
+            // got no encoder at all (issue #5). Limited range is AMF's default,
+            // so only a full-range stream depends on them.
+            let mut range = |name: &str| {
+                if let Err(error) = e.property_raw(name, full) {
+                    if config.full_range() {
+                        tracing::warn!(error = %format!("{error:#}"), property = name, "AMF range property unavailable; full-range colours may be off");
+                    } else {
+                        tracing::debug!(error = %format!("{error:#}"), property = name, "AMF range property unavailable");
+                    }
+                }
+            };
+            range(&format!("{prefix}InputFullRangeColor"));
             // The range written into the bitstream. HEVC and AV1 default to
             // limited, which a full-range stream must not claim.
-            e.property_raw(
-                match config.codec {
-                    0 => "FullRangeColor",
-                    1 => "HevcNominalRange",
-                    _ => "Av1NominalRange",
-                },
-                full,
-            )?;
+            range(match config.codec {
+                0 => "FullRangeColor",
+                1 => "HevcNominalRange",
+                _ => "Av1NominalRange",
+            });
             let requested_ltr = options.integer("amd_ltr_frames", 0).clamp(0, 4) as usize;
             let ltr_count = butterpollo_core::encoder_policy::amf_ltr_frames(options, config);
             if ltr_count < requested_ltr {
