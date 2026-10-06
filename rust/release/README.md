@@ -7,7 +7,7 @@ pwsh rust/release/release.ps1                         # release origin/main
 pwsh rust/release/release.ps1 -NoInstall -NoPublish   # build, package and stream-test only
 ```
 
-Before running it, bump the workspace version in `Cargo.toml`, add a `## New in rc.N` section to `rust/RELEASE_NOTES.md` (it becomes the GitHub release text unless `-Notes` names a file), and push to `main`.
+Before running it, bump the version with `python rust/release/bump.py 2.0.0-rc.N` (workspace version, `Cargo.lock`, READMEs, docs and release notes header), fill in the `## New in rc.N` section it adds to `rust/RELEASE_NOTES.md` (it becomes the GitHub release text unless `-Notes` names a file), and push to `main`. The release refuses to run with that section empty.
 
 | Step | Script |
 | --- | --- |

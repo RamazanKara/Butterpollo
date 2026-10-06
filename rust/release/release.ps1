@@ -66,6 +66,14 @@ if (-not $NoPublish -and ($releases -contains $version -or ($taggedAt -and $tagg
     throw "$version is already released or tagged at another commit; bump the version first."
 }
 $label = if ($version -match '-(rc\.\d+)$') { $Matches[1] } else { $version }
+if (-not $Notes) {
+    # Checked before building: the section becomes the release text.
+    $history = Get-Content "$Checkout\rust\RELEASE_NOTES.md" -Raw
+    $section = [regex]::Match($history, "(?ms)^## New in $([regex]::Escape($label))\s*\r?\n(.*?)(?=^## )")
+    if (-not $section.Success -or $section.Groups[1].Value.Trim() -in '', '-') {
+        throw "Fill in the '## New in $label' section of rust/RELEASE_NOTES.md."
+    }
+}
 $tools = "$Checkout\rust\release"
 $run = Join-Path $Work $version
 $out = "$run\release"
@@ -204,9 +212,6 @@ if (-not $NoInstall) { $finalize += '--installed' }
 & $python "$tools\finalize.py" @finalize
 
 if (-not $Notes) {
-    $history = Get-Content "$Checkout\rust\RELEASE_NOTES.md" -Raw
-    $section = [regex]::Match($history, "(?ms)^## New in $([regex]::Escape($label))\s*\r?\n(.*?)(?=^## )")
-    if (-not $section.Success) { throw "rust/RELEASE_NOTES.md has no '## New in $label' section." }
     # Links relative to rust/ point at the tagged source.
     $text = [regex]::Replace($section.Groups[1].Value.Trim(), '\]\((?!https?:|#)([^)]+)\)',
         { param($m) "](https://github.com/$repo/blob/$version/rust/$($m.Groups[1].Value))" })
