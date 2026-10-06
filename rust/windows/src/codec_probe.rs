@@ -57,7 +57,9 @@ enum Reply {
 }
 
 pub fn pyrowave(config: &Config) -> Result<u32> {
-    let (pipe, name) = Pipe::server(PIPE_PREFIX)?;
+    // The pipe admits only the signed-in user, so it fails before sign-in.
+    let (pipe, name) =
+        Pipe::server(PIPE_PREFIX).map_err(|error| SessionNotReady(format!("{error:#}")))?;
     let program = std::env::current_exe()?;
     let worker = Process::spawn(
         &program,

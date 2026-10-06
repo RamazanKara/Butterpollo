@@ -271,8 +271,13 @@ impl Host {
         let _ = ready.wait_for(|ready| *ready).await;
     }
     pub fn probe_codecs(self: &Arc<Self>) {
+        self.probe_codecs_attempt(0);
+    }
+    fn probe_codecs_attempt(self: &Arc<Self>, attempt: u32) {
         let h = self.clone();
         std::thread::spawn(move || {
+            h.probing_codecs
+                .store(true, std::sync::atomic::Ordering::Release);
             let Ok(_com) = butterpollo_windows::capture::ComGuard::new() else {
                 h.video_codecs_ready.send_replace(true);
                 h.probing_codecs
@@ -403,35 +408,60 @@ impl Host {
                 .store(false, std::sync::atomic::Ordering::Release);
             h.metadata.lock().unwrap().take();
             tracing::info!(codec_flags = flags, "encoder capability probe completed");
+            // Before anyone signs in after Windows starts, the encoders can
+            // fail to open (AMF error 1), and the host then offered no video
+            // codec at all until it restarted. Probe everything again.
+            const STANDARD: u32 = 0x1 | 0x100 | 0x200 | 0x10000 | 0x20000;
+            if flags & STANDARD == 0 && attempt < 6 {
+                let delay = Duration::from_secs(5 << attempt.min(3)).min(Duration::from_secs(60));
+                if h.wait_for_session(delay) {
+                    tracing::info!(
+                        attempt = attempt + 1,
+                        "no video codec available; probing the encoders again"
+                    );
+                    h.probe_codecs_attempt(attempt + 1);
+                }
+                return;
+            }
             if retry_pyrowave {
                 h.retry_pyrowave_probe(&config);
             }
         });
     }
-    /// Probe PyroWave again when the first probe ran before the signed-in
-    /// user's session was ready, as when the host starts with Windows.
-    /// PyroWave otherwise stayed unavailable until the host restarted.
-    fn retry_pyrowave_probe(&self, config: &Config) {
-        use butterpollo_windows::{codec_probe, process};
+    /// Wait `delay`, then until a user is signed in and no stream runs.
+    /// False when the host is stopping.
+    fn wait_for_session(&self, delay: Duration) -> bool {
         use std::sync::atomic::Ordering;
-        let mut delay = Duration::from_secs(5);
-        let mut attempts = 0;
+        let mut until = Instant::now() + delay;
         loop {
-            let until = Instant::now() + delay;
             while Instant::now() < until {
                 if self.stop.load(Ordering::Acquire) {
-                    return;
+                    return false;
                 }
                 std::thread::sleep(Duration::from_millis(250));
             }
             // Wait for a sign-in, and leave the GPU to a running stream.
-            if (process::is_system() && !process::user_signed_in())
+            if (butterpollo_windows::process::is_system()
+                && !butterpollo_windows::process::user_signed_in())
                 || !self.sessions.lock().unwrap().active.is_empty()
             {
-                delay = Duration::from_secs(5);
+                until = Instant::now() + Duration::from_secs(5);
                 continue;
             }
-            attempts += 1;
+            return true;
+        }
+    }
+    /// Probe PyroWave again when the first probe ran before the signed-in
+    /// user's session was ready, as when the host starts with Windows.
+    /// PyroWave otherwise stayed unavailable until the host restarted.
+    fn retry_pyrowave_probe(&self, config: &Config) {
+        use butterpollo_windows::codec_probe;
+        use std::sync::atomic::Ordering;
+        let mut delay = Duration::from_secs(5);
+        for attempts in 1..=6 {
+            if !self.wait_for_session(delay) {
+                return;
+            }
             match codec_probe::pyrowave(config) {
                 Ok(optional) => {
                     let flags = self.codecs.fetch_or(optional, Ordering::AcqRel) | optional;
