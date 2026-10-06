@@ -232,6 +232,86 @@ fn extended_paths(
     }
     Ok(chosen.into_iter().flatten().collect())
 }
+/// The active paths plus one route that switches `target` on, or None while
+/// the target is not connected. Active paths keep their mode indices, so the
+/// other displays keep their timings, positions and clone groups; Windows
+/// chooses the new display's mode, refresh and position.
+fn activation_paths(
+    active: &[DISPLAYCONFIG_PATH_INFO],
+    all: &[DISPLAYCONFIG_PATH_INFO],
+    adapter: LUID,
+    target: u32,
+) -> Result<Option<Vec<DISPLAYCONFIG_PATH_INFO>>> {
+    let ours = |p: &DISPLAYCONFIG_PATH_INFO| {
+        p.targetInfo.adapterId == adapter && p.targetInfo.id == target
+    };
+    let source = |p: &DISPLAYCONFIG_PATH_INFO| {
+        (
+            p.sourceInfo.adapterId.LowPart,
+            p.sourceInfo.adapterId.HighPart,
+            p.sourceInfo.id,
+        )
+    };
+    let routes: Vec<_> = all
+        .iter()
+        .filter(|p| ours(p) && p.targetInfo.targetAvailable.as_bool())
+        .collect();
+    if routes.is_empty() {
+        return Ok(None);
+    }
+    let occupied: std::collections::BTreeSet<_> =
+        active.iter().filter(|p| !ours(p)).map(source).collect();
+    let mut route = **routes
+        .iter()
+        .find(|p| !occupied.contains(&source(p)))
+        .context("no free desktop source for the virtual display")?;
+    route.flags = DISPLAYCONFIG_PATH_ACTIVE;
+    route.sourceInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+    route.targetInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+    // A zero refresh lets Windows pick the display's best rate; it requires
+    // unspecified scan-line ordering.
+    route.targetInfo.refreshRate = DISPLAYCONFIG_RATIONAL::default();
+    route.targetInfo.scanLineOrdering = DISPLAYCONFIG_SCANLINE_ORDERING_UNSPECIFIED;
+    if route.targetInfo.rotation.0 == 0 {
+        route.targetInfo.rotation = DISPLAYCONFIG_ROTATION_IDENTITY;
+    }
+    if route.targetInfo.scaling.0 == 0 {
+        route.targetInfo.scaling = DISPLAYCONFIG_SCALING_PREFERRED;
+    }
+    let mut paths: Vec<_> = active.iter().filter(|p| !ours(p)).copied().collect();
+    paths.push(route);
+    Ok(Some(paths))
+}
+/// Switch on a connected display beside the current desktop. Returns None
+/// while the target is not connected, otherwise whether the other displays
+/// kept their timings.
+fn activate_target(adapter: LUID, target: u32) -> Result<Option<bool>> {
+    let active = Topology::query()?;
+    let all = Topology::query_all()?;
+    let Some(paths) = activation_paths(&active.paths, &all.paths, adapter, target)? else {
+        return Ok(None);
+    };
+    let flags = SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES;
+    let kept = unsafe { SetDisplayConfig(Some(&paths), Some(&active.modes), flags) };
+    if kept == 0 {
+        return Ok(Some(true));
+    }
+    // Some drivers refuse supplied modes beside an unspecified one. Letting
+    // Windows choose every mode can retime the other displays, which the
+    // stream's layout restore undoes; a stream that cannot start cannot.
+    let mut loose = paths;
+    for path in &mut loose {
+        path.sourceInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+        path.targetInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+    }
+    check(unsafe { SetDisplayConfig(Some(&loose), None, flags) }).with_context(|| {
+        format!(
+            "Windows refused the display layout with the virtual display (supplied modes: {})",
+            std::io::Error::from_raw_os_error(kept)
+        )
+    })?;
+    Ok(Some(false))
+}
 impl Topology {
     fn rotations(&self) -> std::collections::BTreeMap<String, u32> {
         self.monitors()
@@ -1599,6 +1679,13 @@ impl VirtualDisplay {
         };
         let target = u32::from_le_bytes(result[40..44].try_into().unwrap());
         let deadline = Instant::now() + Duration::from_secs(10);
+        // Windows decides whether a display it has just connected joins the
+        // desktop. A layout it saved for the same displays (duplicate, or one
+        // screen only) can leave the new virtual display connected but off.
+        // Vibepollo's display helper switches it on after a short grace; so
+        // do we, without changing the other displays.
+        let mut connected_since = None;
+        let mut next_check = Instant::now();
         while Instant::now() < deadline {
             if let Ok(monitors) = monitors()
                 && let Some(m) = monitors
@@ -1610,11 +1697,41 @@ impl VirtualDisplay {
                 self.last_feed = Instant::now();
                 return Ok(());
             }
+            if Instant::now() >= next_check {
+                next_check = Instant::now() + Duration::from_millis(250);
+                let connected = Topology::query_all().is_ok_and(|all| {
+                    all.paths.iter().any(|p| {
+                        p.targetInfo.adapterId == luid
+                            && p.targetInfo.id == target
+                            && p.targetInfo.targetAvailable.as_bool()
+                    })
+                });
+                if connected {
+                    let since = *connected_since.get_or_insert_with(Instant::now);
+                    if since.elapsed() >= Duration::from_secs(1) {
+                        next_check = Instant::now() + Duration::from_secs(1);
+                        match activate_target(luid, target) {
+                            Ok(Some(kept_timings)) => tracing::info!(
+                                kept_timings,
+                                "Windows left the new virtual display switched off; switched it on beside the current displays"
+                            ),
+                            Ok(None) => {}
+                            Err(error) => tracing::warn!(
+                                error = format!("{error:#}"),
+                                "could not switch on the new virtual display"
+                            ),
+                        }
+                    }
+                }
+            }
             if self.last_feed.elapsed() >= Duration::from_secs(1) {
                 self.renew()?;
                 self.last_feed = Instant::now();
             }
             std::thread::sleep(Duration::from_millis(50));
+        }
+        if connected_since.is_some() {
+            bail!("virtual display was connected but Windows kept it switched off")
         }
         bail!("virtual display did not become active before the deadline")
     }
@@ -2284,6 +2401,160 @@ mod tests {
         assert_eq!(result[0].sourceInfo.id, 1);
         assert_eq!(result[1].sourceInfo.id, 0);
         assert!(extended_paths(&[vec![path(0, 10)], vec![path(0, 20)]]).is_err());
+    }
+    #[test]
+    fn switching_on_a_virtual_display_keeps_duplicated_tvs_and_their_modes() {
+        let gpu = LUID {
+            LowPart: 1,
+            HighPart: 0,
+        };
+        let vdd = LUID {
+            LowPart: 9,
+            HighPart: 0,
+        };
+        let path = |adapter, source, target, mode: u32, active, available: bool| {
+            let mut path = DISPLAYCONFIG_PATH_INFO::default();
+            path.sourceInfo.adapterId = adapter;
+            path.sourceInfo.id = source;
+            path.sourceInfo.Anonymous.modeInfoIdx = mode;
+            path.targetInfo.adapterId = adapter;
+            path.targetInfo.id = target;
+            path.targetInfo.Anonymous.modeInfoIdx = mode + 1;
+            path.targetInfo.targetAvailable = available.into();
+            path.targetInfo.refreshRate = DISPLAYCONFIG_RATIONAL {
+                Numerator: 120,
+                Denominator: 1,
+            };
+            path.targetInfo.scanLineOrdering = DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE;
+            path.flags = if active { DISPLAYCONFIG_PATH_ACTIVE } else { 0 };
+            path
+        };
+        // Two TVs share GPU source 0 (duplicate). The virtual display's own
+        // adapter source 0 already drives another client's display.
+        let active = [
+            path(gpu, 0, 10, 0, true, true),
+            path(gpu, 0, 11, 0, true, true),
+            path(vdd, 0, 1, 2, true, true),
+        ];
+        let mut all = active.to_vec();
+        all.extend([
+            path(gpu, 1, 10, 0, false, true),
+            path(vdd, 0, 2, 0, false, true),
+            path(vdd, 1, 2, 0, false, true),
+        ]);
+        let paths = activation_paths(&active, &all, vdd, 2).unwrap().unwrap();
+        assert_eq!(paths.len(), 4);
+        for (kept, original) in paths.iter().zip(&active) {
+            assert_eq!(kept.targetInfo.id, original.targetInfo.id);
+            assert_eq!(kept.sourceInfo.id, original.sourceInfo.id);
+            assert_eq!(unsafe { kept.sourceInfo.Anonymous.modeInfoIdx }, unsafe {
+                original.sourceInfo.Anonymous.modeInfoIdx
+            });
+            assert_eq!(unsafe { kept.targetInfo.Anonymous.modeInfoIdx }, unsafe {
+                original.targetInfo.Anonymous.modeInfoIdx
+            });
+        }
+        let new = paths[3];
+        assert_eq!((new.targetInfo.adapterId, new.targetInfo.id), (vdd, 2));
+        assert_eq!(new.sourceInfo.id, 1);
+        assert_eq!(new.flags, DISPLAYCONFIG_PATH_ACTIVE);
+        assert_eq!(
+            unsafe { new.sourceInfo.Anonymous.modeInfoIdx },
+            DISPLAYCONFIG_PATH_MODE_IDX_INVALID
+        );
+        assert_eq!(
+            unsafe { new.targetInfo.Anonymous.modeInfoIdx },
+            DISPLAYCONFIG_PATH_MODE_IDX_INVALID
+        );
+        assert_eq!(new.targetInfo.refreshRate.Denominator, 0);
+        assert_eq!(
+            new.targetInfo.scanLineOrdering,
+            DISPLAYCONFIG_SCANLINE_ORDERING_UNSPECIFIED
+        );
+        assert_eq!(new.targetInfo.rotation, DISPLAYCONFIG_ROTATION_IDENTITY);
+        assert_eq!(new.targetInfo.scaling, DISPLAYCONFIG_SCALING_PREFERRED);
+        // Not connected yet: keep waiting rather than failing.
+        assert!(activation_paths(&active, &all, vdd, 3).unwrap().is_none());
+        let mut gone = all.clone();
+        gone.retain(|p| p.targetInfo.id != 2);
+        gone.push(path(vdd, 0, 2, 0, false, false));
+        assert!(activation_paths(&active, &gone, vdd, 2).unwrap().is_none());
+        // Every source of the adapter is in use.
+        let busy = [
+            active[0],
+            active[1],
+            active[2],
+            path(vdd, 1, 5, 4, true, true),
+        ];
+        assert!(activation_paths(&busy, &all, vdd, 2).is_err());
+    }
+    #[test]
+    #[ignore = "creates a virtual display and briefly switches it off"]
+    fn native_virtual_display_left_off_by_windows_is_switched_on_without_retiming_others()
+    -> Result<()> {
+        let display = VirtualDisplay::create(
+            &format!("activation-test-{}", std::process::id()),
+            1280,
+            720,
+            60,
+        )?;
+        let owned = display
+            .resolved_target
+            .clone()
+            .context("virtual display unresolved")?;
+        let ours = |m: &Monitor| m.adapter == owned.adapter && m.target == owned.target;
+        // Device, width, height, refresh and desktop position.
+        type Timing = (String, u32, u32, u32, i32, i32);
+        let timings = || -> Result<Vec<Timing>> {
+            monitors()?
+                .iter()
+                .filter(|m| !ours(m))
+                .map(|m| {
+                    let mode = mode(&m.display_name)?;
+                    let position = unsafe { mode.Anonymous1.Anonymous2.dmPosition };
+                    Ok((
+                        m.device_id.clone(),
+                        mode.dmPelsWidth,
+                        mode.dmPelsHeight,
+                        mode.dmDisplayFrequency,
+                        position.x,
+                        position.y,
+                    ))
+                })
+                .collect()
+        };
+        let before = timings()?;
+        // What Windows does when a saved layout leaves the new display off.
+        let active = Topology::query()?;
+        let off: Vec<_> = active
+            .paths
+            .iter()
+            .filter(|p| {
+                !(p.targetInfo.adapterId == owned.adapter && p.targetInfo.id == owned.target)
+            })
+            .copied()
+            .collect();
+        check(unsafe {
+            SetDisplayConfig(
+                Some(&off),
+                Some(&active.modes),
+                SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES,
+            )
+        })?;
+        anyhow::ensure!(
+            !monitors()?.iter().any(ours),
+            "virtual display stayed on after switching it off"
+        );
+        let kept = activate_target(owned.adapter, owned.target)?;
+        anyhow::ensure!(monitors()?.iter().any(ours), "virtual display stayed off");
+        assert_eq!(kept, Some(true));
+        assert_eq!(timings()?, before);
+        println!(
+            "switched on {} beside {} displays",
+            display.name,
+            before.len()
+        );
+        Ok(())
     }
     #[test]
     fn previous_golden_snapshot_import_preserves_fractional_rates_clones_hdr_and_origins() {

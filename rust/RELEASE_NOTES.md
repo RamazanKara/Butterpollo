@@ -6,6 +6,10 @@
 
 Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.10 installer is named `butterpollo-setup-2.0.0-rc.10.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
 
+## Unreleased
+
+- **Fixes "virtual display did not become active before the deadline"** ([#4](https://github.com/RamazanKara/Butterpollo/issues/4)). Windows decides whether a newly connected display joins the desktop, and a layout it saved for the same displays (for example two TVs in duplicate mode) can leave the virtual display connected but switched off. The host waited for Windows and failed the launch after ten seconds; unplugging the other displays was the only workaround. When the virtual display stays off for a second after connecting, the host now switches it on itself beside the current displays, as Vibepollo's display helper does. The other displays keep their modes, positions and clone groups; only if the driver refuses that does Windows choose the modes, which the stream's layout restore undoes. A launch that still fails now says whether the display was connected but kept off.
+
 ## New in rc.10
 
 - **Correct HDR state on newer Windows versions.** Wide-gamut SDR color management is no longer mistaken for HDR support or active HDR. The host uses Windows' dedicated HDR state and toggle APIs where available, retains the legacy path on older systems, waits for the requested state, and cancels its own pending request after a failed transition. The capture and pacing defaults from rc.9 remain unchanged.
