@@ -24,7 +24,7 @@ use windows::{
             Dxgi::{Common::*, *},
         },
     },
-    core::Interface,
+    core::{Interface, PCWSTR},
 };
 
 include!(concat!(env!("OUT_DIR"), "/shader_bytecode.rs"));
@@ -64,10 +64,33 @@ pub struct Compute {
     /// D3D11 textures already opened here, by their COM pointer.
     opened: Mutex<HashMap<usize, (ID3D11Texture2D, ID3D12Resource)>>,
     pub priority: i32,
+    /// Set when the queue did not finish work in time; never shared again.
+    stuck: std::sync::atomic::AtomicBool,
 }
 // D3D12 devices, queues and fences are free-threaded; the rest is locked.
 unsafe impl Send for Compute {}
 unsafe impl Sync for Compute {}
+/// Wait on the CPU until `fence` reaches `value`, for at most two seconds.
+/// The copies wait for fences another device signals; after that device is
+/// lost they may never complete, and an unbounded wait froze the stream for
+/// good with no error to recover from.
+fn wait_fence(fence: &ID3D12Fence, value: u64) -> Result<()> {
+    use windows::Win32::{Foundation::WAIT_OBJECT_0, System::Threading::*};
+    unsafe {
+        if fence.GetCompletedValue() >= value {
+            return Ok(());
+        }
+        let event = CreateEventW(None, false, false, PCWSTR::null())?;
+        let waited = fence
+            .SetEventOnCompletion(value, event)
+            .map(|()| WaitForSingleObject(event, 2000));
+        let _ = CloseHandle(event);
+        if waited? != WAIT_OBJECT_0 && fence.GetCompletedValue() < value {
+            bail!("GPU work did not finish within two seconds");
+        }
+        Ok(())
+    }
+}
 /// Whether the copy and conversion queues ask for global realtime priority
 /// (`compute_queue_realtime`). Off by default: a realtime queue pre-empts the
 /// desktop compositor that every captured frame comes from, and an HDR stream
@@ -121,6 +144,7 @@ impl Compute {
                 next: Mutex::new(0),
                 opened: Mutex::new(HashMap::new()),
                 priority,
+                stuck: std::sync::atomic::AtomicBool::new(false),
             }))
         }
     }
@@ -140,8 +164,9 @@ impl Compute {
         shared.retain(|(_, compute)| compute.strong_count() > 0);
         if let Some(compute) = shared
             .iter()
-            .find(|(owner, _)| *owner == key)
-            .and_then(|(_, compute)| compute.upgrade())
+            .filter(|(owner, _)| *owner == key)
+            .filter_map(|(_, compute)| compute.upgrade())
+            .find(|compute| !compute.stuck.load(std::sync::atomic::Ordering::Acquire))
         {
             return Ok(compute);
         }
@@ -152,8 +177,10 @@ impl Compute {
     /// Signal the fence after the work submitted so far; returns its value.
     fn signal(&self) -> Result<u64> {
         let mut next = self.next.lock().unwrap();
+        // Advance only once the signal is queued: a value nothing will ever
+        // signal would hold every later wait on it.
+        unsafe { self.queue.Signal(&self.fence, *next + 1)? };
         *next += 1;
-        unsafe { self.queue.Signal(&self.fence, *next)? };
         Ok(*next)
     }
     /// The fence value after all work submitted so far.
@@ -171,17 +198,14 @@ impl Compute {
     pub fn completed(&self, value: u64) -> bool {
         unsafe { self.fence.GetCompletedValue() >= value }
     }
-    /// Wait on the CPU until the queue has passed `value`.
+    /// Wait on the CPU until the queue has passed `value`. A queue that does
+    /// not get there is not used again: [`Compute::for_device`] makes a new one.
     pub fn wait(&self, value: u64) -> Result<()> {
-        if self.completed(value) {
-            return Ok(());
+        let result = wait_fence(&self.fence, value);
+        if result.is_err() {
+            self.stuck.store(true, std::sync::atomic::Ordering::Release);
         }
-        // Without an event the call returns once the fence reaches the
-        // value, safely from any thread.
-        unsafe {
-            self.fence.SetEventOnCompletion(value, HANDLE::default())?;
-        }
-        Ok(())
+        result
     }
     /// A shared D3D11 texture as a D3D12 resource on this device.
     pub fn open(&self, texture: &ID3D11Texture2D) -> Result<ID3D12Resource> {
@@ -204,8 +228,11 @@ impl Compute {
             let _ = CloseHandle(handle);
             result?;
             let resource = resource.context("no shared resource")?;
-            // Captures recycle a few textures; start over if many came and went.
-            if opened.len() >= 64 {
+            // Captures recycle a few textures; start over if many came and
+            // went. In-flight copies and conversions hold their own references,
+            // so this cannot free memory the GPU still uses; the bound keeps
+            // stale 4K HDR textures from pinning gigabytes of video memory.
+            if opened.len() >= 24 {
                 opened.clear();
             }
             opened.insert(key, (texture.clone(), resource.clone()));
@@ -228,13 +255,7 @@ unsafe impl Sync for Ready {}
 impl Ready {
     /// Block until the copy is done.
     pub fn wait(&self) -> Result<()> {
-        unsafe {
-            if self.fence.GetCompletedValue() < self.value {
-                self.fence
-                    .SetEventOnCompletion(self.value, HANDLE::default())?;
-            }
-        }
-        Ok(())
+        wait_fence(&self.fence, self.value)
     }
 }
 
@@ -262,8 +283,15 @@ pub struct Handoff {
     value: u64,
     /// The last value the copy queue was asked to signal.
     signalled: u64,
-    /// Command lists, each with the value of the copy that last used it.
-    lists: Vec<(ID3D12CommandAllocator, ID3D12GraphicsCommandList, u64)>,
+    /// Command lists, each with the value of the copy that last used it and
+    /// the resources that copy reads and writes, kept until it has run.
+    #[allow(clippy::type_complexity)]
+    lists: Vec<(
+        ID3D12CommandAllocator,
+        ID3D12GraphicsCommandList,
+        u64,
+        [Option<ID3D12Resource>; 2],
+    )>,
     /// Foreign textures belong to this capture, not the adapter-wide cache.
     /// Releasing a helper must release its imported resources immediately.
     imported: HashMap<usize, (ID3D11Texture2D, ID3D12Resource)>,
@@ -344,10 +372,13 @@ impl Handoff {
         self.value += 1;
         let value = self.value;
         unsafe {
-            let (allocator, commands, last) = &mut self.lists[list];
+            let (allocator, commands, last, resources) = &mut self.lists[list];
             allocator.Reset()?;
             commands.Reset(&*allocator, None)?;
             commands.CopyResource(&destination, &source);
+            // The adapter-wide cache may release its references while the copy
+            // runs; freeing memory the GPU still reads can hang its engine.
+            *resources = [Some(destination.clone()), Some(source.clone())];
             // Back to COMMON for the conversion queue and the D3D11 device.
             let mut barriers = [transition(
                 &destination,
@@ -382,7 +413,7 @@ impl Handoff {
     /// A command list the copy queue has finished with.
     fn list(&mut self) -> Result<usize> {
         let done = unsafe { self.copied.0.GetCompletedValue() };
-        if let Some(index) = self.lists.iter().position(|(.., last)| *last <= done) {
+        if let Some(index) = self.lists.iter().position(|(_, _, last, _)| *last <= done) {
             return Ok(index);
         }
         if self.lists.len() < 8 {
@@ -398,7 +429,7 @@ impl Handoff {
                     None,
                 )?;
                 list.Close()?;
-                self.lists.push((allocator, list, 0));
+                self.lists.push((allocator, list, 0, [None, None]));
             }
             return Ok(self.lists.len() - 1);
         }
@@ -439,13 +470,7 @@ pub struct Converted {
 impl Converted {
     /// Block until the conversion is done.
     pub fn wait(&self) -> Result<()> {
-        unsafe {
-            if self.fence.GetCompletedValue() < self.value {
-                self.fence
-                    .SetEventOnCompletion(self.value, HANDLE::default())?;
-            }
-        }
-        Ok(())
+        wait_fence(&self.fence, self.value)
     }
 }
 /// An output texture with a fence of its own. The encoder waits for the
@@ -472,6 +497,9 @@ struct Slot {
     allocator: ID3D12CommandAllocator,
     list: ID3D12GraphicsCommandList,
     fence: u64,
+    /// The source and cursor the slot's last conversion reads, kept until it
+    /// has run: the adapter-wide cache may release its own references.
+    inputs: [Option<ID3D12Resource>; 2],
 }
 /// RGB to NV12 or P010 on the compute queue, with the same shader as the
 /// D3D11 converter (scaling, letterboxing, HDR and the colour matrix).
@@ -620,6 +648,7 @@ impl Converter {
                     allocator,
                     list,
                     fence: 0,
+                    inputs: [None, None],
                 });
             }
             Ok(Self {
@@ -921,6 +950,9 @@ impl Converter {
             Some(ready) => ready.wait()?,
             None => {}
         }
+        // The slot's previous conversion has finished (waited above), so its
+        // inputs can go; this one's stay until the slot comes round again.
+        self.slots[slot].inputs = [Some(source.clone()), pointer.cloned()];
         let fence = self.compute.execute(&self.slots[slot].list)?;
         self.slots[slot].fence = fence;
         // The encoder's signal for this texture, after the conversion.
