@@ -1,5 +1,7 @@
 """Bump the release version and open its release notes section.
 
+Writes LF line endings on any platform.
+
 usage: python rust/release/bump.py 2.0.0-rc.14 [--notes FILE]
 
 Updates the workspace version (Cargo.toml and the workspace crates in
@@ -31,7 +33,7 @@ cargo = root / 'Cargo.toml'
 text = cargo.read_text(encoding='utf-8')
 old = re.search(r'(?m)^version = "([^"]+)"', text)[1]
 assert old != new, f'already {new}'
-cargo.write_text(text.replace(f'version = "{old}"', f'version = "{new}"', 1), encoding='utf-8')
+cargo.write_text(text.replace(f'version = "{old}"', f'version = "{new}"', 1), encoding='utf-8', newline='')
 
 # Cargo.lock: only the workspace's own crates carry the workspace version.
 members = set(re.findall(r'(?m)^name = "([^"]+)"', ''.join(
@@ -40,13 +42,13 @@ lock = root / 'Cargo.lock'
 text, count = re.subn(r'(?m)^(name = "(?:%s)"\nversion = )"%s"$' % ('|'.join(map(re.escape, members)), re.escape(old)),
                       lambda m: f'{m[1]}"{new}"', lock.read_text(encoding='utf-8'))
 assert count, 'no workspace crate in Cargo.lock'
-lock.write_text(text, encoding='utf-8')
+lock.write_text(text, encoding='utf-8', newline='')
 
 short = re.compile(r'(?<![\w.])%s(?![\w])' % re.escape(label(old)))
 for name in ('README.md', 'docs/README.md', 'docs/getting-started.md', 'rust/README.md'):
     path = root / name
     text = path.read_text(encoding='utf-8')
-    path.write_text(short.sub(label(new), text.replace(old, new)), encoding='utf-8')
+    path.write_text(short.sub(label(new), text.replace(old, new)), encoding='utf-8', newline='')
 
 notes = root / 'rust/RELEASE_NOTES.md'
 lines = notes.read_text(encoding='utf-8').split('\n')
@@ -63,6 +65,6 @@ lines[at:at] = [f'## New in {label(new)}', '', *body, '']
 text = '\n'.join(lines)
 text = text.replace(f'butterpollo-setup-{old}.exe` installs', f'butterpollo-setup-{new}.exe` installs')
 text = text.replace(f'butterpollo-rust-{old}-windows-x64.zip`', f'butterpollo-rust-{new}-windows-x64.zip`')
-notes.write_text(text, encoding='utf-8')
+notes.write_text(text, encoding='utf-8', newline='')
 print(f'{old} -> {new}; {count} crates in Cargo.lock; fill in "## New in {label(new)}" in rust/RELEASE_NOTES.md'
       if not args.notes else f'{old} -> {new}; {count} crates in Cargo.lock')
