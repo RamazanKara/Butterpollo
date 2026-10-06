@@ -24,14 +24,14 @@ from PIL import Image, ImageDraw, ImageFont
 
 W, H = 1920, 1080
 FPS = 30
-DURATION = 54
+DURATION = 57
 BG = (13, 16, 22)
 WHITE = (248, 249, 252)
 YELLOW = (255, 210, 66)
 MUTED = (164, 173, 191)
 PANEL = (24, 29, 39)
 LINE = (48, 56, 70)
-SCENES = ((0, 10), (10, 16), (16, 25), (25, 34), (34, 41), (41, 49), (49, 54))
+SCENES = ((0, 18), (18, 26), (26, 35), (35, 43), (43, 51), (51, 57))
 
 
 def font_path(bold=False, mono=False):
@@ -128,204 +128,249 @@ def path_arrow(d, points, color=YELLOW, width=3):
     d.polygon([(x, y), (x - 12, y - 7), (x - 12, y + 7)], fill=color)
 
 
-def pulse(d, x0, x1, y, time, duration=4):
-    if time is None:
-        return
-    x = x0 + ((time / duration) % 1) * (x1 - x0)
-    d.ellipse((x - 6, y - 6, x + 6, y + 6), fill=WHITE)
+def clamp(value):
+    return max(0.0, min(1.0, value))
 
 
-def encoder(d, x, y):
-    d.rounded_rectangle((x, y, x + 180, y + 71), radius=12, fill=(43, 68, 84))
-    text(d, (x + 90, y + 23), 'AMF', 29, WHITE, True, anchor='mm')
-    text(d, (x + 90, y + 52), 'Hardware encode', 20, WHITE, anchor='mm')
+def mix(a, b, amount):
+    return tuple(round(x + (y - x) * clamp(amount)) for x, y in zip(a, b))
 
 
-def scene_queues(d, time):
-    label(d, '01 / QUEUE PLACEMENT')
-    text(d, (76, 238), 'Different queues. Same Radeon.', 81, bold=True)
-    text(d, (82, 349), 'Capture copies + colour conversion move onto compute.', 38, MUTED)
-
-    d.rounded_rectangle((80, 418, 1840, 616), radius=18, fill=PANEL, outline=LINE, width=2)
-    text(d, (110, 434), 'SUNSHINE-DERIVED D3D11 PATH', 27, WHITE, True)
-    text(d, (1812, 454), 'Reviewed: Vibepollo 2.0', 25, MUTED, anchor='rm')
-    text(d, (111, 536), 'GRAPHICS', 26, MUTED, mono=True, anchor='lm')
-    for i in range(3):
-        x = 348 + i * 204
-        block(d, (x, 501, x + 188, 572), 'Game', (54, 64, 81), size=29)
-    block(d, (986, 501, 1222, 572), 'Capture copy', (136, 124, 82), size=28)
-    block(d, (1240, 501, 1492, 572), 'RGB → YUV', (136, 124, 82), size=30)
-    path_arrow(d, (1505, 536, 1615, 536), (148, 178, 205))
-    encoder(d, 1630, 501)
-    pulse(d, 1507, 1600, 536, time)
-
-    d.rounded_rectangle((80, 646, 1840, 923), radius=18, fill=PANEL, outline=LINE, width=2)
-    text(d, (110, 662), 'BUTTERPOLLO · D3D12 COMPUTE', 27, YELLOW, True)
-    text(d, (1812, 682), 'Native AMF on both paths', 25, MUTED, anchor='rm')
-    text(d, (111, 752), 'GRAPHICS', 26, MUTED, mono=True, anchor='lm')
-    for i in range(3):
-        x = 348 + i * 204
-        block(d, (x, 717, x + 188, 788), 'Game', (54, 64, 81), size=29)
-    text(d, (111, 857), 'COMPUTE', 26, YELLOW, mono=True, anchor='lm')
-    block(d, (348, 822, 630, 893), 'Capture copies', YELLOW, BG, 29)
-    block(d, (650, 822, 960, 893), 'RGB → NV12/P010', YELLOW, BG, 29)
-    path_arrow(d, (978, 857, 1615, 857), YELLOW)
-    text(d, (1278, 818), 'D3D12 surface + readiness fence', 29, MUTED, anchor='mm')
-    encoder(d, 1630, 822)
-    pulse(d, 980, 1600, 857, time)
-    footer(d, ['Queue-placement schematic · both paths share one GPU and use GPU textures + native AMF',
-               'Compute submission lets frame preparation run alongside graphics work.'])
+def stage_job(d, x0, x1, y, title, color, cursor, is_frame=True):
+    bottom = y + 58
+    d.rounded_rectangle((x0, y, x1, bottom), radius=9, fill=PANEL, outline=mix(LINE, color, .4), width=2)
+    fill = clamp((cursor - x0) / (x1 - x0))
+    if fill:
+        d.rounded_rectangle((x0, y, max(x0 + 10, x0 + (x1 - x0) * fill), bottom), radius=9, fill=mix(PANEL, color, .7))
+    active = x0 <= cursor < x1
+    if active:
+        d.rounded_rectangle((x0, y, x1, bottom), radius=9, outline=WHITE, width=2)
+    foreground = BG if cursor >= x1 and color == YELLOW else WHITE
+    text(d, ((x0 + x1) / 2, y + 18), title, 26, foreground, True, anchor='mm')
+    state = 'F042' if active and is_frame else ('rendering' if active else ('complete' if cursor >= x1 else 'queued'))
+    text(d, ((x0 + x1) / 2, y + 44), state, 20, foreground if active or cursor >= x1 else MUTED, anchor='mm')
 
 
-def scene_fences(d, time):
-    label(d, '02 / THE GPU HANDOFF')
-    text(d, (76, 244), 'Explicit handoffs. Frame by frame.', 80, bold=True)
-    text(d, (82, 359), 'GPU fences keep every producer, copy and encoder read in order.', 37, MUTED)
-    titles = [('Captured', 'texture'), ('Fenced GPU', 'copies'), ('RGB →', 'NV12/P010'), ('Native', 'AMD AMF')]
-    notes = [('Windows / WGC or DDX', 'Wait for producer readiness'),
-             ('D3D12 compute queues', 'Copy-complete fence'),
-             ('D3D12 compute shader', 'Per-texture ready fence'),
-             ('D3D12 input surface', 'Texture ownership release')]
-    for i, ((a, b), (n1, n2)) in enumerate(zip(titles, notes)):
-        x = 80 + i * 465
-        fill = YELLOW if i in (1, 2) else PANEL
-        fg = BG if i in (1, 2) else WHITE
-        d.rounded_rectangle((x, 468, x + 365, 670), radius=17, fill=fill)
-        text(d, (x + 24, 489), f'0{i + 1}', 24, fg, mono=True)
-        text(d, (x + 25, 534), a, 43, fg, True)
-        text(d, (x + 25, 587), b, 43, fg, True)
-        text(d, (x + 4, 712), n1, 28, WHITE)
-        text(d, (x + 4, 757), n2, 27, MUTED)
-        if i < 3:
-            path_arrow(d, (x + 383, 567, x + 442, 567))
-            pulse(d, x + 380, x + 436, 567, time, 3)
-    d.line((1630, 811, 1630, 869, 995, 869), fill=LINE, width=3)
-    d.polygon([(995, 869), (1009, 862), (1009, 876)], fill=LINE)
-    text(d, (1290, 827), 'Reuse after the encoder releases ownership', 28, MUTED, anchor='mm')
-    footer(d, ['Service WGC: capture copies include helper transfer + the host-owned snapshot.',
-               'A separate fence for each output texture preserves frame readiness and safe reuse.'])
+def gate(d, x, y, ready):
+    color = (125, 217, 189) if ready else (97, 110, 128)
+    d.line((x, y - 21, x, y + 21), fill=color, width=3)
+    d.polygon([(x, y - 6), (x + 6, y), (x, y + 6), (x - 6, y)], fill=color)
 
 
-def pair_chart(d, x, y, title, values, max_value, time):
+def frame_output(d, x, y, ready):
+    color = YELLOW if ready else LINE
+    d.rounded_rectangle((x, y, x + 145, y + 58), radius=9, fill=PANEL, outline=color, width=2)
+    text(d, (x + 72, y + 19), 'F042', 28, color, True, anchor='mm')
+    text(d, (x + 72, y + 45), 'bitstream' if ready else 'output', 19, color, anchor='mm')
+
+
+def scene_schedule(d, time):
+    time = 6.7 if time is None else time
+    producer_ready = time >= 2.3
+    cursor = 405 + clamp((time - 3) / 9) * (1660 - 405)
+    label(d, 'FOLLOW FRAME 042 / TWO ALTERNATIVE PATHS')
+    text(d, (76, 238), 'Move frame preparation onto compute.', 77, bold=True)
+    subtitle = ('AMF releases each output texture before it returns to the pool.' if time >= 14
+                else 'The game work and hardware-encode duration are identical in this schematic.')
+    text(d, (82, 345), subtitle, 34, YELLOW if time >= 14 else MUTED)
+    game = ((430, 690), (710, 985))
+    stages = [dict(top=406, title='REVIEWED D3D11 PATH / VIBEPOLLO 2.0',
+                   graphics=473, prep=473, encode=567, copy=(1015,1195), convert=(1220,1440), enc=(1470,1640), output=1665, release=14),
+              dict(top=676, title='BUTTERPOLLO / D3D12 COMPUTE',
+                   graphics=738, prep=806, encode=874, copy=(430,610), convert=(635,855), enc=(885,1055), output=1080, release=8.7)]
+    for i, p in enumerate(stages):
+        title_color = WHITE if i == 0 else YELLOW
+        text(d, (82, p['top']), p['title'], 29, title_color, True)
+        if not producer_ready:
+            status = 'F042: waiting for capture'
+        elif cursor < p['copy'][0]:
+            status = 'F042: waiting for graphics' if i == 0 else 'F042: ready for compute'
+        elif cursor < p['copy'][1]:
+            status = 'F042: copying'
+        elif cursor < p['convert'][0]:
+            status = 'F042: copy-complete fence'
+        elif cursor < p['convert'][1]:
+            status = 'F042: converting'
+        elif cursor < p['enc'][0]:
+            status = 'F042: texture ready'
+        elif cursor < p['enc'][1]:
+            status = 'F042: encoding'
+        else:
+            status = 'F042: encoded / S3 held' if time < p['release'] else 'F042: encoded / S3 released'
+        text(d, (1838, p['top'] + 16), status, 27, YELLOW if i else WHITE, mono=True, anchor='rm')
+        text(d, (84, p['graphics'] + 29), 'Graphics work', 27, MUTED, anchor='lm')
+        for x0,x1 in game:
+            stage_job(d, x0, x1, p['graphics'], 'Game draw', (87,102,124), cursor, False)
+        if i:
+            text(d, (84, p['prep'] + 29), 'Compute queues', 27, YELLOW, anchor='lm')
+        text(d, (84, p['encode'] + 29), 'AMF / hardware', 27, (152,206,219), anchor='lm')
+        stage_job(d, *p['copy'], p['prep'], 'GPU copies', YELLOW, cursor)
+        stage_job(d, *p['convert'], p['prep'], 'RGB → YUV', YELLOW, cursor)
+        stage_job(d, *p['enc'], p['encode'], 'Encode', (71,147,174), cursor)
+        gate(d, 405, p['prep'] + 29, producer_ready)
+        gate(d, p['copy'][1] + 12, p['prep'] + 29, cursor >= p['copy'][1])
+        mid = p['convert'][1] + 15
+        d.line((mid, p['prep'] + 29, mid, p['encode'] + 29, p['enc'][0] - 7, p['encode'] + 29), fill=LINE, width=2)
+        gate(d, mid, p['prep'] + 29, cursor >= p['convert'][1])
+        path_arrow(d, (p['enc'][1] + 4, p['encode'] + 29, p['output'] - 6, p['encode'] + 29), (152,206,219), 2)
+        frame_output(d, p['output'], p['encode'], cursor >= p['enc'][1])
+        # Output arrival and texture ownership release are distinct events.
+        locked = cursor >= p['convert'][0] and time < p['release']
+        ownership = ('S3: owned until AMF releases it' if locked else
+                     ('AMF released S3 → reusable' if time >= p['release'] else 'Output surface S3: available'))
+        ownership_color = (125, 217, 189) if time >= p['release'] else MUTED
+        if i:
+            text(d, (1838, p['encode'] + 29), ownership, 25, ownership_color, anchor='rm')
+        else:
+            text(d, (430, p['encode'] + 29), ownership, 25, ownership_color, anchor='lm')
+    footer(d, ['Scheduling schematic · illustrative durations · both paths share the same GPU resources',
+               'Capture producer ready → copy complete → per-texture ready → AMF releases surface ownership'])
+
+
+def axis(d, x, y, width=765):
+    d.line((x, y, x + width, y), fill=LINE, width=2)
+    for value in (0,20,40,60):
+        xx = x + width * value / 60
+        d.line((xx, y-4, xx, y+4), fill=MUTED, width=1)
+        text(d, (xx, y+22), str(value), 24, MUTED, anchor='mm')
+
+
+def pair_chart(d, x, y, title, values, time):
     text(d, (x, y), title, 36, WHITE, True)
-    for i, (value, caption) in enumerate(zip(values, ('D3D11 graphics', 'D3D12 compute'))):
-        yy = y + 81 + i * 142
-        text(d, (x, yy), caption, 27, MUTED)
-        text(d, (x + 765, yy + 2), f'{value:.1f} ms', 37, YELLOW if i else WHITE, True, anchor='rt')
-        d.rounded_rectangle((x, yy + 58, x + 765, yy + 88), radius=5, fill=PANEL)
-        length = 765 * value / max_value * ease(time / 1.25)
-        d.rounded_rectangle((x, yy + 58, x + max(10, length), yy + 88), radius=5,
-                            fill=YELLOW if i else (125, 137, 157))
+    for i,(value,caption) in enumerate(zip(values,('Compute off / D3D11','Compute on / D3D12'))):
+        yy = y + 80 + i * 145
+        text(d, (x, yy), caption, 28, MUTED)
+        start = .25 + i * 1.1
+        p = ease((time-start)/.8)
+        d.rounded_rectangle((x,yy+61,x+765,yy+95), radius=5, fill=PANEL)
+        if p:
+            text(d, (x+765, yy), f'{value:.1f} ms', 40, YELLOW if i else WHITE, True, anchor='rt')
+            d.rounded_rectangle((x,yy+61,x+max(10,765*value/60*p),yy+95), radius=5, fill=YELLOW if i else (125,137,157))
+    axis(d,x,y+366)
 
 
 def scene_compute_results(d, time):
-    label(d, '03 / ISOLATE THE COMPUTE CHANGE')
-    text(d, (76, 243), 'Same build. Compute off → on.', 85, bold=True)
-    text(d, (82, 362), 'Full encrypted stream · test-pattern render → independent decoder', 36, MUTED)
-    pair_chart(d, 84, 456, 'Average picture delay', (41.0, 33.5), 60, time)
-    pair_chart(d, 1050, 456, '95th-percentile picture delay', (54.4, 42.3), 60, time)
-    d.line((970, 459, 970, 813), fill=LINE, width=2)
-    text(d, (83, 864), 'Separate encoder probe: 21.5 → 2.0 ms', 35, YELLOW, True)
-    text(d, (900, 870), 'Synthetic frame submission → completed bitstream', 28, MUTED)
-    footer(d, ['RX 7900 XT · 1080p60 HEVC 10-bit HDR · DDX · controlled GPU load · two runs per mode',
-               'October 4, 2026 · gpu_compute_conversion = false / true · rust/PERFORMANCE.md'])
+    label(d, 'MEASUREMENT 01 / ISOLATE THE COMPUTE CHANGE')
+    text(d, (76, 242), 'Same build. Only compute changes.', 81, bold=True)
+    text(d, (82, 354), 'Picture delay: moving test-pattern render → independent decoder', 36, MUTED)
+    pair_chart(d,84,442,'Average delay',(41.0,33.5),time)
+    pair_chart(d,1050,442,'Slower frames / 95th percentile',(54.4,42.3),time-2.6)
+    d.line((970,445,970,825),fill=LINE,width=2)
+    text(d,(84,882),'Both charts use the same 0–60 ms scale.',31,MUTED)
+    footer(d,['RX 7900 XT · DDX · 1080p60 HEVC HDR · controlled GPU load · mean of two runs per path',
+              'October 4, 2026 · encrypted loopback stream · compute off / on · rust/PERFORMANCE.md'])
 
 
 def scene_host_results(d, time):
-    label(d, '04 / COMPARE THE COMPLETE HOSTS')
-    text(d, (76, 243), 'Measure the picture that arrives.', 83, bold=True)
-    text(d, (83, 359), 'Separate controlled comparison · three alternating runs per host', 37, MUTED)
-    d.line((80, 460, 1840, 460), fill=LINE, width=2)
-    text(d, (1120, 421), 'Vibepollo 2.0', 35, WHITE, True, anchor='mm')
-    text(d, (1580, 421), 'Butterpollo rc.2', 35, YELLOW, True, anchor='mm')
-    rows = [('Render → decode · average', '96.4 ms', '42.4 ms'),
-            ('Render → decode · 95th percentile', '137.0 ms', '56.5 ms'),
-            ('Fresh pictures per second', '23.9 FPS', '51.4 FPS')]
-    for i, (name, old, new) in enumerate(rows):
-        y = 524 + i * 130
-
-        text(d, (83, y), name, 35, WHITE, anchor='lm')
-        text(d, (1120, y), old, 53, (171, 181, 197), True, anchor='mm')
-        text(d, (1580, y), new, 53, YELLOW, True, anchor='mm')
-        if i < 2:
-            d.line((80, y + 65, 1840, y + 65), fill=LINE, width=1)
-    text(d, (83, 878), '56% lower average picture delay', 36, YELLOW, True)
-    text(d, (1120, 878), '2.15× as many fresh pictures', 36, YELLOW, True)
-    footer(d, ['RX 7900 XT · DDX · 1080p60 HEVC HDR · 20 Mbps · matched AMF settings · GPU under load',
-               'Butterpollo rc.2 vs Vibepollo 2.0 · October 4, 2026 · rust/PERFORMANCE.md'])
-
-
-def scene_hdr(d, time):
-    label(d, '05 / CURRENT rc.10 · NATIVE HDR VALIDATION')
-    text(d, (76, 243), 'HDR, checked at the decoded pixels.', 77, bold=True)
-    stages = [('FP16 scRGB', 'Native HDR capture'), ('PQ · BT.2020', 'GPU colour conversion'),
-              ('10-bit HEVC / AV1', 'Native AMF encoding'), ('Decoded pixels', 'Independent verification')]
-    for i, (title, detail) in enumerate(stages):
-        x = 80 + i * 465
-        d.rounded_rectangle((x, 407, x + 365, 578), radius=16, fill=PANEL, outline=LINE, width=2)
-        text(d, (x + 22, 433), title, 33, YELLOW if i == 1 else WHITE, True)
-        text(d, (x + 22, 516), detail, 27, MUTED)
-        if i < 3:
-            path_arrow(d, (x + 380, 491, x + 443, 491))
-    text(d, (84, 639), '5,173 / 5,173', 83, YELLOW, True)
-    text(d, (88, 756), 'HDR frames decoded', 36, WHITE)
-    text(d, (1060, 639), '<0.51', 83, YELLOW, True)
-    text(d, (1064, 756), 'Mean absolute colour error', 36, WHITE)
-    text(d, (1064, 810), '10-bit code values · four reference frames', 27, MUTED)
-    footer(d, ['rc.10 · RX 7900 XT · 1280×720/60 · native virtual HDR · FP16 capture · four HEVC/AV1 runs',
-               '5,173 HDR + 1,169 SDR = 6,342 cleanly decoded frames · rust/PERFORMANCE.md'])
+    label(d, 'MEASUREMENT 02 / SEPARATE WHOLE-HOST COMPARISON')
+    text(d,(76,242),'Vibepollo 2.0 → Butterpollo rc.2',83,bold=True)
+    text(d,(82,354),'Same Radeon, matched AMF settings, three alternating runs per host.',35,MUTED)
+    text(d,(1120,435),'Vibepollo 2.0',34,WHITE,True,anchor='mm')
+    text(d,(1580,435),'Butterpollo rc.2',34,YELLOW,True,anchor='mm')
+    d.line((80,474,1840,474),fill=LINE,width=2)
+    rows=[('Render → decode / average','96.4 ms','42.4 ms'),
+          ('Render → decode / 95th percentile','137.0 ms','56.5 ms'),
+          ('Fresh pictures per second','23.9 FPS','51.4 FPS')]
+    for i,(title,old,new) in enumerate(rows):
+        y=535+i*125
+        amount=clamp((time-(.35+i*1.35))/.35)
+        if amount:
+            text(d,(83,y),title,34,mix(BG,WHITE,amount),anchor='lm')
+            text(d,(1120,y),old,55,mix(BG,(171,181,197),amount),True,anchor='mm')
+            text(d,(1580,y),new,55,mix(BG,YELLOW,amount),True,anchor='mm')
+            if i<2:
+                d.line((80,y+63,1840,y+63),fill=mix(BG,LINE,amount),width=1)
+    if time>=4.8:
+        text(d,(83,871),'56% lower average picture delay',36,YELLOW,True)
+        text(d,(1120,871),'2.15× as many fresh pictures',36,YELLOW,True)
+    footer(d,['RX 7900 XT · DDX · 1080p60 HEVC HDR · 20 Mbps requested · controlled GPU load',
+              'Historical comparison · October 4, 2026 · mean of three runs per host · rust/PERFORMANCE.md'])
 
 
-def sampling_grid(d, x, y, full, plane):
-    side = 142
-    base = (198, 204, 214) if plane == 'Y' else ((66, 175, 210) if plane == 'Cb' else (202, 108, 166))
-    if full or plane == 'Y':
+def scene_hdr(d,time):
+    label(d,'CURRENT rc.10 / NATIVE HEVC + AV1 HDR')
+    text(d,(76,242),'Check the pixels after decoding.',84,bold=True)
+    text(d,(83,357),'Native capture → colour conversion → hardware encode → independent decode',33,MUTED)
+    stages=[('FP16 scRGB','HDR capture'),('10-bit PQ','BT.2020 colour'),('HEVC / AV1','Native AMD AMF'),('Decoded pixels','Compare to reference')]
+    for i,(title,note) in enumerate(stages):
+        x=80+i*465
+        active=time>=i*.65
+        d.rounded_rectangle((x,431,x+365,572),radius=15,fill=PANEL,outline=YELLOW if active else LINE,width=2)
+        text(d,(x+24,449),title,34,WHITE if active else MUTED,True)
+        text(d,(x+24,507),note,27,MUTED)
+        if i<3:
+            path_arrow(d,(x+382,502,x+444,502),YELLOW if time>=(i+1)*.65 else LINE)
+    if time>=2.5:
+        text(d,(83,620),'AV1 decoded reference frame',36,WHITE,True)
+        text(d,(85,676),'10-bit PQ luma / Y′',26,MUTED)
+        text(d,(638,676),'Expected',26,MUTED,anchor='mt')
+        text(d,(926,676),'Decoded',26,MUTED,anchor='mt')
+        d.line((80,719,1044,719),fill=LINE,width=2)
+        for row,(name,expected,decoded) in enumerate([('Black','64.00','64.00'),('100-nit white','509.08','509.00')]):
+            y=766+row*93
+            text(d,(84,y),name,31,WHITE,anchor='lm')
+            text(d,(638,y),expected,43,WHITE,True,anchor='mm')
+            text(d,(926,y),decoded,43,YELLOW,True,anchor='mm')
+        d.line((1120,620,1120,890),fill=LINE,width=2)
+    if time>=3.5:
+        text(d,(1210,632),'Four HEVC / AV1 HDR runs',30,WHITE)
+        text(d,(1206,708),'5,173 / 5,173',61,YELLOW,True)
+        text(d,(1210,796),'frames decoded',34,WHITE)
+        text(d,(1210,854),'Reference colour error <0.51¹',29,MUTED)
+    footer(d,['rc.10 · RX 7900 XT · native virtual HDR · FP16 capture · 1280×720/60 · four HEVC/AV1 runs',
+              '¹ Mean absolute error in 10-bit code values, four reference frames · rust/PERFORMANCE.md'])
+
+
+def sampling_grid(d,x,y,full,plane,visible=True):
+    text(d,(x+71,y-35),plane,31,WHITE,True,anchor='mm')
+    if not visible:
+        return
+    base=(198,204,214) if plane=='Y' else ((66,175,210) if plane=='Cb' else (202,108,166))
+    if full or plane=='Y':
         for row in range(2):
             for col in range(2):
-                delta = (row * 2 + col) * 10
-                color = tuple(max(0, c - delta) for c in base)
-                xx, yy = x + col * 75, y + row * 75
-                d.rounded_rectangle((xx, yy, xx + 66, yy + 66), radius=8, fill=color)
-                text(d, (xx + 33, yy + 33), '•', 28, BG, anchor='mm')
+                delta=(row*2+col)*10
+                color=tuple(max(0,c-delta) for c in base)
+                xx,yy=x+col*75,y+row*75
+                d.rounded_rectangle((xx,yy,xx+66,yy+66),radius=8,fill=color)
+                d.ellipse((xx+29,yy+29,xx+37,yy+37),fill=BG)
     else:
-        d.rounded_rectangle((x, y, x + side, y + side), radius=8, fill=base)
-        text(d, (x + side / 2, y + side / 2), '•', 28, BG, anchor='mm')
-    text(d, (x + side / 2, y - 35), plane, 31, WHITE, True, anchor='mm')
+        d.rounded_rectangle((x,y,x+142,y+142),radius=8,fill=base)
+        d.ellipse((x+67,y+67,x+75,y+75),fill=BG)
 
 
-def scene_pyrowave(d, time):
-    label(d, '06 / PYROWAVE · FULL HDR 4:4:4')
-    text(d, (76, 243), 'Full-resolution colour, pixel by pixel.', 76, bold=True)
-    text(d, (83, 353), 'Chroma sampling in a 2×2-pixel block', 37, MUTED)
-    for i, (mode, detail) in enumerate([('4:2:0', '4 Y + 1 Cb + 1 Cr sample'), ('4:4:4', '4 Y + 4 Cb + 4 Cr samples')]):
-        x = 80 + i * 940
-        d.rounded_rectangle((x, 425, x + 820, 794), radius=18, fill=PANEL, outline=LINE, width=2)
-        text(d, (x + 31, 448), mode, 49, YELLOW if i else WHITE, True)
-        text(d, (x + 785, 473), 'PyroWave HDR' if i else 'Subsampled chroma', 29, MUTED, anchor='rm')
-        for j, plane in enumerate(('Y', 'Cb', 'Cr')):
-            sampling_grid(d, x + 111 + j * 225, 575, bool(i), plane)
-        text(d, (x + 410, 757), detail, 30, WHITE, anchor='mm')
-    text(d, (83, 846), '10-bit planar YUV → shared D3D11 / Vulkan textures → PyroWave', 36, YELLOW, True)
-    footer(d, ['Pair with Nonary’s Moonlight client on a fast wired LAN.',
-               'Recorded 1080p/120 HDR 4:4:4 stream: all 2,357 received frames decoded.'])
+def scene_pyrowave(d,time):
+    label(d,'PYROWAVE / FULL 10-BIT HDR 4:4:4')
+    text(d,(76,242),'Keep the colour detail at every pixel.',78,bold=True)
+    text(d,(83,353),'Chroma sampling in the same 2×2-pixel block',36,MUTED)
+    for i,(mode,detail) in enumerate([('4:2:0','4 Y + 1 Cb + 1 Cr'),('4:4:4','4 Y + 4 Cb + 4 Cr')]):
+        x=80+i*940
+        d.rounded_rectangle((x,426,x+820,795),radius=17,fill=PANEL,outline=LINE,width=2)
+        text(d,(x+31,447),mode,49,YELLOW if i else WHITE,True)
+        text(d,(x+785,473),'Full chroma' if i else 'Subsampled chroma',28,MUTED,anchor='rm')
+        for j,plane in enumerate(('Y','Cb','Cr')):
+            sampling_grid(d,x+111+j*225,575,bool(i),plane, time>=j*.8)
+        if time>=1.6:
+            text(d,(x+410,757),detail,30,WHITE,anchor='mm')
+    if time>=2.2:
+        text(d,(83,842),'Full-resolution chroma preserves fine coloured text and edges.',37,YELLOW,True)
+    footer(d,['PyroWave: 10-bit planar YUV via shared D3D11 / Vulkan textures · a separate codec path',
+              'Use Nonary’s Moonlight client on a fast wired LAN · sampling illustration above'])
 
 
-def scene_cta(d, time):
-    label(d, 'BUTTERPOLLO rc.10')
-    text(d, (76, 249), 'Radeon compute. Lower measured delay.', 74, bold=True)
-    text(d, (83, 398), 'D3D12 compute copies + colour conversion', 43, YELLOW, True)
-    text(d, (87, 463), 'WGC + compute by default. Frame preparation alongside game graphics.', 32, MUTED)
-    text(d, (83, 553), 'Fenced GPU textures → native AMD encoding', 43, WHITE, True)
-    text(d, (87, 618), 'Explicit frame readiness and safe reuse of each output surface.', 34, MUTED)
-    text(d, (83, 708), 'HEVC / AV1 HDR   ·   PyroWave HDR 4:4:4', 43, YELLOW, True)
-    text(d, (87, 773), 'HEVC / AV1: native HDR capture and decoded colours verified.', 32, MUTED)
-    text(d, (83, 849), 'github.com/RamazanKara/Butterpollo', 46, YELLOW, True)
-    footer(d, ['Install → Pair Moonlight → Play',
-               'Source, benchmark methods and codec validation: github.com/RamazanKara/Butterpollo'])
+def scene_cta(d,time):
+    label(d,'BUTTERPOLLO rc.10 / WINDOWS + MOONLIGHT')
+    text(d,(76,246),'Prepare the frame alongside the game.',77,bold=True)
+    text(d,(83,409),'WGC capture → D3D12 compute → native AMF',45,YELLOW,True)
+    text(d,(86,478),'GPU texture handoffs with explicit readiness and ownership fences.',33,MUTED)
+    text(d,(83,598),'HEVC + AV1 HDR  /  PyroWave HDR 4:4:4',44,WHITE,True)
+    text(d,(86,670),'HEVC and AV1 HDR verified through independent decoded-pixel checks.',32,MUTED)
+    text(d,(83,831),'github.com/RamazanKara/Butterpollo',49,YELLOW,True)
+    footer(d,['Install → Pair Moonlight → Play',
+              'Source, comparison methods and codec validation are linked in the README.'])
 
 
-SCENE_DRAWERS = [scene_queues, scene_fences, scene_compute_results, scene_host_results,
-                 scene_hdr, scene_pyrowave, scene_cta]
+SCENE_DRAWERS=[scene_schedule,scene_compute_results,scene_host_results,scene_hdr,scene_pyrowave,scene_cta]
 
 def render_scene(index, time):
     im = backdrop().copy()
@@ -339,9 +384,8 @@ def frame(time):
     index = next((i for i, (_, end) in enumerate(SCENES) if time < end), len(SCENES) - 1)
     local = time - SCENES[index][0]
     im = render_scene(index, local)
-    if index and local < .22:
-        previous = render_scene(index - 1, SCENES[index - 1][1] - SCENES[index - 1][0])
-        im = Image.blend(previous, im, ease(local / .22))
+    # Clean scene cuts keep the technical labels and numbers readable. Motion
+    # within each scene explains the mechanism or reveals the measured values.
     progress(ImageDraw.Draw(im), time)
     return im
 
@@ -384,7 +428,7 @@ def main():
         encode_gif(args.gif_from, args.output)
         return
     if args.storyboard:
-        sheet = Image.new('RGB', (960 * 2, 540 * 4), BG)
+        sheet = Image.new('RGB', (960 * 2, 540 * ((len(SCENES) + 1) // 2)), BG)
         for i, (start, end) in enumerate(SCENES):
             still = frame((start + end) / 2).resize((960, 540), Image.Resampling.LANCZOS)
             sheet.paste(still, ((i % 2) * 960, (i // 2) * 540))

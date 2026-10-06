@@ -14,7 +14,7 @@ Butterpollo is a Windows game-streaming host rebuilt in Rust around Radeon compu
 
 [![Technical demo: the D3D11 and compute paths, controlled comparisons, HDR and PyroWave 4:4:4](docs/media/demo.gif)](docs/media/demo.mp4)
 
-<sub>54-second technical walkthrough. Click for the full 1080p video.</sub>
+<sub>57-second technical walkthrough. Follow a frame through the GPU queues, then compare timing, HDR readback and chroma sampling. Click for the full 1080p video.</sub>
 
 **[Download rc.10](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.10)** · [Watch the demo](docs/media/demo.mp4) · [See the measurements](rust/PERFORMANCE.md#against-vibepollo-20)
 

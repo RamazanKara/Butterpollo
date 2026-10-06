@@ -1783,6 +1783,19 @@ the recorded order is HEVC/AV1/AV1/HEVC.
 | AV1 Main10 HDR | 0.401 | 0.503 | 0.9984 | 0.9976 |
 | HEVC Main10 HDR | 0.374 | 0.434 | 0.9995 | 1.0057 |
 
+The AV1 repeat's decoded reference frame also verifies black and a 100-nit
+white patch. The source renders white as 1.25 in linear scRGB, where 1.0
+represents 80 nits. These are mean limited-range ten-bit PQ luma codes from
+received frame 480 (source frame 468):
+
+| Source patch | Expected Y′ | Decoded Y′ |
+| --- | ---: | ---: |
+| Black | 64.00 | 64.00 |
+| 100-nit white | 509.08 | 509.00 |
+
+The values come from the AV1 repeat's `colour-result.json` and describe one
+reference frame. The four-run frame total below counts successful decoding.
+
 Both repeats passed their independent pixel checks, all 11 during-stream
 topology samples, the pre-cancel topology check and complete restoration.
 The installed service remained running and its configuration hash was unchanged.
