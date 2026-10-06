@@ -4,7 +4,7 @@
 
 Stream your gaming PC to a laptop, TV or phone. Butterpollo is a Windows game-streaming host with Radeon compute, native AMD encoding and **full 10-bit HDR 4:4:4 through PyroWave**. The host, native helpers, Windows service and installer are written in Rust.
 
-**[Download rc.13](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.13)** · **[Get started](docs/getting-started.md)** · [Documentation](docs/README.md) · [Release notes](rust/RELEASE_NOTES.md)
+**[Download rc.14](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.14)** · **[Get started](docs/getting-started.md)** · [Documentation](docs/README.md) · [Release notes](rust/RELEASE_NOTES.md)
 
 [![Butterpollo launch film: written in Rust, Radeon compute, measured comparisons, HDR and PyroWave 4:4:4](docs/media/demo.gif)](docs/media/demo.mp4)
 
@@ -12,7 +12,7 @@ Stream your gaming PC to a laptop, TV or phone. Butterpollo is a Windows game-st
 
 ## Install. Pair Moonlight. Play.
 
-1. Run **`butterpollo-setup-2.0.0-rc.13.exe`** from the [release](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.13).
+1. Run **`butterpollo-setup-2.0.0-rc.14.exe`** from the [release](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.14).
 2. Open the Butterpollo console at **`https://localhost:47990`** and create your local account.
 3. Add your PC in Moonlight, enter its pairing PIN in **Devices**, then launch **Desktop**.
 

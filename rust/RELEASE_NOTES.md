@@ -1,10 +1,29 @@
-# Butterpollo 2.0.0-rc.13 release candidate for Windows
+# Butterpollo 2.0.0-rc.14 release candidate for Windows
 
 [Documentation](../docs/README.md) · [Install and migrate](../docs/getting-started.md) · [Configuration](../docs/configuration.md) · [Compatibility](PARITY.md)
 
-**Release history:** [rc.13](#new-in-rc13) · [rc.12](#new-in-rc12) · [rc.11](#new-in-rc11) · [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
+**Release history:** [rc.14](#new-in-rc14) · [rc.13](#new-in-rc13) · [rc.12](#new-in-rc12) · [rc.11](#new-in-rc11) · [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
 
-Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.13 installer is named `butterpollo-setup-2.0.0-rc.13.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.14 installer is named `butterpollo-setup-2.0.0-rc.14.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+
+## New in rc.14
+
+- **Streams survive encoder and GPU hiccups.** An encoder error mid-stream ended the session, which Moonlight reports as error -7fffbffb; a game holding the GPU or a driver reset was enough. The host now recreates the encoder, keeps the hardware encoder the stream started with, converts on the graphics queue if the compute path failed, and asks for a keyframe. Only failures that last five seconds end the stream. A wait for GPU work that never finishes no longer freezes the picture for good; it gives up after two seconds and recovers the same way.
+- **Fewer frozen pictures on Radeon RX 9000 cards.** The encoder input queue was forced to one frame for every client asking for VRR low latency, which exposes a known RDNA4 driver freeze where video stalls while audio plays. It is now set only on request, as in the original backend. A keyframe requested after a client resets its decoder now carries the AV1 sequence header, so the client can start again, and a frame the encoder loses is followed by a keyframe instead of damaged pictures.
+- **GPU safety.** Captured textures could be released while the GPU was still copying or converting them, the kind of fault that hangs a driver; they are now kept until the GPU is done, and stale ones no longer pin gigabytes of video memory. The queues that copy and convert captured frames ran at global realtime priority, ahead of the desktop compositor every captured frame comes from; they now run at high priority, still ahead of a game's normal work (`compute_queue_realtime = true` restores it). An HDR stream on an RX 7900 XT had ended in an AMD driver timeout that took the GPU offline until a reboot; its cause is not proven, and these are the two likeliest contributors.
+- **Quitting closes games that a store client started.** The Xbox app, Epic, EA, Ubisoft Connect and Battle.net start games themselves, outside the processes an app launches, so quitting left them running. The host now notes the fullscreen game on the stream's display when it started after the launch, and quitting closes it like the app's own processes. Store clients themselves, the plain desktop and Steam or Playnite games are left alone.
+- **Radeon RX 6000 cards:** colour settings a driver rejects no longer cost the encoder, the same kind of rejection as the HEVC fix in rc.12; a bitrate the driver refuses keeps the current one instead of failing every frame.
+- **Lower audio and input latency.** Audio goes out as soon as Windows captures it instead of on a fixed 5 ms tick, which added 5 to 20 ms and could insert short silences. Input is handled the moment it arrives instead of after a 1 ms sleep, and a finished video frame is sent without waiting for the encoder's next one.
+- **The cursor shows on a PC without a mouse.** Windows hides the pointer when no mouse is connected; while streaming, Mouse Keys are turned on so it appears, as in Sunshine. Reported with Moonlight on macOS.
+- **Hosts on Wi-Fi:** connected Wi-Fi adapters run in media streaming mode while streaming, with fewer background scans and the stutter they cause. The desktop compositor is scheduled with multimedia priority.
+- **Firewall check:** the installer allows the host on every network, but a block rule, which Windows leaves when its "allow access" prompt is dismissed, overrides it and makes manual port exceptions look necessary. The host now logs such rules by name at startup, and `--diagnostics` lists them.
+- **Input fixes:**
+  - Absolute mouse, touch and pen follow the stream's display when it is created, recreated or changes resolution, instead of the display at the first input event.
+  - A key or button release that Windows refuses (a UAC prompt, the lock screen) no longer leaves the key repeating, or dead in later sessions.
+  - A long press with touch or a tablet right-clicks without left-clicking first, as in Sunshine.
+  - Print Screen works; a missing virtual gamepad driver no longer slows other input; unplugging a controller no longer leaves a phantom pad; each virtual pad logs the profile it got.
+- **Displays:** when Windows switches a TV on together with the stream display, the host no longer hands Windows the TV's leftover modes while switching it off again, the likely reason Windows refused; if it still refuses, the stream starts with the TV on, as in rc.13. Restoring duplicated displays after a stream falls back to letting Windows choose a mode the group can show when it refuses the original one.
+- Releases are built, checked, installed and published by one script, and each release tag gets its own CI run.
 
 ## New in rc.13
 
@@ -150,8 +169,8 @@ Current automated validation: 263 ordinary tests passed, with 27 environment-dep
 
 ## Install
 
-- `butterpollo-setup-2.0.0-rc.13.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
-- For a portable copy, extract `butterpollo-rust-2.0.0-rc.13-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
+- `butterpollo-setup-2.0.0-rc.14.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
+- For a portable copy, extract `butterpollo-rust-2.0.0-rc.14-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
 - These are unsigned test builds. Keep a copy of your configuration and the previous installer for rollback.
 
 ## Lower latency
