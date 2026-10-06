@@ -12,15 +12,23 @@ Butterpollo is a Windows game-streaming host rebuilt in Rust around Radeon compu
 
 <sub>Butterpollo rc.2 vs Vibepollo 2.0 · RX 7900 XT · DDX · 1080p60 HEVC HDR at 20 Mbps · controlled GPU load · three runs per host · October 4, 2026.</sub>
 
-[![Butterpollo animated demo: Radeon compute and measured streaming results](docs/media/demo.gif)](docs/media/demo.mp4)
+[![Technical demo: the D3D11 and compute paths, controlled comparisons, HDR and PyroWave 4:4:4](docs/media/demo.gif)](docs/media/demo.mp4)
+
+<sub>54-second technical walkthrough. Click for the full 1080p video.</sub>
 
 **[Download rc.10](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.10)** · [Watch the demo](docs/media/demo.mp4) · [See the measurements](rust/PERFORMANCE.md#against-vibepollo-20)
 
-## Radeon muscle. Measured results.
+## Why Radeon compute helps
 
-Butterpollo moves capture copies and colour conversion onto Direct3D 12 compute queues, then feeds the GPU textures straight into AMD's native AMF encoder. Streaming gets a dedicated compute path alongside the game's graphics work.
+The D3D11 path inherited through Sunshine, Apollo and Vibepollo submits capture copies and RGB-to-YUV conversion as graphics work, competing with the game's graphics workload. Butterpollo submits that preparation through **D3D12 compute queues**, so it can run alongside graphics work on Radeon.
 
-Here's what that delivered in the controlled comparison:
+Both the reviewed Vibepollo path and Butterpollo already use GPU textures and native AMF encoding. Butterpollo changes **where the copy and colour work runs** and hands D3D12 surfaces to AMF with explicit GPU synchronization. Producer and copy fences preserve capture readiness; a fence for each output texture protects its handoff to the encoder.
+
+![Queue-placement schematic: the reviewed Sunshine-derived D3D11 path and Butterpollo's D3D12 compute path, both using GPU textures and native AMD encoding](docs/media/compute-comparison.png)
+
+Enabling compute in the **same Rust build** reduced average render-to-decode delay from **41.0 to 33.5 ms**, and the 95th percentile from **54.4 to 42.3 ms**, in the controlled 1080p60 HEVC HDR test. A separate synthetic frame-to-completed-bitstream probe measured **21.5 to 2.0 ms**. [Compute off/on setup and results](rust/PERFORMANCE.md#1080p-at-60-fps).
+
+The separate **whole-host comparison with Vibepollo 2.0** measured:
 
 | RX 7900 XT · 1080p60 HEVC HDR · GPU under load | Vibepollo 2.0 | Butterpollo rc.2 |
 | --- | ---: | ---: |
