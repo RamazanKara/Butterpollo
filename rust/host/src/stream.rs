@@ -1642,6 +1642,11 @@ impl Media {
                             Err(e) => tracing::warn!(error=%e,"input initialization failed"),
                         }
                     }
+                    if let Some(i) = &mut p.injector {
+                        // The stream's display can be created or renamed after
+                        // input began; absolute input follows it.
+                        i.set_output(&s.output.read().unwrap());
+                    }
                     for event in std::mem::take(&mut p.inputs) {
                         if let Some(i) = &mut p.injector {
                             match i.apply(&event) {

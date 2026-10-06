@@ -198,6 +198,13 @@ impl Gamepads {
                 slots[global as usize] = true;
                 self.active.insert(id, global);
                 self.profiles.insert(id, profile);
+                tracing::info!(
+                    controller = id,
+                    client_type = kind,
+                    capabilities = format!("{capabilities:#x}"),
+                    profile = profile_name(profile),
+                    "virtual controller connected"
+                );
                 return Ok(());
             }
         }
@@ -254,7 +261,8 @@ impl Gamepads {
                 self.ensure(u16::from(*id))?;
             }
             Event::Motion { id, kind, xyz } => {
-                self.ensure(u16::from(*id))?;
+                // Only arrival and state packets create a pad: motion travels on
+                // another channel and can arrive after the pad was removed.
                 if !self.motion_supported(u16::from(*id)) {
                     return Ok(());
                 }
@@ -281,7 +289,9 @@ impl Gamepads {
                     }
                     return Ok(());
                 }
-                self.ensure(u16::from(*id))?;
+                if !self.active.contains_key(&u16::from(*id)) {
+                    return Ok(());
+                }
                 if let Some(b) = gamepad_touch_request(
                     &self.pointers,
                     self.profiles[&u16::from(*id)],
@@ -293,7 +303,10 @@ impl Gamepads {
                 }
             }
             Event::Battery { id, state, percent } => {
-                self.ensure(u16::from(*id))?;
+                // Only the PlayStation and Switch profiles have a battery.
+                if !self.motion_supported(u16::from(*id)) {
+                    return Ok(());
+                }
                 let mut b = request(16, Some(u32::from(self.active[&u16::from(*id)])));
                 b.extend_from_slice(&[*percent, *state, 0, 0]);
                 self.ioctl(0x807, &b, 0)?;
@@ -366,6 +379,16 @@ impl Gamepads {
     }
     pub fn motion_supported(&self, id: u16) -> bool {
         matches!(self.profiles.get(&id), Some(5..=7))
+    }
+}
+fn profile_name(profile: u16) -> &'static str {
+    match profile {
+        3 => "vhf_xbox_one",
+        4 => "vhf_xbox",
+        5 => "vhf_ds4",
+        6 => "vhf_ds5",
+        7 => "vhf_switch",
+        _ => "vhf",
     }
 }
 // The driver has one touch surface and two contact slots. Keep this mapping
@@ -471,6 +494,51 @@ pub struct Injector {
     repeat: Option<(u32, u8, u8, std::time::Instant)>,
     scroll: [i32; 2],
     haptics: bool,
+    /// The display absolute input maps onto, and when its rectangle was read.
+    output: String,
+    rect_read: std::time::Instant,
+    /// When to try the virtual gamepad driver again after it failed to open.
+    gamepad_retry: Option<std::time::Instant>,
+    /// Whether the client last moved the mouse by absolute position, and a
+    /// left-button release held back meanwhile.
+    absolute: bool,
+    left_release: Option<std::time::Instant>,
+}
+/// How long a left release waits after absolute input, as in Sunshine.
+const LEFT_RELEASE_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
+/// The desktop rectangle of `output`: a GDI name, a device ID, or empty for
+/// the first display.
+fn display_rect(output: &str) -> Result<RECT> {
+    // Before capture publishes its GDI name, the configured display is
+    // often a device ID ({...}); input arriving then was dropped.
+    let name = crate::display::monitors()
+        .ok()
+        .and_then(|all| all.into_iter().find(|m| m.matches(output)))
+        .map_or_else(|| output.to_owned(), |m| m.display_name);
+    let d = crate::capture::displays()?
+        .into_iter()
+        .find(|d| output.is_empty() || d.display_name.eq_ignore_ascii_case(&name))
+        .ok_or_else(|| anyhow::anyhow!("input display missing"))?;
+    Ok(RECT {
+        left: d.x,
+        top: d.y,
+        right: d.x + d.width as i32,
+        bottom: d.y + d.height as i32,
+    })
+}
+/// The current rectangle of a display by GDI name, read cheaply from its mode.
+fn current_rect(name: &str) -> Option<RECT> {
+    if !name.starts_with(r"\\.\") {
+        return None;
+    }
+    let mode = crate::display::mode(name).ok()?;
+    let position = unsafe { mode.Anonymous1.Anonymous2.dmPosition };
+    Some(RECT {
+        left: position.x,
+        top: position.y,
+        right: position.x + mode.dmPelsWidth as i32,
+        bottom: position.y + mode.dmPelsHeight as i32,
+    })
 }
 impl Injector {
     pub fn new(output: &str, profile: &str) -> Result<Self> {
@@ -485,16 +553,7 @@ impl Injector {
         profile: &str,
         config: &butterpollo_core::config::Config,
     ) -> Result<Self> {
-        // Before capture publishes its GDI name, the configured display is
-        // often a device ID ({...}); input arriving then was dropped.
-        let name = crate::display::monitors()
-            .ok()
-            .and_then(|all| all.into_iter().find(|m| m.matches(output)))
-            .map_or_else(|| output.to_owned(), |m| m.display_name);
-        let d = crate::capture::displays()?
-            .into_iter()
-            .find(|d| output.is_empty() || d.display_name.eq_ignore_ascii_case(&name))
-            .ok_or_else(|| anyhow::anyhow!("input display missing"))?;
+        let rect = display_rect(output)?;
         Ok(Self {
             keys: BTreeSet::new(),
             buttons: BTreeSet::new(),
@@ -521,13 +580,28 @@ impl Injector {
             repeat: None,
             scroll: [0; 2],
             haptics: true,
-            rect: RECT {
-                left: d.x,
-                top: d.y,
-                right: d.x + d.width as i32,
-                bottom: d.y + d.height as i32,
-            },
+            rect,
+            output: output.to_owned(),
+            rect_read: std::time::Instant::now(),
+            gamepad_retry: None,
+            absolute: false,
+            left_release: None,
         })
+    }
+    /// Map absolute input onto `output` from now on: the stream's display can
+    /// be created, recreated or renamed after input began.
+    pub fn set_output(&mut self, output: &str) {
+        if output.is_empty() || output.eq_ignore_ascii_case(&self.output) {
+            return;
+        }
+        match display_rect(output) {
+            Ok(rect) => {
+                self.rect = rect;
+                self.output = output.to_owned();
+                self.rect_read = std::time::Instant::now();
+            }
+            Err(error) => tracing::debug!(%error, output, "input display unavailable"),
+        }
     }
     /// Inject input, following the input desktop when Windows refuses it:
     /// a UAC prompt or the lock screen runs on the secure desktop.
@@ -679,9 +753,9 @@ impl Injector {
                 for p in self.touches.values_mut() {
                     pointer_event(&mut p.pointerInfo, 4, POINT::default());
                 }
-                self.inject_touches()?;
+                let result = self.inject_touches();
                 self.touches.clear();
-                return Ok(());
+                return result;
             }
             let mut p = if let Some(existing) = self.touches.get(&id) {
                 *existing
@@ -744,16 +818,26 @@ impl Injector {
                 }
             }
             self.touches.insert(id, p);
-            self.inject_touches()?;
+            let result = self.inject_touches();
             if matches!(event, 2 | 4 | 6) {
                 self.touches.remove(&id);
             }
+            // Ended contacts are gone, and a contact Windows refused to put
+            // down was never seen: drop both whether or not the frame went
+            // through, or every later frame repeats the failure.
+            let failed = result.is_err();
+            self.touches.retain(|_, p| {
+                let flags = p.pointerInfo.pointerFlags;
+                flags & (POINTER_FLAG_UP | POINTER_FLAG_CANCELED) == POINTER_FLAG_NONE
+                    && !(failed && flags & POINTER_FLAG_DOWN != POINTER_FLAG_NONE)
+            });
             for p in self.touches.values_mut() {
                 p.pointerInfo.pointerFlags &=
                     !(POINTER_FLAG_DOWN | POINTER_FLAG_UP | POINTER_FLAG_CANCELED);
                 p.pointerInfo.pointerFlags |= POINTER_FLAG_UPDATE;
             }
             self.refreshed = std::time::Instant::now();
+            result?;
         }
         Ok(())
     }
@@ -835,39 +919,55 @@ impl Injector {
         Ok(())
     }
     pub fn refresh(&mut self) -> Result<()> {
+        // Every step runs even when an earlier one fails; the first error is
+        // reported. A failed step is not retried before its next due time.
+        let mut first = None;
+        let mut keep = |result: Result<()>| {
+            if let Err(error) = result {
+                first.get_or_insert(error);
+            }
+        };
         if let Some(gamepads) = &mut self.gamepads {
-            gamepads.refresh()?;
+            keep(gamepads.refresh());
+        }
+        let now = std::time::Instant::now();
+        if self.left_release.is_some_and(|due| now >= due) {
+            self.left_release = None;
+            keep(Self::held(false, 1, false, true, Self::button(1, false)));
         }
         if let Some((key, flags, modifiers, due)) = self.repeat
-            && std::time::Instant::now() >= due
+            && now >= due
         {
-            Self::send(&self.with_modifiers(self.key_scan(key, true, flags), modifiers))?;
-            self.repeat = Some((
-                key,
-                flags,
-                modifiers,
-                std::time::Instant::now() + self.policy.repeat_period,
+            self.repeat = Some((key, flags, modifiers, now + self.policy.repeat_period));
+            keep(Self::send(
+                &self.with_modifiers(self.key_scan(key, true, flags), modifiers),
             ));
         }
-        if self.refreshed.elapsed() < std::time::Duration::from_millis(250) {
-            return Ok(());
-        }
-        self.inject_touches()?;
-        if self.pen.pointerInfo.pointerFlags != POINTER_FLAG_NONE
-            && let Some(device) = self.pen_device
-        {
-            unsafe {
-                inject_pointer(
-                    device,
-                    &[POINTER_TYPE_INFO {
-                        r#type: PT_PEN,
-                        Anonymous: POINTER_TYPE_INFO_0 { penInfo: self.pen },
-                    }],
-                )?;
+        // A game can change its display's resolution or position mid-stream.
+        if self.rect_read.elapsed() >= std::time::Duration::from_millis(500) {
+            self.rect_read = now;
+            if let Some(rect) = current_rect(&self.output) {
+                self.rect = rect;
             }
         }
-        self.refreshed = std::time::Instant::now();
-        Ok(())
+        if self.refreshed.elapsed() >= std::time::Duration::from_millis(250) {
+            self.refreshed = now;
+            keep(self.inject_touches());
+            if self.pen.pointerInfo.pointerFlags != POINTER_FLAG_NONE
+                && let Some(device) = self.pen_device
+            {
+                keep(unsafe {
+                    inject_pointer(
+                        device,
+                        &[POINTER_TYPE_INFO {
+                            r#type: PT_PEN,
+                            Anonymous: POINTER_TYPE_INFO_0 { penInfo: self.pen },
+                        }],
+                    )
+                });
+            }
+        }
+        first.map_or(Ok(()), Err)
     }
     pub fn apply(&mut self, e: &Event) -> Result<()> {
         if !self.policy.allows(e) {
@@ -875,30 +975,37 @@ impl Injector {
         }
         use Event::*;
         match e {
-            Relative { x, y } => Self::send(&[Self::mouse(
-                i32::from(*x),
-                i32::from(*y),
-                0,
-                MOUSEEVENTF_MOVE,
-            )])?,
+            Relative { x, y } => {
+                self.absolute = false;
+                Self::send(&[Self::mouse(
+                    i32::from(*x),
+                    i32::from(*y),
+                    0,
+                    MOUSEEVENTF_MOVE,
+                )])?
+            }
             Absolute {
                 x,
                 y,
                 width,
                 height,
             } => unsafe {
+                self.absolute = true;
                 let left = GetSystemMetrics(SM_XVIRTUALSCREEN);
                 let top = GetSystemMetrics(SM_YVIRTUALSCREEN);
                 let w = GetSystemMetrics(SM_CXVIRTUALSCREEN).max(1);
                 let h = GetSystemMetrics(SM_CYVIRTUALSCREEN).max(1);
+                // The client's far edge is the display's last pixel, not the
+                // first pixel of its neighbour.
+                let (width, height) = (i64::from(*width).max(1), i64::from(*height).max(1));
                 let px = self.rect.left
-                    + (i64::from(*x).clamp(0, i64::from(*width))
-                        * i64::from(self.rect.right - self.rect.left)
-                        / i64::from(*width)) as i32;
+                    + (i64::from(*x).clamp(0, width)
+                        * i64::from((self.rect.right - self.rect.left - 1).max(0))
+                        / width) as i32;
                 let py = self.rect.top
-                    + (i64::from(*y).clamp(0, i64::from(*height))
-                        * i64::from(self.rect.bottom - self.rect.top)
-                        / i64::from(*height)) as i32;
+                    + (i64::from(*y).clamp(0, height)
+                        * i64::from((self.rect.bottom - self.rect.top - 1).max(0))
+                        / height) as i32;
                 Self::send(&[Self::mouse(
                     ((i64::from(px - left) * 65535) / i64::from((w - 1).max(1))) as i32,
                     ((i64::from(py - top) * 65535) / i64::from((h - 1).max(1))) as i32,
@@ -907,18 +1014,40 @@ impl Injector {
                 )])?;
             },
             MouseButton { button, down } => {
+                // With absolute input (touch, pen, a tablet), Moonlight sends a
+                // right press right after a left release for a long press: the
+                // left click would land first and open a link. Hold the left
+                // release back briefly and click right meanwhile, as Sunshine does.
+                if *button == 1 && self.absolute {
+                    if !*down && self.buttons.contains(button) {
+                        self.buttons.remove(button);
+                        self.left_release = Some(std::time::Instant::now() + LEFT_RELEASE_DELAY);
+                        return Ok(());
+                    }
+                    if *down && self.left_release.take().is_some() {
+                        // Still down in Windows: its release never went out.
+                        self.buttons.insert(*button);
+                        return Ok(());
+                    }
+                }
+                if *button == 3 && *down && self.left_release.is_some() {
+                    return Self::send(&[Self::button(3, true), Self::button(3, false)]);
+                }
                 let owned = self.buttons.contains(button);
-                Self::held(
+                let sent = Self::held(
                     false,
                     u32::from(*button),
                     *down,
                     owned,
                     Self::button(*button, *down),
-                )?;
+                );
+                // A release is recorded even when Windows refused it.
                 if *down {
+                    sent?;
                     self.buttons.insert(*button);
                 } else {
                     self.buttons.remove(button);
+                    sent?;
                 }
             }
             Scroll { amount, horizontal } => {
@@ -931,6 +1060,9 @@ impl Injector {
                     self.scroll[index] -= amount;
                     amount
                 };
+                if amount == 0 {
+                    return Ok(());
+                }
                 Self::send(&[Self::mouse(
                     0,
                     0,
@@ -969,21 +1101,27 @@ impl Injector {
                 } else {
                     0
                 };
-                if modifiers == 0 {
-                    Self::held(true, key, *down, owned, self.key_scan(key, *down, flags))?;
+                let sent = if modifiers == 0 {
+                    Self::held(true, key, *down, owned, self.key_scan(key, *down, flags))
                 } else {
                     // The client reported a modifier it never pressed as a
                     // key: press it around this key only, as Vibepollo does.
                     let mut held = HELD.lock().unwrap();
                     let count = held.get(&(true, key)).copied().unwrap_or(0);
-                    if count == 0 {
-                        Self::send(
-                            &self.with_modifiers(self.key_scan(key, true, flags), modifiers),
-                        )?;
+                    let sent = if count == 0 {
+                        Self::send(&self.with_modifiers(self.key_scan(key, true, flags), modifiers))
+                    } else {
+                        Ok(())
+                    };
+                    if sent.is_ok() {
+                        held.insert((true, key), count + 1);
                     }
-                    held.insert((true, key), count + 1);
-                }
+                    sent
+                };
+                // A press Windows refused is not held; a release is recorded
+                // even when Windows refused it, or the key keeps repeating.
                 if *down {
+                    sent?;
                     self.keys.insert(key);
                     self.key_flags.insert(key, flags);
                     if !owned
@@ -999,6 +1137,7 @@ impl Injector {
                     if self.repeat.is_some_and(|(repeating, ..)| repeating == key) {
                         self.repeat = None;
                     }
+                    sent?;
                 }
             }
             Text(s) => {
@@ -1029,8 +1168,25 @@ impl Injector {
             Haptics(enabled) => self.haptics = *enabled,
             _ => {
                 if self.gamepads.is_none() {
-                    self.gamepads =
-                        Some(Gamepads::open_options(self.profile, self.policy.clone())?);
+                    // Opening the driver enumerates devices: when it is missing,
+                    // do not repeat that for every controller packet.
+                    let now = std::time::Instant::now();
+                    if self.gamepad_retry.is_some_and(|at| now < at) {
+                        return Ok(());
+                    }
+                    match Gamepads::open_options(self.profile, self.policy.clone()) {
+                        Ok(gamepads) => self.gamepads = Some(gamepads),
+                        Err(error) => {
+                            if self.gamepad_retry.is_none() {
+                                tracing::warn!(
+                                    error = format!("{error:#}"),
+                                    "virtual gamepad driver unavailable; controller input is ignored"
+                                );
+                            }
+                            self.gamepad_retry = Some(now + std::time::Duration::from_secs(10));
+                            return Ok(());
+                        }
+                    }
                 }
                 self.gamepads.as_mut().unwrap().apply(e)?;
             }
@@ -1110,8 +1266,10 @@ impl Injector {
             }
         } else if owned {
             if count <= 1 {
-                send(&[input])?;
+                // Forget the key first: a release Windows refused must not
+                // keep it held for every later press and session.
                 held.remove(&identity);
+                send(&[input])?;
             } else {
                 held.insert(identity, count - 1);
             }
@@ -1163,7 +1321,13 @@ unsafe fn inject_pointer(
 const MODIFIER_EXTENDED: u8 = 0x10;
 const EXPLICIT_EXTENDED_KEY: u32 = 1 << 16;
 fn legacy_extended_key(key: u16) -> bool {
-    matches!(key, 0x21..=0x2e | 0xa3 | 0xa5 | 0x5b | 0x5c | 0x5d | 0x6f)
+    // Navigation, Insert/Delete, right Ctrl/Alt, Windows, Apps and keypad
+    // divide, as in Sunshine. Print Screen (0x2c) is not: E0 54 maps to
+    // nothing, so it never took a screenshot.
+    matches!(
+        key,
+        0x21..=0x28 | 0x2d | 0x2e | 0xa3 | 0xa5 | 0x5b | 0x5c | 0x5d | 0x6f
+    )
 }
 fn mapped_keyboard_identity(
     policy: &butterpollo_core::input_policy::Policy,
@@ -1202,6 +1366,9 @@ fn modifier_held(
 }
 impl Drop for Injector {
     fn drop(&mut self) {
+        if self.left_release.take().is_some() {
+            let _ = Self::held(false, 1, false, true, Self::button(1, false));
+        }
         for key in &self.keys {
             let _ = Self::held(
                 true,
@@ -1434,6 +1601,24 @@ mod tests {
     }
 
     #[test]
+    fn a_release_windows_refuses_still_forgets_the_key() {
+        let key = (true, keyboard_identity(0x0d, 0));
+        let mut held = BTreeMap::from([(key, 1)]);
+        let refused = Injector::update_held(
+            &mut held,
+            key,
+            false,
+            true,
+            Injector::keyboard_input(key.1, false, 0, false),
+            |_| anyhow::bail!("the secure desktop refused input"),
+        );
+        assert!(refused.is_err());
+        // Otherwise every later press of the key, in every later session, is
+        // skipped as already held.
+        assert!(held.is_empty());
+    }
+
+    #[test]
     fn key_remapping_uses_the_destination_extension_and_legacy_vk_width() {
         let config =
             butterpollo_core::config::Config::parse("keybindings=[13,65,66,163,67,4660]\n")
@@ -1487,8 +1672,8 @@ mod tests {
     #[test]
     fn new_extended_modifier_preserves_legacy_navigation_and_right_modifier_identity() {
         for key in [
-            0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2c, 0x2d, 0x2e, 0xa3, 0xa5, 0x5b,
-            0x5c, 0x5d, 0x6f,
+            0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2d, 0x2e, 0xa3, 0xa5, 0x5b, 0x5c,
+            0x5d, 0x6f,
         ] {
             let legacy = keyboard_identity(key, 0);
             assert_eq!(legacy, keyboard_identity(key, MODIFIER_EXTENDED));
@@ -1499,7 +1684,7 @@ mod tests {
                 );
             }
         }
-        for key in [0x0d, 0x41, 0xa0, 0xa1, 0xa2, 0xa4] {
+        for key in [0x0d, 0x2c, 0x41, 0xa0, 0xa1, 0xa2, 0xa4] {
             assert_eq!(
                 keyboard(keyboard_identity(key, 0), true, 0).dwFlags & KEYEVENTF_EXTENDEDKEY,
                 KEYBD_EVENT_FLAGS(0)
