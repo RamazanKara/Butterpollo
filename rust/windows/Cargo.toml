@@ -30,11 +30,11 @@ windows = { version = "0.62.2", features = [
  "Win32_System_Services", "Win32_System_RemoteDesktop", "Win32_System_Environment", "Win32_System_StationsAndDesktops",
  "Win32_System_Pipes", "Win32_System_JobObjects", "Win32_System_Console", "Win32_Storage_FileSystem", "Win32_Security", "Win32_Security_Authorization",
  "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Kernel",
- "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Input_Pointer", "Win32_UI_Input_Touch",
+ "Win32_UI_Accessibility", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Input_Pointer", "Win32_UI_Input_Touch",
  "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_UI_Shell_PropertiesSystem", "Win32_UI_HiDpi",
  "Win32_System_WinRT", "Win32_System_WinRT_Direct3D11", "Win32_System_WinRT_Graphics_Capture",
  "Win32_Devices_DeviceAndDriverInstallation", "Win32_Devices_Display", "Win32_System_IO", "Win32_Networking_WinSock",
- "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis"
+ "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_NetworkManagement_WiFi"
 ] }
 
 [build-dependencies]

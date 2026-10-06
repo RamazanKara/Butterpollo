@@ -158,13 +158,178 @@ impl Drop for Timer {
 /// Process-wide scheduling for the lifetime of at least one stream: a 1 ms
 /// system timer, high priority class, and no power throttling. Without these,
 /// driver waits (an AMF output query, a DXGI acquire) and Windows 11 timer
-/// coalescing can add a scheduler tick to a frame. Restored after the last stream.
+/// coalescing can add a scheduler tick to a frame. Like the C++ host it also
+/// schedules the compositor under MMCSS, puts connected Wi-Fi adapters in
+/// media streaming mode, and turns on Mouse Keys when no mouse is connected,
+/// because Windows otherwise hides the cursor the stream should show.
+/// Restored after the last stream.
 pub struct StreamingScope(());
-static STREAMS: std::sync::Mutex<(usize, u32)> = std::sync::Mutex::new((0, 0));
+#[derive(Default)]
+struct Streams {
+    count: usize,
+    priority: u32,
+    /// The WLAN client handle that holds media streaming mode; closing it ends it.
+    wlan: Option<usize>,
+    /// Mouse Keys as they were before the first stream turned them on.
+    mouse_keys: Option<windows::Win32::UI::Accessibility::MOUSEKEYS>,
+}
+static STREAMS: std::sync::Mutex<Streams> = std::sync::Mutex::new(Streams {
+    count: 0,
+    priority: 0,
+    wlan: None,
+    mouse_keys: None,
+});
+/// Mouse Keys on, when Windows has no mouse and would hide the cursor;
+/// returns the previous settings to restore.
+fn force_cursor() -> Option<windows::Win32::UI::Accessibility::MOUSEKEYS> {
+    use windows::Win32::UI::{Accessibility::*, WindowsAndMessaging::*};
+    unsafe {
+        if GetSystemMetrics(SM_MOUSEPRESENT) != 0 {
+            return None;
+        }
+        let mut previous = MOUSEKEYS {
+            cbSize: size_of::<MOUSEKEYS>() as u32,
+            ..Default::default()
+        };
+        let mut enabled = MOUSEKEYS {
+            cbSize: size_of::<MOUSEKEYS>() as u32,
+            dwFlags: MKF_MOUSEKEYSON | MKF_AVAILABLE,
+            iMaxSpeed: 10,
+            iTimeToMaxSpeed: 1000,
+            ..Default::default()
+        };
+        let result = SystemParametersInfoW(
+            SPI_GETMOUSEKEYS,
+            0,
+            Some((&mut previous as *mut MOUSEKEYS).cast()),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+        .and_then(|()| {
+            SystemParametersInfoW(
+                SPI_SETMOUSEKEYS,
+                0,
+                Some((&mut enabled as *mut MOUSEKEYS).cast()),
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+            )
+        });
+        match result {
+            Ok(()) => {
+                tracing::info!(
+                    "no mouse connected; Mouse Keys are on while streaming so the cursor shows"
+                );
+                Some(previous)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "no mouse connected and Mouse Keys could not be turned on; the cursor may stay hidden");
+                None
+            }
+        }
+    }
+}
+/// Media streaming mode on every connected Wi-Fi adapter: fewer background
+/// scans, which otherwise cause periodic loss and jitter. The returned WLAN
+/// handle keeps it on until it is closed. wlanapi.dll is loaded at run time;
+/// systems without it simply skip this.
+fn wifi_streaming_mode() -> Option<usize> {
+    use windows::Win32::{NetworkManagement::WiFi::*, System::LibraryLoader::*};
+    type Open =
+        unsafe extern "system" fn(u32, *const core::ffi::c_void, *mut u32, *mut HANDLE) -> u32;
+    type Enumerate = unsafe extern "system" fn(
+        HANDLE,
+        *const core::ffi::c_void,
+        *mut *mut WLAN_INTERFACE_INFO_LIST,
+    ) -> u32;
+    type Set = unsafe extern "system" fn(
+        HANDLE,
+        *const windows::core::GUID,
+        WLAN_INTF_OPCODE,
+        u32,
+        *const core::ffi::c_void,
+        *const core::ffi::c_void,
+    ) -> u32;
+    type Free = unsafe extern "system" fn(*const core::ffi::c_void);
+    type Close = unsafe extern "system" fn(HANDLE, *const core::ffi::c_void) -> u32;
+    unsafe {
+        let module = LoadLibraryW(windows::core::w!("wlanapi.dll")).ok()?;
+        let open: Open =
+            std::mem::transmute(GetProcAddress(module, windows::core::s!("WlanOpenHandle"))?);
+        let enumerate: Enumerate = std::mem::transmute(GetProcAddress(
+            module,
+            windows::core::s!("WlanEnumInterfaces"),
+        )?);
+        let set: Set = std::mem::transmute(GetProcAddress(
+            module,
+            windows::core::s!("WlanSetInterface"),
+        )?);
+        let free: Free =
+            std::mem::transmute(GetProcAddress(module, windows::core::s!("WlanFreeMemory"))?);
+        let close: Close = std::mem::transmute(GetProcAddress(
+            module,
+            windows::core::s!("WlanCloseHandle"),
+        )?);
+        let (mut version, mut handle) = (0, HANDLE::default());
+        if open(2, std::ptr::null(), &mut version, &mut handle) != 0 {
+            return None;
+        }
+        let mut list = std::ptr::null_mut();
+        if enumerate(handle, std::ptr::null(), &mut list) != 0 || list.is_null() {
+            close(handle, std::ptr::null());
+            return None;
+        }
+        let interfaces = std::slice::from_raw_parts(
+            (*list).InterfaceInfo.as_ptr(),
+            (*list).dwNumberOfItems as usize,
+        );
+        let enabled = windows::core::BOOL::from(true);
+        let mut any = false;
+        for interface in interfaces
+            .iter()
+            .filter(|i| i.isState == wlan_interface_state_connected)
+        {
+            if set(
+                handle,
+                &interface.InterfaceGuid,
+                wlan_intf_opcode_media_streaming_mode,
+                size_of::<windows::core::BOOL>() as u32,
+                (&enabled as *const windows::core::BOOL).cast(),
+                std::ptr::null(),
+            ) == 0
+            {
+                any = true;
+            }
+        }
+        free(list.cast());
+        if !any {
+            close(handle, std::ptr::null());
+            return None;
+        }
+        tracing::info!("Wi-Fi adapter in media streaming mode while streaming");
+        Some(handle.0 as usize)
+    }
+}
+fn close_wlan(handle: usize) {
+    use windows::Win32::System::LibraryLoader::*;
+    type Close = unsafe extern "system" fn(HANDLE, *const core::ffi::c_void) -> u32;
+    unsafe {
+        if let Ok(module) = GetModuleHandleW(windows::core::w!("wlanapi.dll"))
+            && let Some(close) = GetProcAddress(module, windows::core::s!("WlanCloseHandle"))
+        {
+            let close: Close = std::mem::transmute(close);
+            close(HANDLE(handle as *mut _), std::ptr::null());
+        }
+    }
+}
 impl StreamingScope {
     pub fn enter() -> Self {
         let mut streams = STREAMS.lock().unwrap();
-        if streams.0 == 0 {
+        if streams.count == 0 {
+            unsafe {
+                let _ = windows::Win32::Graphics::Dwm::DwmEnableMMCSS(true);
+            }
+            streams.wlan = wifi_streaming_mode();
+            if streams.mouse_keys.is_none() {
+                streams.mouse_keys = force_cursor();
+            }
             unsafe {
                 let process = GetCurrentProcess();
                 // Windows 11 otherwise ignores timer requests from a process
@@ -184,27 +349,47 @@ impl StreamingScope {
                     tracing::debug!(%error, "power throttling opt-out unavailable");
                 }
                 let _ = windows::Win32::Media::timeBeginPeriod(1);
-                streams.1 = GetPriorityClass(process);
+                streams.priority = GetPriorityClass(process);
                 if let Err(error) = SetPriorityClass(process, HIGH_PRIORITY_CLASS) {
                     tracing::debug!(%error, "high process priority unavailable");
                 }
             }
         }
-        streams.0 += 1;
+        streams.count += 1;
         Self(())
     }
 }
 impl Drop for StreamingScope {
     fn drop(&mut self) {
         let mut streams = STREAMS.lock().unwrap();
-        streams.0 -= 1;
-        if streams.0 == 0 {
+        streams.count -= 1;
+        if streams.count == 0 {
             unsafe {
                 let process = GetCurrentProcess();
-                if streams.1 != 0 {
-                    let _ = SetPriorityClass(process, PROCESS_CREATION_FLAGS(streams.1));
+                if streams.priority != 0 {
+                    let _ = SetPriorityClass(process, PROCESS_CREATION_FLAGS(streams.priority));
                 }
                 let _ = windows::Win32::Media::timeEndPeriod(1);
+                let _ = windows::Win32::Graphics::Dwm::DwmEnableMMCSS(false);
+            }
+            if let Some(handle) = streams.wlan.take() {
+                close_wlan(handle);
+            }
+            // Keep the original settings until they are back, as the C++ host does.
+            if let Some(mut previous) = streams.mouse_keys
+                && unsafe {
+                    windows::Win32::UI::WindowsAndMessaging::SystemParametersInfoW(
+                    windows::Win32::UI::WindowsAndMessaging::SPI_SETMOUSEKEYS,
+                    0,
+                    Some(
+                        (&mut previous as *mut windows::Win32::UI::Accessibility::MOUSEKEYS).cast(),
+                    ),
+                    windows::Win32::UI::WindowsAndMessaging::SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+                )
+                }
+                .is_ok()
+            {
+                streams.mouse_keys = None;
             }
         }
     }
@@ -232,6 +417,19 @@ mod tests {
         assert_eq!(unsafe { SetThreadExecutionState(before) }, before);
         drop(restore);
         Ok(())
+    }
+    #[test]
+    #[ignore = "briefly puts connected Wi-Fi adapters in media streaming mode"]
+    fn native_streaming_scope_is_restored_after_the_last_stream() {
+        let first = StreamingScope::enter();
+        let second = StreamingScope::enter();
+        assert_eq!(STREAMS.lock().unwrap().count, 2);
+        drop(second);
+        drop(first);
+        let streams = STREAMS.lock().unwrap();
+        assert_eq!(streams.count, 0);
+        assert!(streams.wlan.is_none());
+        assert!(streams.mouse_keys.is_none());
     }
     #[test]
     fn capture_before_wait_is_retained_and_each_consumer_has_its_own_wake() -> Result<()> {
