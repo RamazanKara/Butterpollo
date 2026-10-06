@@ -254,6 +254,10 @@ pub struct Process {
     host_stop: Option<HostStop>,
     pub pid: u32,
 }
+/// The session attached to the physical console.
+pub fn console_session() -> u32 {
+    unsafe { windows::Win32::System::RemoteDesktop::WTSGetActiveConsoleSessionId() }
+}
 /// Whether a user is signed in to this process's session. Only a host
 /// running as SYSTEM can tell; a portable host runs as the user.
 pub fn user_signed_in() -> bool {

@@ -67,6 +67,10 @@ struct Args {
     service_stop_source: Option<String>,
     #[arg(long, hide = true)]
     display_watch: Option<u32>,
+    /// Run the display self-test and write its report; see
+    /// butterpollo-service.exe --display-self-test.
+    #[arg(long, hide = true)]
+    display_self_test: Option<PathBuf>,
     #[arg(long, hide = true, requires = "rtss_parent")]
     rtss_worker: Option<String>,
     #[arg(long, hide = true, requires = "rtss_worker")]
@@ -118,6 +122,11 @@ async fn main() -> Result<()> {
             )?
         );
         return Ok(());
+    }
+    if let Some(report) = &args.display_self_test {
+        let _com = butterpollo_windows::capture::ComGuard::new()?;
+        let passed = butterpollo_windows::display::self_test::run(report)?;
+        std::process::exit(if passed { 0 } else { 1 });
     }
     if args.virtual_display_smoke {
         let _com = butterpollo_windows::capture::ComGuard::new()?;

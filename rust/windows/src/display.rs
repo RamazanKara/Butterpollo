@@ -11,6 +11,7 @@ use windows::{
 
 mod color_state;
 mod hotplug;
+pub mod self_test;
 
 fn check(code: i32) -> Result<()> {
     if code == 0 {
@@ -1565,11 +1566,18 @@ pub fn configure_permanent(config: &butterpollo_core::config::Config) -> Result<
     let count = value
         .parse::<u32>()
         .context("invalid permanent virtual display count")?;
-    let request = permanent_request(count)?;
-    let driver = Driver::open()?;
-    if permanent_response(&driver.ioctl(0x907, 1, &[], 80)?)? == count {
+    if permanent_display_count()? == count {
         return Ok(());
     }
+    set_permanent_display_count(count)
+}
+/// The driver's persistent display count.
+pub fn permanent_display_count() -> Result<u32> {
+    permanent_response(&Driver::open()?.ioctl(0x907, 1, &[], 80)?)
+}
+pub fn set_permanent_display_count(count: u32) -> Result<()> {
+    let request = permanent_request(count)?;
+    let driver = Driver::open()?;
     let result = driver.ioctl(0x906, 3, &request, 80);
     // The driver may persist the count and report a registry-write failure.
     // Confirm runtime state before treating that failure as fatal.
@@ -1600,6 +1608,8 @@ pub struct VirtualDisplay {
     capability: [u8; 32],
     startup_protection: Option<hotplug::Protection>,
     resolved_target: Option<Monitor>,
+    /// Windows left this display off and the host switched it on.
+    pub switched_on: bool,
 }
 // Driver IOCTLs use a thread-safe Windows device handle; shared access is
 // serialized by the enclosing mutex, including feed and final teardown.
@@ -1686,6 +1696,7 @@ impl VirtualDisplay {
             capability,
             startup_protection: Some(startup_protection),
             resolved_target: None,
+            switched_on: false,
         };
         display.resolve(&result)?;
         display.check_hotplug("created")?;
@@ -1737,10 +1748,13 @@ impl VirtualDisplay {
                     if since.elapsed() >= Duration::from_secs(1) {
                         next_check = Instant::now() + Duration::from_secs(1);
                         match activate_target(luid, target) {
-                            Ok(Some(kept_timings)) => tracing::info!(
-                                kept_timings,
-                                "Windows left the new virtual display switched off; switched it on beside the current displays"
-                            ),
+                            Ok(Some(kept_timings)) => {
+                                self.switched_on = true;
+                                tracing::info!(
+                                    kept_timings,
+                                    "Windows left the new virtual display switched off; switched it on beside the current displays"
+                                )
+                            }
                             Ok(None) => {}
                             Err(error) => tracing::warn!(
                                 error = format!("{error:#}"),
