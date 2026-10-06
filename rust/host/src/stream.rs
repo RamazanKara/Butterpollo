@@ -842,10 +842,6 @@ impl Media {
                             };
                             next_wire_frame.set(u64::from(packetizer.frame));
                             let frame_bytes = packets.iter().map(|p|p.len() as u64).sum();
-                            if Instant::now() >= link_due {
-                                link = butterpollo_windows::net::routed_link_bps(peer);
-                                link_due = Instant::now() + Duration::from_secs(2);
-                            }
                             let bps = butterpollo_core::network_pacing::rate_bps(
                                 c.integer("pacing_max_bitrate_kbps", 0),
                                 s.bitrate.load(Ordering::Relaxed),
@@ -873,6 +869,12 @@ impl Media {
                             }
                             s.stats.frames.fetch_add(1, Ordering::Relaxed);
                             s.stats.performance.lock().unwrap().record_timing(Instant::now(),butterpollo_core::performance::Timing{encode:latency,host:processing,age},frame_bytes);
+                            // The interface lookup takes a moment: refresh the
+                            // link speed after the frame is out, for the next one.
+                            if Instant::now() >= link_due {
+                                link = butterpollo_windows::net::routed_link_bps(peer);
+                                link_due = Instant::now() + Duration::from_secs(2);
+                            }
                         }
                         Ok(())
                     };

@@ -50,6 +50,8 @@ impl Sender {
         let worker = thread::Builder::new()
             .name("pyrowave-send".into())
             .spawn(move || {
+                // Like the other media threads: this one paces every packet.
+                let _priority = butterpollo_windows::capture::Priority::new();
                 let result = (|| -> Result<()> {
                     let timer = Timer::new()?;
                     let mut packetizer = VideoPacketizer {
@@ -151,10 +153,6 @@ impl Sender {
                                 continue;
                             }
                         };
-                        if now >= link_due {
-                            link = butterpollo_windows::net::routed_link_bps(peer);
-                            link_due = now + Duration::from_secs(2);
-                        }
                         let overhead = butterpollo_core::network_pacing::overhead(peer.is_ipv6());
                         let wire_bytes = packets.iter().map(|p| p.len() + overhead).sum::<usize>();
                         let demand = (wire_bytes as u64)
@@ -219,6 +217,12 @@ impl Sender {
                             },
                             sent as u64,
                         );
+                        // The interface lookup takes a moment: refresh the link
+                        // speed after the frame is out, for the next one.
+                        if Instant::now() >= link_due {
+                            link = butterpollo_windows::net::routed_link_bps(peer);
+                            link_due = Instant::now() + Duration::from_secs(2);
+                        }
                     }
                     Ok(())
                 })();
