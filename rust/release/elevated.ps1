@@ -1,6 +1,6 @@
 # The one elevated step of a release: the display self-test as SYSTEM, then
 # a quiet install of the new setup over the running host. release.ps1 starts
-# it with a UAC prompt; it writes WORK\elevated\installed.json and done.txt.
+# it elevated; it writes WORK\elevated\installed.json and done.txt.
 param(
     [Parameter(Mandatory)] [string] $Package,
     [Parameter(Mandatory)] [string] $Installer,
@@ -26,11 +26,15 @@ try {
         if ($command.Length -gt 261) { throw "self-test command line too long ($($command.Length))" }
         schtasks /Create /TN $task /TR $command /SC ONCE /ST 23:59 /RU SYSTEM /RL HIGHEST /F | Out-Host
         schtasks /Run /TN $task | Out-Host
+        # Done once the task has a result other than "has not run" (0x41303)
+        # or "running" (0x41301); a task that cannot start fails at once.
         $deadline = (Get-Date).AddMinutes(5)
         do {
             Start-Sleep -Seconds 2
             $state = (schtasks /Query /TN $task /FO LIST /V | Select-String '^(Status|Last Result|Letztes Ergebnis):').Line -join ' | '
-        } until (((Test-Path $report) -and $state -notmatch 'Running|Wird ausgef') -or (Get-Date) -gt $deadline)
+            $code = if ($state -match '(?:Last Result|Letztes Ergebnis):\s*(-?\d+)') { [long]$Matches[1] }
+            $finished = $null -ne $code -and $code -notin 267009, 267011 -and $state -notmatch 'Running|Wird ausgef'
+        } until ($finished -or (Get-Date) -gt $deadline)
         "self-test task: $state"
         if (-not (Test-Path $report)) { schtasks /End /TN $task | Out-Host }
         schtasks /Delete /TN $task /F | Out-Host
@@ -58,6 +62,10 @@ try {
     }
     $installed | ConvertTo-Json | Set-Content (Join-Path $out 'installed.json') -Encoding utf8
     $installed | ConvertTo-Json
+} catch {
+    # Into the transcript: the window is hidden.
+    "elevated step failed: $_"
+    $_.ScriptStackTrace
 } finally {
     Stop-Transcript | Out-Null
     'done' | Set-Content (Join-Path $out 'done.txt')

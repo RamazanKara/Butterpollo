@@ -1,9 +1,9 @@
 # Started by the ButterpolloReleaseElevated task (see elevation.ps1) with
 # highest privileges. Reads the request release.ps1 wrote and runs the
-# elevated step for it. Only paths inside the release work folder of the
-# user the task runs as are accepted.
+# elevated step for it. Only paths inside release.ps1's default work folder
+# are accepted.
 $ErrorActionPreference = 'Stop'
-$root = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'Butterpollo\release')) + '\'
+$root = 'C:\src\butterpollo-release\'
 $request = Get-Content (Join-Path $root 'request.json') -Raw | ConvertFrom-Json
 $version = [string]$request.version
 if ($version -notmatch '^\d+\.\d+\.\d+(-rc\.\d+)?$') { throw "invalid version $version" }

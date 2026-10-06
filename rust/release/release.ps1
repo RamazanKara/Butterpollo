@@ -12,8 +12,9 @@ Build, verify, install and publish a Butterpollo release in one run.
    documentation, lock file and versions change (package.py).
 4. Streams H.264, HEVC and AV1 through the packaged host with the independent
    moonlight-common-c client, and runs the protocol checks (e2e.py, protocol.py).
-5. One UAC prompt, or none once elevation.ps1 has been run: the display
-   self-test as SYSTEM and a quiet install over the running host (elevated.ps1).
+5. The display self-test as SYSTEM and a quiet install over the running host
+   (elevated.ps1): run directly from an elevated shell, otherwise through the
+   task elevation.ps1 installs, otherwise after one UAC prompt.
 6. Records the results (finalize.py), tags the commit and publishes without
    waiting for CI, which verifies the same commit; then downloads every asset
    and checks it against SHA256SUMS.
@@ -29,10 +30,13 @@ pwsh rust/release/release.ps1 -NoInstall -NoPublish
 param(
     [string] $Ref = 'origin/main',
     [string] $Checkout = 'C:\src\butterpollo',
-    [string] $Work = (Join-Path $env:LOCALAPPDATA 'Butterpollo\release'),
+    # Not under %LOCALAPPDATA%: a packaged (MSIX) app such as the Claude
+    # desktop app sees its own copy of that folder, so the SYSTEM self-test
+    # could not find a package built from inside it.
+    [string] $Work = 'C:\src\butterpollo-release',
     # Machine settings, dot-sourced: the Rust build environment (PATH, FFmpeg,
     # PyroWave, ...), BUTTERPOLLO_TEST_CLIENT_EXE and BUTTERPOLLO_TEST_PYTHON.
-    [string] $Settings = (Join-Path $env:LOCALAPPDATA 'Butterpollo\release\settings.ps1'),
+    [string] $Settings = (Join-Path $Work 'settings.ps1'),
     [string] $Notes,
     [string] $Scope,
     [switch] $NoInstall,
@@ -151,26 +155,35 @@ if (-not $NoInstall) {
     $taskHome = 'C:\ProgramData\ButterpolloRelease'
     $task = $false
     try { schtasks /Query /TN ButterpolloReleaseElevated *> $null; $task = $true } catch { }
-    $current = $task -and $Work -eq (Join-Path $env:LOCALAPPDATA 'Butterpollo\release') -and
+    $current = $task -and $Work -eq 'C:\src\butterpollo-release' -and
         @('elevated.ps1', 'elevated-task.ps1' | Where-Object {
             -not (Test-Path "$taskHome\$_") -or (Get-FileHash "$taskHome\$_").Hash -ne (Get-FileHash "$tools\$_").Hash
         }).Count -eq 0
-    if ($current) {
+    $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)
+    $arguments = '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$tools\elevated.ps1`"",
+        '-Package', "`"$package`"", '-Installer', "`"$out\butterpollo-setup-$version.exe`"",
+        '-Version', $version, '-Work', "`"$run`""
+    if ($admin) {
+        Step 'display self-test as SYSTEM and install'
+        Start-Process powershell -WindowStyle Hidden -ArgumentList $arguments
+    } elseif ($current) {
         Step 'display self-test as SYSTEM and install'
         @{ version = $version } | ConvertTo-Json | Set-Content (Join-Path $Work 'request.json')
         schtasks /Run /TN ButterpolloReleaseElevated | Out-Null
     } else {
         if ($task) { Write-Warning 'The release elevation task is out of date; run rust/release/elevation.ps1 as administrator again.' }
         Step 'display self-test as SYSTEM and install (UAC prompt)'
-        $arguments = '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$tools\elevated.ps1`"",
-            '-Package', "`"$package`"", '-Installer', "`"$out\butterpollo-setup-$version.exe`"",
-            '-Version', $version, '-Work', "`"$run`""
         Start-Process powershell -Verb RunAs -WindowStyle Hidden -ArgumentList $arguments
     }
     $deadline = (Get-Date).AddMinutes(15)
     while (-not (Test-Path "$run\elevated\done.txt")) {
         if ((Get-Date) -gt $deadline) { throw 'The elevated step did not finish; was the UAC prompt declined?' }
         Start-Sleep -Seconds 2
+    }
+    # Checked before tagging: a release is only published once it installed.
+    if (-not (Test-Path "$run\elevated\installed.json")) {
+        throw "The install did not finish; see $run\elevated\transcript.txt"
     }
     $selfTest = "$run\elevated\display-self-test.json"
     $selfTestPassed = $null
