@@ -69,7 +69,10 @@ pub struct Host {
 }
 impl Host {
     pub fn stop_app(&self) {
-        self.current_app.lock().unwrap().take();
+        // Stopping the app waits for it to exit, up to its exit timeout and
+        // undo commands: never under the lock every serverinfo request takes.
+        let app = self.current_app.lock().unwrap().take();
+        drop(app);
         self.live_rtx.lock().unwrap().take();
         self.app_audio.lock().unwrap().take();
         self.app_display.lock().unwrap().clear();

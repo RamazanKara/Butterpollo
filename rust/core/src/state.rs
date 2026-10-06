@@ -172,13 +172,23 @@ impl PairedState {
             }
             root.as_object_mut().unwrap().remove("devices");
         }
+        // Vibepollo appended a device again when it paired again, so an
+        // imported profile can list one certificate twice. Keep the first
+        // entry rather than refusing to start.
         let mut certs = HashSet::new();
         let mut ids = HashSet::new();
-        for c in &clients {
-            if !certs.insert(c.der()?) || !ids.insert(c.uuid.clone()) {
-                bail!("duplicate paired client identity");
+        let mut unique = Vec::with_capacity(clients.len());
+        for mut c in clients {
+            if !certs.insert(c.der()?) {
+                continue;
             }
+            if !ids.insert(c.uuid.clone()) {
+                c.uuid = uuid::Uuid::new_v4().to_string();
+                ids.insert(c.uuid.clone());
+            }
+            unique.push(c);
         }
+        let clients = unique;
         if clients.len() > 256 {
             bail!("too many paired clients");
         }
@@ -206,17 +216,25 @@ impl PairedState {
         d["root"]["named_devices"] = serde_json::to_value(&self.clients)?;
         write_json(path, &d)
     }
+    /// Pair a device. A certificate that is already paired, as when Moonlight
+    /// forgot this host and pairs again, keeps its entry, identity and
+    /// permissions; only the name is updated. Refusing it left the device
+    /// unable to pair until someone deleted it in the console.
     pub fn add(&mut self, path: &Path, client: Client) -> Result<()> {
-        if self.clients.len() >= 256
-            || self
-                .clients
-                .iter()
-                .any(|c| c.uuid == client.uuid || c.der().ok() == client.der().ok())
-        {
-            bail!("duplicate client or paired client limit reached");
-        }
+        let der = client.der()?;
         let mut next = self.clone();
-        next.clients.push(client);
+        if let Some(existing) = next
+            .clients
+            .iter_mut()
+            .find(|c| c.der().is_ok_and(|b| crypto::equal(&b, &der)))
+        {
+            existing.name = client.name;
+        } else {
+            if next.clients.len() >= 256 || next.clients.iter().any(|c| c.uuid == client.uuid) {
+                bail!("duplicate client or paired client limit reached");
+            }
+            next.clients.push(client);
+        }
         next.save(path)?;
         *self = next;
         Ok(())
@@ -327,6 +345,36 @@ mod tests {
         let n = load_json(&p, json!(null)).unwrap();
         assert_eq!(n["root"]["other"], json!([1, 2]));
         assert_eq!(n["root"]["uniqueid"], "same-id");
+    }
+    #[test]
+    fn pairing_a_known_certificate_again_keeps_the_device_and_duplicates_load() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("state.json");
+        let identity = crypto::Identity::generate().unwrap();
+        let client = |name: &str, uuid: &str| Client {
+            name: name.into(),
+            cert: identity.certificate.clone(),
+            uuid: uuid.into(),
+            perm: 0x0300_0000,
+            enabled: true,
+            extra: BTreeMap::new(),
+        };
+        let mut s = PairedState::load(&p).unwrap();
+        s.add(&p, client("Phone", "a")).unwrap();
+        s.clients[0].perm = 0x071f_1f00;
+        s.add(&p, client("Phone again", "b")).unwrap();
+        assert_eq!(s.clients.len(), 1);
+        assert_eq!(s.clients[0].uuid, "a");
+        assert_eq!(s.clients[0].perm, 0x071f_1f00);
+        assert_eq!(s.clients[0].name, "Phone again");
+        // A Vibepollo profile that lists the certificate twice still loads.
+        let mut doubled = s.clone();
+        doubled.clients.push(client("Phone", "a"));
+        doubled.save(&p).unwrap();
+        let loaded = PairedState::load(&p).unwrap();
+        assert_eq!(loaded.clients.len(), 1);
+        let der = loaded.clients[0].der().unwrap();
+        assert!(loaded.client_by_certificate(&der).is_some());
     }
     #[test]
     fn existing_credentials_format() {

@@ -130,6 +130,16 @@ fn authenticated(h: &Shared, connection: &Connection, permission: u32) -> Result
     }
     Ok(c.clone())
 }
+/// Watching a stream needs the view or the launch permission, as in
+/// Vibepollo: a device that may launch a game may also resume it.
+const VIEW: u32 = (1 << 25) | (1 << 26);
+fn authenticated_viewer(h: &Shared, connection: &Connection) -> Result<Client> {
+    let client = authenticated(h, connection, 0)?;
+    if client.perm & VIEW == 0 {
+        bail!("client permission denied");
+    }
+    Ok(client)
+}
 fn stream_key_id(value: &str) -> Result<u32> {
     // Android sends Java's signed random int; desktop clients can send the
     // same 32 bits as an unsigned decimal. Both forms describe the same IV.
@@ -393,6 +403,11 @@ async fn do_pair(h: Shared, args: &Args) -> Result<Vec<(String, String)>> {
             .get("devicename")
             .cloned()
             .unwrap_or("Moonlight Client".into());
+        // A new certificate request replaces this device's unfinished
+        // pairing, as in the previous host. Moonlight abandons a pairing after
+        // a wrong PIN without telling the host, and its apps share one unique
+        // ID, so the stale session refused every later attempt until restart.
+        h.pairings.lock().unwrap().sessions.remove(&id);
         if let Some(auth) = args.get("otpauth") {
             // One-time PIN pairing (Artemis). A wrong hash still gets an
             // ordinary answer, with a random PIN that fails the next step.
@@ -437,20 +452,20 @@ async fn do_pair(h: Shared, args: &Args) -> Result<Vec<(String, String)>> {
             ]);
         }
         let (sender, receiver) = tokio::sync::oneshot::channel();
+        let created = Instant::now();
         {
             let mut pins = h.pins.lock().unwrap();
             pins.retain(|_, p| p.created.elapsed() < Duration::from_secs(300));
-            if pins.contains_key(&id)
-                || pins.len() >= 32
-                || h.pairings.lock().unwrap().sessions.contains_key(&id)
-            {
-                bail!("pairing already pending or request limit reached");
+            // Replacing an older request ends its wait for the PIN.
+            pins.remove(&id);
+            if pins.len() >= 32 {
+                bail!("pairing request limit reached");
             }
             pins.insert(
                 id.clone(),
                 PendingPin {
                     name: name.clone(),
-                    created: Instant::now(),
+                    created,
                     sender,
                 },
             );
@@ -461,7 +476,13 @@ async fn do_pair(h: Shared, args: &Args) -> Result<Vec<(String, String)>> {
             &format!("{name} wants to pair. Enter the PIN it shows in the Butterpollo console."),
         );
         let response = tokio::time::timeout(Duration::from_secs(300), receiver).await;
-        h.pins.lock().unwrap().remove(&id);
+        {
+            // Only this request's entry: a newer request may have replaced it.
+            let mut pins = h.pins.lock().unwrap();
+            if pins.get(&id).is_some_and(|p| p.created == created) {
+                pins.remove(&id);
+            }
+        }
         let (pin, name) = response
             .context("PIN entry timed out")?
             .context("pairing cancelled")?;
@@ -587,7 +608,7 @@ async fn applist(
         .into_iter()
         .filter(|entry| {
             let permission = match remote::identify(entry.id, &entry.uuid) {
-                Some(Control::Resume | Control::RunningGame) => 1 << 25,
+                Some(Control::Resume | Control::RunningGame) => VIEW,
                 Some(_) => 1 << 26,
                 None => 1 << 24,
             };
@@ -600,7 +621,9 @@ async fn applist(
             .get("enable_legacy_ordering")
             .is_none_or(|value| value != false && value != "false");
     let hdr = u8::from(
-        h.codecs.load(std::sync::atomic::Ordering::Acquire) & (0x200 | 0x20000 | 0x800000) != 0,
+        h.codecs.load(std::sync::atomic::Ordering::Acquire)
+            & (0x200 | 0x20000 | 0x2000000 | 0x4000000)
+            != 0,
     );
     let mut s = "<?xml version=\"1.0\"?><root status_code=\"200\">".to_owned();
     for (index, entry) in entries.iter().enumerate() {
@@ -648,7 +671,12 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
         _ if resume => 1 << 25,
         _ => 1 << 26,
     };
-    let client = match authenticated(&h, &connection, permission) {
+    let authorized = if permission == 1 << 25 {
+        authenticated_viewer(&h, &connection)
+    } else {
+        authenticated(&h, &connection, permission)
+    };
+    let client = match authorized {
         Ok(c) => c,
         Err(error) => {
             tracing::warn!(%error, app_id = requested, resume, "Moonlight launch authorization failed");
@@ -731,6 +759,10 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
             Some("Remote session action conflicts with this client's current session state".into()),
         );
     }
+    // The reply names the endpoint Moonlight called. Android and iOS read
+    // <gamesession> from /launch and fail without it, also when the launch
+    // joins the running game.
+    let reply = if resume { "resume" } else { "gamesession" };
     let resume = resume
         || matches!(control, Some(Control::Resume | Control::RunningGame))
         || (control == Some(Control::Monitor) && owner == remote::Owner::Monitor);
@@ -885,8 +917,11 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
                 .unwrap()
                 .clear(&launch.client.uuid, remote::Confirmation::Replace);
             h.sessions.lock().unwrap().stop_role(Role::Stream, None);
-            current.take();
+            let previous = current.take();
             drop(current);
+            // Stopping the app waits for it to exit, never under the lock
+            // that every serverinfo and app list request takes.
+            drop(previous);
             h.app_audio.lock().unwrap().take();
             h.app_display.lock().unwrap().clear();
             let deadline = Instant::now() + Duration::from_secs(10);
@@ -925,8 +960,16 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
                     butterpollo_core::framegen::Rate::from_client(dimensions[2].parse()?)
                 };
                 let mut stream = butterpollo_core::rtsp::Negotiated {
-                    width: dimensions[0].parse().context("invalid launch width")?,
-                    height: dimensions[1].parse().context("invalid launch height")?,
+                    // Encoders need even sizes. Moonlight rounds only the
+                    // height, and only later; a 2556x1179 phone was refused.
+                    width: dimensions[0]
+                        .parse::<u32>()
+                        .context("invalid launch width")?
+                        & !1,
+                    height: dimensions[1]
+                        .parse::<u32>()
+                        .context("invalid launch height")?
+                        & !1,
                     fps: rate.rounded(),
                     rate_millihz: rate.0,
                     hdr: args.get("hdrMode").is_some_and(|v| v == "1"),
@@ -1048,10 +1091,7 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
             std::net::IpAddr::V4(ip) => ip.to_string(),
             std::net::IpAddr::V6(ip) => format!("[{ip}]"),
         };
-        Ok((
-            if resume { "resume" } else { "gamesession" }.into(),
-            format!("{scheme}://{host}:{rtsp_port}"),
-        ))
+        Ok((reply.into(), format!("{scheme}://{host}:{rtsp_port}")))
     })();
     match result {
         Ok((key, url)) => xml(
@@ -1077,7 +1117,7 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
                 error
                     .downcast_ref::<LaunchFailure>()
                     .map_or(503, |failure| failure.0),
-                &[(if resume { "resume" } else { "gamesession" }, "0".into())],
+                &[(reply, "0".into())],
                 Some(error.to_string()),
             )
         }
@@ -1252,7 +1292,7 @@ async fn bitrate(
 ) -> Response {
     // Vibepollo's reply: the applied bitrate, 0 on failure.
     let failed = |code, message: &str| xml(code, &[("bitrate", "0".into())], Some(message.into()));
-    let client = match authenticated(&h, &c, 1 << 25) {
+    let client = match authenticated_viewer(&h, &c) {
         Ok(client) => client,
         Err(e) => return failed(403, &e.to_string()),
     };
@@ -1289,7 +1329,7 @@ async fn bitrate(
     )
 }
 async fn abr(State(h): State<Shared>, Extension(c): Extension<Connection>) -> Response {
-    if authenticated(&h, &c, 1 << 25).is_err() {
+    if authenticated_viewer(&h, &c).is_err() {
         return axum::http::StatusCode::UNAUTHORIZED.into_response();
     }
     // The host has no adaptive bitrate of its own; clients that see this run

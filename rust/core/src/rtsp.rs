@@ -201,8 +201,9 @@ impl Negotiated {
                 None => d,
             })
         };
-        n.width = get("x-nv-video[0].clientViewportWd", n.width)?;
-        n.height = get("x-nv-video[0].clientViewportHt", n.height)?;
+        // Encoders need even sizes; round an odd client size down.
+        n.width = get("x-nv-video[0].clientViewportWd", n.width)? & !1;
+        n.height = get("x-nv-video[0].clientViewportHt", n.height)? & !1;
         n.fps = get("x-nv-video[0].maxFPS", n.fps)?;
         n.rate_millihz = if n.fps > 1000 {
             n.fps
