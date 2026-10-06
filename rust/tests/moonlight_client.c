@@ -24,6 +24,10 @@ static OpusMSDecoder *opus_decoder;
 static int audio_channels;
 static int requested_format;
 static int requested_hdr;
+/* Unset logs only; auto follows the existing hevc-hdr/av1-hdr CLI selection. */
+static int expected_hdr_control=-1;
+static atomic_int hdr_notifications,hdr_enabled_notifications,hdr_disabled_notifications;
+static atomic_int hdr_control_mismatches,hdr_invalid_metadata;
 static int decoder_threads=1;
 static int requested_width,requested_height;
 static double audio_energy,audio_peak;
@@ -196,6 +200,44 @@ static void stage_start(int stage){printf("STAGE %s\n",LiGetStageName(stage));}
 static void stage_failed(int stage,int error){printf("FAILED %s error=%d\n",LiGetStageName(stage),error);}
 static void terminated(int error){printf("TERMINATED error=%d\n",error);atomic_store(&ended,1);}
 static void log_message(const char*fmt,...){va_list args;va_start(args,fmt);vprintf(fmt,args);va_end(args);}
+static int hdr_chromaticity_valid(unsigned x,unsigned y){
+    return y>0&&x<=50000&&y<=50000&&x+y<=50000;
+}
+static int hdr_metadata_valid(const SS_HDR_METADATA *metadata){
+    if(!metadata->maxDisplayLuminance||
+       !hdr_chromaticity_valid(metadata->whitePoint.x,metadata->whitePoint.y)||
+       (unsigned)metadata->minDisplayLuminance>(unsigned)metadata->maxDisplayLuminance*10000u||
+       metadata->maxFullFrameLuminance>metadata->maxDisplayLuminance)return 0;
+    for(int i=0;i<3;i++)if(!hdr_chromaticity_valid(metadata->displayPrimaries[i].x,metadata->displayPrimaries[i].y))return 0;
+    /* Zero minimum, MaxCLL, MaxFALL and full-frame luminance are valid.
+     * The content/display maxima may be unknown, so no fabricated value is required. */
+    return 1;
+}
+static void hdr_mode(bool enabled){
+    SS_HDR_METADATA metadata={0};
+    int available=LiGetHdrMetadata(&metadata);
+    int valid=available&&hdr_metadata_valid(&metadata);
+    int notification=atomic_fetch_add(&hdr_notifications,1)+1;
+    if(enabled)atomic_fetch_add(&hdr_enabled_notifications,1);
+    else atomic_fetch_add(&hdr_disabled_notifications,1);
+    if(expected_hdr_control>=0&&(int)enabled!=expected_hdr_control)atomic_fetch_add(&hdr_control_mismatches,1);
+    if(enabled&&!valid)atomic_fetch_add(&hdr_invalid_metadata,1);
+    /* One record per callback; the callback owns the metadata snapshot and
+     * cross-thread summary state is atomic. Values retain Moonlight's wire units. */
+    if(available){
+        printf("HDR_CONTROL {\"notification\":%d,\"enabled\":%s,\"metadata_available\":true,\"metadata_valid\":%s,"
+               "\"primaries_xy_50000\":[[%u,%u],[%u,%u],[%u,%u]],\"white_xy_50000\":[%u,%u],"
+               "\"maximum_nits\":%u,\"minimum_10000th_nit\":%u,\"max_cll_nits\":%u,\"max_fall_nits\":%u,\"full_frame_nits\":%u}\n",
+               notification,enabled?"true":"false",valid?"true":"false",
+               (unsigned)metadata.displayPrimaries[0].x,(unsigned)metadata.displayPrimaries[0].y,
+               (unsigned)metadata.displayPrimaries[1].x,(unsigned)metadata.displayPrimaries[1].y,
+               (unsigned)metadata.displayPrimaries[2].x,(unsigned)metadata.displayPrimaries[2].y,
+               (unsigned)metadata.whitePoint.x,(unsigned)metadata.whitePoint.y,
+               (unsigned)metadata.maxDisplayLuminance,(unsigned)metadata.minDisplayLuminance,
+               (unsigned)metadata.maxContentLightLevel,(unsigned)metadata.maxFrameAverageLightLevel,
+               (unsigned)metadata.maxFullFrameLuminance);
+    }else printf("HDR_CONTROL {\"notification\":%d,\"enabled\":%s,\"metadata_available\":false,\"metadata_valid\":false}\n",notification,enabled?"true":"false");
+}
 int main(int argc,char**argv){
     if(argc<2){fprintf(stderr,"session URL required\n");return 2;}
     setbuf(stdout,NULL);
@@ -204,6 +246,13 @@ int main(int argc,char**argv){
     STREAM_CONFIGURATION config;LiInitializeStreamConfiguration(&config);config.width=640;config.height=480;config.fps=30;config.bitrate=2000;config.packetSize=1024;config.streamingRemotely=STREAM_CFG_LOCAL;config.audioConfiguration=AUDIO_CONFIGURATION_STEREO;config.supportedVideoFormats=VIDEO_FORMAT_H264;config.encryptionFlags=ENCFLG_ALL;
     if(argc>2){if(strcmp(argv[2],"hevc")==0)config.supportedVideoFormats=VIDEO_FORMAT_H265;else if(strcmp(argv[2],"hevc-hdr")==0)config.supportedVideoFormats=VIDEO_FORMAT_H265_MAIN10;else if(strcmp(argv[2],"av1")==0)config.supportedVideoFormats=VIDEO_FORMAT_AV1_MAIN8;else if(strcmp(argv[2],"av1-hdr")==0)config.supportedVideoFormats=VIDEO_FORMAT_AV1_MAIN10;}
     requested_format=config.supportedVideoFormats;requested_hdr=(requested_format&(VIDEO_FORMAT_H265_MAIN10|VIDEO_FORMAT_AV1_MAIN10))!=0;
+    const char *hdr_expectation=getenv("BUTTERPOLLO_TEST_EXPECT_HDR_CONTROL");
+    if(hdr_expectation){
+        if(strcmp(hdr_expectation,"auto")==0)expected_hdr_control=requested_hdr;
+        else if(strcmp(hdr_expectation,"0")==0)expected_hdr_control=0;
+        else if(strcmp(hdr_expectation,"1")==0)expected_hdr_control=1;
+        else{fprintf(stderr,"BUTTERPOLLO_TEST_EXPECT_HDR_CONTROL must be auto, 0 or 1\n");return 2;}
+    }
     int duration=argc>6?atoi(argv[6]):0;
     if(getenv("BUTTERPOLLO_TEST_WARMUP_SECONDS"))warmup_seconds=atof(getenv("BUTTERPOLLO_TEST_WARMUP_SECONDS"));
     barcode_bottom=getenv("BUTTERPOLLO_TEST_BARCODE_BOTTOM")&&strcmp(getenv("BUTTERPOLLO_TEST_BARCODE_BOTTOM"),"1")==0;
@@ -222,7 +271,7 @@ int main(int argc,char**argv){
     /* Concurrent clients need distinct stream keys: rikey byte i is i+seed and rikeyid is 123+seed. */
     if(getenv("BUTTERPOLLO_TEST_KEY_SEED")){int seed=atoi(getenv("BUTTERPOLLO_TEST_KEY_SEED"))&0x7f;for(int i=0;i<16;i++)config.remoteInputAesKey[i]=(char)(i+seed);config.remoteInputAesIv[3]=(char)(123+seed);}
     if(getenv("BUTTERPOLLO_TEST_SIGNED_KEY_ID")&&strcmp(getenv("BUTTERPOLLO_TEST_SIGNED_KEY_ID"),"1")==0)config.remoteInputAesIv[0]=(char)0x80;
-    CONNECTION_LISTENER_CALLBACKS listener;LiInitializeConnectionCallbacks(&listener);listener.stageStarting=stage_start;listener.stageFailed=stage_failed;listener.connectionTerminated=terminated;listener.logMessage=log_message;
+    CONNECTION_LISTENER_CALLBACKS listener;LiInitializeConnectionCallbacks(&listener);listener.stageStarting=stage_start;listener.stageFailed=stage_failed;listener.connectionTerminated=terminated;listener.logMessage=log_message;listener.setHdrMode=hdr_mode;
     DECODER_RENDERER_CALLBACKS video;LiInitializeVideoCallbacks(&video);video.setup=video_setup;video.submitDecodeUnit=video_frame;video.capabilities=CAPABILITY_DIRECT_SUBMIT;
     AUDIO_RENDERER_CALLBACKS audio;LiInitializeAudioCallbacks(&audio);audio.init=audio_init;audio.decodeAndPlaySample=audio_frame;audio.capabilities=CAPABILITY_DIRECT_SUBMIT;
     int result=LiStartConnection(&server,&config,&listener,&video,&audio,NULL,0,NULL,0);
@@ -231,7 +280,14 @@ int main(int argc,char**argv){
     for(int i=0;i<(duration?duration*10:100)&&!atomic_load(&ended)&&(duration||atomic_load(&frames)<30);i++)wait_ms(100);
     double seconds=(clock_ms()-started)/1000.0;
     int premature=atomic_load(&ended)||(duration&&seconds<duration*0.98);
-    LiStopConnection();printf("RESULT frames=%d decoded_frames=%d audio_packets=%d failures=%d\n",atomic_load(&frames),atomic_load(&decoded_frames),atomic_load(&audio_packets),atomic_load(&failures));
+    LiStopConnection();
+    int hdr_control_valid=expected_hdr_control<0||(atomic_load(&hdr_notifications)>0&&atomic_load(&hdr_control_mismatches)==0&&atomic_load(&hdr_invalid_metadata)==0);
+    printf("HDR_CONTROL_RESULT {\"checked\":%s,\"expected_enabled\":%d,\"notifications\":%d,\"enabled_notifications\":%d,\"disabled_notifications\":%d,\"mismatches\":%d,\"invalid_metadata\":%d,\"passed\":%s}\n",
+           expected_hdr_control>=0?"true":"false",expected_hdr_control,atomic_load(&hdr_notifications),
+           atomic_load(&hdr_enabled_notifications),atomic_load(&hdr_disabled_notifications),
+           atomic_load(&hdr_control_mismatches),atomic_load(&hdr_invalid_metadata),hdr_control_valid?"true":"false");
+    if(!hdr_control_valid){fprintf(stderr,"HDR control expectation failed: missing/wrong mode notification or invalid HDR metadata\n");atomic_fetch_add(&failures,1);}
+    printf("RESULT frames=%d decoded_frames=%d audio_packets=%d failures=%d\n",atomic_load(&frames),atomic_load(&decoded_frames),atomic_load(&audio_packets),atomic_load(&failures));
     printf("PICTURE_CONTENT frames_with_luma_contrast=%d\n",atomic_load(&detailed_frames));
     if(timing_csv)fclose(timing_csv);
     printf("AUDIO_SIGNAL samples=%llu peak=%.6f rms=%.6f\n",audio_samples,audio_peak,audio_samples?sqrt(audio_energy/audio_samples):0.0);
