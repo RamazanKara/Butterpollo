@@ -1565,6 +1565,265 @@ RX 9070 XT/Wi-Fi report, sustained gameplay, native HDR accuracy or client
 scanout. Recovery coverage is limited to the specific checks described above;
 later codec fixes require their own exact-binary validation.
 
+## October 6 follow-up: saturation, HDR state and compatibility
+
+These follow-ups use evidence under
+D:\CodexArtifacts\butterpollo-remaining-20261006. The first rc.10 test host is
+SHA-256
+93a681c26f8e767212e3580260d641658e1d871257b64aadd97b511e0e31bcbf.
+Its ordinary suite passed 257 tests with 27 environment-dependent tests ignored
+by default; Clippy with warnings denied and the release build passed. These
+checks and the scoped native tests below do not establish installation or
+publication of the candidate.
+
+The final hotplug-protection revision passed 263 ordinary tests with 27 excluded
+by default, including six new hotplug tests. Formatting, Clippy with warnings
+denied and release builds passed. Its host SHA-256 is
+3b6d6e3299cc57383c4ca5aa373a0bfbb721218afb44114c81dbbdd61a9bd89c.
+The earlier executable hash and SDR result below identify their own tested
+build; final package and installation provenance are recorded separately.
+
+### Saturation diagnosis and queue-drain rejection
+
+Four serial cases ran the unchanged rc.9 executable
+d22e446dd103592c09cd9bf11da3a76d355ab1783a18862d5d3b9f8b31a3237a
+in baseline/drain/drain/baseline order. The only case setting changed was
+wgc_drain_to_newest=false/true/true/false. All used the WGC helper and compute
+copy, implicit default source-phase pacing, AV1 1280x720 at 60 FPS and 20 Mbps,
+the 2560x1440 physical desktop at 120 Hz, minimum_fps_target=20, a 20-second
+stream with five-second warmup, and the same bounded uncapped synthetic GPU
+workload. The workload rendered at 184.5–184.6 FPS in all four cases.
+The freshness floor remained 58.2 FPS.
+
+| Case | Actual source presentation FPS | Distinct FPS | Original render age, mean ms | Estimated presentation age, mean ms | Wire gaps above 25 ms | Host processing, mean ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| rc9-saturated-base-a | 58.727 | 54.063 | 31.034 | 17.251 | 52 | 1.760 |
+| rc9-saturated-drain-a | 59.518 | 52.632 | 28.355 | 15.252 | 79 | 1.757 |
+| rc9-saturated-drain-b | 59.689 | 54.101 | 27.212 | 15.405 | 58 | 1.761 |
+| rc9-saturated-base-b | 59.691 | 54.808 | 29.457 | 16.888 | 34 | 1.760 |
+
+All four decode without errors, capture restart or compute fallback, but all
+fail the unchanged distinct-picture floor. Drain-a also fails the delivery
+floor at 57.304 FPS. Draining reduces picture age by roughly 1.5–2.0 ms while
+losing more fresh pictures and increasing long wire intervals. It remains
+disabled by default. The result must not be represented as a saturation fix.
+
+The newer timing analysis checks DXGI presentation identity separately from
+uniform requested cadence. Source frame IDs match Present call IDs, and actual
+presentation remains one frame behind the calls throughout each measured
+window. Those checks permit the same presentation-QPC estimate described above
+even though the source's frame intervals are irregular. The older table's
+withheld saturated estimates are retained as the original analysis; a separate
+reanalysis estimates 17.860/17.757 ms for guard-saturated60-1/2. Neither the new
+estimate nor this reanalysis changes a raw age or acceptance gate. This
+approximation excludes input and display scanout and has roughly 0.1 ms
+claim-clock alignment precision.
+
+The measured encoder/host processing stays near 1.8 ms. Under saturation, both
+capture publication delay and frame-selection delay rise. In the current
+baseline cases, all 68/72 omitted source pictures have an estimated matching
+capture publication. With drainage, 73 of 100 and 51 of 80 omitted pictures no
+longer have an estimated matching publication. This is inferred identity for
+unclaimed images: selecting the most recent actual presentation at least
+0.25–1 ms before the capture timestamp agrees with every known claimed
+picture in these four runs, but unclaimed pixels were not read back.
+
+Fixed-publication replay does not support disabling prediction globally or
+shortening the minimum claim spacing as a default fix. An ideal content
+deduplication oracle improves modeled baseline freshness from 54.057/55.066
+to 56.646/58.287 FPS at the existing spacing, but assumes zero GPU comparison
+cost and uses picture identity unavailable to production. It retains source
+irregularity and does not pass every case. Exact GPU comparison therefore
+remains a diagnostic candidate, not a default capture optimization.
+
+Raw cases and unchanged acceptance are in saturation/saturation-results.json.
+RC9_ABBA_REPORT.md and RC9_ABBA_DIAGNOSIS.json in that directory retain stage
+timing and provenance; RC9_ORACLE_AND_LIFETIMES.json retains the model's
+assumptions. No game, display mode, installed profile or service was changed by
+these four tests; the installed host was checked idle and Warhammer absent
+before each run.
+
+### HDR-state correction and current SDR validation
+
+The candidate reads the explicit modern HDR capability/request bits and active
+color mode, using the dedicated HDR setter rather than treating any Windows
+Advanced Color state as HDR. Its ABI is checked against
+[Microsoft's SDK definitions](https://github.com/microsoft/win32metadata/blob/main/generation/WinSDK/RecompiledIdlHeaders/um/wingdi.h).
+Legacy query/set behavior is retained for operating systems without the modern
+query; a failed modern setter does not fall back to changing WCG. A successful
+request must settle in both requested and active state. Temporary query errors
+are retried; a timed-out owned request is rolled back while preserving an
+observed competing request. Unit checks include pending-state cancellation,
+failed disable rollback and explicit rollback failure.
+
+The actual physical display path exposed modern flags 69 with HDR-support bit 4
+clear and active mode SDR, while the legacy value 5 reported general Advanced
+Color/WCG capability. That describes this current Windows display path; it
+does not establish that the panel model lacks HDR hardware. The corrected
+probe refuses to claim native HDR from this state. Earlier attempted physical
+HDR color results that used BGRA8 capture are not native HDR validation.
+
+One rc.10 AV1 SDR check, rc10-sdr-av1-720p60-1, passed on the unchanged physical
+desktop using default WGC/helper/source-phase behavior and minimum 20 FPS.
+All 1,172 received frames decoded without errors. Its steady window delivered
+60.002 FPS and 871 consecutive distinct source pictures, with no repeats,
+omitted IDs or wire gaps above 25 ms. Host processing averaged 1.815 ms and
+original render-start-to-decoder age averaged 9.508 ms. DXGI presentation
+counters remained zero in this smoke, so actual presentation timing is
+unavailable; the raw age must not be relabeled as presentation-to-decoder
+latency. The decoder barcode gate is independent of those missing counters.
+Physical settings and 120 Hz refresh were unchanged after cleanup.
+
+The final host repeated this default-path SDR check in
+rc10-sdr-av1-720p60-2. All 1,169 received frames decoded; the steady window
+delivered 59.999 distinct FPS with 868 consecutive unique picture IDs, no repeats,
+omitted IDs or long wire gaps. The physical mode, 120 Hz refresh and SDR state
+were unchanged. DXGI statistics again supplied no usable presentation-ID/QPC
+pairs, so this is freshness and compatibility evidence without an actual
+presentation-to-decoder latency claim. The original 58.2 FPS floor was retained.
+
+The initial native virtual HDR attempts below failed before pixel validation.
+The reviewed isolated harness uses one
+owned extended HDR display, full-window native 1280x720 motion, independent
+frame readback and the original color thresholds: luma/chroma mean absolute
+error at most three 10-bit code values, contrast 0.98–1.02 and saturation
+0.95–1.05. The first normally elevated attempt failed the VDD access preflight
+with AccessDenied before starting its private host, creating a display,
+pairing, capture or encoding. Its failure is not a codec or HDR pixel failure.
+No native HDR pass or relaxed threshold follows from it. A later native HDR result
+requires its own recorded capture and pixel evidence.
+
+Subsequent isolated service-context attempts did open WGC with RgbaF16 source
+pixels. One stopped because ANSI log formatting obscured the harness's readiness
+check; the corrected reader preserves all acceptance tokens and thresholds.
+The next attempt detected a second newly active display, the previously dormant
+HISENSE, alongside the owned HDR virtual display. The exact physical/topology
+gate rejected it before motion began. The original Odyssey settings were
+unchanged, and teardown restored the original topology in 2.327 seconds. Neither
+attempt provides a native HDR color-roundtrip pass.
+
+The source fix captures available inactive targets immediately before owned VDD
+creation/recreation and protects those same identities through HDR startup. It
+prunes only reactivated dormant targets from a fresh active topology, keeping
+the supplied modes, path priority and clone relationships. Strict temporary
+SetDisplayConfig flags neither save the topology nor allow Windows to retime
+the supplied modes. The owned display is followed by driver target and monitor
+path, so GDI display-name reuse cannot redirect its HDR setup or recovery.
+A second semantic snapshot check rejects an observed concurrent layout change.
+The final settle phase requires 500 ms of quiet within one 1.5-second deadline,
+retained across retries; expiry prevents further mutation. Protection ends
+after startup. Windows has no atomic topology compare-and-set, so a narrow
+last-call race remains, and intentional activation of the same dormant target
+during this short window cannot be distinguished from automatic topology recall.
+Six pure tests cover the selection, clone/mode, identity, race and deadline
+rules. The reporter's phone behavior has not been reproduced by these local
+tests; final native pixel-validation evidence follows separately.
+
+### Final native virtual HDR pixels, excluding physical-panel calibration
+
+Two isolated service-context runs used the final host above, each with one owned
+extended 1280x720 HDR virtual display, full-window 60 FPS motion, WGC helper
+capture and AMF at 40 Mbps. The stream ran for 22 seconds with a five-second
+warmup and minimum repeat target 20 FPS. Both reported active modern HDR and
+RgbaF16 capture; independent software decoding supplied a ten-bit frame dump
+at received frame 480. No capture fallback or restart occurred. These are
+native HDR capture/conversion/codec pixel checks, not physical-panel calibration,
+client HDR rendering, scanout or game-content validation.
+
+| Codec | Received/decoded frames | Steady distinct FPS | Unique pictures in steady window | Repeats / skipped IDs | Wire intervals above 25 ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| HEVC Main10 HDR | 1,281 / 1,281 | 60.001 | 985 / 985 | 0 / 0 | 0 |
+| AV1 Main10 HDR | 1,302 / 1,302 | 60.026 | 1,000 / 1,000 | 0 / 0 | 31 |
+
+| Codec | Luma MAE, 10-bit codes | Chroma MAE, 10-bit codes | Contrast slope | Saturation ratio |
+| --- | ---: | ---: | ---: | ---: |
+| HEVC Main10 HDR | 0.393 | 0.404 | 0.9995 | 1.0059 |
+| AV1 Main10 HDR | 0.387 | 0.428 | 0.9983 | 0.9976 |
+
+Both black patches decoded to code 64 and white patches to 509 against 509.08
+expected. The original limits were retained: black error at most two codes,
+white error at most three, luma/chroma MAE at most three, contrast 0.98–1.02 and
+saturation 0.95–1.05. Both passed the unchanged 58.2 distinct-FPS floor and
+decoded without errors. AV1's 31 long arrival intervals remain an unresolved
+cadence finding; its complete picture coverage and correct pixels do not make
+it a gap-free smoothness pass. No latency improvement is claimed from these
+two HDR runs.
+
+Each run passed 11 during-stream topology samples and a mandatory check before
+cancellation, with the original physical settings intact and only the owned
+virtual display added. Logs in both runs show the guard restoring the dormant
+HISENSE target after creation and again after HDR settings. This validates
+correction of that reproduced startup recall, not prevention of every transient
+activation or the remote phone report. Final teardown removed the virtual
+display and restored the original topology; the installed service stayed
+running and its configuration hash was unchanged. The temporary dispatcher
+tasks were removed. HEVC/AV1 complete fixture durations were 35.493/35.280 seconds,
+including 0.401/0.439 seconds of cleanup.
+
+Full results are system-context/hdr-9dae55fb791f48f2b23414231da970dc/
+coordinator-result.json (HEVC) and
+system-context/hdr-4edd39d9a9d441bb8f179768b3ee1d8f/coordinator-result.json (AV1).
+Their matching hdr-virtual case directories retain raw host/receiver logs,
+pixel dumps, color results, topology samples and before/after snapshots.
+
+### Native controller and Moonlight 6.2 command checks
+
+One explicitly selected native HID test passed with the installed signed
+libvirtualgamepad 0.1.0.39 driver. It sequentially created an owned neutral
+DualShock 4 and DualSense and read their newly enumerated HID reports through
+the production packet decoder and Gamepads::apply path. It verified two
+independent primary-pad contacts, stable movement identity, release/reuse,
+cancel-all, rejection of a third occupied contact, and removal on drop.
+Secondary-surface events with matching pointer IDs did not alter either
+primary contact. The first probe's VID/PID pathname assumption was corrected
+to inspect HID attributes; production input behavior did not change.
+
+This validates the existing fallback and primary-pad behavior, not a second
+native touch surface. The signed driver's protocol has a contact index but
+no independent surface index. A genuine second surface needs a compatible
+device profile, versioned driver protocol and signed package; it cannot be
+represented by the second finger of the primary pad. No live physical
+two-pad controller, network-delivered touch event or game-specific mapping
+was tested. Evidence is touchpad/INVESTIGATION.json and
+touchpad/native-test-attempt2.log; the selected test executable SHA-256 is
+5b01008db084c9aad9ed1cfa886b2b6c2a41772230b7187d4403420be9b031b0.
+
+Further checks of the unchanged official Windows Moonlight Qt 6.2.0 executable
+resolve part of the earlier command-line uncertainty. Against a private rc.9
+software-only host, plain listing and cached CSV listing exited naturally
+with code zero in 0.204/0.207 seconds. Three running-app quit cases exited
+naturally in 3.847–3.849 seconds, and idle quit in 0.811 seconds. The fixture
+used a verified private Windows desktop with normal GUI startup behavior:
+the earlier hidden-startup flag suppressed the client's GUI polling, and its
+half-second post-cancel wait was too short. No physical desktop switch or
+user input was needed.
+
+An unmodified official client still hangs on a cold-cache CSV listing in the
+controlled mock case; the 65.143-second observation was stopped and is retained
+as a failure. Source/debugger evidence associates it with asynchronous artwork
+workers during Qt thread-pool shutdown. Plain listing or a normally populated
+artwork cache avoids that tested path. No host protocol workaround or official
+client patch was shipped. These command checks contain no RTSP stream and do
+not replace the earlier codec matrix or validate the new candidate's codecs.
+cli/SUMMARY.json preserves exact client/host hashes, mock controls and six
+passing pure lifecycle tests.
+
+An optional [Moonlight 6.2.0 source patch](compatibility/moonlight-6.2.0/README.md)
+now makes CSV listing read existing artwork without starting background
+artwork downloads. Eight focused regression cases pass against the actual
+patched BoxArtManager translation unit with real Qt 6.4.2 on Linux; three
+negative controls expose the original background-worker behavior. This is
+source-only validation with stubbed HTTP/computer and cache boundaries, not a
+full Windows client build or an end-to-end patched-client result. It does not
+replace the official executable or erase its recorded cold-cache failure.
+
+The read-only environment collector now records OS, GPU/driver, physical
+adapter/link counters, host version/hash and service state without changing
+settings or uploading data. Its local output is environmental evidence only.
+Neither it nor these local tests reproduces the remote RX 9070 XT over Wi-Fi
+report, establishes NVIDIA execution, or supplies physical-panel calibration
+and client-scanout validation.
+
 ## Limits
 
 This machine validates AMD AMF. Native NVENC now calls the installed NVIDIA driver directly, supports reviewed API versions 11.0–13.0, reference frame invalidation, D3D11 4:2:0/8-bit 4:4:4 and GPU-only CUDA interop for ten-bit 4:4:4. Seven mock-driver tests exercise compatibility, asynchronous ownership, timeout teardown, metadata lifetime, loss recovery and bitrate changes; NVIDIA execution/performance still needs NVIDIA hardware. QSV has native D3D11 imports, and TrueHDR has a shared-device GPU path; these need Intel/NVIDIA hardware respectively. Unsupported native formats, PyroWave and software encoding use CPU compatibility paths. The wired LAN checks above do not establish Wi-Fi performance, multiple concurrent 4K sessions, dynamic game content, native 4K capture or end-to-end input/display latency. The GPU texture pools and native encoder queues are bounded to eight retained frames; capacity runs may intentionally keep those queues occupied. [PARITY.md](PARITY.md) separates implemented features from native validation.

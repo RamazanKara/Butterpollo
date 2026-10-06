@@ -9,6 +9,9 @@ use windows::{
     core::{GUID, PCWSTR},
 };
 
+mod color_state;
+mod hotplug;
+
 fn check(code: i32) -> Result<()> {
     if code == 0 {
         Ok(())
@@ -640,20 +643,8 @@ impl Topology {
                 {
                     return None;
                 }
-                let mut color = DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO {
-                    header: header(
-                        DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO,
-                        size_of::<DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO>(),
-                        p.targetInfo.adapterId,
-                        p.targetInfo.id,
-                    ),
-                    ..Default::default()
-                };
-                let flags = if DisplayConfigGetDeviceInfo(&mut color.header) == 0 {
-                    color.Anonymous.value
-                } else {
-                    0
-                };
+                let color =
+                    color_state::query(p.targetInfo.adapterId, p.targetInfo.id).unwrap_or_default();
                 let display_name = wide(&source.viewGdiDeviceName);
                 let monitor_device_path = wide(&target.monitorDevicePath);
                 Some(Monitor {
@@ -662,8 +653,8 @@ impl Topology {
                     friendly_name: wide(&target.monitorFriendlyDeviceName),
                     primary: primary.as_ref() == Some(&display_name),
                     display_name,
-                    hdr_supported: flags & 1 != 0,
-                    hdr_enabled: flags & 2 != 0,
+                    hdr_supported: color.supported,
+                    hdr_enabled: color.enabled,
                     adapter: p.targetInfo.adapterId,
                     target: p.targetInfo.id,
                     source: p.sourceInfo.id,
@@ -1206,23 +1197,10 @@ pub fn restore_positions() -> Result<()> {
     Ok(())
 }
 pub fn set_hdr(m: &Monitor, enabled: bool) -> Result<()> {
-    unsafe {
-        if enabled && !m.hdr_supported {
-            bail!("selected display does not support HDR");
-        }
-        let color = DISPLAYCONFIG_SET_ADVANCED_COLOR_STATE {
-            header: header(
-                DISPLAYCONFIG_DEVICE_INFO_SET_ADVANCED_COLOR_STATE,
-                size_of::<DISPLAYCONFIG_SET_ADVANCED_COLOR_STATE>(),
-                m.adapter,
-                m.target,
-            ),
-            Anonymous: DISPLAYCONFIG_SET_ADVANCED_COLOR_STATE_0 {
-                value: u32::from(enabled),
-            },
-        };
-        check(DisplayConfigSetDeviceInfo(&color.header))
+    if enabled && !m.hdr_supported {
+        bail!("selected display does not support HDR");
     }
+    color_state::set(m.adapter, m.target, enabled)
 }
 pub fn mode(name: &str) -> Result<DEVMODEW> {
     unsafe {
@@ -1514,6 +1492,8 @@ pub struct VirtualDisplay {
     options: VirtualOptions,
     generation: u64,
     capability: [u8; 32],
+    startup_protection: Option<hotplug::Protection>,
+    resolved_target: Option<Monitor>,
 }
 // Driver IOCTLs use a thread-safe Windows device handle; shared access is
 // serialized by the enclosing mutex, including feed and final teardown.
@@ -1586,6 +1566,7 @@ impl VirtualDisplay {
             driver.protocol,
             &capability,
         );
+        let startup_protection = hotplug::Protection::capture()?;
         let result = driver.ioctl(driver.protocol.create_function(), 3, &request, 56)?;
         let mut display = Self {
             driver,
@@ -1597,8 +1578,11 @@ impl VirtualDisplay {
             options,
             generation: 0,
             capability,
+            startup_protection: Some(startup_protection),
+            resolved_target: None,
         };
         display.resolve(&result)?;
+        display.check_hotplug("created")?;
         Ok(display)
     }
     fn resolve(&mut self, result: &[u8]) -> Result<()> {
@@ -1621,7 +1605,8 @@ impl VirtualDisplay {
                     .into_iter()
                     .find(|m| m.adapter == luid && m.target == target)
             {
-                self.name = m.display_name;
+                self.name = m.display_name.clone();
+                self.resolved_target = Some(m);
                 self.last_feed = Instant::now();
                 return Ok(());
             }
@@ -1632,6 +1617,51 @@ impl VirtualDisplay {
             std::thread::sleep(Duration::from_millis(50));
         }
         bail!("virtual display did not become active before the deadline")
+    }
+    fn owns_monitor(&self, monitor: &Monitor) -> bool {
+        self.resolved_target.as_ref().is_some_and(|owned| {
+            owned.adapter == monitor.adapter
+                && owned.target == monitor.target
+                && owned
+                    .monitor_device_path
+                    .eq_ignore_ascii_case(&monitor.monitor_device_path)
+        })
+    }
+    fn hotplug_monitor(&self) -> Result<&Monitor> {
+        // Resolve stores the target returned by our driver request. Never infer
+        // ownership from a GDI display name that Windows could later reuse.
+        self.resolved_target
+            .as_ref()
+            .context("owned virtual display unavailable during startup protection")
+    }
+    fn refresh_name(&mut self) -> Result<()> {
+        self.name = monitors()?
+            .into_iter()
+            .find(|m| self.owns_monitor(m))
+            .context("owned virtual display unavailable after startup protection")?
+            .display_name;
+        Ok(())
+    }
+    fn check_hotplug(&mut self, stage: &str) -> Result<()> {
+        if let Some(protection) = &self.startup_protection {
+            protection.check(self.hotplug_monitor()?, stage)?;
+            self.refresh_name()?;
+        }
+        Ok(())
+    }
+    /// Finish only after virtual HDR settings have settled. Afterwards the
+    /// user is free to change displays without a stream overriding them.
+    fn finish_hotplug(&mut self, stage: &str) -> Result<()> {
+        if self.startup_protection.is_some() {
+            let owned = self.hotplug_monitor()?.clone();
+            self.startup_protection
+                .as_mut()
+                .unwrap()
+                .settle(&owned, stage)?;
+            self.refresh_name()?;
+            self.startup_protection = None;
+        }
+        Ok(())
     }
     fn renew(&mut self) -> Result<()> {
         let mut request = NAMESPACE.to_vec();
@@ -1645,7 +1675,7 @@ impl VirtualDisplay {
         if self.last_feed.elapsed() >= Duration::from_secs(1) {
             self.last_feed = Instant::now();
             let renewed = self.renew();
-            let present = monitors().map(|m| m.iter().any(|m| m.display_name == self.name));
+            let present = monitors().map(|m| m.iter().any(|m| self.owns_monitor(m)));
             if renewed.is_ok() && present? {
                 return Ok(());
             }
@@ -1661,11 +1691,16 @@ impl VirtualDisplay {
                 self.driver.protocol,
                 &self.capability,
             );
+            let protection = hotplug::Protection::capture()?;
             let response =
                 self.driver
                     .ioctl(self.driver.protocol.create_function(), 3, &request, 56)?;
+            self.startup_protection = Some(protection);
             self.resolve(&response)?;
+            // Retain a resolved recovery even if protection needs a retry, so
+            // Guard::feed still completes HDR/startup validation next time.
             self.generation = self.generation.wrapping_add(1);
+            self.check_hotplug("recreated")?;
             tracing::info!(output=%self.name, "owned virtual display recovered");
         }
         Ok(())
@@ -1847,8 +1882,8 @@ impl Guard {
         };
         let choices = monitors()?;
         let chosen = if let Some(v) = &virtual_display {
-            let name = v.lock().unwrap().name.clone();
-            choices.iter().find(|d| d.display_name == name)
+            let display = v.lock().unwrap();
+            choices.iter().find(|d| display.owns_monitor(d))
         } else {
             choices.iter().find(|d| d.matches(output)).or_else(|| {
                 if output.is_empty() {
@@ -1863,7 +1898,7 @@ impl Guard {
         }
         .context("display unavailable")?
         .clone();
-        let guard = Self {
+        let mut guard = Self {
             output: chosen.display_name.clone(),
             generation: virtual_display
                 .as_ref()
@@ -1964,6 +1999,11 @@ impl Guard {
             Ok(())
         })();
         result?;
+        if let Some(display) = &guard.virtual_display {
+            let mut display = display.lock().unwrap();
+            display.finish_hotplug("after settings")?;
+            guard.output = display.name.clone();
+        }
         Ok(guard)
     }
     pub fn feed(&mut self) -> Result<bool> {
@@ -1973,7 +2013,7 @@ impl Guard {
             if display.generation != self.generation {
                 let chosen = monitors()?
                     .into_iter()
-                    .find(|m| m.display_name == display.name)
+                    .find(|m| display.owns_monitor(m))
                     .context("recovered display unavailable")?;
                 let mut settings = SETTINGS.lock().unwrap();
                 if chosen.device_id != self.identity {
@@ -2017,6 +2057,7 @@ impl Guard {
                         set_hdr(&chosen, hdr)?;
                     }
                 }
+                display.finish_hotplug("after recovery settings")?;
                 self.output = display.name.clone();
                 self.generation = display.generation;
                 return Ok(true);

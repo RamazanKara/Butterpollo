@@ -191,6 +191,10 @@ try {
         Copy-Item -LiteralPath (Join-Path $repo 'rust\RELEASE_NOTES.md') -Destination $distribution
         Copy-Item -LiteralPath (Join-Path $repo 'rust\PERFORMANCE.md') -Destination $distribution
         Copy-Item -LiteralPath (Join-Path $repo 'rust\PARITY.md') -Destination $distribution
+        New-Item -ItemType Directory -Path "$distribution\tools" -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path $repo 'rust\tests\collect_environment.ps1') -Destination "$distribution\tools"
+        Copy-Item -LiteralPath (Join-Path $repo 'rust\tests\ENVIRONMENT_REPORT.md') -Destination "$distribution\tools\README.md"
+        Copy-Item -LiteralPath (Join-Path $repo 'rust\compatibility') -Destination "$distribution\compatibility" -Recurse
         Copy-Item -LiteralPath (Join-Path $repo 'rust\THIRD_PARTY.md') -Destination "$distribution\licenses"
         foreach ($header in @('nvEncodeAPI.h', 'dynlink_cuda.h')) {
             $text = [IO.File]::ReadAllText((Join-Path $repo "rust\windows\include\$header"))

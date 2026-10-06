@@ -1,0 +1,69 @@
+--- a/app/backend/boxartmanager.h
++++ b/app/backend/boxartmanager.h
+@@ -13,10 +13,15 @@
+     friend class NetworkBoxArtLoadTask;
+ 
+ public:
++    enum class LoadMode {
++        CacheOnly,
++        FetchIfMissing,
++    };
++
+     explicit BoxArtManager(QObject *parent = nullptr);
+ 
+     QUrl
+-    loadBoxArt(NvComputer* computer, NvApp& app);
++    loadBoxArt(NvComputer* computer, NvApp& app, LoadMode mode = LoadMode::FetchIfMissing);
+ 
+     static
+     void
+--- a/app/backend/boxartmanager.cpp
++++ b/app/backend/boxartmanager.cpp
+@@ -69,7 +69,7 @@
+     NvApp m_App;
+ };
+ 
+-QUrl BoxArtManager::loadBoxArt(NvComputer* computer, NvApp& app)
++QUrl BoxArtManager::loadBoxArt(NvComputer* computer, NvApp& app, LoadMode mode)
+ {
+     // Try to open the cached file if it exists and contains data
+     QFile cacheFile(getFilePathForBoxArt(computer, app.id));
+@@ -77,13 +77,13 @@
+         return QUrl::fromLocalFile(cacheFile.fileName());
+     }
+ 
+-    // If we get here, we need to fetch asynchronously.
+-    // Kick off a worker on our thread pool to do just that.
+-    NetworkBoxArtLoadTask* netLoadTask = new NetworkBoxArtLoadTask(this, computer, app);
+-    m_ThreadPool.start(netLoadTask);
++    if (mode == LoadMode::FetchIfMissing) {
++        // GUI callers can consume the asynchronous completion signal.
++        NetworkBoxArtLoadTask* netLoadTask = new NetworkBoxArtLoadTask(this, computer, app);
++        m_ThreadPool.start(netLoadTask);
++    }
+ 
+-    // Return the placeholder then we can notify the caller
+-    // later when the real image is ready.
++    // Return the placeholder while fetching, or when only the cache is requested.
+     return QUrl("qrc:/res/no_app_image.png");
+ }
+ 
+--- a/app/cli/listapps.cpp
++++ b/app/cli/listapps.cpp
+@@ -131,13 +131,15 @@
+ 
+     void printAppCSV(NvApp app) const
+     {
++        // CSV is a synchronous snapshot. Missing artwork remains a placeholder;
++        // do not start asynchronous work as the application is about to exit.
+         fprintf(stdout, "\"%s\",%d,%s,%s,%s,%s,\"%s\"\n", qPrintable(app.name),
+                                                           app.id,
+                                                           app.hdrSupported ? "true" : "false",
+                                                           app.isAppCollectorGame ? "true" : "false",
+                                                           app.hidden ? "true" : "false",
+                                                           app.directLaunch ? "true" : "false",
+-                                                          qPrintable(m_BoxArtManager->loadBoxArt(m_Computer, app).toDisplayString()));
++                                                          qPrintable(m_BoxArtManager->loadBoxArt(m_Computer, app, BoxArtManager::LoadMode::CacheOnly).toDisplayString()));
+     }
+ 
+     Launcher *q_ptr;

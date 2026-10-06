@@ -1243,6 +1243,10 @@ fn pointer_event(p: &mut POINTER_INFO, event: u8, location: POINT) {
 }
 
 #[cfg(test)]
+#[path = "input/native_touch_tests.rs"]
+mod native_touch_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

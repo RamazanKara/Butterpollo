@@ -1,8 +1,19 @@
-# Butterpollo 2.0.0-rc.9 release candidate for Windows
+# Butterpollo 2.0.0-rc.10 release candidate for Windows
 
-Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.9 installer is named `butterpollo-setup-2.0.0-rc.9.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.10 installer is named `butterpollo-setup-2.0.0-rc.10.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
 
-The earlier rc.9 test installer predates the changes below. Use the standard rc.9 package named above; its validation record identifies the source commit and tested executable.
+## New in rc.10
+
+- **Correct HDR state on newer Windows versions.** Wide-gamut SDR color management is no longer mistaken for HDR support or active HDR. The host uses Windows' dedicated HDR state and toggle APIs where available, retains the legacy path on older systems, waits for the requested state, and cancels its own pending request after a failed transition. The capture and pacing defaults from rc.9 remain unchanged.
+- Restores previously inactive displays when Windows reactivates them during owned virtual-display startup and recovery. A brief guard removes only reactivated targets with the same identity, retains current modes and clone relationships, rejects an observed concurrent layout change, and expires after startup. It does not continuously enforce the desktop or establish that the reporter's phone issue is resolved.
+- Verified native virtual-HDR pixels with HEVC and AV1 at 720p60 on the final RX 7900 XT host. Both captured FP16, decoded every frame and passed the unchanged color/freshness gates, with display restoration confirmed. HEVC had no long arrival gaps; AV1 had 31 intervals above 25 ms despite complete picture coverage. This validates the tested pixel path and reproduced display fix, not gap-free AV1 delivery, physical-panel calibration or client scanout.
+- Adds a read-only environment collector under `tools` in the portable package. It records the exact host hash, GPU and driver versions, Windows build and network-adapter type without changing settings or uploading anything. This makes hardware-specific reports reproducible; it does not replace a test on the reporter's machine.
+- Validates DS4 and DualSense touch input through the installed signed driver: production packet decoding, two contacts, movement, release, cancellation, isolation of unsupported secondary pads and device cleanup. A true second touch surface still needs a new signed driver and device profile.
+- Resolves the previous CLI test limitation. The unmodified Moonlight PC 6.2.0 client successfully lists apps and quits normally against rc.9 when its window and polling lifecycle are allowed to complete. Cold-cache CSV listing remains a separately reproduced client artwork-shutdown issue; plain listing or cached artwork is the workaround. An optional client source patch under `compatibility/moonlight-6.2.0` passed eight focused Qt tests; it still requires a custom client build and Windows validation.
+- Keeps queue draining disabled after another saturation comparison: it reduced frame age but delivered fewer distinct pictures and more gaps. No additional performance setting was enabled on that evidence.
+
+Current automated validation: 263 ordinary tests passed, with 27 environment-dependent tests excluded by default; formatting, Clippy with warnings denied and release builds passed. This includes eleven HDR-state tests and six virtual-display hotplug tests. Hardware test scope and package verification are recorded separately in PERFORMANCE.md and the release's VALIDATION.json.
+
 
 ## New in rc.9
 
@@ -15,7 +26,7 @@ The earlier rc.9 test installer predates the changes below. Use the standard rc.
 - HDR requests and ten-bit codec decoding passed from an SDR desktop. This matrix does not validate native HDR source capture, displayed HDR brightness or colour accuracy. Stock Moonlight 6.2.0 supports the standard codecs; PyroWave and the host's 1000 Hz low-latency VRR mode still require [Nonary's client](https://github.com/Nonary/moonlight-qt). Moonlight's own client-side VRR rendering is a separate feature.
 - Three additional AV1 checks verified Moonlight 6.2.0's existing AMD-padding compensation: 1080p SDR/HDR and 1968×2184 SDR. Client logs confirm the requested crop, hardware decoding and rendering without decoder errors. The underlying AMD bitstream still has padded dimensions; these checks verify the client's crop path, not pixel-edge or HDR display accuracy.
 - Handles Moonlight PC 6.2.0's extended-key modifier, distinguishing keypad Enter from ordinary Enter through holds, repeats, release and disconnect cleanup. Existing key remaps and older clients retain their behavior. Controller touch parsing and batching now preserve the touchpad index. The bundled driver supports one touch surface with two contacts; secondary-pad events are safely ignored with a warning and cannot corrupt primary-pad state. Native second-touchpad support remains unavailable. Input was disabled during the streaming matrix, so live input on that application has not been newly validated.
-- Standalone CLI teardown remains limited: `list --csv` returned valid app rows but did not exit within the timeout. `quit` successfully cancelled the host app, with both the web API and standard `/serverinfo` reporting idle, but the harness had to close its GUI normally. Natural exit of those commands has not passed; the successful streaming-window close and reconnect checks are recorded separately.
+- Follow-up checks on the unchanged rc.9 host verified natural exit of official Moonlight 6.2.0's plain `list`, CSV listing with cached artwork, three successive app quits and an idle quit. Paired HTTPS `/serverinfo` and the web API agreed that each app had stopped. The earlier quit failure came from the harness hiding its window and allowing too little time for its next status poll. Cold-cache `list --csv` still has an upstream artwork-shutdown bug, reproduced without Butterpollo; use plain `list` for automation or CSV after artwork is cached. Streaming-window close and reconnect evidence remains separate.
 - Validation of the final runtime passed 246 ordinary tests, with 26 environment-dependent tests excluded by default, and Clippy with warnings denied. Four selected native checks separately passed: WGC reconnect/COM teardown, a 64-frame H.264 one-reference SPS/VUI and decode check, packet-loss reference recovery for the three AMD codecs, and exact GPU texture comparison. The ten exact-client connections and three crop checks above are additional checks. Final default-path motion results and capture-worker recovery are recorded separately in PERFORMANCE.md; package integrity and build provenance are recorded with the release assets.
 
 ## New in rc.8
@@ -77,13 +88,13 @@ The earlier rc.9 test installer predates the changes below. Use the standard rc.
 
 ## Install
 
-- `butterpollo-setup-2.0.0-rc.9.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
-- For a portable copy, extract `butterpollo-rust-2.0.0-rc.9-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
+- `butterpollo-setup-2.0.0-rc.10.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
+- For a portable copy, extract `butterpollo-rust-2.0.0-rc.10-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
 - These are unsigned test builds. Keep a copy of your configuration and the previous installer for rollback.
 
 ## Lower latency
 
-- On AMD GPUs, captured frames are copied and converted on D3D12 compute queues, and AMF encodes from D3D12. The game no longer delays this work on the graphics engine. In a full AV1 HDR 1968×2184 120 fps stream beside a heavy GPU load, the picture arrived 7-9 ms sooner, and 50 rather than 45 new pictures reached the client each second. Idle, it arrived about 0.6 ms sooner; encoding was already at the hardware limit (2.8-3.3 ms). `gpu_compute_conversion` (Settings › Capture) turns this off.
+- On supported AMD GPUs, captured frames are copied and converted on D3D12 compute queues, and AMF encodes from D3D12. This reduces waiting on the game's graphics queue. In the historical full AV1 HDR 1968×2184 120 fps comparison beside a heavy GPU load, the picture arrived 7-9 ms sooner, and 50 rather than 45 new pictures reached the client each second. Idle, it arrived about 0.6 ms sooner; encoding was already at the hardware limit (2.8-3.3 ms). `gpu_compute_conversion` (Settings › Capture) turns this off.
 - Current defaults use WGC capture with guarded source-phase pacing, AMF `speed` quality, and a virtual display at twice the stream rate. The earlier Desktop Duplication comparisons remain in PERFORMANCE.md as historical measurements; explicit Desktop Duplication remains available.
 - Video FEC uses 21-29% less CPU time than the C++ host, with identical output; encrypted packets avoid extra copies.
 
@@ -101,6 +112,7 @@ Left out on purpose: WebRTC streaming, session history and host statistics pages
 
 ## Known limits
 
+- The final native 720p60 AV1 HDR run had 31 steady arrival intervals above 25 ms. All pictures arrived and decoded, but that cadence issue remains under investigation; the pixel and average-freshness pass is not a smoothness pass.
 - Guarded WGC pacing passed the controlled 60 FPS freshness checks on the 2560×1440/120 Hz desktop; earlier 5120×1440 comparisons had fresh-frame losses and have not been repeated with the new guard. Both pacing alternatives still failed the 60 FPS freshness gate under uncapped GPU saturation. See [PERFORMANCE.md](PERFORMANCE.md); successful decoding alone is not a smoothness pass.
 - The Artemide reporter's phone and RX 9070 XT are unavailable locally. The virtual-display precedence fix addresses a reproduced protocol bug, but confirmation on that phone is still needed.
 - The RX 9070 XT report of 4.7 versus 3.9 ms on Wi-Fi remains open pending the tester's comparison. Packet pacing and recovery fixes address observed problems, but are not proof that this latency difference is resolved.
