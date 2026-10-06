@@ -273,6 +273,8 @@ int main(int argc,char**argv){
     if(getenv("BUTTERPOLLO_TEST_SIGNED_KEY_ID")&&strcmp(getenv("BUTTERPOLLO_TEST_SIGNED_KEY_ID"),"1")==0)config.remoteInputAesIv[0]=(char)0x80;
     CONNECTION_LISTENER_CALLBACKS listener;LiInitializeConnectionCallbacks(&listener);listener.stageStarting=stage_start;listener.stageFailed=stage_failed;listener.connectionTerminated=terminated;listener.logMessage=log_message;listener.setHdrMode=hdr_mode;
     DECODER_RENDERER_CALLBACKS video;LiInitializeVideoCallbacks(&video);video.setup=video_setup;video.submitDecodeUnit=video_frame;video.capabilities=CAPABILITY_DIRECT_SUBMIT;
+    /* Declare reference frame invalidation like Moonlight's hardware decoders, so a lost frame is recovered without a keyframe when the host supports it. */
+    if(getenv("BUTTERPOLLO_TEST_RFI")&&strcmp(getenv("BUTTERPOLLO_TEST_RFI"),"1")==0)video.capabilities|=CAPABILITY_REFERENCE_FRAME_INVALIDATION_AVC|CAPABILITY_REFERENCE_FRAME_INVALIDATION_HEVC|CAPABILITY_REFERENCE_FRAME_INVALIDATION_AV1;
     AUDIO_RENDERER_CALLBACKS audio;LiInitializeAudioCallbacks(&audio);audio.init=audio_init;audio.decodeAndPlaySample=audio_frame;audio.capabilities=CAPABILITY_DIRECT_SUBMIT;
     int result=LiStartConnection(&server,&config,&listener,&video,&audio,NULL,0,NULL,0);
     if(result){printf("CONNECT FAILED %d\n",result);return 1;}
