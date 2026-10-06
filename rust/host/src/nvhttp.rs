@@ -942,6 +942,10 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
             }
             current = h.current_app.lock().unwrap();
         }
+        // Preparing displays, audio and the app's own commands can take many
+        // seconds; serverinfo and the app list read current_app meanwhile.
+        // Launches and stops stay serialized by launch_transition.
+        drop(current);
         h.sessions.lock().unwrap().queue(launch.clone())?;
         if role != Role::InputOnly {
             let prepared = (|| -> Result<crate::display_session::StreamPreparation> {
@@ -1038,6 +1042,7 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
                 }
             }
         }
+        let mut current = h.current_app.lock().unwrap();
         if role == Role::Stream && current.is_none() {
             let mut process_args = args.clone();
             process_args.insert("clientName".into(), launch.client.name.clone());
