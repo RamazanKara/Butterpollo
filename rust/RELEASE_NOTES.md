@@ -11,6 +11,39 @@ Butterpollo's host, native helpers, service and setup are written in Rust, with 
 - **Fixes "virtual display did not become active before the deadline"** ([#4](https://github.com/RamazanKara/Butterpollo/issues/4)). Windows decides whether a newly connected display joins the desktop, and a layout it saved for the same displays (for example two TVs in duplicate mode) can leave the virtual display connected but switched off. The host waited for Windows and failed the launch after ten seconds; unplugging the other displays was the only workaround. When the virtual display stays off for a second after connecting, the host now switches it on itself beside the current displays, as Vibepollo's display helper does. The other displays keep their modes, positions and clone groups; only if the driver refuses that does Windows choose the modes, which the stream's layout restore undoes. A launch that still fails now says whether the display was connected but kept off.
 - **PyroWave no longer stays unavailable after Windows starts.** The host checks PyroWave support once at startup, in a helper running in the signed-in user's session. When the host started with Windows, that check could run before anyone was signed in, or while the session's desktop was still being set up (`optional codec probe exited before replying (0xc0000142)`), and PyroWave stayed off until the host restarted. The host now repeats the check once the user is signed in, with growing pauses and at most six attempts, and never while a stream is running. A probe that fails for any other reason, such as a crashing overlay, is not repeated.
 
+**Display layouts and recovery**
+
+- Restoring a saved layout with duplicated displays (two cloned TVs, for example) no longer fails every time. Clone groups are rebuilt before positions, and displays are found by device instead of by a Windows display name that changes when they rejoin their group.
+- A setting that cannot be restored after an interrupted stream no longer stops the host from starting. Recovery attempts every step, logs what failed and continues; before, the same failure repeated on every start.
+- A TV or monitor that is off or unplugged when a stream ends keeps its HDR, colour profile and mode entries until it is back, instead of keeping the stream's settings.
+- The layout restored after a stream is taken before the virtual display is created, so what Windows changes when it arrives (a TV switched off, another primary display, a retimed display) is undone too.
+- A display that disappears during a stream no longer keeps the rest of the layout from being restored.
+- Displays that stay on keep their timing and position when the layout changes, such as a retained remote monitor during a restore.
+- An expired startup guard on a virtual display no longer makes its recovery fail for the rest of the session.
+- A TV that takes a resolution but refuses the refresh rate is put back after a failed launch.
+- Disconnecting a remote monitor can no longer hang the host while its display is being recovered.
+
+**Streaming**
+
+- The control and input connection survives network errors such as a Wi-Fi roam, an ICMP reply or an oversized datagram. Before, its worker stopped and every later session had no input or control until the host restarted; it now also restarts itself.
+- Controller and motion input get their own channels again (Moonlight asks for 48) instead of sharing one with keep-alive messages.
+- Delayed keyframe requests and key releases are no longer discarded as replays behind many motion reports (a 4096-message window instead of 64).
+- Moonlight's reference frame invalidation requests are read correctly instead of each becoming a full keyframe.
+- A frame too large for Moonlight's packet format at very high bitrates is dropped and followed by a keyframe, instead of ending the session.
+- Audio delay no longer grows after a scheduling hiccup: a backlog over 30 ms is trimmed back to two packets.
+- PyroWave honours the configured pacing limit (`pacing_max_bitrate_kbps`), which helps a client behind Wi-Fi, and no longer sends a catch-up burst after a send had to wait. Wired clients keep pacing at 95% of the host's Ethernet link.
+- The video clock wraps instead of freezing after 13 hours.
+
+**Moonlight compatibility**
+
+- Joining or resuming a running game from Moonlight for Android or iOS works: `/launch` always answers with a game session.
+- A wrong PIN no longer blocks pairing for every Moonlight device until the host restarts.
+- A device that forgot this PC can pair again; it was refused as a duplicate until removed in the console. Vibepollo profiles that list a device twice now load.
+- Quitting a game that is slow to exit no longer stalls other devices' requests.
+- Odd client resolutions such as 2556x1179 are rounded down instead of refused.
+- A device with the launch permission may resume its own game, as in Vibepollo.
+- The app list reports HDR only when a codec has a 10-bit mode.
+
 ## New in rc.10
 
 - **Correct HDR state on newer Windows versions.** Wide-gamut SDR color management is no longer mistaken for HDR support or active HDR. The host uses Windows' dedicated HDR state and toggle APIs where available, retains the legacy path on older systems, waits for the requested state, and cancels its own pending request after a failed transition. The capture and pacing defaults from rc.9 remain unchanged.
