@@ -68,13 +68,26 @@ pub struct Compute {
 // D3D12 devices, queues and fences are free-threaded; the rest is locked.
 unsafe impl Send for Compute {}
 unsafe impl Sync for Compute {}
-/// A compute queue at the highest priority Windows grants this process.
+/// Whether the copy and conversion queues ask for global realtime priority
+/// (`compute_queue_realtime`). Off by default: a realtime queue pre-empts the
+/// desktop compositor that every captured frame comes from, and an HDR stream
+/// on an RX 7900 XT with it ended in an AMD engine timeout the driver could
+/// not reset. High priority still runs ahead of a game's normal work.
+static REALTIME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn set_realtime(enabled: bool) {
+    REALTIME.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+/// A compute queue at the highest allowed priority Windows grants this process.
 fn compute_queue(device: &ID3D12Device) -> Result<(ID3D12CommandQueue, i32)> {
+    let realtime = REALTIME.load(std::sync::atomic::Ordering::Relaxed);
     for priority in [
         D3D12_COMMAND_QUEUE_PRIORITY_GLOBAL_REALTIME.0,
         D3D12_COMMAND_QUEUE_PRIORITY_HIGH.0,
         D3D12_COMMAND_QUEUE_PRIORITY_NORMAL.0,
-    ] {
+    ]
+    .into_iter()
+    .filter(|priority| realtime || *priority != D3D12_COMMAND_QUEUE_PRIORITY_GLOBAL_REALTIME.0)
+    {
         if let Ok(queue) = unsafe {
             device.CreateCommandQueue::<ID3D12CommandQueue>(&D3D12_COMMAND_QUEUE_DESC {
                 Type: D3D12_COMMAND_LIST_TYPE_COMPUTE,

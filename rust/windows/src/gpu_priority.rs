@@ -33,6 +33,7 @@ pub fn configure(
     gpu: &crate::capture::Device,
     config: &butterpollo_core::config::Config,
 ) -> Result<()> {
+    crate::compute::set_realtime(config.boolean("compute_queue_realtime", false));
     unsafe {
         let device = gpu.device.cast::<IDXGIDevice>()?;
         // These device settings are independent of the privileged process
