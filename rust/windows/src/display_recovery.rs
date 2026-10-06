@@ -146,17 +146,24 @@ fn watch(path: &Path) -> Result<()> {
     {
         return Ok(());
     }
-    // Escape the host's job, otherwise a service stop would also kill recovery.
-    *child = Some(
-        Command::new(std::env::current_exe()?)
+    let spawn = |flags: u32| -> Result<std::process::Child> {
+        Ok(Command::new(std::env::current_exe()?)
             .arg("--display-watch")
             .arg(std::process::id().to_string())
             .arg("--config-dir")
             .arg(path.parent().context("journal directory missing")?)
-            .creation_flags(CREATE_BREAKAWAY_FROM_JOB.0 | CREATE_NO_WINDOW.0)
-            .spawn()
-            .context("cannot start the display recovery helper")?,
-    );
+            .creation_flags(flags)
+            .spawn()?)
+    };
+    // Escape the host's job, otherwise a service stop would also kill recovery.
+    // A job that forbids breaking away (a launcher, a terminal) refuses that
+    // with access denied, and every frame limit and display change failed on
+    // it; the helper then stays in the job and still covers a host crash.
+    let started = spawn(CREATE_BREAKAWAY_FROM_JOB.0 | CREATE_NO_WINDOW.0).or_else(|error| {
+        tracing::debug!(%error, "display recovery helper cannot leave the host's job");
+        spawn(CREATE_NO_WINDOW.0)
+    });
+    *child = Some(started.context("cannot start the display recovery helper")?);
     Ok(())
 }
 fn change(id: &str, output: &str, update: impl FnOnce(&mut Entry)) -> Result<()> {
