@@ -1,16 +1,16 @@
 # Butterpollo and Vibepollo 2.0
 
-Butterpollo's Rust host is meant to replace Vibepollo 2.0.0 (commit `8a8c4b03a280ab9f567beb380110abb80f5220b8`) on Windows. This file lists what matches, what differs on purpose and what is still missing, as of 2026-10-05. "Same" means the Rust host reads the same settings and files and gives clients the same answers; it does not mean every hardware path has been exercised. Evidence is at the end.
+Butterpollo's Rust host is meant to replace Vibepollo 2.0.0 (commit `8a8c4b03a280ab9f567beb380110abb80f5220b8`) on Windows. This file lists what matches, what differs on purpose and what is still missing, as of 2026-10-06. "Same" means the Rust host reads the same settings and files and gives clients the same answers; it does not mean every hardware path has been exercised. Evidence is at the end.
 
 Left out on purpose: WebRTC streaming, session history and host statistics pages, the ViGEm and SudoVDA fallbacks, and Linux and macOS hosting.
 
 ## Deliberate differences
 
-Three defaults differ because they measured lower latency on the test PC (see [PERFORMANCE.md](PERFORMANCE.md)). Setting the Vibepollo value restores Vibepollo's behaviour.
+The table compares the current defaults. In rc.9, Automatic capture prefers WGC; WGC-selected streams also use guarded source-phase pacing, while explicit Desktop Duplication keeps its previous pacing default. See [PERFORMANCE.md](PERFORMANCE.md) for measured benefits, fallback behavior and hardware limits.
 
 | Setting | Vibepollo default | Butterpollo default |
 | --- | --- | --- |
-| `capture` (automatic) | Windows Graphics Capture on Windows 11 23H2 and later | Desktop Duplication, except for VRR and game-provided frame generation on a virtual display |
+| `capture` (automatic) | Windows Graphics Capture on Windows 11 23H2 and later | Windows Graphics Capture on physical and virtual displays, with Desktop Duplication fallback when WGC cannot open |
 | `amd_quality` | `balanced` | `speed` |
 | `frame_limiter_auto_virtual_framegen` | `enabled` (virtual display at 4x the stream rate) | `legacy` (2x); a VRR request still gets 1000 Hz |
 
@@ -30,7 +30,7 @@ Settings changed in the console are saved at once and most take effect from the 
 | Display layout | Same | Golden layout restore (skipped while a display it names is disconnected), restore after a stream or crash, mode remapping, the display restore hotkey (`dd_snapshot_restore_hotkey`). `dd_wa_dummy_plug_hdr10` turns VSync off but does not force HDR on. |
 | Device display mode | Same | A device's `display_mode` sets its display's resolution and refresh in place of the host's policies; the stream keeps the client's rate. |
 | Letterboxing | Same | A source of another shape keeps its aspect ratio between black bars, in the GPU and the software encoders. |
-| Input | Same | Keyboard (key code mask, synthetic modifiers), mouse, touch, pen, controllers through the VHF driver, DualSense triggers and feedback. |
+| Input | Implemented; driver and validation limits | Keyboard (key code mask, synthetic modifiers and extended keypad Enter), mouse, touch, pen, controllers through the VHF driver, DualSense triggers and feedback. Controller touch packets preserve their touchpad index, but the bundled driver supports one surface with two contacts; secondary-pad events are safely ignored. Keypad hold/repeat/release and touchpad isolation have automated coverage. Input was disabled in the exact Moonlight PC 6.2.0 streaming matrix, so that matrix does not provide a new live-input validation. |
 | Audio | Same | Endpoint matching by id, name, description or adapter; Steam Streaming Speakers; surround Opus. |
 | Apps | Same | Commands, preparation and undo, detached commands, URLs and documents, working folder inference, `APOLLO_*` variables, starting before sign-in. |
 | Steam library | Same | `steam_*` settings, sync on demand and every 30 seconds, covers from Steam's cache or store as PNG, `/api/steam/*`. A Steam app's stream ends when the game's processes exit. |
@@ -45,6 +45,7 @@ Settings changed in the console are saved at once and most take effect from the 
 
 ## Evidence
 
+- AMD AV1's raw bitstream remains padded at some sizes on the RX 7900 XT: 1920×1080 decodes as 1920×1082, 1968×2184 as 1984×2186, and 2184×1968 as 2240×1968. The independent exact-geometry gate still fails for these cases in SDR and HDR, including AMF alignment modes 3 (`NO_RESTRICTIONS`) and 4 (`8X2_ONLY`). [Moonlight PC 6.2.0 explicitly crops RDNA3 padding](https://github.com/moonlight-stream/moonlight-qt/blob/v6.2.0/app/streaming/video/ffmpeg.cpp#L1772) back to the negotiated size when each padding amount is below 64 pixels; its [D3D11 renderer uses the cropped dimensions](https://github.com/moonlight-stream/moonlight-qt/blob/v6.2.0/app/streaming/video/ffmpeg-renderers/d3d11va.cpp#L819). Three exact-client checks passed this metadata path: 1920×1080 SDR and HDR, plus 1968×2184 SDR. Client logs confirmed the padded coded sizes, expected eight/ten-bit decoding, cropping to the negotiated dimensions and D3D11 rendering, with no decoder errors and normal streaming-window disconnects. These checks used host SHA-256 `cbc837071d1b27a02050a3db1f16ec18aa444e54b4ecacd49c33b24534491ca6`. They do not validate displayed edge pixels, native HDR source/display accuracy, distinct-picture smoothness, or the untested 2184×1968 client case. The strict raw-bitstream gate remains unchanged.
 - October 5 rc.4 helper: 188 ordinary workspace tests pass, including five new transport/ownership checks; 22 hardware tests are excluded from that count. Seven local 720p60 motion cases cover direct WGC, the helper, HEVC, AV1, HDR output from an SDR source and compute disabled, all at 60 fresh pictures per second without decode errors. Forced helper termination reopened WGC in 357 ms; all 1,249 received pictures decoded. After a normal installer upgrade, the SYSTEM service launched the helper as the signed-in user and captured a 2184×1968 native HDR virtual display for an AV1 120 FPS session with compute enabled at both ends. The client confirmed correct pictures and responsive input. This live session is functional evidence, not a controlled throughput or latency comparison.
 - October 5 final workspace/native run: 200 pass, including 20 opt-in native checks, on an active moving desktop. This includes opt-in WGC compute synchronization and same-frame fallback after a sharing failure. The known failing AMD AV1 geometry check and unavailable NVIDIA hardware check were excluded; AV1 was also run separately and still fails. The standalone DDX snapshot check receives no frame with the display off but passes on the active desktop; the separate cold-start display transitions remain unresolved. Clippy with warnings denied and the web console's type check pass.
 - Native AMD tests on the test PC: GPU colour and letterbox conversion, cursor composition, AMF loss recovery, Opus surround, WGC teardown, and the software encoder letterbox test.

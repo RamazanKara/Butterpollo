@@ -774,6 +774,48 @@ fn nanos(at: Instant, origin: Instant) -> i64 {
         -(origin.duration_since(at).as_nanos().min(i64::MAX as u128) as i64)
     }
 }
+const WGC_FRAME_POOL_CAPACITY: usize = 2;
+
+/// Select only within the current pool's capacity so a busy producer cannot
+/// keep capture draining forever. Each acquired frame is validated, including
+/// ones that would be skipped, so resize/access errors still trigger recovery.
+fn newest_capture_frame<T>(
+    limit: usize,
+    mut next: impl FnMut() -> Result<Option<T>>,
+    mut validate: impl FnMut(&T) -> Result<()>,
+    mut close: impl FnMut(T) -> Result<()>,
+) -> Result<Option<T>> {
+    let mut newest = None;
+    for _ in 0..limit {
+        let candidate = match next() {
+            Ok(Some(frame)) => frame,
+            Ok(None) => break,
+            Err(error) => {
+                if let Some(frame) = newest {
+                    let _ = close(frame);
+                }
+                return Err(error);
+            }
+        };
+        if let Err(error) = validate(&candidate) {
+            let _ = close(candidate);
+            if let Some(frame) = newest {
+                let _ = close(frame);
+            }
+            return Err(error);
+        }
+        if let Some(previous) = newest.replace(candidate)
+            && let Err(error) = close(previous)
+        {
+            if let Some(frame) = newest.take() {
+                let _ = close(frame);
+            }
+            return Err(error);
+        }
+    }
+    Ok(newest)
+}
+
 pub struct Wgc {
     gpu: Device,
     pool: Direct3D11CaptureFramePool,
@@ -789,6 +831,7 @@ pub struct Wgc {
     size: (i32, i32),
     color_space: Option<DXGI_COLOR_SPACE_TYPE>,
     color_check: Instant,
+    drain_to_newest: bool,
 }
 pub(crate) fn qpc_frequency() -> i64 {
     *std::sync::OnceLock::get_or_init(&QPC_FREQUENCY, || {
@@ -882,7 +925,7 @@ impl Wgc {
                 } else {
                     DirectXPixelFormat::B8G8R8A8UIntNormalized
                 },
-                2,
+                WGC_FRAME_POOL_CAPACITY as i32,
                 size,
             )
             .context("Windows Graphics Capture frame pool")?;
@@ -894,8 +937,8 @@ impl Wgc {
             // Leaving this property untouched is not equivalent to zero:
             // Windows build 26200 reports a 16 ms default, which can deliver
             // only 50-57 updates/sec when quantized to compositor ticks.
-            // Explicitly remove that throttle for <=60 FPS streams. Keep
-            // the separately tested 1 ms workaround for higher rates.
+            // Explicitly remove that throttle at every stream rate. The old
+            // 1 ms workaround remains available for diagnostic comparisons.
             let interval = windows::Foundation::TimeSpan {
                 Duration: if high_rate { 10_000 } else { 0 },
             };
@@ -923,6 +966,7 @@ impl Wgc {
                 size: (size.Width, size.Height),
                 color_space,
                 color_check: Instant::now() + Duration::from_secs(1),
+                drain_to_newest: false,
             };
             // Own the pool/session before starting so failure closes them
             // just like normal capture teardown.
@@ -953,11 +997,10 @@ impl Wgc {
     }
     pub fn next_frame(&mut self) -> Result<Option<Image>> {
         self.check_color_space()?;
-        let Some(frame) = self.try_frame()? else {
+        let Some(frame) = self.next_native_frame()? else {
             return Ok(None);
         };
         let result = (|| -> Result<Image> {
-            self.check_size(&frame)?;
             let surface = frame.Surface()?;
             let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
             let texture: ID3D11Texture2D = unsafe { access.GetInterface()? };
@@ -969,14 +1012,13 @@ impl Wgc {
     pub fn next_gpu(&mut self) -> Result<Option<GpuImage>> {
         self.check_color_space()?;
         let now = Instant::now();
-        if let Some(frame) = self.try_frame()? {
-            if let Err(error) = self.check_size(&frame) {
-                let _ = frame.Close();
-                return Err(error);
-            }
+        if let Some(frame) = self.next_native_frame()? {
             let composition = self.intervals.observe(nanos(now, self.origin));
-            if let Some((previous, _, _)) = self.held.take() {
-                previous.Close()?;
+            if let Some((previous, _, _)) = self.held.take()
+                && let Err(error) = previous.Close()
+            {
+                let _ = frame.Close();
+                return Err(error.into());
             }
             let deadline = self.grid.as_ref().and_then(|grid| {
                 let grid = grid.lock().unwrap();
@@ -1020,6 +1062,18 @@ impl Wgc {
         frame.Close()?;
         self.last_publish = now;
         result
+    }
+    fn next_native_frame(&self) -> Result<Option<Direct3D11CaptureFrame>> {
+        newest_capture_frame(
+            if self.drain_to_newest {
+                WGC_FRAME_POOL_CAPACITY
+            } else {
+                1
+            },
+            || self.try_frame(),
+            |frame| self.check_size(frame),
+            |frame| frame.Close().map_err(Into::into),
+        )
     }
     fn try_frame(&self) -> Result<Option<Direct3D11CaptureFrame>> {
         // Reset before checking the pool: a notification racing the check stays
@@ -1244,6 +1298,7 @@ impl Capture {
         let wgc = |gpu: Device| -> Result<Wgc> {
             let mut capture =
                 Wgc::new_device(gpu, hdr, config.boolean("wgc_high_rate_capture", false))?;
+            capture.drain_to_newest = config.boolean("wgc_drain_to_newest", false);
             // The pool's textures can be shared with D3D12 on supported AMD
             // drivers. The same fenced handoff used by DDX keeps the copy and
             // AMF conversion off a busy graphics queue. Keep an independent
@@ -1292,6 +1347,120 @@ impl Capture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn newest_frame_selection_is_bounded_and_preserves_lone_static_updates() -> Result<()> {
+        for limit in [1, WGC_FRAME_POOL_CAPACITY] {
+            for frames in [vec![], vec![1], vec![1, 2, 3]] {
+                let mut pending = std::collections::VecDeque::from(frames.clone());
+                let mut acquired = 0;
+                let mut checked = Vec::new();
+                let mut closed = Vec::new();
+                let newest = newest_capture_frame(
+                    limit,
+                    || {
+                        acquired += 1;
+                        Ok(pending.pop_front())
+                    },
+                    |frame| {
+                        checked.push(*frame);
+                        Ok(())
+                    },
+                    |frame| {
+                        closed.push(frame);
+                        Ok(())
+                    },
+                )?;
+                let consumed = frames.len().min(limit);
+                assert_eq!(acquired, (frames.len() + 1).min(limit));
+                assert_eq!(newest, frames[..consumed].last().copied());
+                assert_eq!(checked, frames[..consumed]);
+                assert_eq!(closed, frames[..consumed.saturating_sub(1)]);
+                assert_eq!(pending.into_iter().collect::<Vec<_>>(), frames[consumed..]);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn newest_frame_selection_closes_every_acquired_frame_on_resize() {
+        for invalid in [1, 2] {
+            let mut acquired = 0;
+            let mut closed = Vec::new();
+            let error = newest_capture_frame(
+                WGC_FRAME_POOL_CAPACITY,
+                || {
+                    acquired += 1;
+                    Ok(Some(acquired))
+                },
+                |frame| {
+                    if *frame == invalid {
+                        bail!("capture output dimensions changed");
+                    }
+                    Ok(())
+                },
+                |frame| {
+                    closed.push(frame);
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error.to_string(), "capture output dimensions changed");
+            assert_eq!(acquired, invalid);
+            closed.sort_unstable();
+            assert_eq!(closed, (1..=invalid).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn newest_frame_selection_preserves_pool_errors_and_closes_a_selected_frame() {
+        let mut acquired = 0;
+        let mut closed = Vec::new();
+        let error = newest_capture_frame(
+            WGC_FRAME_POOL_CAPACITY,
+            || {
+                acquired += 1;
+                if acquired == 2 {
+                    bail!("capture pool lost access");
+                }
+                Ok(Some(acquired))
+            },
+            |_| Ok(()),
+            |frame| {
+                closed.push(frame);
+                bail!("frame also failed to close");
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "capture pool lost access");
+        assert_eq!(acquired, 2);
+        assert_eq!(closed, [1]);
+    }
+
+    #[test]
+    fn newest_frame_selection_closes_the_replacement_when_superseded_close_fails() {
+        let mut acquired = 0;
+        let mut closed = Vec::new();
+        let error = newest_capture_frame(
+            WGC_FRAME_POOL_CAPACITY,
+            || {
+                acquired += 1;
+                Ok(Some(acquired))
+            },
+            |_| Ok(()),
+            |frame| {
+                closed.push(frame);
+                if frame == 1 {
+                    bail!("superseded frame failed to close");
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "superseded frame failed to close");
+        assert_eq!(acquired, 2);
+        assert_eq!(closed, [1, 2]);
+    }
 
     #[test]
     fn wgc_startup_failure_uses_the_same_fallback_as_recovery() {

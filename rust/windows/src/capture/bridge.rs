@@ -117,6 +117,8 @@ fn capture_config(config: &Config) -> Config {
         "gpu_compute_conversion",
         "wgc_compute_copy",
         "wgc_high_rate_capture",
+        "wgc_drain_to_newest",
+        "wgc_helper_streaming_scope",
         "nvenc_realtime_hags",
     ];
     Config {
@@ -491,11 +493,7 @@ impl Drop for NativeFrame {
 }
 fn next_native(capture: &mut Wgc) -> Result<Option<NativeFrame>> {
     capture.check_color_space()?;
-    let frame = capture.try_frame()?.map(NativeFrame);
-    if let Some(frame) = &frame {
-        capture.check_size(&frame.0)?;
-    }
-    Ok(frame)
+    Ok(capture.next_native_frame()?.map(NativeFrame))
 }
 fn native_texture(frame: &NativeFrame) -> Result<ID3D11Texture2D> {
     let access: IDirect3DDxgiInterfaceAccess = frame.0.Surface()?.cast()?;
@@ -546,6 +544,9 @@ fn worker(pipe: &Pipe) -> Result<()> {
     };
     let _com = ComGuard::new()?;
     let _priority = Priority::new();
+    let _streaming = config
+        .boolean("wgc_helper_streaming_scope", false)
+        .then(crate::timing::StreamingScope::enter);
     let timer = crate::timing::Timer::new()?;
     let gpu = Device::new_adapter(
         &name,
@@ -562,6 +563,7 @@ fn worker(pipe: &Pipe) -> Result<()> {
         hdr,
         config.boolean("wgc_high_rate_capture", false),
     )?;
+    capture.drain_to_newest = config.boolean("wgc_drain_to_newest", false);
     let mut first = loop {
         if let Some(frame) = next_native(&mut capture)? {
             break Some(frame);
@@ -760,12 +762,14 @@ mod tests {
     }
     #[test]
     fn helper_receives_only_capture_settings_and_no_host_secrets_or_commands() {
-        let source = Config::parse("adapter_name = AMD\ngpu_compute_conversion = false\nwgc_high_rate_capture = true\ncredentials_file = secret\nprep_cmd = run-something\nport = 47989\nwgc_user_helper = true\n").unwrap();
+        let source = Config::parse("adapter_name = AMD\ngpu_compute_conversion = false\nwgc_high_rate_capture = true\nwgc_drain_to_newest = true\nwgc_helper_streaming_scope = true\ncredentials_file = secret\nprep_cmd = run-something\nport = 47989\nwgc_user_helper = true\n").unwrap();
         let filtered = capture_config(&source);
-        assert_eq!(filtered.values.len(), 3);
+        assert_eq!(filtered.values.len(), 5);
         assert_eq!(filtered.get("adapter_name", ""), "AMD");
         assert!(!filtered.boolean("gpu_compute_conversion", true));
         assert!(filtered.boolean("wgc_high_rate_capture", false));
+        assert!(filtered.boolean("wgc_drain_to_newest", false));
+        assert!(filtered.boolean("wgc_helper_streaming_scope", false));
         let message = Request::Start {
             version: VERSION,
             name: "display".into(),

@@ -109,6 +109,16 @@ impl Encoder {
         av1_alignment: i64,
         compute: Option<std::sync::Arc<crate::compute::Compute>>,
     ) -> Result<Self> {
+        let mut effective_config = config.clone();
+        effective_config.intra_refresh =
+            butterpollo_core::encoder_policy::amf_intra_refresh(config);
+        if config.intra_refresh && !effective_config.intra_refresh {
+            tracing::warn!(
+                client_max_reference_frames = config.references,
+                "AMF H.264 intra refresh requires two references; using IDR recovery for this decoder"
+            );
+        }
+        let config = &effective_config;
         if config.yuv444 {
             bail!("AMF does not expose 4:4:4 for this encoder; select NVENC or software");
         }
@@ -366,7 +376,18 @@ impl Encoder {
                 },
                 full,
             )?;
-            e.configure_ltr(options.integer("amd_ltr_frames", 0).clamp(0, 4) as usize);
+            let requested_ltr = options.integer("amd_ltr_frames", 0).clamp(0, 4) as usize;
+            let ltr_count = butterpollo_core::encoder_policy::amf_ltr_frames(options, config);
+            if ltr_count < requested_ltr {
+                tracing::info!(
+                    requested_ltr,
+                    client_max_reference_frames = config.references,
+                    effective_ltr_frames = ltr_count,
+                    intra_refresh = config.intra_refresh,
+                    "AMF LTR anchors limited by decoder reference budget or intra refresh"
+                );
+            }
+            e.configure_ltr(ltr_count);
             check(((*(*e.component).pVtbl).Init.unwrap())(
                 e.component,
                 if config.ten_bit() {
@@ -417,6 +438,8 @@ impl Encoder {
                 "InputQueueSize",
                 "QueryTimeout",
                 "FullRangeColor",
+                "MaxNumRefFrames",
+                "MaxOfLTRFrames",
             ],
             1 => &[
                 "HevcUsage",
@@ -430,6 +453,8 @@ impl Encoder {
                 "HevcInputQueueSize",
                 "HevcQueryTimeout",
                 "HevcNominalRange",
+                "HevcMaxNumRefFrames",
+                "HevcMaxOfLTRFrames",
             ],
             _ => &[
                 "Av1Usage",
@@ -443,6 +468,8 @@ impl Encoder {
                 "Av1InputQueueSize",
                 "Av1QueryTimeout",
                 "Av1NominalRange",
+                "Av1MaxNumRefFrames",
+                "Av1MaxNumLTRFrames",
             ],
         };
         let mut settings: Vec<String> = names
@@ -478,7 +505,11 @@ impl Encoder {
                 ((*(*caps).pVtbl).Release.unwrap())(caps);
             }
         }
-        tracing::info!(settings = %settings.join(" "), "AMF encoder settings");
+        tracing::info!(
+            settings = %settings.join(" "),
+            client_max_reference_frames = self.config.references,
+            "AMF encoder settings"
+        );
     }
     fn property(&mut self, name: &str, value: AMFVariantStruct) -> Result<()> {
         let prefix = match self.codec {

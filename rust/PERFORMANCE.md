@@ -108,8 +108,8 @@ and is not a whole-host comparison with Vibepollo.
 
 The independent AV1 geometry gate still fails on this RX 7900 XT. Requested
 1920×1080, 1968×2184 and 2184×1968 decode as 1920×1082, 1984×2186 and 2240×1968,
-respectively, in both SDR/HDR and both supported unrestricted alignment modes
-tested. Requested component dimensions and alignment read back correctly, but
+respectively, in both SDR/HDR with tested alignment modes 3 (`NO_RESTRICTIONS`)
+and 4 (`8X2_ONLY`). Requested component dimensions and alignment read back correctly, but
 bitstream traces contain enlarged dimensions without a render-size correction.
 The same customer-size failure occurs in the current C++ baseline. Do not
 count these as exact-resolution passes or change the strict decoder gate.
@@ -1212,6 +1212,358 @@ the two-buffer native WGC pool to the newest frame before copying after a stall;
 and compare the helper's process scheduling settings with the host's streaming
 scope under load. The helper already uses MMCSS and a high-resolution timer.
 No capture, pacing, encoder or scheduling defaults were changed by this audit.
+
+## October 6 capture phase and actual-presentation investigation
+
+The follow-up measurements use a different desktop configuration: 2560x1440 at
+120 Hz, streaming 1280x720 AV1 at 20 Mbps on the local RX 7900 XT. The display
+was already in this mode when testing resumed. These ages must not be compared
+directly with the earlier 5120x1440/240 Hz, 2560x720 results. Each controlled case
+requested 20 seconds with a five-second warmup, WGC through the signed-in user
+helper, compute conversion and the explicit zero capture interval. The receiver
+independently decodes pictures in software on loopback; this is not a Moonlight
+hardware-decoder or input-to-display measurement.
+
+The fixture now records actual DXGI presentation statistics as well as render
+submissions. Healthy source windows maintained the intended presentation rate
+and a constant one-frame in-flight count. An additional presentation-to-decoder
+estimate uses
+`SyncQPCTime + (PresentRefreshCount - SyncRefreshCount) * QPCfrequency / refreshHz`
+to estimate display presentation, then subtracts render-to-presentation delay
+from the original decoded picture age. The fixture's present-call and picture
+IDs are checked against the actual presentation counters before using that
+mapping. The [DXGI statistics definitions](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/ns-dxgi-dxgi_frame_statistics)
+and [present-call counter](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgiswapchain-getlastpresentcount)
+are distinct. This estimate supplements the original render-age metric; it does
+not replace raw acceptance or include scanout, network Wi-Fi delay or input.
+
+Trace-level capture records identify each publication, including publications
+replaced before an encoder claim. Current instrumentation scopes IDs by source
+and records generation, capture/publication timestamps and matching claims.
+Weak identity records do not keep image textures alive, and tracing disabled
+avoids populating those records. The saved single-source experiments correlate
+claims with decoded wire frames using frame order and a checked timing fit;
+they do not identify the pixel contents of unclaimed publications.
+
+Actual presentation was healthy in the initial four compute/graphics cases,
+while the later 60 FPS diagnostic cases published roughly 70-78 capture updates
+per second. Every decoded repeat in those cases had a new capture publication
+ID. Thus a new captured image could contain the same source picture and consume
+pacing credit immediately before the next useful update. In the baseline trace,
+252 publications were replaced before claim, 85 claimed pictures repeated and
+76 source picture IDs were absent. Disabling prediction reduced repeats to eight
+and omitted source IDs to zero, but increased estimated presentation-to-decoder
+age from 12.334 to 15.438 ms. A fixed-grid comparison likewise reached 60 distinct
+FPS but increased that age to 19.275 ms. These alternatives do not justify a
+global pacing change.
+
+The opt-in `frame_pacing_source_phase=true` diagnostic learns a dominant phase
+from capture timestamps observed by the streaming thread. It does not consume
+fixture barcodes, render IDs or DXGI statistics. It requires a concentrated
+rolling history and a recent source interval close to the stream interval;
+irregular, faster and slower sources fall back to ordinary arrival pacing.
+Recovery, timestamp discontinuities and persistent phase shifts reset history.
+Anticipation remains bounded rather than adding a full source period. The
+ordinary arrival policy and `frame_pacing_source_phase=false` remained defaults
+during the initial diagnostics below.
+
+Nine cases used the same runtime SHA-256
+`1551d2f33a927023c5319f45d770cb07c3962c0ebed5374685f1066be6306c4a`.
+All decoded without errors. Source and stream rates are independent in the last
+four cases. Same-rate gates remain 58.2 distinct FPS at 60 and 116.4 at 120.
+The explicitly planned 120-to-60 and 30-to-60 workloads use
+`min(source FPS, stream FPS) * 97%`, recorded as receiver thresholds 58.2 and
+29.1 respectively. A 30 FPS source cannot supply 60 distinct pictures. These
+new mixed-rate cases have their own declared workload; historical failures and
+same-rate gates remain unchanged.
+
+| Case | Source to stream FPS | Delivered FPS | Distinct FPS | Original render age, mean ms | Estimated presentation age, mean / p95 ms | Wire gaps | Fresh-picture gaps |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| phase-60-a | 60 to 60 | 60.392 | 59.906 | 12.007 | 9.281 / 17.259 | 0 | 7 |
+| base-60-b | 60 to 60 | 60.479 | 54.232 | 17.533 | 13.067 / 25.075 | 13 | 104 |
+| phase-120-a | 120 to 120 | 120.133 | 119.927 | 14.315 | 6.043 / 7.795 | 0 | 3 |
+| base-120-b | 120 to 120 | 120.823 | 119.930 | 14.904 | 6.633 / 9.954 | 0 | 13 |
+| phase-60-b | 60 to 60 | 60.137 | 59.931 | 16.082 | 7.875 / 11.700 | 0 | 3 |
+| phase-fast-source | 120 to 60 | 60.478 | 60.478 | 13.408 | 5.135 / 7.527 | 0 | 0 |
+| base-fast-source | 120 to 60 | 60.577 | 60.577 | 13.308 | 5.034 / 7.237 | 0 | 0 |
+| phase-slow-source | 30 to 60 | 49.109 | 29.973 | 17.652 | 15.269 / 32.405 | 233 | 0 |
+| base-slow-source | 30 to 60 | 45.803 | 30.009 | 21.152 | 13.520 / 31.483 | 260 | 0 |
+
+Wire gaps exceed 1.5 stream periods; fresh-picture gaps exceed 1.5 periods at
+the available distinct-picture rate. The 30-to-60 cases have zero fresh-picture
+gaps above 50 ms despite many wire gaps above 25 ms. Omitted source IDs for
+120-to-60 can represent expected downsampling and are not alone a loss diagnosis.
+
+Both 60 FPS phase runs passed their freshness gate and reduced estimated
+presentation age by 3.785/5.192 ms relative to the intervening baseline, which
+still failed freshness. The 120 FPS pair retained about 119.93 distinct FPS and
+improved estimated age by 0.590 ms. The faster-source pair was effectively
+unchanged, with phase 0.100 ms slower in this sample. The slower-source pair was
+1.749 ms slower after presentation with phase, despite a lower original render
+age: the latter was influenced by different render-to-vsync phase. Both retained
+all 438 distinct source pictures. Exact-estimator offline replays of each saved
+slow trace selected identical capture IDs and times with phase on/off across
+three encoder-busy assumptions, and observed claim/deadline analysis found no
+changed phase deadline in those slow windows. Phase had more surplus capture
+publications and repeated pictures. This points toward run variation, but does
+not establish equivalence under all real schedules; slow-source ABBA repeats
+remain necessary.
+
+Initial synthetic-load and DDX follow-ups used runtime SHA-256
+`12bf588d1517a3ce4545366567bdcd11c0a55af4710cc0f43fd4becd572a1294`.
+The four loaded cases kept the same source/stream rates and freshness gates;
+a separate GPU workload rendered at roughly 120 FPS with about 5.1 ms median
+and 5.9 ms p95 render work. The DDX pair used the controlled source without that
+extra load. All six decoded without errors and maintained the intended average
+source presentation rate. The loaded 60 FPS phase source occasionally alternated
+one/three display refreshes around its intended two-refresh cadence; its baseline
+source was uniform. Both loaded 120 FPS sources were uniform. These are synthetic
+stress samples, not gameplay validation.
+
+| Case | Distinct FPS | Original render age, mean ms | Estimated presentation age, mean / p95 ms | Wire gaps | Fresh-picture gaps |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| load-60-base | 57.089 | 18.278 | 13.959 / 21.480 | 0 | 51 |
+| load-60-phase | 59.310 | 22.708 | 14.390 / 23.263 | 1 | 18 |
+| load-120-phase | 118.751 | 19.930 | 11.667 / 15.832 | 13 | 45 |
+| load-120-base | 119.178 | 16.626 | 8.354 / 12.111 | 0 | 28 |
+| ddx-60-phase | 58.284 | 17.155 | 12.600 / 21.747 | 0 | 34 |
+| ddx-60-base | 55.083 | 20.413 | 12.304 / 21.415 | 0 | 81 |
+
+Phase improved 60 FPS freshness under synthetic load and with DDX, but their
+estimated presentation ages increased by 0.432 and 0.296 ms respectively. The
+loaded 120 FPS phase run was 3.313 ms slower and had more long intervals than
+baseline, although both passed freshness. Its source render-to-presentation
+phase matched baseline, so that difference is not removed by presentation
+normalization. That phase run had 103 capture publication intervals above 12.5 ms
+versus zero in baseline, even though actual source presentation was uniform.
+Five of its 13 long wire intervals claimed a late publication immediately; eight
+used the ordinary prediction deadline. None directly matched a phase override
+on the claimed frame, but 76 other first deadlines did. The optional capture
+publication alignment to the claim grid was disabled in these profiles; shared
+GPU scheduling can still couple capture and encoder work. Attribution and repeat
+runs are pending. These results do not establish a universal latency win or
+justify enabling the diagnostic by default.
+
+A subsequent guard restricts phase overrides to sustained surplus:
+at least 32 observed timestamps, using up to 64, must average at least 110% of
+the requested stream rate. It counts timestamp intervals, resets with phase
+history and falls back when the surplus ends. Fixed-trace replay preserved the
+phase choices of the successful 60 FPS runs while selecting ordinary pacing on
+the idle 120 FPS traces and loaded 120 FPS baseline trace. It reduced, but did
+not eliminate, activation on the prior loaded 120 FPS phase trace. This replay
+uses modeled newest-seen observations and several encoder-busy assumptions;
+it does not reproduce shared GPU scheduling or optional claim-grid feedback to
+capture. That replay alone did not establish runtime acceptance; the following
+group measures the guarded implementation with explicit on/off settings.
+
+### Guarded A/B, stress and compatibility checks
+
+All thirteen cases in `guard-plan.json` used runtime SHA-256
+`f0974b404dcc613cbeab0a19857bab5e8328c4c7aaeb1a919954c5fae63fabab`,
+the same 2560x1440/120 Hz desktop and 1280x720/20 Mbps AV1 workload. The loaded
+120 FPS group and 30-to-60 group use baseline/phase/phase/baseline order. The
+final pair deliberately removes the synthetic GPU workload's rate cap; it
+renders about 183.6-183.7 FPS with 5.4 ms median GPU work, leaving very little
+headroom. The freshness gates remain 58.2, 116.4 and the explicitly planned
+29.1 for the 30 FPS source. All thirteen cases decoded without errors.
+
+| Case | Phase | Source / stream FPS | Distinct FPS | Original render age, mean ms | Estimated presentation age, mean / p95 ms | Wire / fresh / publication gaps |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| guard-idle60-1 | on | 60 / 60 | 60.000 | 12.628 | 7.902 / 12.358 | 0 / 3 / 0 |
+| guard-idle60-2 | off | 60 / 60 | 57.650 | 19.269 | 11.847 / 19.194 | 0 / 43 / 0 |
+| guard-idle60-3 | on | 60 / 60 | 59.862 | 16.671 | 8.221 / 15.647 | 0 / 4 / 0 |
+| guard-load120-1 | off | 120 / 120 | 118.986 | 19.223 | 10.952 / 14.779 | 0 / 32 / 0 |
+| guard-load120-2 | on | 120 / 120 | 119.118 | 16.813 | 8.541 / 12.392 | 0 / 29 / 0 |
+| guard-load120-3 | on | 120 / 120 | 119.789 | 14.934 | 6.660 / 9.963 | 0 / 16 / 0 |
+| guard-load120-4 | off | 120 / 120 | 118.593 | 19.455 | 11.186 / 15.003 | 0 / 38 / 0 |
+| guard-slow-1 | off | 30 / 60 | 30.057 | 19.705 | 14.350 / 31.642 | 223 / 0 / 292 |
+| guard-slow-2 | on | 30 / 60 | 29.992 | 19.548 | 14.655 / 30.423 | 172 / 0 / 245 |
+| guard-slow-3 | on | 30 / 60 | 30.038 | 19.535 | 13.158 / 31.095 | 237 / 0 / 315 |
+| guard-slow-4 | off | 30 / 60 | 30.025 | 19.266 | 14.187 / 31.573 | 270 / 0 / 329 |
+| guard-saturated60-1 | on | 60 / 60 | 53.955 | 31.880 | unavailable | 27 / 110 / 64 |
+| guard-saturated60-2 | off | 60 / 60 | 53.019 | 31.676 | unavailable | 28 / 120 / 61 |
+
+Wire and publication gaps exceed 1.5 stream periods; fresh gaps use 1.5 periods
+of available distinct content. Thus slow-source wire/publication intervals above
+25 ms are kept in the table, while fresh content has no gaps above 50 ms. The
+saturated cases no longer pass the presentation estimator's steady-source-rate
+validation, so their adjusted ages are withheld. Their raw render ages and failed
+freshness gates are retained. Actual source presentation averaged 59.691/59.140
+FPS and varied between one and four display refreshes, rather than a uniform two.
+
+The two guarded idle 60 FPS runs pass freshness and reduce estimated presentation
+age by 3.945/3.625 ms versus the intervening baseline, or 3.785 ms averaging those
+two run differences. The baseline still fails freshness. First-deadline trace
+reconstruction confirms phase-specific decisions in both guarded runs. The loaded
+120 FPS group reproduces neither the earlier long wire intervals nor long capture
+publication intervals. However, neither enabled loaded run has a reconstructed
+surplus activation in its steady window, so their lower measured ages must not be
+credited as a new 120 FPS algorithmic latency gain. These are descriptive short
+runs, not a statistical guarantee against all scheduling variation.
+
+All four slow-source runs retain every available source picture and use ordinary
+pacing in the reconstructed steady windows. Their mean estimated presentation
+ages average 14.269 ms baseline and 13.907 ms guarded. The earlier 1.749 ms slow
+regression is not reproduced; this does not prove an improvement where the phase
+override is inactive. Both saturated runs fail the unchanged 58.2 FPS gate.
+Phase has no learned stable center in those reconstructed windows, so it falls
+back, while host processing remains about 1.80 ms. Pacing cannot be claimed to
+restore 60 distinct FPS under this uncapped workload, and no game performance or
+remote RX 9070 XT/Wi-Fi conclusion follows from it.
+
+The current candidate now enables guarded source-phase pacing for WGC-selected
+streams; `frame_pacing_source_phase=false` preserves the previous behavior.
+Explicit DDX keeps its previous default, since this guarded runtime group did not
+validate DDX. This selects the measured 60 FPS improvement while retaining the
+rate, concentration and recovery fallbacks. The default-path and recovery checks
+below follow this decision; packaging is separate. These measurements do not
+assert installation over the service or publication.
+
+Runtime-4 verification passed 242 ordinary tests with 26 environment-dependent
+tests ignored by default, and Clippy with warnings denied. Four selected native
+checks separately passed across `native-3` and `native-4`: WGC reconnect/COM
+teardown, H.264's negotiated one-reference budget, native H.264/HEVC/AV1 reference
+recovery after dropped packets, and exact localized GPU texture comparison.
+The one-reference H.264 check decoded all 64 frames with SPS and VUI reference
+budgets of one and no LTR recovery; the unrestricted recovery test retained its
+separate LTR coverage. The first default-selection follow-up repeated all 242
+ordinary passes, 26 default skips, Clippy and the release build successfully.
+
+Official Windows Moonlight Qt 6.2.0 also passed ten local hardware-decoder and
+D3D11-renderer connections against runtime-3, SHA-256
+`12bf588d1517a3ce4545366567bdcd11c0a55af4710cc0f43fd4becd572a1294`:
+two each for H.264, HEVC, AV1, HEVC HDR negotiation and AV1 HDR negotiation at
+1280x720/60 FPS. Requested formats matched negotiation, client logs reported about
+60 decoded/rendered FPS and no decoder errors, and each connection and reconnect
+closed cleanly. Host cancellation returned the host to its free state. The
+separate quit command's GUI needed an owned-window close after cancellation, so
+natural CLI quit exit is not established; the earlier standalone list timeout
+also remains unresolved. HDR requests used an SDR desktop and do not validate
+native HDR color or HDR display output. These loopback compatibility checks are
+separate from the software-decoder latency fixture and do not validate every
+Moonlight platform, Wi-Fi behavior or final-package installation.
+
+### Repeat deadlines and current candidate
+
+The first default-enabled executable, SHA-256
+`cbc837071d1b27a02050a3db1f16ec18aa444e54b4ecacd49c33b24534491ca6`,
+passed the no-override AV1 60/120 FPS cases with 59.977/119.858 distinct FPS,
+zero long wire intervals and zero decode errors. Original render ages were
+15.407/14.791 ms mean, and estimated presentation ages were 8.185/6.520 ms.
+
+A deliberately terminated WGC helper reopened in 309 ms after releasing encoder
+resources in 31 ms. The HEVC stream resumed without decoder errors or a new
+client connection. This is a functional recovery pass, not a smoothness pass:
+its whole steady window produced 51.551 distinct FPS and failed the normal 58.2
+gate. The recovery runner's explicitly recorded 50 FPS delivery threshold did
+not replace that freshness gate. The shortfall already existed before failure
+(51.189 distinct FPS in the preceding steady interval) and remained after the
+first two recovery seconds were excluded (53.804). The outage itself skipped
+19 source pictures, rather than explaining the entire deficit.
+
+That profile requested `minimum_fps_target=60`. Frequent source presentation
+intervals of one/three refreshes around the intended two caused old images to
+reach their 16.667 ms repeat deadline before the useful update arrived. Repeating
+them spent pacing credit. The old trace logged only new-image submissions, so
+its 1,062 claim records could not be joined ordinally to 1,167 received frames.
+Clock-aligned matching associated 81 of 111 steady repeated pictures with outputs
+without a fresh-image claim record. Separate HEVC on/off/on cases then achieved
+60.004/53.533/59.963 distinct FPS and estimated presentation ages of
+7.312/11.840/7.417 ms, establishing that this was not a general HEVC decoding or
+phase-pacing regression. The failed recovery smoothness result remains retained.
+
+The follow-up gives a repeat a bounded opportunity to yield to an imminent new
+capture when source-phase pacing is enabled and the observed source interval is
+near the stream period. Extra wait cannot exceed one quarter of the stream
+period plus 0.5 ms. Slower sources, disabled phase policy and non-arrival pacing
+retain their existing repeat policy. Tracing now includes every submission with
+an explicit `fresh` flag, allowing same-image repeats to be separated from a
+newly captured image containing the same pixels.
+
+Eight cases in `repeat-plan.json` compare the revised executable, SHA-256
+`d22e446dd103592c09cd9bf11da3a76d355ab1783a18862d5d3b9f8b31a3237a`,
+with the preceding executable at the same HEVC settings. All seven revised cases
+pass their declared freshness gates and decode without errors; the old HEVC case
+still fails 58.2. Source presentation is uniform within each measured window.
+The normal-minimum cases use the actual default `minimum_fps_target=20`; the
+high-minimum and slow-source cases are explicitly different workloads.
+
+| Case | Codec | Source / stream / minimum FPS | Distinct FPS | Original render age, mean ms | Estimated presentation age, mean / p95 ms | Same-image repeats | Wire / fresh gaps |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| repeat-hevc-on1 | HEVC | 60 / 60 / 60 | 59.793 | 11.292 | 7.343 / 11.288 | 0 | 0 / 6 |
+| repeat-hevc-old | HEVC | 60 / 60 / 60 | 57.700 | 16.713 | 13.269 / 22.959 | 42 inferred | 0 / 42 |
+| repeat-hevc-on2 | HEVC | 60 / 60 / 60 | 59.860 | 10.317 | 7.210 / 11.157 | 0 | 0 / 5 |
+| repeat-av1-60 | AV1 | 60 / 60 / 60 | 60.000 | 13.428 | 7.321 / 9.092 | 0 | 0 / 0 |
+| repeat-av1-120 | AV1 | 120 / 120 / 120 | 119.603 | 15.608 | 7.334 / 11.421 | 1 | 0 / 23 |
+| repeat-slow | HEVC | 30 / 60 / 60 | 30.025 | 29.907 | 22.907 / 37.708 | 305 | 1 / 5 |
+| repeat-normal60 | AV1 | 60 / 60 / 20 | 59.976 | 12.522 | 8.027 / 12.570 | 0 | 0 / 4 |
+| repeat-normal120 | AV1 | 120 / 120 / 20 | 120.006 | 14.906 | 6.633 / 10.219 | 0 | 0 / 10 |
+
+The revised HEVC runs remove the same-image repeats observed in the matching
+old case and lower estimated presentation age by 5.926/6.059 ms. This overlaps
+with the pacing improvements above and must not be added to them as a separate
+end-to-end gain. Repeated pixels in new capture publications still occur. The
+30 FPS source with a forced 60 FPS repeat minimum delivers 60.600 encoded FPS,
+retains every source picture, and has five fresh-picture intervals above 50 ms;
+it is not a zero-jitter pass. Its age cannot be compared directly with the earlier
+30 FPS tests using minimum 20. No same-image submission in the new traces decoded
+as a different picture, supporting the trace's identity distinction.
+
+The revised source passed 246 ordinary tests, with 26 environment checks ignored
+by default, plus Clippy with warnings denied and the release build. New tests
+cover bounded repeat waits and fallback conditions. These measured uniform-source
+runs do not establish that every irregular presentation cadence is fixed.
+Subsequent direct-WGC and helper-failure checks on this same executable completed
+as follows; installation and publication remain separate steps.
+
+Direct WGC without the user helper passed 59.930/120.001 distinct FPS at requested
+60/120 FPS, with zero decoder errors, long wire intervals, capture restarts or
+compute fallbacks. Original render ages averaged 14.310/14.315 ms and estimated
+presentation ages 7.738/6.041 ms. These cases retain the normal minimum of 20 FPS.
+
+The final HEVC helper-failure check repeated the original explicit 60 FPS minimum.
+Resource release took 31 ms and WGC reopened in 317 ms; the client remained
+connected and decoded all 1,157 received frames without errors. Including the
+forced outage, the whole steady window delivered 58.691 FPS and 58.348 distinct
+FPS, passing the unchanged normal 58.2 freshness gate. It contains one 379.469 ms
+wire gap, five repeated pictures and 24 skipped source pictures. Nineteen skipped
+pictures span the outage itself; five occur during immediate encoder recovery.
+The preceding steady segment produced 59.343 distinct FPS; after the first
+recovery second, 59.996 distinct FPS resumed with no omitted source pictures.
+Whole-window render age averaged 9.781 ms and estimated presentation age 7.224 ms.
+Actual source presentation was uniform in this run. The earlier irregular-source
+failure remains separate evidence, so this does not establish universal recovery
+smoothness or broader display/device-loss handling. Exact records are
+`direct-results.json`, `final-helper-recovery2/recovery-result.json` and
+`final-recovery-analysis-20261006/RECOVERY2_SEGMENTS.json`.
+
+Three further official Qt 6.2.0 checks against the preceding
+`cbc837071d1b27a02050a3db1f16ec18aa444e54b4ecacd49c33b24534491ca6`
+executable verified the client's AV1 hardware-decoder, cropping and D3D11-renderer
+metadata path: 1920x1080 at 8-bit and 10-bit, and 1968x2184 at 8-bit. The client
+reported cropping coded 1920x1082 to 1920x1080 and 1984x2186 to 1968x2184, with
+no decoder errors and decoded/rendered rates near the requested 60 FPS. This
+shows the official client's handling of padding; it does not change the failed
+raw elementary-bitstream geometry gate. Pixel readback, edge correctness, native
+HDR color and display accuracy were not checked. Exact summaries are
+`qt62/cases/official-av1-crop-1080/summary.json` and
+`qt62/cases/official-av1-crop-portrait/summary.json`; the untested transposed
+2184x1968 output must not be inferred from them.
+
+Raw plans, per-frame receiver CSVs, source presentation reports, acceptance
+results and runtime provenance are under
+`D:\CodexArtifacts\butterpollo-latency-compat-20261006`. The
+`phase-case-analysis-20261006/RESULTS.json` and `COMPARISON.json` retain all nine
+cases and raw gates; `stress-phase-review-20261006/RESULTS.json` retains the six
+follow-ups. `guard-case-analysis-20261006` retains the complete thirteen-case
+comparison and deadline reconstruction; `qt62/cases/official-fixed-3/summary.json`
+retains the exact-client compatibility matrix. `repeat-case-analysis-20261006`
+and `final-recovery-analysis-20261006` preserve repeat and recovery attribution.
+`trace-review-20261006` and `slow-phase-review-20261006` preserve earlier trace
+attribution and replay limitations. No result here validates the remote
+RX 9070 XT/Wi-Fi report, sustained gameplay, native HDR accuracy or client
+scanout. Recovery coverage is limited to the specific checks described above;
+later codec fixes require their own exact-binary validation.
 
 ## Limits
 

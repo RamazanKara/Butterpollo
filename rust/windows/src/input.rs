@@ -77,6 +77,7 @@ pub struct Gamepads {
     policy: butterpollo_core::input_policy::Policy,
     started: std::time::Instant,
     pointers: BTreeMap<(u8, u32), u8>,
+    unsupported_touchpads: BTreeSet<u8>,
     /// The last feedback report forwarded for each controller.
     last_feedback: BTreeMap<u16, (u16, Vec<u8>)>,
 }
@@ -103,6 +104,9 @@ pub fn capabilities(config: &butterpollo_core::config::Config) -> u32 {
             "vhf_xbox" | "vhf_xbox_one" | "x360" | "vhf_switch"
         )
     {
+        // Moonlight has one general controller-touch feature bit; there is
+        // no separate host bit for dual touchpads. Only pad 0 is supported by
+        // the current virtual gamepad protocol; apply() filters other pads.
         flags |= 2;
     }
     flags
@@ -127,6 +131,7 @@ impl Gamepads {
             policy,
             started: std::time::Instant::now(),
             pointers: BTreeMap::new(),
+            unsupported_touchpads: BTreeSet::new(),
             last_feedback: BTreeMap::new(),
         };
         let out = g.ioctl(0x800, &request(8, None), 28)?;
@@ -219,6 +224,7 @@ impl Gamepads {
                         self.arrivals.remove(&i);
                         self.states.remove(&i);
                         self.pointers.retain(|(id, _), _| u16::from(*id) != i);
+                        self.unsupported_touchpads.remove(&(i as u8));
                         SLOTS.lock().unwrap()[global as usize] = false;
                     }
                 }
@@ -262,54 +268,28 @@ impl Gamepads {
                 }
                 self.ioctl(0x806, &b, 0)?;
             }
-            Event::ControllerTouch {
-                id,
-                event,
-                pointer,
-                x,
-                y,
-                pressure,
-            } => {
+            Event::ControllerTouch { id, touchpad, .. } => {
+                // Protocol 2 exposes one PlayStation touch surface with two
+                // contacts, not two surfaces. Never reinterpret pad 1 as pad 0.
+                if *touchpad != 0 {
+                    if self.unsupported_touchpads.insert(*id) {
+                        tracing::warn!(
+                            controller = id,
+                            touchpad,
+                            "controller touchpad ignored: the virtual gamepad driver supports only touchpad 0"
+                        );
+                    }
+                    return Ok(());
+                }
                 self.ensure(u16::from(*id))?;
-                if !matches!(self.profiles.get(&u16::from(*id)), Some(5 | 6)) {
-                    return Ok(());
-                }
-                let mut b = request(22, Some(u32::from(self.active[&u16::from(*id)])));
-                let event = match event {
-                    0..=4 => *event,
-                    6 => 4,
-                    7 => 5,
-                    _ => return Ok(()),
-                };
-                let key = (*id, *pointer);
-                let slot = if event == 5 {
-                    0
-                } else if let Some(slot) = self.pointers.get(&key) {
-                    *slot
-                } else if matches!(event, 0 | 1) {
-                    let Some(slot) = (0..2).find(|slot| {
-                        !self
-                            .pointers
-                            .iter()
-                            .any(|((pad, _), used)| pad == id && used == slot)
-                    }) else {
-                        return Ok(());
-                    };
-                    self.pointers.insert(key, slot);
-                    slot
-                } else {
-                    return Ok(());
-                };
-                b.extend_from_slice(&[slot, event]);
-                for f in [*x, *y, *pressure] {
-                    b.extend_from_slice(&((f.clamp(0., 1.) * 65535.) as u16).to_le_bytes());
-                }
-                b.extend_from_slice(&[0, 0]);
-                self.ioctl(0x805, &b, 0)?;
-                if event == 5 {
-                    self.pointers.retain(|(pad, _), _| pad != id);
-                } else if matches!(event, 2 | 4) {
-                    self.pointers.remove(&key);
+                if let Some(b) = gamepad_touch_request(
+                    &self.pointers,
+                    self.profiles[&u16::from(*id)],
+                    self.active[&u16::from(*id)],
+                    event,
+                ) {
+                    self.ioctl(0x805, &b.packet, 0)?;
+                    b.submitted(&mut self.pointers);
                 }
             }
             Event::Battery { id, state, percent } => {
@@ -387,6 +367,81 @@ impl Gamepads {
     pub fn motion_supported(&self, id: u16) -> bool {
         matches!(self.profiles.get(&id), Some(5..=7))
     }
+}
+// The driver has one touch surface and two contact slots. Keep this mapping
+// independent of device IO so unsupported surfaces cannot change slot state.
+struct GamepadTouchRequest {
+    packet: Vec<u8>,
+    id: u8,
+    pointer: u32,
+    slot: u8,
+    event: u8,
+}
+impl GamepadTouchRequest {
+    fn submitted(self, pointers: &mut BTreeMap<(u8, u32), u8>) {
+        if self.event == 5 {
+            pointers.retain(|(pad, _), _| *pad != self.id);
+        } else if matches!(self.event, 2 | 4) {
+            pointers.remove(&(self.id, self.pointer));
+        } else {
+            pointers.insert((self.id, self.pointer), self.slot);
+        }
+    }
+}
+fn gamepad_touch_request(
+    pointers: &BTreeMap<(u8, u32), u8>,
+    profile: u16,
+    global: u16,
+    input: &Event,
+) -> Option<GamepadTouchRequest> {
+    let Event::ControllerTouch {
+        id,
+        event,
+        touchpad,
+        pointer,
+        x,
+        y,
+        pressure,
+    } = input
+    else {
+        return None;
+    };
+    if *touchpad != 0 || !matches!(profile, 5 | 6) {
+        return None;
+    }
+    let event = match event {
+        0..=4 => *event,
+        6 => 4,
+        7 => 5,
+        _ => return None,
+    };
+    let key = (*id, *pointer);
+    let slot = if event == 5 {
+        0
+    } else if let Some(slot) = pointers.get(&key) {
+        *slot
+    } else if matches!(event, 0 | 1) {
+        (0..2).find(|slot| {
+            !pointers
+                .iter()
+                .any(|((pad, _), used)| pad == id && used == slot)
+        })?
+    } else {
+        return None;
+    };
+    let mut b = request(22, Some(u32::from(global)));
+    b.extend_from_slice(&[slot, event]);
+    for f in [*x, *y, *pressure] {
+        b.extend_from_slice(&((f.clamp(0., 1.) * 65535.) as u16).to_le_bytes());
+    }
+    b.extend_from_slice(&[0, 0]);
+    Some(GamepadTouchRequest {
+        packet: b,
+        id: *id,
+        pointer: *pointer,
+        slot,
+        event,
+    })
 }
 impl Drop for Gamepads {
     fn drop(&mut self) {
@@ -1190,6 +1245,85 @@ fn pointer_event(p: &mut POINTER_INFO, event: u8, location: POINT) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn submit_touch(
+        pointers: &mut BTreeMap<(u8, u32), u8>,
+        profile: u16,
+        global: u16,
+        input: &Event,
+    ) -> Option<Vec<u8>> {
+        let update = gamepad_touch_request(pointers, profile, global, input)?;
+        let packet = update.packet.clone();
+        update.submitted(pointers);
+        Some(packet)
+    }
+
+    #[test]
+    fn failed_touch_submission_does_not_acquire_or_release_contact_slots() {
+        let mut pointers = BTreeMap::new();
+        drop(gamepad_touch_request(&pointers, 6, 2, &touch(2, 0, 1, 17)).unwrap());
+        assert!(pointers.is_empty());
+        submit_touch(&mut pointers, 6, 2, &touch(2, 0, 1, 17)).unwrap();
+        for event in [2, 4, 6, 7] {
+            drop(gamepad_touch_request(&pointers, 6, 2, &touch(2, 0, event, 17)).unwrap());
+            assert_eq!(pointers, BTreeMap::from([((2, 17), 0)]));
+        }
+    }
+
+    fn touch(id: u8, touchpad: u8, event: u8, pointer: u32) -> Event {
+        Event::ControllerTouch {
+            id,
+            touchpad,
+            event,
+            pointer,
+            x: 0.25,
+            y: 0.5,
+            pressure: 1.0,
+        }
+    }
+
+    #[test]
+    fn secondary_touchpad_cannot_move_release_or_cancel_primary_contacts() {
+        let mut pointers = BTreeMap::new();
+        let first = submit_touch(&mut pointers, 6, 5, &touch(2, 0, 1, 17)).unwrap();
+        assert_eq!(first.len(), 22);
+        assert_eq!(&first[8..12], &5u32.to_le_bytes());
+        assert_eq!(&first[12..], &[0, 1, 255, 63, 255, 127, 255, 255, 0, 0]);
+        for index in [1, 2, 255] {
+            for event in 0..=7 {
+                let before = pointers.clone();
+                assert!(submit_touch(&mut pointers, 6, 5, &touch(2, index, event, 17)).is_none());
+                assert_eq!(pointers, before);
+            }
+        }
+        let moved = submit_touch(&mut pointers, 6, 5, &touch(2, 0, 3, 17)).unwrap();
+        assert_eq!(&moved[12..14], &[0, 3]);
+        let second = submit_touch(&mut pointers, 6, 5, &touch(2, 0, 1, 18)).unwrap();
+        assert_eq!(&second[12..14], &[1, 1]);
+        assert!(submit_touch(&mut pointers, 6, 5, &touch(2, 0, 1, 19)).is_none());
+        let released = submit_touch(&mut pointers, 6, 5, &touch(2, 0, 2, 17)).unwrap();
+        assert_eq!(&released[12..14], &[0, 2]);
+        let reused = submit_touch(&mut pointers, 6, 5, &touch(2, 0, 1, 19)).unwrap();
+        assert_eq!(&reused[12..14], &[0, 1]);
+    }
+
+    #[test]
+    fn virtual_touch_mapping_keeps_controller_lifecycles_and_profiles_separate() {
+        let mut pointers = BTreeMap::new();
+        for id in [2, 3] {
+            submit_touch(&mut pointers, 5, u16::from(id), &touch(id, 0, 1, 17)).unwrap();
+        }
+        let cancel = submit_touch(&mut pointers, 5, 2, &touch(2, 0, 7, 0)).unwrap();
+        assert_eq!(&cancel[12..14], &[0, 5]);
+        assert_eq!(pointers, BTreeMap::from([((3, 17), 0)]));
+        for profile in [1, 2, 3, 4, 7, 8] {
+            assert!(submit_touch(&mut pointers, profile, 3, &touch(3, 0, 7, 0)).is_none());
+            assert_eq!(pointers, BTreeMap::from([((3, 17), 0)]));
+        }
+        let cancel_contact = submit_touch(&mut pointers, 6, 3, &touch(3, 0, 6, 17)).unwrap();
+        assert_eq!(&cancel_contact[12..14], &[0, 4]);
+        assert!(pointers.is_empty());
+    }
 
     fn keyboard(key: u32, down: bool, flags: u8) -> KEYBDINPUT {
         // No input injection or layout API calls: normalized scan codes come

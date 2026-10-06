@@ -9,12 +9,42 @@ use std::{
     time::Instant,
 };
 
+/// Diagnostic identities outlive replacement of the latest frame without
+/// keeping the frame or its GPU resources alive. Only TRACE publications add
+/// records; expired records are pruned by the next traced publication.
+struct PublicationTrace<T> {
+    next_id: u64,
+    live: Vec<(Weak<T>, u64)>,
+}
+impl<T> PublicationTrace<T> {
+    fn new() -> Self {
+        Self {
+            next_id: 0,
+            live: Vec::new(),
+        }
+    }
+    fn observe(&mut self, image: &Arc<T>) -> u64 {
+        self.live.retain(|(image, _)| image.strong_count() > 0);
+        self.next_id = self.next_id.wrapping_add(1).max(1);
+        self.live.push((Arc::downgrade(image), self.next_id));
+        self.next_id
+    }
+    fn id(&self, image: &Arc<T>) -> Option<u64> {
+        self.live
+            .iter()
+            .rev()
+            .find(|(recorded, _)| recorded.as_ptr() == Arc::as_ptr(image))
+            .map(|(_, id)| *id)
+    }
+}
+
 struct State<T> {
     image: Option<Arc<T>>,
     error: Option<String>,
     captured: Option<Instant>,
     cadence: butterpollo_core::capture_policy::Freshness,
     generation: u64,
+    trace: PublicationTrace<T>,
 }
 impl<T> State<T> {
     fn check(&self) -> Result<()> {
@@ -40,9 +70,11 @@ pub(super) struct Latest<T> {
     state: Mutex<State<T>>,
     changed: Mutex<Vec<Weak<Consumer>>>,
     origin: Instant,
+    trace_source_id: u64,
 }
 impl<T> Latest<T> {
     pub(super) fn new() -> Self {
+        static NEXT_SOURCE_ID: AtomicU64 = AtomicU64::new(1);
         Self {
             state: Mutex::new(State {
                 image: None,
@@ -50,9 +82,11 @@ impl<T> Latest<T> {
                 captured: None,
                 cadence: Default::default(),
                 generation: 0,
+                trace: PublicationTrace::new(),
             }),
             changed: Mutex::new(Vec::new()),
             origin: Instant::now(),
+            trace_source_id: NEXT_SOURCE_ID.fetch_add(1, Ordering::Relaxed),
         }
     }
     pub(super) fn subscribe(&self) -> Result<Arc<Consumer>> {
@@ -108,9 +142,30 @@ impl<T> Latest<T> {
             nanos(captured.saturating_duration_since(self.origin)),
             nanos(now.saturating_duration_since(captured)),
         );
+        if tracing::enabled!(target: "pacing", tracing::Level::TRACE) {
+            let capture_id = state.trace.observe(&image);
+            tracing::trace!(
+                target: "pacing",
+                capture_id,
+                generation = state.generation,
+                captured_ns = nanos(captured.saturating_duration_since(self.origin)),
+                published_ns = nanos(now.saturating_duration_since(self.origin)),
+                age_ns = nanos(now.saturating_duration_since(captured)),
+                source_id = self.trace_source_id,
+                "publish"
+            );
+        }
         state.captured = Some(captured);
         state.image = Some(image);
         self.notify()
+    }
+    /// Match a claimed frame even if capture already published its replacement.
+    /// Call only while emitting pacing traces; untraced frames have no identity.
+    pub(super) fn trace_publication_id(&self, image: &Arc<T>) -> Option<u64> {
+        self.state.lock().unwrap().trace.id(image)
+    }
+    pub(super) fn trace_source_id(&self) -> u64 {
+        self.trace_source_id
     }
     /// The source's recent frame interval, as observed by the capture worker.
     pub(super) fn source_interval(&self) -> Option<std::time::Duration> {
@@ -197,6 +252,33 @@ impl<T> Latest<T> {
 mod tests {
     use super::*;
     use std::time::Duration;
+    #[test]
+    fn publication_trace_matches_frames_still_owned_after_replacement() {
+        let mut trace = PublicationTrace::new();
+        let old = Arc::new(1u8);
+        let old_id = trace.observe(&old);
+        let current = Arc::new(2u8);
+        let current_id = trace.observe(&current);
+        assert!(current_id > old_id);
+        assert_eq!(trace.id(&old), Some(old_id));
+        assert_eq!(trace.id(&current), Some(current_id));
+        assert_eq!(trace.id(&Arc::new(1u8)), None);
+    }
+    #[test]
+    fn publication_trace_does_not_keep_capture_resources_alive() {
+        let mut trace = PublicationTrace::new();
+        let frame = Arc::new(1u8);
+        let released = Arc::downgrade(&frame);
+        let old_id = trace.observe(&frame);
+        assert_eq!(Arc::strong_count(&frame), 1);
+        drop(frame);
+        assert!(released.upgrade().is_none());
+        let replacement = Arc::new(2u8);
+        let new_id = trace.observe(&replacement);
+        assert!(new_id > old_id);
+        assert_eq!(trace.live.len(), 1);
+        assert_eq!(trace.id(&replacement), Some(new_id));
+    }
     #[test]
     fn publications_before_wait_and_independent_consumers_keep_the_latest_frame() -> Result<()> {
         let latest = Latest::new();

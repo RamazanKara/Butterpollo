@@ -45,8 +45,30 @@ pub fn tristate(config: &Config, key: &str, default: Option<bool>) -> Option<boo
         },
     }
 }
+/// AVC intra refresh requires two retained references in AMF. A client that
+/// negotiated only one must use IDR recovery instead of exceeding its budget.
+pub fn amf_intra_refresh(stream: &Negotiated) -> bool {
+    stream.intra_refresh && !(stream.codec == 0 && stream.references == 1)
+}
+
+/// AMF keeps LTR anchors alongside the rolling short-term reference. The
+/// decoder's negotiated budget includes both; zero means it imposed no limit.
+/// In particular, Moonlight's one-reference AVC mode cannot retain LTR anchors.
+pub fn amf_ltr_frames(config: &Config, stream: &Negotiated) -> usize {
+    if stream.intra_refresh {
+        return 0;
+    }
+    let requested = config.integer("amd_ltr_frames", 0).clamp(0, 4) as usize;
+    if stream.references == 0 {
+        requested
+    } else {
+        requested.min(stream.references.saturating_sub(1) as usize)
+    }
+}
+
 pub fn amf(config: &Config, stream: &Negotiated) -> Result<Vec<Property>> {
     let codec = stream.codec;
+    let intra_refresh = amf_intra_refresh(stream);
     if codec > 2 {
         bail!("invalid AMF codec");
     }
@@ -233,11 +255,7 @@ pub fn amf(config: &Config, stream: &Negotiated) -> Result<Vec<Property>> {
     }
     let references = stream
         .references
-        .max(if stream.intra_refresh && codec == 0 {
-            2
-        } else {
-            0
-        });
+        .max(if intra_refresh && codec == 0 { 2 } else { 0 });
     if references > 0 {
         add(
             format!("{prefix}MaxNumRefFrames"),
@@ -245,7 +263,7 @@ pub fn amf(config: &Config, stream: &Negotiated) -> Result<Vec<Property>> {
             true,
         );
     }
-    if stream.intra_refresh {
+    if intra_refresh {
         if codec == 2 {
             add("Av1IntraRefreshMode".into(), Value::Integer(2), true);
             add(
@@ -276,6 +294,12 @@ pub fn ffmpeg(config: &Config, stream: &Negotiated, name: &str) -> Result<Vec<(S
     let mut output = vec![];
     let mut add = |key: &str, value: &str| output.push((key.into(), value.into()));
     if name.ends_with("_nvenc") {
+        // AVCodecContext.refs limits the active prediction list, while NVENC's
+        // retained-picture budget is a separate option. Bound both for clients
+        // such as Moonlight's one-reference AVC decoder.
+        if stream.references > 0 {
+            add("dpb_size", &stream.references.to_string());
+        }
         add(
             "preset",
             &format!("p{}", config.integer("nvenc_preset", 1).clamp(1, 7)),
@@ -410,6 +434,125 @@ pub fn ffmpeg(config: &Config, stream: &Negotiated, name: &str) -> Result<Vec<(S
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn legacy_nvenc_retained_picture_budget_matches_negotiated_references() {
+        let config = Config::default();
+        for (codec, name) in [(0, "h264_nvenc"), (1, "hevc_nvenc"), (2, "av1_nvenc")] {
+            for references in [0, 1, 2, 4, 16] {
+                let stream = Negotiated {
+                    codec,
+                    references,
+                    ..Default::default()
+                };
+                let options = ffmpeg(&config, &stream, name).unwrap();
+                let dpb = options.iter().find(|(key, _)| key == "dpb_size");
+                assert_eq!(
+                    dpb.map(|(_, value)| value.clone()),
+                    (references > 0).then(|| references.to_string())
+                );
+                for other in ["h264_qsv", "libx264", "libx265"] {
+                    assert!(
+                        !ffmpeg(&config, &stream, other)
+                            .unwrap()
+                            .iter()
+                            .any(|(key, _)| key == "dpb_size")
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn amf_ltr_anchors_share_the_negotiated_reference_budget() {
+        let config = Config::parse("amd_ltr_frames=4\n").unwrap();
+        for codec in 0..=2 {
+            for (references, expected_ltr) in [(1, 0), (2, 1), (3, 2), (4, 3), (5, 4), (16, 4)] {
+                let stream = Negotiated {
+                    codec,
+                    references,
+                    ..Default::default()
+                };
+                let count = amf_ltr_frames(&config, &stream);
+                assert_eq!(count, expected_ltr);
+                assert!(count < references as usize);
+                let properties = amf(&config, &stream).unwrap();
+                assert!(properties.iter().any(|property| {
+                    property.name.ends_with("MaxNumRefFrames")
+                        && property.value == Value::Integer(i64::from(references))
+                        && property.required
+                }));
+            }
+        }
+    }
+
+    #[test]
+    fn one_reference_avc_intra_refresh_falls_back_without_expanding_the_budget() {
+        let config = Config::parse("amd_ltr_frames=4\n").unwrap();
+        for references in [0, 1, 2, 4] {
+            let stream = Negotiated {
+                references,
+                intra_refresh: true,
+                ..Default::default()
+            };
+            let enabled = references != 1;
+            assert_eq!(amf_intra_refresh(&stream), enabled);
+            let properties = amf(&config, &stream).unwrap();
+            assert!(properties.iter().any(|property| {
+                property.name == "MaxNumRefFrames"
+                    && property.value
+                        == Value::Integer(if references == 0 {
+                            2
+                        } else {
+                            i64::from(references)
+                        })
+            }));
+            assert_eq!(
+                properties
+                    .iter()
+                    .any(|property| { property.name == "IntraRefreshMBsNumberPerSlot" }),
+                enabled
+            );
+            assert_eq!(amf_ltr_frames(&config, &stream), 0);
+        }
+    }
+
+    #[test]
+    fn one_reference_avc_uses_idr_recovery_without_ltr_marks() {
+        let config = Config::parse("amd_ltr_frames=4\n").unwrap();
+        let stream = Negotiated {
+            references: 1,
+            ..Default::default()
+        };
+        let mut recovery = crate::ltr::References::new(amf_ltr_frames(&config, &stream));
+        for frame in 1..=64 {
+            let plan = recovery.plan(frame, frame == 1);
+            assert!(plan.mark.is_none());
+            assert!(plan.reference.is_none());
+            recovery.accepted(frame, &plan);
+        }
+        assert!(!recovery.enabled());
+        assert!(!recovery.invalidate(60, 61));
+    }
+
+    #[test]
+    fn amf_ltr_preserves_unrestricted_clients_and_explicit_disable() {
+        let stream = Negotiated::default();
+        for (requested, expected) in [(-1, 0), (0, 0), (1, 1), (4, 4), (99, 4)] {
+            let config = Config::parse(&format!("amd_ltr_frames={requested}\n")).unwrap();
+            assert_eq!(amf_ltr_frames(&config, &stream), expected);
+            assert_eq!(
+                amf_ltr_frames(
+                    &config,
+                    &Negotiated {
+                        intra_refresh: true,
+                        ..stream.clone()
+                    }
+                ),
+                0
+            );
+        }
+    }
+
     #[test]
     fn imported_encoder_names_keep_the_selected_vendor_and_legacy_backend() {
         for name in [

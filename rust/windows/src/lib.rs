@@ -79,6 +79,10 @@ pub mod rtx_profiles;
 pub mod service;
 #[cfg(windows)]
 pub mod steam;
+// Full-frame GPU comparison remains a native test diagnostic until its
+// completion/readback overhead is shown to improve real stream latency.
+#[cfg(all(windows, test))]
+mod texture_compare;
 #[cfg(windows)]
 pub mod timing;
 #[cfg(windows)]

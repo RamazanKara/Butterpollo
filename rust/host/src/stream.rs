@@ -267,6 +267,8 @@ struct CaptureKey {
     wgc_compute: bool,
     wgc_user_helper: bool,
     wgc_high_rate: bool,
+    wgc_drain: bool,
+    wgc_helper_scheduling: bool,
 }
 impl CaptureKey {
     fn new(kind: &str, output: &str, hdr: bool, config: &Config, phase: &str) -> Self {
@@ -287,6 +289,10 @@ impl CaptureKey {
             wgc_user_helper: config.boolean("wgc_user_helper", false),
             wgc_high_rate: !matches!(kind, "ddx" | "dxgi")
                 && config.boolean("wgc_high_rate_capture", false),
+            wgc_drain: !matches!(kind, "ddx" | "dxgi")
+                && config.boolean("wgc_drain_to_newest", false),
+            wgc_helper_scheduling: !matches!(kind, "ddx" | "dxgi")
+                && config.boolean("wgc_helper_streaming_scope", false),
         }
     }
 }
@@ -718,7 +724,9 @@ impl Media {
                     let mut cadence = butterpollo_core::stream_policy::Cadence::new(Instant::now(), period, c.boolean("wgc_pacing_smoothing", true));
                     let arrival_pacing = !s.config.vrr_low_latency
                         && butterpollo_core::stream_policy::Pacing::from_config(&c) == butterpollo_core::stream_policy::Pacing::Arrival;
-                    let mut pacer = butterpollo_core::stream_policy::Pacer::new(Instant::now(), period);
+                    let mut pacer = butterpollo_core::stream_policy::Pacer::new(Instant::now(), period)
+                        .with_prediction(c.boolean("frame_pacing_predictive", true))
+                        .with_source_phase(c.boolean("frame_pacing_source_phase", prepared.capture() == "wgc"));
                     let due = cadence.deadline();
                     let mut last_stamp = start;
                     let mut live_at = due;
@@ -927,6 +935,7 @@ impl Media {
                                 last_image = None;
                                 truehdr = None;
                                 truehdr_staging = None;
+                                pacer.reset_source_phase();
                                 latest.release_generation(&capture_wake);
                                 continue;
                             };
@@ -934,6 +943,12 @@ impl Media {
                             rebuild_encoder |= encoder
                                 .as_ref()
                                 .is_none_or(|encoder| !encoder.accepts_gpu_device(&image));
+                            if rebuild_encoder {
+                                pacer.reset_source_phase();
+                            }
+                            if arrival_pacing {
+                                pacer.observe_source(image.captured);
+                            }
                             let fresh = last_image.as_ref().is_none_or(|previous| !Arc::ptr_eq(previous, &image));
                             if arrival_pacing
                                 && fresh
@@ -959,6 +974,11 @@ impl Media {
                                 latest.wait_if_current(&timer, &capture_wake, &image, until)?;
                                 continue;
                             }
+                            let repeat_due = if arrival_pacing {
+                                pacer.repeat_deadline(encoded_at + static_period, image.captured, latest.source_interval())
+                            } else {
+                                encoded_at + static_period
+                            };
                             if !rebuild_encoder
                                 && (s.config.vrr_low_latency || limit_static_rate || arrival_pacing)
                                 && !s.idr.load(Ordering::Acquire)
@@ -966,11 +986,11 @@ impl Media {
                                 && last_image
                                     .as_ref()
                                     .is_some_and(|previous| Arc::ptr_eq(previous, &image))
-                                && encoded_at.elapsed() < static_period
+                                && Instant::now() < repeat_due
                             {
                                 if encoder.as_ref().is_some_and(Encoder::pending) { send_frames(encoder.as_mut().map_or(Ok(vec![]), Encoder::poll)?, peer, Duration::ZERO)?; }
                                 let wait = if encoder.as_ref().is_some_and(Encoder::pending) { OUTPUT_POLL } else { period };
-                                latest.wait_if_current(&timer, &capture_wake, &image, Instant::now() + wait.min(static_period.saturating_sub(encoded_at.elapsed())))?;
+                                latest.wait_if_current(&timer, &capture_wake, &image, Instant::now() + wait.min(repeat_due.saturating_duration_since(Instant::now())))?;
                                 continue;
                             }
                             if use_truehdr && Instant::now() >= profile_due {
@@ -1010,7 +1030,7 @@ impl Media {
                                 active.set_next_frame(next_wire_frame.get());
                             }
                             let begin = Instant::now();
-                            if fresh && tracing::enabled!(target: "pacing", tracing::Level::TRACE) {
+                            if tracing::enabled!(target: "pacing", tracing::Level::TRACE) {
                                 let us = |at: Instant| at.saturating_duration_since(start).as_micros() as u64;
                                 let key = Arc::as_ptr(&image) as usize;
                                 let (seen, interval, deadline) = match first_seen {
@@ -1019,12 +1039,16 @@ impl Media {
                                 };
                                 tracing::trace!(
                                     target: "pacing",
+                                    capture_id = latest.trace_publication_id(&image).unwrap_or(0),
                                     presented = us(image.captured),
                                     acquired = us(image.acquired),
                                     seen = us(seen),
                                     claim = us(begin),
                                     interval = interval.map_or(0, |i| i.as_micros() as u64),
                                     deadline = deadline.map_or(0, us),
+                                    source_id = latest.trace_source_id(),
+                                    stream_id = %s.launch.id,
+                                    fresh,
                                     "claim"
                                 );
                             }
@@ -1709,10 +1733,14 @@ mod tests {
         for kind in ["wgc", "auto"] {
             assert_eq!(key(kind, ""), key(kind, "wgc_high_rate_capture=false"));
             assert_ne!(key(kind, ""), key(kind, "wgc_high_rate_capture=true"));
+            assert_ne!(key(kind, ""), key(kind, "wgc_drain_to_newest=true"));
+            assert_ne!(key(kind, ""), key(kind, "wgc_helper_streaming_scope=true"));
         }
         for kind in ["ddx", "dxgi"] {
             assert_eq!(key(kind, ""), key(kind, "wgc_high_rate_capture=true"));
             assert_eq!(key(kind, ""), key(kind, "wgc_high_rate_capture=false"));
+            assert_eq!(key(kind, ""), key(kind, "wgc_drain_to_newest=true"));
+            assert_eq!(key(kind, ""), key(kind, "wgc_helper_streaming_scope=true"));
         }
     }
     #[test]

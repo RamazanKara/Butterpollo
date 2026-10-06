@@ -64,6 +64,7 @@ pub enum Input {
     ControllerTouch {
         id: u8,
         event: u8,
+        touchpad: u8,
         pointer: u32,
         x: f32,
         y: f32,
@@ -250,6 +251,7 @@ pub fn decode(b: &[u8]) -> Result<Input> {
         0x55000005 => Input::ControllerTouch {
             id: b[8],
             event: b[9],
+            touchpad: b[11],
             pointer: le32(b, 12),
             x: float(b, 16)?,
             y: float(b, 20)?,
@@ -411,17 +413,30 @@ impl Input {
             (s @ ControllerTouch { .. }, n @ ControllerTouch { .. }) => {
                 if let (
                     ControllerTouch {
-                        id, event, pointer, ..
+                        id,
+                        event,
+                        touchpad,
+                        pointer,
+                        ..
                     },
                     ControllerTouch {
                         id: ni,
                         event: ne,
+                        touchpad: nt,
                         pointer: np,
                         ..
                     },
                 ) = (&*s, n)
                 {
-                    if id != ni || pointer != np {
+                    if id != ni || touchpad != nt {
+                        return Batch::Skip;
+                    }
+                    // Cancel-all affects every contact on this touchpad, even
+                    // if its pointer ID differs from the move being batched.
+                    if *event == 7 || *ne == 7 {
+                        return Batch::Stop;
+                    }
+                    if pointer != np {
                         return Batch::Skip;
                     }
                     if !matches!(event, 0 | 3) || event != ne {
@@ -501,6 +516,7 @@ mod tests {
                 23,
                 0x55000002,
                 0x55000003,
+                0x55000005,
                 0x55000006,
                 u32::MAX,
             ] {
@@ -527,6 +543,55 @@ mod tests {
             }
         );
     }
+    fn controller_touch(touchpad: u8, event: u8, pointer: u32, x: f32) -> Input {
+        Input::ControllerTouch {
+            id: 2,
+            event,
+            touchpad,
+            pointer,
+            x,
+            y: 0.5,
+            pressure: 0.75,
+        }
+    }
+    #[test]
+    fn controller_touch_decodes_the_wire_touchpad_index_without_changing_coordinates() {
+        for touchpad in [0, 1, 2, 255] {
+            let mut packet = vec![0; 28];
+            packet[..4].copy_from_slice(&24u32.to_be_bytes());
+            packet[4..8].copy_from_slice(&0x55000005u32.to_le_bytes());
+            packet[8] = 2;
+            packet[9] = 3;
+            packet[11] = touchpad;
+            packet[12..16].copy_from_slice(&17u32.to_le_bytes());
+            packet[16..20].copy_from_slice(&0.25f32.to_le_bytes());
+            packet[20..24].copy_from_slice(&0.5f32.to_le_bytes());
+            packet[24..28].copy_from_slice(&0.75f32.to_le_bytes());
+            assert_eq!(
+                decode(&packet).unwrap(),
+                controller_touch(touchpad, 3, 17, 0.25)
+            );
+        }
+    }
+    #[test]
+    fn controller_touch_coalescing_keeps_surfaces_and_cancel_all_separate() {
+        let mut primary = controller_touch(0, 3, 17, 0.25);
+        let original = primary.clone();
+        assert_eq!(primary.merge(&controller_touch(1, 3, 17, 0.9)), Batch::Skip);
+        assert_eq!(primary, original);
+        assert_eq!(primary.merge(&controller_touch(1, 7, 0, 0.0)), Batch::Skip);
+        assert_eq!(primary.merge(&controller_touch(0, 7, 0, 0.0)), Batch::Stop);
+        assert_eq!(primary, original);
+        assert_eq!(primary.merge(&controller_touch(0, 2, 17, 0.0)), Batch::Stop);
+        assert_eq!(
+            primary.merge(&controller_touch(0, 3, 17, 0.5)),
+            Batch::Merged
+        );
+        assert_eq!(primary, controller_touch(0, 3, 17, 0.5));
+        let mut cancelled = controller_touch(0, 7, 0, 0.0);
+        assert_eq!(cancelled.merge(&primary), Batch::Stop);
+    }
+
     #[test]
     fn actual_moonlight_mouse_packet() {
         let p = hex::decode("0000000807000000fffb0004").unwrap();

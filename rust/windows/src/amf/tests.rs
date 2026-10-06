@@ -327,6 +327,177 @@ fn native_av1_geometry_and_hdr_are_preserved() -> Result<()> {
 }
 
 #[test]
+#[ignore = "requires AMD AMF, independent FFmpeg and a reference-budget report path"]
+fn native_h264_one_reference_budget_decodes_without_ltr_corruption() -> Result<()> {
+    use crate::capture::{ComGuard, Pixel};
+    use std::{os::windows::process::CommandExt, path::PathBuf, process::Command};
+    let _com = ComGuard::new()?;
+    let gpu = Device::new("")?;
+    let decoder = std::env::var_os("BUTTERPOLLO_TEST_FFMPEG")
+        .context("set BUTTERPOLLO_TEST_FFMPEG to an independent decoder")?;
+    let report = PathBuf::from(
+        std::env::var_os("BUTTERPOLLO_TEST_REFERENCE_BUDGET_REPORT")
+            .context("set BUTTERPOLLO_TEST_REFERENCE_BUDGET_REPORT")?,
+    );
+    let directory = report
+        .parent()
+        .context("report requires a parent directory")?;
+    std::fs::create_dir_all(directory)?;
+    let config = butterpollo_core::rtsp::Negotiated {
+        width: 640,
+        height: 480,
+        references: 1,
+        ..Default::default()
+    };
+    let options = butterpollo_core::config::Config::parse(
+        "amd_ltr_frames=4\namd_usage=ultralowlatency\namd_quality=speed\namd_lowlatency_mode=enabled\n",
+    )?;
+    // Synthetic input avoids capturing or changing any user's desktop/window.
+    let source = GpuImage::upload(
+        &gpu,
+        &Image {
+            width: config.width,
+            height: config.height,
+            stride: config.width as usize * 4,
+            bytes: (0..config.width * config.height)
+                .flat_map(|index| {
+                    let x = index % config.width;
+                    let y = index / config.width;
+                    [x as u8, y as u8, (x ^ y) as u8, 255]
+                })
+                .collect(),
+            captured: Instant::now(),
+            pixel: Pixel::Bgra8,
+        },
+    )?;
+    let mut encoder = Encoder::new_device_options(&config, gpu, &options)?;
+    let supports_invalidation = encoder.supports_invalidation();
+    let mut output = vec![];
+    for frame in 0..64 {
+        output.extend(encoder.encode_gpu(&source, frame == 0, config.bitrate_kbps)?);
+    }
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while encoder.pending() {
+        output.extend(encoder.poll()?);
+        if Instant::now() > deadline {
+            bail!("AMF reference-budget fixture output timed out");
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let bitstream = directory.join(format!("amf-one-reference-{}.h264", std::process::id()));
+    std::fs::write(
+        &bitstream,
+        output
+            .iter()
+            .flat_map(|packet| packet.bytes.iter().copied())
+            .collect::<Vec<_>>(),
+    )?;
+    // Inspect the encoder's actual SPS independently. A software-only decode
+    // can pass an oversized SPS that Moonlight's one-reference fixup would reject.
+    let trace = Command::new(&decoder)
+        .args(["-hide_banner", "-nostdin", "-f", "h264", "-i"])
+        .arg(&bitstream)
+        .args([
+            "-map",
+            "0:v",
+            "-c:v",
+            "copy",
+            "-bsf:v",
+            "trace_headers",
+            "-f",
+            "null",
+            "-",
+        ])
+        .creation_flags(0x08000000)
+        .output()?;
+    let headers = String::from_utf8_lossy(&trace.stderr);
+    let values = |field: &str| -> Vec<u32> {
+        headers
+            .lines()
+            .filter(|line| line.contains(field))
+            .filter_map(|line| line.rsplit_once('=')?.1.trim().parse().ok())
+            .collect()
+    };
+    let max_num_ref_frames = values("max_num_ref_frames");
+    let max_dec_frame_buffering = values("max_dec_frame_buffering");
+    std::fs::write(bitstream.with_extension("headers.log"), &trace.stderr)?;
+    let decoded = Command::new(&decoder)
+        .args([
+            "-hide_banner",
+            "-nostdin",
+            "-v",
+            "error",
+            "-xerror",
+            "-err_detect",
+            "explode",
+            "-f",
+            "h264",
+            "-i",
+        ])
+        .arg(&bitstream)
+        .args([
+            "-an",
+            "-progress",
+            "pipe:1",
+            "-nostats",
+            "-fps_mode",
+            "passthrough",
+            "-f",
+            "null",
+            "-",
+        ])
+        .creation_flags(0x08000000)
+        .output()?;
+    std::fs::write(bitstream.with_extension("decode.log"), &decoded.stderr)?;
+    let decoded_frames = String::from_utf8_lossy(&decoded.stdout)
+        .lines()
+        .filter_map(|line| line.strip_prefix("frame=")?.trim().parse::<u32>().ok())
+        .next_back()
+        .unwrap_or(0);
+    let observation = serde_json::json!({
+        "negotiated_references": config.references,
+        "requested_ltr_frames": 4,
+        "supports_invalidation": supports_invalidation,
+        "applied_max_num_ref_frames": encoder.read("MaxNumRefFrames"),
+        "applied_max_ltr_frames": encoder.read("MaxOfLTRFrames"),
+        "encoded_frames": output.len(),
+        "decoded_frames": decoded_frames,
+        "sps_max_num_ref_frames": max_num_ref_frames,
+        "vui_max_dec_frame_buffering": max_dec_frame_buffering,
+        "header_trace_success": trace.status.success(),
+        "decode_success": decoded.status.success(),
+        "decode_errors": String::from_utf8_lossy(&decoded.stderr),
+        "bitstream": bitstream,
+    });
+    std::fs::write(&report, serde_json::to_vec_pretty(&observation)?)?;
+    eprintln!("{observation}");
+    assert!(
+        !supports_invalidation,
+        "one-reference clients must use IDR recovery"
+    );
+    assert_eq!(output.len(), 64);
+    assert!(trace.status.success(), "independent SPS trace failed");
+    assert!(
+        !max_num_ref_frames.is_empty(),
+        "trace contained no SPS reference count"
+    );
+    assert!(
+        max_num_ref_frames.iter().all(|&count| count <= 1),
+        "oversized SPS reference budget"
+    );
+    assert!(
+        max_dec_frame_buffering.iter().all(|&count| count <= 1),
+        "oversized VUI decoder buffer budget"
+    );
+    assert!(
+        decoded.status.success() && decoded.stderr.is_empty(),
+        "independent decoder rejected stream"
+    );
+    assert_eq!(decoded_frames, 64);
+    Ok(())
+}
+
+#[test]
 #[ignore = "requires a live AMD D3D11 adapter and AMF runtime"]
 fn native_reference_recovery_decodes_after_dropping_the_invalidated_packets() -> Result<()> {
     let _com = crate::capture::ComGuard::new()?;
