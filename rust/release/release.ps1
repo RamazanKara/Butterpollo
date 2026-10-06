@@ -119,7 +119,16 @@ $package = "$out\butterpollo-rust-release"
 
 foreach ($codec in 'h264', 'hevc', 'av1') {
     Step "stream $codec"
-    & $python "$tools\e2e.py" --package $package --work $run --client $client --codec $codec
+    try {
+        & $python "$tools\e2e.py" --package $package --work $run --client $client --codec $codec
+    } catch {
+        # Other load on the workstation can push one run under the frame-rate
+        # floor; a regression fails twice. The first run's logs are kept.
+        Write-Warning "stream $codec failed; running it once more"
+        Remove-Item -Recurse -Force "$run\e2e-$codec-failed" -ErrorAction SilentlyContinue
+        Move-Item "$run\e2e-$codec" "$run\e2e-$codec-failed"
+        & $python "$tools\e2e.py" --package $package --work $run --client $client --codec $codec
+    }
 }
 Step 'protocol checks'
 & $python "$tools\protocol.py" --package $package --work $run

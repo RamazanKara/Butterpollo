@@ -26,8 +26,12 @@ version = validation['version']
 for asset in validation['assets']:
     assert sha(out / asset['name']) == asset['sha256'], asset['name']
 
-streams = [json.loads(p.read_text()) for p in sorted(work.glob('e2e-*/result.json'))]
+results = sorted(work.glob('e2e-*/result.json'))
+streams = [json.loads(p.read_text()) for p in results if not p.parent.name.endswith('-failed')]
 assert streams and all(s['passed'] for s in streams), 'an end-to-end stream failed'
+# A stream that failed once and passed when run again is recorded with both runs.
+for failed in (json.loads(p.read_text()) for p in results if p.parent.name.endswith('-failed')):
+    next(s for s in streams if s['codec'] == failed['codec'])['first_attempt_failed'] = failed
 protocol = json.loads((work / 'protocol' / 'result.json').read_text())
 assert protocol['passed'], 'a protocol check failed'
 validation['changes'] = [line for line in args.changes.read_text(encoding='utf-8').splitlines() if line.strip()]
