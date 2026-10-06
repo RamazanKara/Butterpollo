@@ -17,6 +17,9 @@ pub(crate) const RTX_KEYS: &[&str] = &[
 ];
 /// How often completed encoder output is collected while a frame is in flight.
 const OUTPUT_POLL: Duration = Duration::from_micros(100);
+/// How long an encoder that fails mid-stream is recreated before the session
+/// gives up: a GPU busy with a game or a driver reset costs frames, not the stream.
+const ENCODER_RECOVERY: Duration = Duration::from_secs(5);
 /// Backoff only after reopening fails; resource release is acknowledged.
 const RECOVERY_RETRY: Duration = Duration::from_millis(150);
 fn rtx_parameters(config: &Config) -> [u32; 4] {
@@ -767,6 +770,8 @@ impl Media {
                     let mut last_stamp = start;
                     let mut live_at = due;
                     let mut rebuild_encoder = false;
+                    // Since when encoding has failed without a frame getting through.
+                    let mut encoder_failing: Option<Instant> = None;
                     let mut runtime_config = c.clone();
                     let mut profiles = None;
                     let mut foreground = None;
@@ -1060,12 +1065,23 @@ impl Media {
                             let rebuilt = rebuild_encoder;
                             if rebuild_encoder {
                                 encoder = None;
-                                encoder = Some(Encoder::new_gpu_options(
+                                match Encoder::new_gpu_options(
                                     &s.config,
                                     c.get("encoder", "auto"),
                                     &image,
                                     &c,
-                                )?);
+                                ) {
+                                    Ok(created) => encoder = Some(created),
+                                    Err(error) => {
+                                        let since = *encoder_failing.get_or_insert_with(Instant::now);
+                                        if since.elapsed() >= ENCODER_RECOVERY {
+                                            return Err(error.context("the encoder could not be recreated"));
+                                        }
+                                        tracing::debug!(error = %format!("{error:#}"), "encoder recreation failed; retrying");
+                                        timer.until(Instant::now() + Duration::from_millis(100));
+                                        continue;
+                                    }
+                                }
                                 metadata_due = Instant::now();
                                 truehdr = if use_truehdr {
                                     truehdr_filter(&image, &runtime_config)
@@ -1145,21 +1161,41 @@ impl Media {
                             let mut presented_image = image.as_ref().clone();
                             if last_image.as_ref().is_some_and(|previous| Arc::ptr_eq(previous,&image)) { presented_image.captured = Instant::now(); }
                             let transformed = if converted { truehdr.as_mut().map(|filter| filter.apply_gpu(&presented_image)).transpose() } else { Ok(None) };
-                            let output = if let Ok(Some(transformed)) = transformed.as_ref() {
-                                active.encode_gpu(transformed, idr, bitrate)?
-                            } else if let Err(error) = transformed {
-                                tracing::warn!(%error, "TrueHDR conversion failed; continuing with SDR-to-PQ");
-                                truehdr = None;
-                                active.set_luminance(100. + runtime_config.integer("rtx_hdr_sdr_brightness",0).clamp(0,100) as f32, 1.);
-                                active.encode_gpu(&presented_image, idr, bitrate)?
-                            } else if c.boolean("wgc_direct_encoder_input", true) {
-                                active.encode_gpu(&presented_image, idr, bitrate)?
-                            } else {
-                                active.encode(
-                                    &presented_image.readback(&mut truehdr_staging)?,
-                                    idr,
-                                    bitrate,
-                                )?
+                            let encoded = (|| -> Result<Vec<butterpollo_windows::encoder::Encoded>> {
+                                Ok(if let Ok(Some(transformed)) = transformed.as_ref() {
+                                    active.encode_gpu(transformed, idr, bitrate)?
+                                } else if let Err(error) = transformed {
+                                    tracing::warn!(%error, "TrueHDR conversion failed; continuing with SDR-to-PQ");
+                                    truehdr = None;
+                                    active.set_luminance(100. + runtime_config.integer("rtx_hdr_sdr_brightness",0).clamp(0,100) as f32, 1.);
+                                    active.encode_gpu(&presented_image, idr, bitrate)?
+                                } else if c.boolean("wgc_direct_encoder_input", true) {
+                                    active.encode_gpu(&presented_image, idr, bitrate)?
+                                } else {
+                                    active.encode(
+                                        &presented_image.readback(&mut truehdr_staging)?,
+                                        idr,
+                                        bitrate,
+                                    )?
+                                })
+                            })();
+                            let output = match encoded {
+                                Ok(output) => {
+                                    encoder_failing = None;
+                                    output
+                                }
+                                Err(error) => {
+                                    // A stalled or reset GPU costs these frames and a
+                                    // keyframe; the rebuild requests it. Only failures
+                                    // that keep coming end the session.
+                                    let since = *encoder_failing.get_or_insert_with(Instant::now);
+                                    if since.elapsed() >= ENCODER_RECOVERY {
+                                        return Err(error.context("the encoder kept failing"));
+                                    }
+                                    tracing::warn!(error = %format!("{error:#}"), client = %s.launch.client.name, "encoding failed; recreating the encoder");
+                                    rebuild_encoder = true;
+                                    continue;
+                                }
                             };
                             let call_latency = begin.elapsed();
                             // Repeat deadlines start at submission, so encoder work
