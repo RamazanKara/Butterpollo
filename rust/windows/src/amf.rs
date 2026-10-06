@@ -805,66 +805,68 @@ impl Encoder {
         }
         unsafe {
             let mut output = vec![];
-            // With a query timeout, asking again after the last frame in flight
-            // has been returned would only wait for the timeout.
-            while !self.in_flight.is_empty() {
-                let mut data = ptr::null_mut();
-                let code =
-                    ((*(*self.component).pVtbl).QueryOutput.unwrap())(self.component, &mut data);
-                if code == AMF_RESULT_AMF_REPEAT
-                    || code == AMF_RESULT_AMF_EOF
-                    || code == AMF_RESULT_AMF_NEED_MORE_INPUT
-                {
-                    break;
-                }
-                check(code)?;
-                if data.is_null() {
-                    break;
-                }
-                let buffer = data as *mut AMFBuffer;
-                let pts = ((*(*data).pVtbl).GetPts.unwrap())(data);
-                let submission = self
-                    .in_flight
-                    .iter()
-                    .position(|s| s.pts == pts)
-                    .and_then(|position| self.in_flight.remove(position));
-                let latency = submission.as_ref().map(|s| s.started.elapsed());
-                let presentation = submission.as_ref().map(|s| s.presentation);
-                let after_invalidation = submission.is_some_and(|s| s.after_invalidation);
-                let v = &*(*buffer).pVtbl;
-                let size = (v.GetSize.unwrap())(buffer);
-                let raw = (v.GetNative.unwrap())(buffer) as *const u8;
-                let mut picture: AMFVariantStruct = std::mem::zeroed();
-                let prop = match self.codec {
-                    0 => "OutputDataType",
-                    1 => "HevcOutputDataType",
-                    _ => "Av1OutputFrameType",
-                };
-                let _ = (v.GetProperty.unwrap())(buffer, wide(prop).as_ptr(), &mut picture);
-                if size > 64 * 1024 * 1024 || raw.is_null() {
-                    (v.Release.unwrap())(buffer);
-                    bail!("invalid AMF output buffer");
-                }
-                let idr = if picture.type_ == AMF_VARIANT_TYPE_AMF_VARIANT_INT64 {
-                    picture.__bindgen_anon_1.int64Value == 0
-                } else {
-                    self.index == 1
-                };
-                let bytes = std::slice::from_raw_parts(raw, size as usize);
-                let bytes = if self.codec == 0 && idr && self.references.enabled() {
-                    butterpollo_core::bitstream::h264_reference_recovery(bytes)
-                } else {
-                    bytes.to_vec()
-                };
-                (v.Release.unwrap())(buffer);
-                output.push(Encoded {
-                    bytes,
-                    idr,
-                    after_invalidation,
-                    latency,
-                    presentation,
-                });
+            // With a query timeout, asking when nothing is in flight would only
+            // wait for it. One finished frame is handed to the sender at once:
+            // asking for the next one still in flight would hold it for the
+            // timeout. Callers poll again while frames are pending.
+            if self.in_flight.is_empty() {
+                return Ok(output);
             }
+            let mut data = ptr::null_mut();
+            let code = ((*(*self.component).pVtbl).QueryOutput.unwrap())(self.component, &mut data);
+            if code == AMF_RESULT_AMF_REPEAT
+                || code == AMF_RESULT_AMF_EOF
+                || code == AMF_RESULT_AMF_NEED_MORE_INPUT
+            {
+                return Ok(output);
+            }
+            check(code)?;
+            if data.is_null() {
+                return Ok(output);
+            }
+            let buffer = data as *mut AMFBuffer;
+            let pts = ((*(*data).pVtbl).GetPts.unwrap())(data);
+            let submission = self
+                .in_flight
+                .iter()
+                .position(|s| s.pts == pts)
+                .and_then(|position| self.in_flight.remove(position));
+            let latency = submission.as_ref().map(|s| s.started.elapsed());
+            let presentation = submission.as_ref().map(|s| s.presentation);
+            let after_invalidation = submission.is_some_and(|s| s.after_invalidation);
+            let v = &*(*buffer).pVtbl;
+            let size = (v.GetSize.unwrap())(buffer);
+            let raw = (v.GetNative.unwrap())(buffer) as *const u8;
+            let mut picture: AMFVariantStruct = std::mem::zeroed();
+            let prop = match self.codec {
+                0 => "OutputDataType",
+                1 => "HevcOutputDataType",
+                _ => "Av1OutputFrameType",
+            };
+            let _ = (v.GetProperty.unwrap())(buffer, wide(prop).as_ptr(), &mut picture);
+            if size > 64 * 1024 * 1024 || raw.is_null() {
+                (v.Release.unwrap())(buffer);
+                bail!("invalid AMF output buffer");
+            }
+            let idr = if picture.type_ == AMF_VARIANT_TYPE_AMF_VARIANT_INT64 {
+                picture.__bindgen_anon_1.int64Value == 0
+            } else {
+                self.index == 1
+            };
+            let bytes = std::slice::from_raw_parts(raw, size as usize);
+            let bytes = if self.codec == 0 && idr && self.references.enabled() {
+                butterpollo_core::bitstream::h264_reference_recovery(bytes)
+            } else {
+                bytes.to_vec()
+            };
+            (v.Release.unwrap())(buffer);
+            output.push(Encoded {
+                bytes,
+                idr,
+                after_invalidation,
+                latency,
+                presentation,
+            });
             Ok(output)
         }
     }
@@ -1051,7 +1053,9 @@ impl Encoder {
             && (self.compute.is_none() || crate::compute::shareable(&image.texture))
     }
     fn wait_capacity(&mut self) -> Result<Vec<Encoded>> {
-        let mut output = self.poll()?;
+        // Only a full queue waits: a poll blocks for the query timeout while a
+        // frame is in flight, which delayed submitting the next frame.
+        let mut output = Vec::new();
         let deadline = Instant::now() + Duration::from_millis(100);
         while self.in_flight.len() >= 8 || self.ownership.retained() >= 8 {
             output.extend(self.poll()?);

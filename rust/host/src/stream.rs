@@ -1021,7 +1021,11 @@ impl Media {
                                 if first_seen.is_none_or(|(seen, ..)| seen != key) {
                                     first_seen = Some((key, Instant::now(), interval, Some(deadline)));
                                 }
-                                if encoder.as_ref().is_some_and(Encoder::pending) {
+                                // A poll can block for the encoder's 1 ms query
+                                // timeout; close to the claim it would overshoot.
+                                if encoder.as_ref().is_some_and(Encoder::pending)
+                                    && deadline.saturating_duration_since(Instant::now()) >= Duration::from_millis(1)
+                                {
                                     send_frames(encoder.as_mut().map_or(Ok(vec![]), Encoder::poll)?, peer, Duration::ZERO)?;
                                 }
                                 let until = if encoder.as_ref().is_some_and(Encoder::pending) {
