@@ -948,7 +948,16 @@ impl Injector {
                 flags,
                 modifiers,
             } => {
-                let key = mapped_keyboard_identity(&self.policy, *key, *modifiers);
+                let mut key = mapped_keyboard_identity(&self.policy, *key, *modifiers);
+                // A client can set the extended-key bit on the press but not
+                // on the release: release the key that is held, or it stays
+                // down and keeps repeating.
+                if !*down
+                    && !self.keys.contains(&key)
+                    && self.keys.contains(&(key ^ EXPLICIT_EXTENDED_KEY))
+                {
+                    key ^= EXPLICIT_EXTENDED_KEY;
+                }
                 let owned = self.keys.contains(&key);
                 let flags = if *down {
                     *flags
@@ -977,13 +986,12 @@ impl Injector {
                 if *down {
                     self.keys.insert(key);
                     self.key_flags.insert(key, flags);
-                    if !owned && !is_modifier(key) {
-                        self.repeat = Some((
-                            key,
-                            flags,
-                            modifiers,
-                            std::time::Instant::now() + self.policy.repeat_delay,
-                        ));
+                    if !owned
+                        && !is_modifier(key)
+                        && let Some(delay) = self.policy.repeat_delay
+                    {
+                        self.repeat =
+                            Some((key, flags, modifiers, std::time::Instant::now() + delay));
                     }
                 } else {
                     self.keys.remove(&key);
@@ -1090,7 +1098,11 @@ impl Injector {
     ) -> Result<()> {
         let count = held.get(&identity).copied().unwrap_or(0);
         if down {
-            if count == 0 || owned {
+            // A repeated press of a key or button this client already holds
+            // is not sent again, as in Vibepollo: with the host's own repeat
+            // it doubled the repeat rate, and a second button-down could
+            // become a double-click.
+            if count == 0 && !owned {
                 send(&[input])?;
             }
             if !owned {
@@ -1386,7 +1398,7 @@ mod tests {
         for (key, down, owned) in [
             (enter, true, false),
             (keypad, true, false),
-            (keypad, true, true), // Repeating does not acquire another hold.
+            (keypad, true, true), // A repeated press is neither sent nor counted.
             (enter, true, false), // A second client also holds ordinary Enter.
             (enter, false, true), // First client must not release that key yet.
             (keypad, false, true),
@@ -1414,7 +1426,6 @@ mod tests {
             sent,
             vec![
                 KEYEVENTF_SCANCODE,
-                KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY,
                 KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY,
                 KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP,
                 KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP,

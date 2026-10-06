@@ -13,7 +13,8 @@ pub struct Policy {
     pub forward_rumble: bool,
     pub motion_as_ds4: bool,
     pub touchpad_as_ds4: bool,
-    pub repeat_delay: Duration,
+    /// None: the host does not repeat held keys.
+    pub repeat_delay: Option<Duration>,
     pub repeat_period: Duration,
     pub back_button_timeout: Option<Duration>,
     pub keybindings: BTreeMap<u16, u16>,
@@ -61,9 +62,15 @@ impl Policy {
             forward_rumble: config.boolean("forward_rumble", true),
             motion_as_ds4: config.boolean("motion_as_ds4", true),
             touchpad_as_ds4: config.boolean("touchpad_as_ds4", true),
-            repeat_delay: Duration::from_millis(
-                config.integer("key_repeat_delay", 500).clamp(0, 60000) as u64,
-            ),
+            // As in Vibepollo: 0 turns host key repeat off and a negative
+            // value keeps the default. Clamping 0 to an immediate repeat
+            // typed two or three characters per tap for imported profiles
+            // that had turned repeat off.
+            repeat_delay: match config.integer("key_repeat_delay", 500) {
+                0 => None,
+                ms if ms < 0 => Some(Duration::from_millis(500)),
+                ms => Some(Duration::from_millis(ms.min(60000) as u64)),
+            },
             repeat_period: Duration::from_secs_f64(
                 1.0 / if frequency == 0.0 { 24.9 } else { frequency },
             ),
@@ -100,6 +107,11 @@ impl Policy {
             6
         } else if kind == 3 {
             7
+        } else if kind == 1 {
+            // An Xbox controller stays an Xbox pad, as in Vibepollo, even
+            // with motion sensors: a PlayStation pad is also claimed by Steam
+            // Input, and games could see the controller twice.
+            4
         } else if (self.motion_as_ds4 && capabilities & 0x30 != 0)
             || (self.touchpad_as_ds4 && capabilities & 8 != 0)
         {
@@ -172,6 +184,22 @@ mod tests {
         assert_eq!(policy.controller_profile(0, 0, 8, all), Some(6));
         assert_eq!(policy.controller_profile(5, 3, 0, all), Some(5));
         assert_eq!(policy.controller_profile(0, 2, 0, 1 << 3), Some(4));
+        assert_eq!(policy.controller_profile(0, 1, 0x30 | 8, all), Some(4));
+    }
+    #[test]
+    fn key_repeat_delay_follows_vibepollo() {
+        let delay = |value: &str| {
+            let config = Config::parse(&format!("key_repeat_delay={value}\n")).unwrap();
+            Policy::resolve(&config).unwrap().repeat_delay
+        };
+        assert_eq!(delay("0"), None);
+        assert_eq!(delay("-5"), Some(Duration::from_millis(500)));
+        assert_eq!(delay("250"), Some(Duration::from_millis(250)));
+        assert_eq!(delay("999999"), Some(Duration::from_millis(60000)));
+        assert_eq!(
+            Policy::resolve(&Config::default()).unwrap().repeat_delay,
+            Some(Duration::from_millis(500))
+        );
     }
     #[test]
     fn held_back_emits_one_home_pulse_and_requires_release_before_rearming() {
