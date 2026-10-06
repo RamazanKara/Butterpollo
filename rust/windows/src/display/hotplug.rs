@@ -104,6 +104,44 @@ fn protected_paths(
         .collect())
 }
 
+/// The modes the kept paths use, renumbered. Modes left behind by a pruned
+/// path make Windows refuse the supplied layout (ERROR_INVALID_PARAMETER).
+fn referenced_modes(
+    paths: &[DISPLAYCONFIG_PATH_INFO],
+    modes: &[DISPLAYCONFIG_MODE_INFO],
+) -> Result<(Vec<DISPLAYCONFIG_PATH_INFO>, Vec<DISPLAYCONFIG_MODE_INFO>)> {
+    let mut kept = Vec::new();
+    let mut renumbered = BTreeMap::new();
+    let mut remap = |index: u32| -> Result<u32> {
+        if index == DISPLAYCONFIG_PATH_MODE_IDX_INVALID {
+            return Ok(index);
+        }
+        if let Some(new) = renumbered.get(&index) {
+            return Ok(*new);
+        }
+        kept.push(
+            *modes
+                .get(index as usize)
+                .context("display mode index out of range")?,
+        );
+        let new = kept.len() as u32 - 1;
+        renumbered.insert(index, new);
+        Ok(new)
+    };
+    let paths = paths
+        .iter()
+        .map(|path| {
+            let mut path = *path;
+            path.sourceInfo.Anonymous.modeInfoIdx =
+                remap(unsafe { path.sourceInfo.Anonymous.modeInfoIdx })?;
+            path.targetInfo.Anonymous.modeInfoIdx =
+                remap(unsafe { path.targetInfo.Anonymous.modeInfoIdx })?;
+            Ok(path)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok((paths, kept))
+}
+
 // Compare values, never raw struct bytes (unions/padding are not comparable).
 // A reordered mode table is conservatively treated as a change as well.
 fn same_topology(a: &Topology, b: &Topology) -> bool {
@@ -211,6 +249,7 @@ impl Protection {
             "display layout changed during virtual hotplug protection"
         );
         topology.paths = protected_paths(&topology.paths, &unwanted, owned_key)?;
+        (topology.paths, topology.modes) = referenced_modes(&topology.paths, &topology.modes)?;
         tracing::warn!(
             stage,
             targets = ?unwanted.iter().filter_map(|k| names.get(k)).collect::<Vec<_>>(),
@@ -350,6 +389,38 @@ mod tests {
                 original.targetInfo.Anonymous.modeInfoIdx
             });
         }
+    }
+
+    #[test]
+    fn modes_of_a_pruned_display_are_left_out_and_the_rest_renumbered() {
+        // path() points source s at mode 4 + s and target t at mode 20 + t.
+        let modes: Vec<_> = (0..30)
+            .map(|id| DISPLAYCONFIG_MODE_INFO {
+                id,
+                ..Default::default()
+            })
+            .collect();
+        let kept = [
+            path(1, 0, true, true),
+            path(3, 0, true, true),
+            path(4, 2, true, true),
+        ];
+        let (paths, used) = referenced_modes(&kept, &modes).unwrap();
+        assert_eq!(
+            used.iter().map(|m| m.id).collect::<Vec<_>>(),
+            vec![4, 21, 23, 6, 24]
+        );
+        for path in &paths {
+            let (source, target) = unsafe {
+                (
+                    path.sourceInfo.Anonymous.modeInfoIdx,
+                    path.targetInfo.Anonymous.modeInfoIdx,
+                )
+            };
+            assert_eq!(used[source as usize].id, 4 + path.sourceInfo.id);
+            assert_eq!(used[target as usize].id, 20 + path.targetInfo.id);
+        }
+        assert!(referenced_modes(&kept, &modes[..10]).is_err());
     }
 
     #[test]
