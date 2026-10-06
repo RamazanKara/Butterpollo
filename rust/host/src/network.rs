@@ -439,6 +439,7 @@ mod tests {
         );
     }
     #[tokio::test]
+    #[ignore = "listens on every interface; Windows Firewall asks again for every new test binary"]
     async fn dual_stack_listener_accepts_ipv4_and_ipv6_loopback() {
         let listener = tcp("[::]:0".parse().unwrap()).unwrap();
         let port = listener.local_addr().unwrap().port();
