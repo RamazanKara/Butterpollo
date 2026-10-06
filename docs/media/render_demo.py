@@ -312,15 +312,16 @@ def scene_pyrowave(d, time):
 
 def scene_cta(d, time):
     label(d, 'BUTTERPOLLO rc.10')
-    text(d, (76, 249), 'Built for Radeon. Built on great work.', 76, bold=True)
-    text(d, (83, 383), 'WGC + compute by default   ·   PyroWave HDR 4:4:4', 40, YELLOW, True)
-    text(d, (83, 448), 'Virtual displays   ·   RTSS   ·   Steam + Playnite   ·   263 tests passed', 34, MUTED)
-    text(d, (82, 568), 'Thanks, Nonary.', 76, WHITE, True)
-    text(d, (86, 671), 'For Vibepollo and the Moonlight client work.', 38, WHITE)
-    text(d, (86, 731), 'With credit to Sunshine, Apollo, Themaister and joemossjr16.', 31, MUTED)
+    text(d, (76, 249), 'Radeon compute. Lower measured delay.', 74, bold=True)
+    text(d, (83, 398), 'D3D12 compute copies + colour conversion', 43, YELLOW, True)
+    text(d, (87, 463), 'WGC + compute by default. Frame preparation alongside game graphics.', 32, MUTED)
+    text(d, (83, 553), 'Fenced GPU textures → native AMD encoding', 43, WHITE, True)
+    text(d, (87, 618), 'Explicit frame readiness and safe reuse of each output surface.', 34, MUTED)
+    text(d, (83, 708), 'HEVC / AV1 HDR   ·   PyroWave HDR 4:4:4', 43, YELLOW, True)
+    text(d, (87, 773), 'HEVC / AV1: native HDR capture and decoded colours verified.', 32, MUTED)
     text(d, (83, 849), 'github.com/RamazanKara/Butterpollo', 46, YELLOW, True)
     footer(d, ['Install → Pair Moonlight → Play',
-               'Open source · written in Rust · full measurements and source linked in the README'])
+               'Source, benchmark methods and codec validation: github.com/RamazanKara/Butterpollo'])
 
 
 SCENE_DRAWERS = [scene_queues, scene_fences, scene_compute_results, scene_host_results,
