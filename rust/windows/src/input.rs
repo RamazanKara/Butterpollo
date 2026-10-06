@@ -485,9 +485,15 @@ impl Injector {
         profile: &str,
         config: &butterpollo_core::config::Config,
     ) -> Result<Self> {
+        // Before capture publishes its GDI name, the configured display is
+        // often a device ID ({...}); input arriving then was dropped.
+        let name = crate::display::monitors()
+            .ok()
+            .and_then(|all| all.into_iter().find(|m| m.matches(output)))
+            .map_or_else(|| output.to_owned(), |m| m.display_name);
         let d = crate::capture::displays()?
             .into_iter()
-            .find(|d| d.display_name == output || output.is_empty())
+            .find(|d| output.is_empty() || d.display_name.eq_ignore_ascii_case(&name))
             .ok_or_else(|| anyhow::anyhow!("input display missing"))?;
         Ok(Self {
             keys: BTreeSet::new(),
