@@ -231,6 +231,25 @@ pub fn datagram_lost(error: &std::io::Error) -> bool {
 }
 /// How long a send waits for room in a full socket buffer before dropping.
 const WRITABLE_WAIT_MS: i32 = 4;
+/// Wait until `socket` has a datagram to read, or `timeout_ms` passes;
+/// returns whether one is there. Unlike a fixed sleep, input waiting on the
+/// socket is handled the moment it arrives.
+pub fn wait_readable(
+    socket: std::os::windows::io::RawSocket,
+    timeout_ms: i32,
+) -> std::io::Result<bool> {
+    let mut poll = [WSAPOLLFD {
+        fd: SOCKET(socket as usize),
+        events: POLLRDNORM,
+        revents: WSAPOLL_EVENT_FLAGS(0),
+    }];
+    match unsafe { WSAPoll(poll.as_mut_ptr(), 1, timeout_ms) } {
+        ready if ready >= 0 => Ok(ready > 0),
+        _ => Err(std::io::Error::from_raw_os_error(
+            unsafe { WSAGetLastError() }.0,
+        )),
+    }
+}
 fn writable(socket: &UdpSocket) -> bool {
     let mut poll = [WSAPOLLFD {
         fd: SOCKET(socket.as_raw_socket() as usize),
@@ -490,6 +509,18 @@ mod tests {
         }
         assert_eq!(local_mac("127.0.0.1".parse()?)?, "00:00:00:00:00:00");
         println!("read-only network identity: {address} / {mac}");
+        Ok(())
+    }
+    #[test]
+    fn waiting_for_input_wakes_when_a_datagram_arrives() -> Result<()> {
+        use std::os::windows::io::AsRawSocket;
+        let receiver = UdpSocket::bind("127.0.0.1:0")?;
+        let sender = UdpSocket::bind("127.0.0.1:0")?;
+        assert!(!wait_readable(receiver.as_raw_socket(), 0)?);
+        sender.send_to(b"input", receiver.local_addr()?)?;
+        let waited = std::time::Instant::now();
+        assert!(wait_readable(receiver.as_raw_socket(), 1000)?);
+        assert!(waited.elapsed() < std::time::Duration::from_millis(500));
         Ok(())
     }
     #[test]

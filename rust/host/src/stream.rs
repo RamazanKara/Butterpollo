@@ -1393,6 +1393,7 @@ impl Media {
     fn control(&self, h: Shared) -> Result<()> {
         let socket = crate::network::udp((self.bind, self.control_port).into())?;
         butterpollo_windows::net::configure_udp(&socket)?;
+        let raw_socket = std::os::windows::io::AsRawSocket::as_raw_socket(&socket);
         let mut host = Host::new(
             ControlSocket(socket),
             HostSettings {
@@ -1753,8 +1754,12 @@ impl Media {
                 peers.remove(&peer);
             }
             host.flush();
-            // Sleep(1) can defer input until the next coarse Windows tick.
-            input_timer.until(Instant::now() + Duration::from_millis(1));
+            // Wake as soon as input arrives; otherwise within a millisecond for
+            // feedback and cleanup. A fixed sleep made every event wait for it.
+            if butterpollo_windows::net::wait_readable(raw_socket, 1).is_err() {
+                // A polling error must not spin the loop.
+                input_timer.until(Instant::now() + Duration::from_millis(1));
+            }
         }
         for (peer, p) in peers {
             host.peer_mut(peer).disconnect_now(0);
