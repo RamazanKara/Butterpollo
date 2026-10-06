@@ -157,6 +157,8 @@ fn beside_duplicated_tvs(a: &str, b: &str) -> Result<Value> {
 
 fn clone_layout_restored(a: &str, b: &str) -> Result<Value> {
     if !cloned(a, b)? {
+        // As the stand-in TVs were first duplicated, and as a restore does.
+        Topology::set_active(&active_ids()?)?;
         Topology::query()?.restore_clone_groups(&[vec![a.to_owned(), b.to_owned()]])?;
     }
     let saved = Snapshot::capture()?;

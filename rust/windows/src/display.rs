@@ -398,6 +398,7 @@ impl Topology {
     fn restore_clone_groups(&mut self, groups: &[Vec<String>]) -> Result<()> {
         let monitors = self.monitors();
         let mut changed = false;
+        let mut members = Vec::new();
         for group in groups {
             let selected: Vec<_> = group
                 .iter()
@@ -430,11 +431,36 @@ impl Topology {
                 path.targetInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
                 changed = true;
             }
+            members.extend(selected.iter().map(|m| (m.adapter, m.target)));
         }
-        if changed {
-            self.restore()?;
+        if !changed {
+            return Ok(());
         }
-        Ok(())
+        let Err(exact) = self.restore() else {
+            return Ok(());
+        };
+        // Windows can refuse to show the first member's desktop mode on the
+        // others (ERROR_GEN_FAILURE). Let it choose a mode the whole group
+        // can show; the caller sets every display's mode again afterwards.
+        for path in &mut self.paths {
+            if members.iter().any(|(adapter, target)| {
+                path.targetInfo.adapterId == *adapter && path.targetInfo.id == *target
+            }) {
+                path.sourceInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+                path.targetInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+            }
+        }
+        if self.restore().is_ok() {
+            return Ok(());
+        }
+        let mut loose = self.paths.clone();
+        for path in &mut loose {
+            path.sourceInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+            path.targetInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+        }
+        let flags = SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES;
+        check(unsafe { SetDisplayConfig(Some(&loose), None, flags) })
+            .with_context(|| format!("Windows refused the cloned layout (saved modes: {exact:#})"))
     }
     pub fn nodes(&self) -> Result<Vec<butterpollo_core::topology::Node>> {
         use butterpollo_core::topology::{Kind, Mode, Node, Position};
