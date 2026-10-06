@@ -102,6 +102,21 @@ impl Resampler {
             self.phase = 0.;
         }
     }
+    /// Drop the oldest queued audio back to `target_ms` once more than
+    /// `limit_ms` is queued. A late tick leaves extra audio behind, and
+    /// each tick sends one packet, so the delay it added stayed until the
+    /// 100 ms bound; clock drift crept up to that bound as well.
+    pub fn bound(&mut self, limit_ms: u32, target_ms: u32) -> bool {
+        let frames = |ms: u32| (self.rate as usize * ms as usize / 1000).max(1);
+        let queued = self.queue.len() / self.channels;
+        if queued <= frames(limit_ms) {
+            return false;
+        }
+        let excess = queued - frames(target_ms).min(queued);
+        self.queue.drain(..excess * self.channels);
+        self.phase = 0.;
+        true
+    }
     pub fn read(&mut self, frames: usize) -> Option<Vec<f32>> {
         if frames == 0 {
             return Some(Vec::new());
@@ -253,6 +268,20 @@ mod tests {
             }
             assert!(r.queue.len() <= rate as usize / 10 * 2);
         }
+    }
+    #[test]
+    fn a_backlog_after_a_late_tick_is_dropped_back_to_two_packets() {
+        let mut r = Resampler::new(48000, 2).unwrap();
+        for i in 0..48 * 50 {
+            r.push(&[i as f32 / 1e6, 0.]);
+        }
+        // 50 ms queued: within a 60 ms limit nothing is dropped.
+        assert!(!r.bound(60, 10));
+        assert!(r.bound(30, 10));
+        assert_eq!(r.queue.len() / 2, 480);
+        // The newest audio is kept.
+        let last = r.read(480).unwrap();
+        assert_eq!(last[last.len() - 2], (48 * 50 - 1) as f32 / 1e6);
     }
     #[test]
     fn surround_upmix_does_not_duplicate_right_channel() {

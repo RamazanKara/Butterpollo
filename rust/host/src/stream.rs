@@ -296,6 +296,34 @@ impl CaptureKey {
         }
     }
 }
+/// ENet's UDP adapter ends the control worker on any error but WouldBlock,
+/// and nothing restarted it: a Wi-Fi roam (WSAENETUNREACH), an ICMP reply
+/// (WSAENETRESET) or an oversized datagram (WSAEMSGSIZE) left every later
+/// session without input or control. These lose one datagram; ENet resends
+/// what was reliable.
+struct ControlSocket(UdpSocket);
+impl rusty_enet::Socket for ControlSocket {
+    type Address = SocketAddr;
+    type Error = std::io::Error;
+    fn init(&mut self, options: rusty_enet::SocketOptions) -> std::io::Result<()> {
+        rusty_enet::Socket::init(&mut self.0, options)
+    }
+    fn send(&mut self, address: SocketAddr, buffer: &[u8]) -> std::io::Result<usize> {
+        match rusty_enet::Socket::send(&mut self.0, address, buffer) {
+            Err(error) if butterpollo_windows::net::datagram_lost(&error) => Ok(0),
+            result => result,
+        }
+    }
+    fn receive(
+        &mut self,
+        buffer: &mut [u8; rusty_enet::MTU_MAX],
+    ) -> std::io::Result<Option<(SocketAddr, rusty_enet::PacketReceived)>> {
+        match rusty_enet::Socket::receive(&mut self.0, buffer) {
+            Err(error) if butterpollo_windows::net::datagram_lost(&error) => Ok(None),
+            result => result,
+        }
+    }
+}
 fn capture_config(config: &Config) -> Config {
     let mut capture = config.clone();
     // Keep the effective interval choice with the shared capture and its helper.
@@ -380,8 +408,16 @@ impl Media {
         thread::Builder::new()
             .name("control".into())
             .spawn(move || {
-                if let Err(e) = control.control(h) {
-                    tracing::error!(error=%e,"control worker stopped");
+                // Input and control for every session pass through this
+                // worker: restart it rather than leave later sessions without.
+                while !h.stop.load(Ordering::Acquire) {
+                    match control.control(h.clone()) {
+                        Ok(()) => break,
+                        Err(e) => {
+                            tracing::error!(error = %format!("{e:#}"), "control worker stopped; restarting");
+                            thread::sleep(Duration::from_secs(1));
+                        }
+                    }
                 }
             })?;
         Ok(m)
@@ -787,8 +823,23 @@ impl Media {
                             let processing = micros(Instant::now().saturating_duration_since(claimed));
                             let stamp = present_stamper.as_mut().map_or(captured, |stamper| stamper.stamp(captured, &prepared.output())).max(last_stamp + Duration::from_nanos(11_112));
                             last_stamp = stamp;
-                            let timestamp = (stamp.saturating_duration_since(start).as_secs_f64() * 90000.) as u32;
-                            let packets = packetizer.encode_recovery(&frame.bytes,frame.idr,frame.after_invalidation,timestamp,processing)?;
+                            // Wrap like the previous host; a saturating cast
+                            // froze the clock after 13.25 hours.
+                            let timestamp = (stamp.saturating_duration_since(start).as_secs_f64() * 90000.) as u64 as u32;
+                            if frame.bytes.is_empty() {
+                                continue;
+                            }
+                            // A frame beyond Moonlight's packet limit (very high
+                            // bitrates) costs that frame and a keyframe, not the
+                            // session.
+                            let packets = match packetizer.encode_recovery(&frame.bytes,frame.idr,frame.after_invalidation,timestamp,processing) {
+                                Ok(packets) => packets,
+                                Err(error) => {
+                                    tracing::warn!(error = %format!("{error:#}"), bytes = frame.bytes.len(), "encoded frame dropped");
+                                    s.request_idr();
+                                    continue;
+                                }
+                            };
                             next_wire_frame.set(u64::from(packetizer.frame));
                             let frame_bytes = packets.iter().map(|p|p.len() as u64).sum();
                             if Instant::now() >= link_due {
@@ -1305,10 +1356,14 @@ impl Media {
         let socket = crate::network::udp((self.bind, self.control_port).into())?;
         butterpollo_windows::net::configure_udp(&socket)?;
         let mut host = Host::new(
-            socket,
+            ControlSocket(socket),
             HostSettings {
                 peer_limit: 32,
-                channel_limit: 16,
+                // Moonlight opens 48 channels (gamepads from 0x10, motion
+                // from 0x20) and folds those above the host's limit onto
+                // channel 0, where one lost ping holds up all controller
+                // input. The previous host allowed the protocol maximum.
+                channel_limit: 255,
                 ..Default::default()
             },
         )?;
@@ -1324,7 +1379,10 @@ impl Media {
                 let Some(event) = host.service()? else { break };
                 match event {
                     Event::Connect { peer, data } => {
-                        let address = peer.address().context("ENet peer address missing")?;
+                        let Some(address) = peer.address() else {
+                            peer.disconnect_now(0);
+                            continue;
+                        };
                         let sessions = h.sessions.lock().unwrap();
                         let candidates: Vec<_> = sessions
                             .active
@@ -1466,11 +1524,16 @@ impl Media {
                                     }
                                 }
                             }
-                            0x0301 if payload.len() == 8 => {
+                            // SS_RFI_REQUEST: first frame, a reserved word, last
+                            // frame, reserved words; older clients sent two
+                            // 64-bit indices, whose low words sit at the same
+                            // offsets. Requiring 8 bytes turned every request
+                            // into a keyframe.
+                            0x0301 if payload.len() >= 12 => {
                                 s.request_invalidation(
                                     u64::from(u32::from_le_bytes(payload[..4].try_into().unwrap())),
                                     u64::from(u32::from_le_bytes(
-                                        payload[4..8].try_into().unwrap(),
+                                        payload[8..12].try_into().unwrap(),
                                     )),
                                 );
                             }
@@ -1557,7 +1620,14 @@ impl Media {
                         p.hdr_metadata = Some(metadata);
                     }
                     if !p.inputs.is_empty() && p.injector.is_none() {
-                        let c = effective_config(&h, &s.launch)?;
+                        let c = match effective_config(&h, &s.launch) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                tracing::warn!(error = %format!("{e:#}"), "input configuration unavailable");
+                                p.inputs.clear();
+                                continue;
+                            }
+                        };
                         let output = s.output.read().unwrap().clone();
                         match Injector::new_options(
                             if output.is_empty() {

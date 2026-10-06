@@ -2,35 +2,60 @@ use anyhow::{Context, Result, bail};
 
 use crate::crypto;
 
-/// Authenticate a message before recording its sequence. ENet's separate
-/// channels can reorder messages, so accept unseen entries within a window.
-#[derive(Default)]
+const REPLAY_WINDOW: u32 = 4096;
+/// Authenticate a message before recording its sequence. Moonlight numbers
+/// control messages with one counter across ENet channels, which are only
+/// ordered within themselves: a resent keyframe request can arrive after
+/// hundreds of 200 Hz motion reports on other channels. A 64-entry window
+/// rejected it as a replay (a stall of a second or two, or a stuck key);
+/// accept unseen sequences within a wider window instead.
 pub struct ReplayWindow {
     newest: Option<u32>,
-    seen: u64,
+    seen: Box<[u64; REPLAY_WINDOW as usize / 64]>,
+}
+impl Default for ReplayWindow {
+    fn default() -> Self {
+        Self {
+            newest: None,
+            seen: Box::new([0; REPLAY_WINDOW as usize / 64]),
+        }
+    }
 }
 impl ReplayWindow {
+    fn slot(sequence: u32) -> (usize, u64) {
+        let index = (sequence % REPLAY_WINDOW) as usize;
+        (index / 64, 1 << (index % 64))
+    }
+    fn mark(&mut self, sequence: u32) {
+        let (word, bit) = Self::slot(sequence);
+        self.seen[word] |= bit;
+    }
     pub fn accept(&mut self, sequence: u32) -> bool {
         let Some(newest) = self.newest else {
             self.newest = Some(sequence);
-            self.seen = 1;
+            self.mark(sequence);
             return true;
         };
         if sequence > newest {
             let distance = sequence - newest;
-            self.seen = if distance >= 64 {
-                1
+            if distance >= REPLAY_WINDOW {
+                self.seen.fill(0);
             } else {
-                (self.seen << distance) | 1
-            };
+                // These slots held sequences one window older.
+                for skipped in 1..=distance {
+                    let (word, bit) = Self::slot(newest.wrapping_add(skipped));
+                    self.seen[word] &= !bit;
+                }
+            }
             self.newest = Some(sequence);
+            self.mark(sequence);
             true
         } else {
-            let distance = newest - sequence;
-            if distance >= 64 || self.seen & (1u64 << distance) != 0 {
+            let (word, bit) = Self::slot(sequence);
+            if newest - sequence >= REPLAY_WINDOW || self.seen[word] & bit != 0 {
                 return false;
             }
-            self.seen |= 1u64 << distance;
+            self.seen[word] |= bit;
             true
         }
     }
@@ -756,9 +781,20 @@ mod tests {
         for n in [100, 102, 101, 103, 99] {
             assert!(window.accept(n));
         }
-        for n in [100, 99, 102, 1] {
+        for n in [100, 99, 102] {
             assert!(!window.accept(n));
         }
+        // A keyframe request resent behind hundreds of motion reports.
+        for n in 104..=900 {
+            assert!(window.accept(n));
+        }
+        assert!(window.accept(1));
+        assert!(!window.accept(1));
+        // Older than the window, or reusing a slot a newer sequence cleared.
+        assert!(window.accept(10_000));
+        assert!(!window.accept(10_000 - 4096));
+        assert!(window.accept(10_000 - 4095));
+        assert!(!window.accept(10_000 - 4095));
         assert!(window.accept(u32::MAX));
         assert!(!window.accept(0));
     }

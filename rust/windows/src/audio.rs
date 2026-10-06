@@ -130,6 +130,12 @@ impl Loopback {
                 }
                 self.capture.ReleaseBuffer(count)?;
             }
+            // Steady state queues under one WASAPI period plus a packet;
+            // keep two packets once a stall left more than 30 ms.
+            let packet_ms = (frames / 48).max(1) as u32;
+            if self.resampler.bound((packet_ms * 3).max(30), packet_ms * 2) {
+                tracing::debug!("audio capture backlog dropped");
+            }
             Ok(self.resampler.read(frames))
         }
     }

@@ -69,7 +69,7 @@ impl Sender {
                     let mut stamper =
                         track_presents.then(butterpollo_windows::present_timing::Stamper::default);
                     let mut batch = Batch::default();
-                    let mut due = Instant::now();
+                    let mut pacer = butterpollo_core::network_pacing::Pacer::new(Instant::now());
                     let mut last_stamp = start;
                     let mut link_due = start;
                     let mut link = 0;
@@ -106,8 +106,8 @@ impl Sender {
                             // Keep at least one 90 kHz RTP tick even without ETW.
                             .max(last_stamp + Duration::from_nanos(11_112));
                         last_stamp = stamp;
-                        let timestamp =
-                            (stamp.saturating_duration_since(start).as_secs_f64() * 90000.) as u32;
+                        let timestamp = (stamp.saturating_duration_since(start).as_secs_f64() * 90000.)
+                            as u64 as u32;
                         let latency = frame
                             .latency
                             .unwrap_or(processing)
@@ -131,7 +131,9 @@ impl Sender {
                             } else {
                                 (0, 0)
                             };
-                        let packets = packetizer.encode_pyrowave(
+                        // Every PyroWave frame stands alone: drop one Moonlight
+                        // cannot carry, not the session.
+                        let packets = match packetizer.encode_pyrowave(
                             &frame.bytes,
                             timestamp,
                             processing.as_micros().min(u128::from(u64::MAX)) as u64,
@@ -142,39 +144,58 @@ impl Sender {
                                 wire_budget,
                                 ipv6: peer.is_ipv6(),
                             },
-                        )?;
+                        ) {
+                            Ok(packets) => packets,
+                            Err(error) => {
+                                tracing::warn!(error = %format!("{error:#}"), bytes = frame.bytes.len(), "PyroWave frame dropped");
+                                continue;
+                            }
+                        };
                         if now >= link_due {
                             link = butterpollo_windows::net::routed_link_bps(peer);
                             link_due = now + Duration::from_secs(2);
                         }
-                        let overhead = if peer.is_ipv6() { 86 } else { 66 };
+                        let overhead = butterpollo_core::network_pacing::overhead(peer.is_ipv6());
                         let wire_bytes = packets.iter().map(|p| p.len() + overhead).sum::<usize>();
                         let demand = (wire_bytes as u64)
                             .saturating_mul(u64::from(current.config.fps_millihz()))
                             / 1000
                             * 8;
-                        let bps = if link > 0 {
+                        // PyroWave is for fast wired links, so it keeps 95% of a
+                        // known Ethernet link rather than the other codecs'
+                        // 800 Mbps ceiling. The configured limit, for a client
+                        // behind a slower link such as Wi-Fi, was ignored; it
+                        // still lets this frame leave within its interval.
+                        let configured = config.integer("pacing_max_bitrate_kbps", 0);
+                        let bps = if configured > 0 {
+                            butterpollo_core::network_pacing::rate_bps(configured, kbps, link)
+                                .max(demand)
+                        } else if link > 0 {
                             link * 95 / 100
                         } else {
                             demand.max(u64::from(kbps) * 1100).max(1_000_000)
                         };
-                        due = due.max(Instant::now());
                         let mut remaining = packets.as_slice();
                         let mut sent = 0;
                         while !remaining.is_empty() {
                             if shared.stop.load(Ordering::Acquire) || current.stopping() {
                                 return Ok(());
                             }
-                            if due > Instant::now() {
-                                timer.until_precise(due);
+                            if pacer.due() > Instant::now() {
+                                timer.until_precise(pacer.due());
                             }
                             let budget =
                                 (bps / 4000).clamp(remaining[0].len() as u64, 64 * 1024) as usize;
                             let count = Batch::count(remaining, budget);
                             let bytes = batch.send(&socket, &remaining[..count], peer)?;
                             sent += bytes;
-                            due += Duration::from_secs_f64(
-                                (bytes + count * overhead) as f64 * 8. / bps as f64,
+                            // No catch-up credit after a send waited for room.
+                            pacer.sent(
+                                Instant::now(),
+                                bytes,
+                                if bytes > 0 { count } else { 0 },
+                                peer.is_ipv6(),
+                                bps,
                             );
                             current
                                 .stats

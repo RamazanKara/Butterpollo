@@ -219,6 +219,16 @@ fn transient(error: WSA_ERROR) -> bool {
     ]
     .contains(&error)
 }
+/// A send or receive error that loses only this datagram; the socket keeps
+/// working. A receive also reports a datagram too large for its buffer this
+/// way (WSAEMSGSIZE) after discarding it.
+pub fn datagram_lost(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::WouldBlock
+        || error.raw_os_error().is_some_and(|code| {
+            let code = WSA_ERROR(code);
+            transient(code) || code == WSAEMSGSIZE
+        })
+}
 /// How long a send waits for room in a full socket buffer before dropping.
 const WRITABLE_WAIT_MS: i32 = 4;
 fn writable(socket: &UdpSocket) -> bool {
@@ -527,6 +537,12 @@ mod tests {
         for error in [WSAEINVAL, WSAENOTSOCK, WSAEFAULT, WSAEMSGSIZE] {
             assert!(!transient(error), "{}", error.0);
         }
+        for code in [WSAENETUNREACH, WSAENETRESET, WSAEMSGSIZE, WSAENOBUFS] {
+            assert!(datagram_lost(&std::io::Error::from_raw_os_error(code.0)));
+        }
+        assert!(!datagram_lost(&std::io::Error::from_raw_os_error(
+            WSAENOTSOCK.0
+        )));
         // Without SIO_UDP_CONNRESET disabled, the ICMP reply from a closed
         // port turns later sends into WSAECONNRESET on Windows.
         let sender = UdpSocket::bind("127.0.0.1:0")?;
