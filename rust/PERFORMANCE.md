@@ -1,5 +1,21 @@
 # Rust performance evidence
 
+[Documentation](../docs/README.md) · [Performance overview](../docs/performance.md) · [Compatibility](PARITY.md)
+
+This is the dated measurement record. For a guided comparison, start with the [performance overview](../docs/performance.md). Each section below describes the source, version and fixture used at that time.
+
+| Find a result | Recorded evidence |
+| --- | --- |
+| Radeon compute off/on | [1080p60 comparison](#1080p-at-60-fps) |
+| Other Sunshine hosts | [Vibepollo 2.0 baseline](#against-vibepollo-20) |
+| WGC capture and pacing | [Guarded comparisons](#guarded-ab-stress-and-compatibility-checks) |
+| Native HEVC / AV1 HDR | [Final rc.10 pixels and repeat runs](#final-native-virtual-hdr-pixels-excluding-physical-panel-calibration) |
+| PyroWave HDR 4:4:4 | [Transport and decoding](#vibepollo-20-pyrowave-transport) |
+| CPU error correction | [C++ FEC comparison](#controlled-comparison-with-the-original-c-fec) |
+| Reproduction and scope | [Probes](#reproduce-on-another-machine) · [Hardware limits](#limits) |
+
+## Initial measurement environment
+
 Measured locally on 2026-10-01: Ryzen 7 5800X3D (8 cores/16 threads), RX 7900 XT, AMD driver 32.0.31041.1004, Windows x64, Rust 1.98.1 release builds. The initial HEVC/AV1 runs captured a 1968×2184 HDR desktop. The later 2.0 candidate runs captured a 2560×1440 SDR desktop and converted/scaled it to the requested format; physical HDR remained disabled. Neither source establishes native 4K capture performance. Hosts ran on loopback with isolated configurations and display changes disabled. The installed production service was preserved; it was stopped during the 2.0 candidate tests.
 
 The measured reason to switch is video FEC generation: the Rust implementation is 1.26–1.40× faster than the original C++ implementation on representative video blocks, using 21–29% less CPU time for identical parity bytes. GPU-resident HDR processing, bounded texture/encoder queues and a Rust-rendered console are additional implementation benefits. Changing language alone does not establish a performance improvement, and the FEC results do not establish a whole-host or end-to-end latency improvement.
@@ -283,10 +299,11 @@ its column has the three idle runs; Butterpollo's has all six.
 Both streams also carry the same HDR10 metadata (BT.2020 primaries, D65,
 the virtual display's peak luminance). Butterpollo's decoded pictures match
 the expected values within half a 10-bit code on average, with no lifted
-black and no lost saturation. A washed-out look therefore comes from before
-capture (how Windows composes SDR content on an HDR display) or after
-decoding (how the client shows HDR), not from the host's conversion or
-encoding.
+black and no lost saturation in these reference frames. This validates the
+tested host conversion and encoding path for this content and setup. A
+washed-out report on another stream still requires checking that stream's
+captured pixels, encoded colours and client presentation; these fixtures
+do not isolate the cause of an unmeasured case.
 
 ## Controlled comparison with the original C++ FEC
 

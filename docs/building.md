@@ -1,54 +1,101 @@
-# Building Butterpollo
+# Build Butterpollo
 
-Butterpollo builds for Windows with CMake, Ninja and MSYS2 UCRT64. The supported installer pipeline is [.github/workflows/butterpollo-windows.yml](../.github/workflows/butterpollo-windows.yml), which calls [ci-windows.yml](../.github/workflows/ci-windows.yml). That workflow is the source of truth for pinned dependencies and packaging flags.
+[Docs](README.md) · [Getting started](getting-started.md) · [Configuration](configuration.md)
 
-## Dependencies
+The current Windows host, service, launcher and installer are built with Rust. Use [rust/build.ps1](../rust/build.ps1) for the complete build and package; [.github/workflows/rust-windows.yml](../.github/workflows/rust-windows.yml) records the CI environment. The [Rust developer guide](../rust/README.md) describes the workspace and implementation.
 
-Install the UCRT64 compiler, CMake, Ninja, Boost, C++/WinRT, curl-winssl, MinHook, miniupnpc, nlohmann-json, oneVPL, OpenSSL, Opus, Python and Vulkan headers listed in the CI workflow. Use Node.js 22 and npm for the browser interface. The installer additionally requires WiX and .NET.
+To install a release and start streaming, use [Getting started](getting-started.md). The [archived C++ build guide](legacy/building-cpp.md) covers the earlier CMake host.
+
+## Windows prerequisites
+
+Use Windows x64 with PowerShell, Git, Rustup and Node.js 22. In an MSYS2 UCRT64 shell, install these packages, matching CI:
 
 ```sh
-git clone --recurse-submodules https://github.com/RamazanKara/Butterpollo.git
+pacman -S --needed git mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-vulkan-headers mingw-w64-ucrt-x86_64-opus mingw-w64-ucrt-x86_64-libvpl
+```
+
+The default MSYS2 path is `C:\msys64`; pass `-MsysRoot` if yours differs. The host uses the GNU Rust target and GNU codec libraries. The optional TrueHDR DLL uses the MSVC target and needs an x64 Microsoft C++ toolchain and Windows SDK.
+
+Clone the repository and install the pinned toolchains in PowerShell:
+
+```powershell
+git clone https://github.com/RamazanKara/Butterpollo.git
 cd Butterpollo
+
+rustup toolchain install 1.98.1-x86_64-pc-windows-gnu --profile minimal --component rustfmt --component clippy
+rustup target add x86_64-pc-windows-msvc --toolchain 1.98.1-x86_64-pc-windows-gnu
 ```
 
-CMake downloads the pinned prebuilt FFmpeg library; it is retained for Intel QuickSync and software encoding. AMD uses native AMF and NVIDIA uses native NVENC. CUDA interop for NVIDIA 4:4:4 remains part of the Windows encoder.
+The pinned version is defined by [rust-toolchain.toml](../rust-toolchain.toml) and the build script; `Cargo.lock` pins Rust dependencies.
 
-The Windows packaging configuration validates the virtual-display, VHF gamepad and TrueHDR packages. Follow CI's download steps and pass the verified package directories and contract pins when configuring. The dependency download scripts are in [scripts](../scripts). Keep TrueHDR enabled: it remains a supported feature.
+## Build and package
 
-## Compile and test
+Run the full build from the repository root in a **Visual Studio x64 developer PowerShell** so the TrueHDR adapter can find the Microsoft libraries:
 
-Run in an MSYS2 UCRT64 shell, with Node.js on PATH and the verified packaging inputs from CI:
-
-```sh
-cmake -S . -B build -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DBUILD_TESTS=ON \
-  -DBUILD_WERROR=ON
-cmake --build build --parallel
-ctest --test-dir build --output-on-failure --timeout 120
+```powershell
+.\rust\build.ps1 -FetchDependencies -Package
 ```
 
-The packaging inputs omitted from this short command are required; copy their exact flags from CI's **Build Windows** step. CI also runs workflow, installer, driver and native-AMF contract checks. Tests must pass without exclusions.
+The script fetches the pinned FFmpeg and NVIDIA SDK archives, builds the pinned PyroWave SDK and extracts the signed display/gamepad packages from the pinned Vibepollo release. Archive hashes, PyroWave build identity and driver signatures are checked. CMake builds the external PyroWave SDK; Cargo builds the host.
 
-The `web_ui` target installs locked npm dependencies with lifecycle scripts disabled, generates design tokens, type-checks Vue and builds the only interface into `build/assets/web`. The host and installer depend on it. The production UI is served at `/`; old `/v2` URLs redirect to it.
+The build checks Rust formatting, runs ordinary workspace tests and Clippy with warnings denied, then builds the release executables, performance probes and TrueHDR adapter. Packaging also builds the Svelte console and includes runtime libraries, drivers, artwork, licenses, the optional Moonlight source patch and a SHA-256 file manifest. Building a package does not install it.
 
-For frontend-only work:
+Default outputs are under `%LOCALAPPDATA%\ButterpolloRust\target`:
 
-```sh
-cd src_assets/common/assets/web
-npm ci --ignore-scripts
-npm run dev
+| Output | Contents |
+| --- | --- |
+| `release\` | Compiled executables, runtime DLLs and examples. |
+| `butterpollo-rust-release\` | Portable package with console assets and dependencies. |
+| `butterpollo-rust-release.zip` | ZIP of the portable package. |
+| `butterpollo-setup-<version>.exe` | Installer carrying that package; version comes from the workspace manifest. |
+
+SDK downloads use `%LOCALAPPDATA%\ButterpolloRust\sdk`. Choose a separate build location with `-TargetDirectory` and a dependency cache with `-Dependencies`.
+
+Useful options:
+
+| Option | Purpose |
+| --- | --- |
+| `-DebugBuild` | Build debug executables for development. Use release builds for streaming measurements. |
+| `-SkipTrueHdr` | Omit the optional NVIDIA TrueHDR adapter and its MSVC SDK requirement. |
+| `-MsvcSdk <path>` | Use an xwin SDK layout containing `crt/lib/x86_64`, `sdk/lib/um/x86_64` and `sdk/lib/ucrt/x86_64`. |
+| `-FfmpegRoot`, `-PyrowaveRoot`, `-NvidiaRoot` | Reuse existing SDKs. The PyroWave identity must match the pinned revision and patches. |
+| `-DriverRoot <path>` | Supply the signed release's `drivers` folder for packaging. |
+| `-SkipTests` | Skip workspace tests and Clippy for a local iteration. Formatting still runs; this is not the release validation path. |
+
+For a build without TrueHDR:
+
+```powershell
+.\rust\build.ps1 -FetchDependencies -SkipTrueHdr -Package
+```
+
+## Development checks
+
+After the build script has configured the SDK paths in the same PowerShell session, the ordinary Rust checks are:
+
+```powershell
+cargo +1.98.1-x86_64-pc-windows-gnu fmt --all -- --check
+cargo +1.98.1-x86_64-pc-windows-gnu test --workspace --locked
+cargo +1.98.1-x86_64-pc-windows-gnu clippy --workspace --all-targets --locked -- -D warnings
+```
+
+The TrueHDR crate is outside the main workspace; the build script checks and builds it separately for `x86_64-pc-windows-msvc`.
+
+Hardware and environment-dependent tests are selected separately. Their fixtures can exercise capture, controllers or displays; choose a fixture for the intended machine and preserve its restoration checks. [PERFORMANCE.md](../rust/PERFORMANCE.md) records measured workloads, and [PARITY.md](../rust/PARITY.md) distinguishes implementation from hardware validation. Ordinary test success alone is not a GPU compatibility result.
+
+## Web console
+
+The current interface is the Svelte app in [rust/web](../rust/web). Its commands, starting from the repository root, are:
+
+```powershell
+cd rust/web
+npm ci --no-audit --no-fund
+npm run check
 npm run build
-npm run test:unit
-npm run format:check
+npm run dev
 ```
 
-## PyroWave
+CI runs `npm run check`; packaging runs the production build and copies `dist` into `assets/web`. The package script uses a separate web build folder so a WSL checkout's Linux `node_modules` cannot be reused as Windows dependencies.
 
-Enable `SUNSHINE_ENABLE_PYROWAVE=ON` and point `SUNSHINE_PYROWAVE_ROOT` to the installed pinned PyroWave C API library. [scripts/build_pyrowave.sh](../scripts/build_pyrowave.sh) builds the revision used in CI, including Granite and volk. Packaging ships the shared DLL beside the host and includes their MIT licenses.
+The development server proxies `/api` to `https://localhost:47990` by default. Set `BUTTERPOLLO_HOST` before starting it to point at an isolated development profile. Requests go to that real host, including actions taken in the console. See [vite.config.ts](../rust/web/vite.config.ts) for the proxy configuration.
 
-With tests enabled, `pyrowave_selftest` exercises the production conversion, encoder, framing and decoder on a Vulkan-capable GPU. It is a manual hardware test rather than a CTest dependency. A passing self-test does not establish compatibility with a live Moonlight client.
-
-## Installer
-
-CI produces an unsigned `VibepolloSetup.exe` and MSI with release provenance. The executable, service, install directory, registry keys and MSI upgrade identity keep their existing names so upgrades preserve paired devices and configuration. User-visible project and support links point to Butterpollo.
+The earlier `src_assets/common/assets/web` Vue build and CMake/MSI workflows belong to the historical C++ implementation. Use the Rust workflow above for current packages.

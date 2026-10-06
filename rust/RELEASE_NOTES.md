@@ -1,5 +1,9 @@
 # Butterpollo 2.0.0-rc.10 release candidate for Windows
 
+[Documentation](../docs/README.md) · [Install and migrate](../docs/getting-started.md) · [Configuration](../docs/configuration.md) · [Compatibility](PARITY.md)
+
+**Release history:** [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
+
 Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.10 installer is named `butterpollo-setup-2.0.0-rc.10.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
 
 ## New in rc.10

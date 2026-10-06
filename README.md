@@ -1,82 +1,76 @@
 # Butterpollo
 
-**Built for AMD Radeon. Made for Moonlight.**
+**Written in Rust. Built for Radeon. Made for Moonlight.**
 
-Your gaming PC has serious horsepower. Put it to work for your stream.
+Stream your gaming PC to a laptop, TV or phone. Butterpollo is a Windows game-streaming host with Radeon compute, native AMD encoding and **full 10-bit HDR 4:4:4 through PyroWave**. The host, native helpers, Windows service and installer are written in Rust.
 
-Butterpollo is a Windows game-streaming host rebuilt in Rust around Radeon compute and AMD's native encoder. Stream your games to a laptop, TV or phone with fast capture, sharp HDR and a console that puts you in control.
+**[Download rc.10](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.10)** · **[Get started](docs/getting-started.md)** · [Documentation](docs/README.md) · [Release notes](rust/RELEASE_NOTES.md)
 
-**PyroWave with full HDR 4:4:4. WGC + Radeon compute by default.**
+[![Butterpollo launch film: written in Rust, Radeon compute, measured comparisons, HDR and PyroWave 4:4:4](docs/media/demo.gif)](docs/media/demo.mp4)
 
-**56% lower render-to-decode delay. 2.15× as many fresh pictures.**
+<sub>Follow one frame from capture to the decoded picture. 60 seconds · 1080p · 60 fps · original soundtrack. [Watch the film](docs/media/demo.mp4).</sub>
 
-<sub>Butterpollo rc.2 vs Vibepollo 2.0 · RX 7900 XT · DDX · 1080p60 HEVC HDR at 20 Mbps · controlled GPU load · three runs per host · October 4, 2026.</sub>
+## Install. Pair Moonlight. Play.
 
-[![Technical demo: the D3D11 and compute paths, controlled comparisons, HDR and PyroWave 4:4:4](docs/media/demo.gif)](docs/media/demo.mp4)
+1. Run **`butterpollo-setup-2.0.0-rc.10.exe`** from the [release](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.10).
+2. Open the Butterpollo console at **`https://localhost:47990`** and create your local account.
+3. Add your PC in Moonlight, enter its pairing PIN in **Devices**, then launch **Desktop**.
 
-<sub>57-second technical walkthrough. Follow a frame through the GPU queues, then compare timing, HDR readback and chroma sampling. Click for the full 1080p video.</sub>
+**WGC capture and Radeon compute are enabled by default.** Start at 1080p/60, then choose your resolution, frame rate and HDR. Upgrades carry your settings, paired devices and library forward. Updates notify you first, with automatic installation available as an opt-in.
 
-**[Download rc.10](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.10)** · [Watch the demo](docs/media/demo.mp4) · [See the measurements](rust/PERFORMANCE.md#against-vibepollo-20)
+[First-stream walkthrough, portable setup and migration →](docs/getting-started.md)
 
-## Why Radeon compute helps
+## Why Butterpollo
 
-The D3D11 path inherited through Sunshine, Apollo and Vibepollo submits capture copies and RGB-to-YUV conversion as graphics work, competing with the game's graphics workload. Butterpollo submits that preparation through **D3D12 compute queues**, so it can run alongside graphics work on Radeon.
+| What you get | How it helps |
+| --- | --- |
+| **Radeon compute** | Frame copies and colour conversion run on D3D12 compute queues alongside the game's graphics work. Native AMF encodes the result. |
+| **A Rust host throughout** | Streaming, protocol handling, native helpers, service and setup share the Rust implementation. |
+| **HEVC and AV1 HDR** | Native capture and ten-bit BT.2020/PQ conversion preserve the HDR signal through encoding. H.264 is also available. |
+| **PyroWave HDR 4:4:4** | Full-resolution colour keeps fine coloured text and edges crisp. |
+| **Your setup, per device and per game** | Virtual displays, display layouts, RTSS limits and application profiles let each stream use its own settings. |
+| **A useful web console** | Pair devices, bring in Steam or Playnite, configure Lossless Scaling, and see frame rate, bitrate and encoder timing together. |
 
-Both the reviewed Vibepollo path and Butterpollo already use GPU textures and native AMF encoding. Butterpollo changes **where the copy and colour work runs** and hands D3D12 surfaces to AMF with explicit GPU synchronization. Producer and copy fences preserve capture readiness; a fence for each output texture protects its handoff to the encoder.
+[How the frame pipeline works →](docs/architecture.md) · [Choose your settings →](docs/configuration.md)
 
-![Queue-placement schematic: the reviewed Sunshine-derived D3D11 path and Butterpollo's D3D12 compute path, both using GPU textures and native AMD encoding](docs/media/compute-comparison.png)
+## Measured against other Sunshine hosts
 
-Enabling compute in the **same Rust build** reduced average render-to-decode delay from **41.0 to 33.5 ms**, and the 95th percentile from **54.4 to 42.3 ms**, in the controlled 1080p60 HEVC HDR test. A separate synthetic frame-to-completed-bitstream probe measured **21.5 to 2.0 ms**. [Compute off/on setup and results](rust/PERFORMANCE.md#1080p-at-60-fps).
+**56% lower average render-to-decode delay. 2.15× as many fresh pictures.**
 
-The separate **whole-host comparison with Vibepollo 2.0** measured:
-
-| RX 7900 XT · 1080p60 HEVC HDR · GPU under load | Vibepollo 2.0 | Butterpollo rc.2 |
+| Controlled 1080p60 HEVC HDR test | Other Sunshine host¹ | Butterpollo rc.2 |
 | --- | ---: | ---: |
-| Render to decoded picture, average | 96.4 ms | **42.4 ms** |
-| Render to decoded picture, 95th percentile | 137.0 ms | **56.5 ms** |
+| Average render-to-decode delay | 96.4 ms | **42.4 ms** |
+| 95th-percentile delay, averaged across runs | 137.0 ms | **56.5 ms** |
 | Fresh pictures per second | 23.9 | **51.4** |
 
-<sub>October 4, 2026 · DDX · 20 Mbps · mean of three runs per host. Encrypted loopback streams, moving picture IDs and independent decoding. [Benchmark setup, runs and colour checks](rust/PERFORMANCE.md#against-vibepollo-20).</sub>
+<sub>¹ Measured baseline: Vibepollo 2.0. RX 7900 XT · DDX · 20 Mbps requested · controlled GPU load · means of three alternating runs per host · October 4, 2026. Render-to-decode measures picture age through independent loopback decoding. [Method and recorded runs](rust/PERFORMANCE.md#against-vibepollo-20).</sub>
 
-The idle comparison reached **13.8 ms** render-to-decode against **16.0 ms** for Vibepollo 2.0. In a separate comparison with the original C++ FEC implementation, video error correction uses **21–29% less CPU time** with byte-identical parity output. [Explore the performance work](rust/PERFORMANCE.md).
+In a separate **same-build compute off/on** comparison, average picture delay fell from **41.0 to 33.5 ms**. That test isolates the compute change. The historical whole-host comparison above measures the combined implementation.
 
-## PyroWave. Full HDR 4:4:4.
+[Benchmarks, current WGC results and HDR validation →](docs/performance.md)
 
-Stream **10-bit HDR with full-resolution chroma**, keeping fine coloured text and edges crisp. GPU conversion feeds PyroWave through shared D3D11/Vulkan textures. Pair with [Nonary's Moonlight client](https://github.com/Nonary/moonlight-qt) on a fast wired LAN for the PyroWave experience.
+## Full colour with PyroWave
 
-Our recorded **1080p/120 HDR 4:4:4** stream decoded **all 2,357 received frames**, with zero video or audio decode errors. [PyroWave transport results and setup](rust/PERFORMANCE.md#vibepollo-20-pyrowave-transport).
+PyroWave carries **10-bit HDR with 4:4:4 chroma**: a colour sample for every pixel. Its GPU pipeline shares D3D11/Vulkan textures and sends the encoded stream over a fast wired LAN. Pair it with [Nonary's compatible Moonlight client](https://github.com/Nonary/moonlight-qt).
 
-## Ready to stream
+Standard Moonlight clients use H.264, HEVC or AV1. **Moonlight PC 6.2.0** has recorded codec and reconnect checks, including HEVC and AV1 HDR. [Pick the client and stream format for your setup](docs/getting-started.md#choose-your-stream-format).
 
-- **WGC and Radeon compute enabled by default.** Capture and pacing are tuned to get fresh frames moving.
-- **AV1 and HEVC with HDR10, plus H.264.** Native AMD encoding keeps the video pipeline on the GPU.
-- **Native HDR. Verified colours.** rc.10's native virtual-HDR checks delivered about **60 distinct pictures per second** with HEVC and AV1, verified decoded colours and restored the display layout.
-- **6,342 frames decoded cleanly** across five latest rc.10 SDR and native-HDR checks.
-- **263 automated tests passed.** Coverage includes HDR transitions, pairing, encryption, input, display hotplug and recovery.
-- **Moonlight PC 6.2.0 tested.** Codec, reconnect and AMD AV1 crop checks have recorded results.
+## Find what you need
 
-<sub>Native HDR setup: rc.10 · RX 7900 XT · 1280×720/60 · FP16 virtual-display capture · independent decoding. [Detailed results](rust/PERFORMANCE.md#final-native-virtual-hdr-pixels-excluding-physical-panel-calibration) · [Compatibility evidence](rust/PARITY.md).</sub>
+| I want to… | Read |
+| --- | --- |
+| Get my first stream running | [Getting started](docs/getting-started.md) |
+| Set up displays, HDR, frame limits or updates | [Configuration](docs/configuration.md) |
+| Diagnose pairing, capture, colour or smoothness | [Troubleshooting](docs/troubleshooting.md) |
+| Understand the implementation and evidence | [Architecture](docs/architecture.md) · [Performance](docs/performance.md) · [Compatibility](rust/PARITY.md) |
+| Build or integrate Butterpollo | [Build guide](docs/building.md) · [Developer guide](rust/README.md) · [API reference](docs/api.md) |
 
-## Your setup, your way
-
-Create per-device virtual displays, choose extended or isolated layouts, and give every game its own profile. Bring in your Steam library with covers, launch through Playnite, and configure Lossless Scaling per app.
-
-The web console brings live frame rate, encoder timing and frame age together with pairing, device permissions, display controls and RTSS frame limiting. rc.10 adds precise Windows HDR detection and a startup guard that automatically restores your chosen display layout as your virtual screen comes online.
-
-## Upgrade and play
-
-1. Get **`butterpollo-setup-2.0.0-rc.10.exe`** from [Releases](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.10).
-2. Run the installer. A fresh install sets up the host, service and drivers. An upgrade brings your settings, paired devices and game library forward.
-3. Open **`https://localhost:47990`**, pair Moonlight and launch a stream.
-
-Updates **notify you first**. Automatic installation is available as an opt-in. A portable ZIP is also available: extract it and open **Start Butterpollo.exe**.
-
-Share your Radeon setup, your games and your results in [Issues](https://github.com/RamazanKara/Butterpollo/issues). The console's support bundle and the included environment-report tool make it easy to bring useful details.
-
-[Release notes](rust/RELEASE_NOTES.md) · [Performance evidence](rust/PERFORMANCE.md) · [Feature and compatibility matrix](rust/PARITY.md) · [Build and run](rust/README.md) · [Project history](docs/butterpollo-cpp.md)
+Share your Radeon setup, games and results in [Issues](https://github.com/RamazanKara/Butterpollo/issues). The [support guide](docs/troubleshooting.md) explains which logs and environment details make a report useful.
 
 ## Credits and license
 
-Butterpollo is GPL-3.0. Thanks to Nonary for Vibepollo, ClassicOldSong for Apollo, and LizardByte and the Sunshine contributors. PyroWave and Granite are by Themaister (MIT); the PyroWave Moonlight protocol and clients are joemossjr16's work.
+Butterpollo is **GPL-3.0**. Thanks to **Nonary** for Vibepollo, **ClassicOldSong** for Apollo, and **LizardByte and the Sunshine contributors**. PyroWave and Granite are by **Themaister** (MIT); the PyroWave Moonlight protocol and clients are **joemossjr16's** work.
+
+[License](LICENSE) · [Third-party components](rust/THIRD_PARTY.md) · [Project history](docs/butterpollo-cpp.md)
 
 The name came from a tester's verdict: **“smooth as butter.”**

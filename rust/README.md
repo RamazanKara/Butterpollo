@@ -1,35 +1,18 @@
-# Butterpollo Rust
+# Butterpollo developer guide
 
-The Windows host, protocol implementation, native helpers, service and setup are written in Rust. The executables do not link the previous Butterpollo C++ host. The console is a Svelte app (`rust/web`) built into the package; the host serves it and keeps server-rendered pages as a fallback. Codec libraries, device drivers and GPU SDKs remain external dependencies.
+[Documentation](../docs/README.md) · [Build guide](../docs/building.md) · [Architecture](../docs/architecture.md) · [API](../docs/api.md) · [Release notes](RELEASE_NOTES.md)
 
-**Windows release candidate 2.0.0-rc.10.** This Rust replacement ports the Windows streaming changes in Vibepollo 2.0.0 (`8a8c4b03a280ab9f567beb380110abb80f5220b8`) onto the previous Butterpollo baseline. See [what changed for players](RELEASE_NOTES.md), [feature evidence](PARITY.md) and [Rust performance measurements](PERFORMANCE.md). The parent README retains the historical controlled comparison against Vibepollo 2.0.
+The Windows host, protocol implementation, native helpers, service and setup are written in Rust. The browser console is Svelte. The Rust executables do not link the previous C++ host; codec libraries, GPU SDKs and Windows drivers are external dependencies.
+
+The workspace version is **2.0.0-rc.10**. This guide covers development and isolated validation. For feature status and exact hardware evidence, use [PARITY.md](PARITY.md) and [PERFORMANCE.md](PERFORMANCE.md).
 
 ## Start streaming
 
-1. Run `butterpollo-setup-<version>.exe` from the release. It installs the host, service and drivers, or upgrades a Vibepollo or Butterpollo installation in place with its settings and paired devices. For a portable copy instead, extract the Windows x64 ZIP into a folder and open **Start Butterpollo.exe**.
-2. On the first portable launch, choose whether to import your Vibepollo/Apollo profile. Select its folder containing `sunshine.conf`, or the installation folder containing `config/sunshine.conf`. Import copies settings, paired devices, identity, library and covers into a new Rust profile. The original profile is retained. Choose **No** for a fresh setup.
-3. The launcher opens the console at `https://localhost:47990` (or your configured port). Create the local administrator account if prompted, then use the connection checklist to check video, display and sound.
-4. Open Moonlight on another device on the same network. Add this PC if discovery does not find it. Enter **the PIN shown by Moonlight** in **Devices**, then launch **Desktop**. Start with 1080p/60 and choose your preferred resolution, rate and HDR after the first successful stream.
-
-Opening the launcher again returns to the running profile's console. It also opens the profile of the Rust service installed from the same package. A stopped service or a port occupied by another host produces an actionable error. Logs are in the profile's `logs/butterpollo.log` unless configured otherwise. Portable mode needs no service installation; virtual-display and controller features then need their Windows drivers installed separately.
-
-Standard Moonlight supports H.264, HEVC and AV1. PyroWave and the host's 1000 Hz low-latency VRR mode require [Nonary's Moonlight client](https://github.com/Nonary/moonlight-qt); client-side VRR rendering is a separate feature. Use PyroWave on a fast wired LAN with hundreds of Mbps available; its client bandwidth calibration estimates capacity before connecting. The host VRR mode uses 1000 Hz virtual-display capture while preserving the requested stream frame rate. Present-timing tracking falls back to WGC timestamps when Windows does not allow it.
-
-The exact released [Moonlight PC 6.2.0 application](https://github.com/moonlight-stream/moonlight-qt/releases/tag/v6.2.0) has now completed a local compatibility check against the candidate code on the RX 7900 XT. At 1280×720/60, two connections each for H.264, HEVC, AV1, HEVC HDR and AV1 HDR selected the expected formats and D3D11 hardware rendering. Incoming and decoded rates matched, rendering remained about 60 FPS, and there were no decoder errors. Each streaming window closed and disconnected normally, and reconnecting worked. This verifies the tested codec and renderer paths; it does not measure distinct-picture smoothness, network performance or input latency. The HDR cases encoded an SDR desktop: native HDR source capture, displayed HDR brightness and colour accuracy were not validated by this matrix.
-
-The candidate fixes H.264 decode failures caused by enabling more long-term references than the client allowed. AMF now respects the negotiated reference budget and uses IDR recovery for one-reference clients. It also distinguishes keypad Enter from ordinary Enter through holds, repeats and release. Controller touch packets retain their touchpad index, but the bundled virtual-gamepad driver exposes one touch surface with two contacts. Secondary touchpad events are safely ignored with a warning instead of changing primary-touchpad state; native second-touchpad support still needs a compatible driver. Input was disabled during the streaming matrix. Separate local DS4 and DualSense tests passed through the signed driver, verifying primary multitouch and secondary-pad isolation in native HID reports; physical controller input over Moonlight and game-specific mappings remain unverified.
-
-Official Moonlight 6.2.0's plain `list`, CSV listing with cached artwork, and normally launched `quit` all exited successfully against the unchanged rc.9 host. The earlier quit limitation came from hiding its window and closing it before its next status poll; the corrected harness verified three successive app quits and an idle quit without assistance. One upstream client issue remains: `list --csv` can hang during shutdown when artwork is not cached. Use plain `list` for automation, or CSV after artwork is cached. See [feature evidence](PARITY.md) for the isolated checks.
-
-An optional [Moonlight source patch](compatibility/moonlight-6.2.0/README.md) avoids background artwork downloads during CSV listing. Its focused Qt regression checks passed; it requires a custom client build and has not been validated as a complete Windows client.
-
-Use `butterpollo-setup-2.0.0-rc.10.exe` or `butterpollo-rust-2.0.0-rc.10-windows-x64.zip`. See [release notes](RELEASE_NOTES.md) for the tested scope and the release's validation record for package provenance.
-
-The Overview page shows recent frame rate, bitrate, encode p95 and performance history. Optional live refresh updates every five seconds and can be paused. Older pending PyroWave frames are replaced when a connection is slow; the page explains when reducing bitrate would help.
+Use [Getting started](../docs/getting-started.md) for installation, migration, pairing and client selection. [Configuration](../docs/configuration.md) covers capture, HDR, virtual displays, RTSS and updates; [Troubleshooting](../docs/troubleshooting.md) covers symptoms and support reports.
 
 ## Build
 
-Requirements: Windows x64, MSYS2 UCRT64 with GCC, Clang, CMake, Ninja, Vulkan headers, Opus and oneVPL; Rust 1.98.1 GNU; Node.js 22 for the console; and a Microsoft x64 C++ SDK/toolchain for the NVIDIA adapter. The host uses GNU codec libraries; only the small Rust TrueHDR DLL uses the MSVC target to link NVIDIA's SDK library.
+The Cargo workspace is at the repository root. Build from a Windows x64 checkout with the pinned toolchain in [rust-toolchain.toml](../rust-toolchain.toml) and the SDK environment described in the [build guide](../docs/building.md).
 
 ```powershell
 rustup toolchain install 1.98.1-x86_64-pc-windows-gnu --profile minimal --component rustfmt --component clippy
@@ -38,84 +21,98 @@ rustup target add x86_64-pc-windows-msvc --toolchain 1.98.1-x86_64-pc-windows-gn
 .\rust\build.ps1 -FetchDependencies -Package
 ```
 
-Run in a Visual Studio x64 developer PowerShell for TrueHDR. Alternatively pass `-MsvcSdk` pointing to an xwin layout with `crt/lib/x86_64`, `sdk/lib/um/x86_64` and `sdk/lib/ucrt/x86_64`. `-SkipTrueHdr` builds without the optional NVIDIA DLL. Existing SDKs can be supplied with `-FfmpegRoot`, `-PyrowaveRoot` and `-NvidiaRoot`; downloads are pinned and checked. CMake is used to build the external PyroWave SDK, not the host.
+Run in a Visual Studio x64 developer PowerShell for TrueHDR, or pass `-MsvcSdk` for a compatible xwin SDK layout. `-SkipTrueHdr` omits that optional NVIDIA DLL. Existing dependency roots can be supplied with `-FfmpegRoot`, `-PyrowaveRoot` and `-NvidiaRoot`.
 
-The script checks formatting, tests, lints, builds the host, launcher, service and GPU/protocol performance probes plus the optional TrueHDR DLL, then packages runtime libraries, artwork, notices and a SHA-256 manifest. A locked Cargo dependency tree and pinned SDK revisions are included. PyroWave is pinned to bitstream `186f0393` with Vibepollo 2.0's three codec patches; the build rejects SDKs missing the matching identity. CI is `.github/workflows/rust-windows.yml`.
+The [build script](build.ps1) checks formatting, tests and lints, then builds and packages the runtime, helpers, performance probes, console, notices and SHA-256 manifest. PyroWave uses a pinned SDK identity and matching patches. CMake builds the external PyroWave SDK; Cargo builds the host. [rust-windows.yml](../.github/workflows/rust-windows.yml) defines the Windows CI path.
+
+Use release builds for stream-performance work. The [build guide](../docs/building.md) documents dependencies, output paths and packaging options.
 
 ## Run and migration
 
-```powershell
-.\butterpollo.exe --config-dir C:\path\to\a\config-copy --bind 0.0.0.0
-```
-
-Without arguments the host uses `%LOCALAPPDATA%\ButterpolloRust\config` and listens on all IPv4 interfaces, preserving the previous host's LAN discovery behavior; the web interface is `https://localhost:47990`. `address_family=both` enables dual-stack listeners, and `bind_address` or `--bind` selects an interface. Initial credential setup requires a local connection. Use `--port 48123 --bind 127.0.0.1` for an isolated instance: web 48124, HTTPS 48118 and RTSP 48144. Standard Moonlight UDP port offsets remain compatible.
-
-The launcher imports into `%LOCALAPPDATA%\ButterpolloRust\config`, and refuses to overwrite a nonempty profile. A command-line import into an empty destination is also available; it validates and copies the profile, then exits without starting the host:
+Run a packaged host against an explicitly selected development profile:
 
 ```powershell
-.\butterpollo.exe --config-dir C:\path\to\a\new-profile --import-config C:\path\to\old\config
+.\butterpollo.exe --config-dir C:\tests\butterpollo-profile --port 48123 --bind 127.0.0.1
 ```
 
-Configured identity/state/library files are copied into owned paths, and existing PNG covers are copied by content. Credentials, certificates, app UUIDs, permissions and unknown fields are retained. Game paths and preparation commands keep their existing meaning. Missing configured identity files, links/junctions or excessive profile sizes abort the import without committing the new profile. Imported legacy clients and booleans are normalized on load. State writes replace files atomically.
+This isolated base port uses web 48124, HTTPS 48118 and RTSP 48144. Standard Moonlight UDP offsets remain compatible. Initial administrator setup requires a local connection.
 
-The service uses `ApolloService` for compatibility and `%PROGRAMDATA%\Butterpollo\config`. The setup installs it; `service.ps1` manages a portable installation and refuses to alter a service belonging to another executable. Running or building the host never installs the service.
+| Mode | Default profile | Service |
+| --- | --- | --- |
+| Portable / direct host | `%LOCALAPPDATA%\ButterpolloRust\config` | Optional |
+| Installed package | `%PROGRAMDATA%\Butterpollo\config` | `ApolloService` for migration compatibility |
 
-Since rc.9, an unset, blank or Automatic capture setting prefers WGC on physical and virtual displays. An explicit WGC, Desktop Duplication or legacy `dxgi`/`wgcc` choice is retained. WGC startup failures use the existing Desktop Duplication fallback, including service and capture-recovery paths.
+Without arguments, the host listens on all IPv4 interfaces with the console at `https://localhost:47990`. `address_family=both` enables dual-stack listeners; `bind_address` or `--bind` selects an interface. Running or building the host does not install a service. [service.ps1](service.ps1) manages a portable service installation and refuses to alter one belonging to another executable.
 
-When the service selects WGC, it starts a hidden capture worker as the signed-in user: Windows cannot open the per-user WGC broker directly as SYSTEM (`0x80070424`). Three shared GPU textures carry frames to the host through keyed synchronization; a local pipe carries bounded metadata and checks both process identities. The worker receives capture settings only, and its owned job closes with the capture session. Lock/UAC desktops use Desktop Duplication, with WGC retried when the normal desktop returns. Other WGC startup failures retain the logged DDX fallback. `wgc_user_helper=true` forces this worker path in a portable host for validation; it does not change automatic backend selection. Check the `capture backend opened` log for the actual backend, separately from `requested_capture` in the stream settings.
+Import into an empty destination without starting a host:
 
-WGC explicitly requests a zero minimum update interval at every stream rate on Windows versions that support the property. The earlier automatic 1 ms request above 60 FPS reduced a controlled 120 FPS stream to 107-109 FPS on the test PC; explicit zero restored 121 FPS delivery without changing quality or the stream target. Leaving the property untouched is different: Windows can impose a 16 ms capture throttle that misses a 60 FPS target. The effective choice is included in capture sharing and passed to the user helper. For diagnosis, `wgc_high_rate_capture=true` selects 1 ms and `false` selects explicit zero; omitting the setting selects explicit zero. Older Windows versions without the property retain their system behavior. This removes an identified capture throttle; it does not guarantee the requested rate or distinct-picture delivery. See [PERFORMANCE.md](PERFORMANCE.md) for measurements and remaining validation.
+```powershell
+.\butterpollo.exe --config-dir C:\tests\new-profile --import-config C:\path\to\old\config
+```
 
-WGC-selected streams also use guarded source-phase pacing by default. It waits for the expected fresh update only when a stable timing history shows surplus capture updates; irregular or slower sources retain ordinary pacing, and capture recovery resets the history. Explicit Desktop Duplication keeps its previous pacing default. Set `frame_pacing_source_phase=false` to compare the previous WGC behavior. In the controlled local 720p60 AV1 comparison, this delivered 59.862–60.000 distinct pictures per second versus 57.650, and reduced estimated source-presentation-to-software-decode age by about 3.8 ms on average. This excludes remote network transit, client display scanout and input latency. Loaded 120 FPS and 30 FPS source checks retained ordinary pacing and passed their freshness checks; uncapped GPU saturation still reduced both alternatives to about 53–54 fresh FPS. These measurements do not establish the remote RX 9070 XT/Wi-Fi result. The released rc.9 default-path checks and helper-failure recovery passed; their exact scope is recorded in PERFORMANCE.md.
+Import copies identity, settings, state, app IDs, permissions, certificates and covers into owned paths. Unknown fields survive. Game paths and preparation commands keep their existing meaning. Missing configured identity files, links/junctions or excessive profile sizes abort the import before the new profile is committed. The launcher refuses to overwrite a nonempty profile. State writes are atomic.
+
+Keep development profiles and ports distinct from the installed service. Tests under `rust/tests` use isolated profiles and stop their own processes.
 
 ## Implementation
 
-rc.10 distinguishes Windows' explicit HDR state from wide-gamut SDR. During an owned virtual display's startup or recovery, a brief guard restores previously inactive targets if Windows reactivates them, without importing a saved topology or retiming the remaining displays. It tracks the owned display by driver target and monitor identity, preserves clone paths, and stops applying changes when its deadline expires or an observed layout changes. The guard ends after startup; it is not continuous display enforcement or proof that the reporter's phone issue is fixed.
-
-| Crate | Responsibility |
+| Workspace member | Responsibility |
 | --- | --- |
-| `core` | NV pairing, AES/RSA, RTSP/SDP, media encryption, Cauchy FEC, input parsing, audio mixing/resampling, app identities, permissions and durable state |
-| `windows` | DXGI/WGC, HDR conversion/ICC leases, AMF LTR recovery, direct NVENC/reference recovery/4:4:4, native QSV frames, software encoding, PyroWave, NGX bridge, WASAPI/Opus/routing, SendInput/touch/pen/VHF, clipboard, display topology/recovery, RTSS/NVAPI, process jobs, tray and SCM |
-| `host` | TLS/HTTP, Moonlight endpoints, administration/auth, encrypted RTSP, ENet control, UDP media, scheduling and lifecycle |
-| `truehdr-runtime` | Rust MSVC DLL directly calling NVIDIA's NGX C ABI |
-| `vulkan-layer` | Rust implicit Vulkan layer providing HDR swapchain formats during owned HDR sessions |
+| [core](core) | Moonlight protocol, crypto, FEC, input parsing, audio mixing, permissions and state. |
+| [windows](windows) | Capture, GPU conversion, native codecs, audio, input, displays, limiter integration, tray and SCM. |
+| [host](host) | HTTP/TLS, administration, RTSP, ENet control, UDP transport and stream lifecycle. |
+| [setup](setup) | Installation, upgrade and recovery. |
+| [vulkan-layer](vulkan-layer) | Implicit Vulkan HDR layer for owned sessions. |
+| [truehdr-runtime](truehdr-runtime) | Separately built Rust MSVC DLL calling NVIDIA's NGX C ABI. |
 
-On supported AMD GPUs, Desktop Duplication and WGC frames are copied into shared textures and converted on D3D12 compute queues, and AMF encodes from D3D12. This reduces waiting behind a game's graphics work. Unshareable capture textures fall back to D3D11. The compute toggle in Settings > Capture applies to either backend; `wgc_compute_copy=false` independently disables WGC compute copies. Native NVENC calls the installed NVIDIA driver directly with reviewed API 11.0–13.0 compatibility and capability-gated reference recovery. D3D11 supplies 4:2:0 and 8-bit 4:4:4; ten-bit 4:4:4 uses GPU-only CUDA interop without CPU readback. `nvenc` and `nvenc_experimental` select this native path; `nvenc_legacy` selects the FFmpeg compatibility path. Quick Sync 4:2:0 imports D3D11 frames. NVIDIA/Intel codec execution still requires hardware validation. TrueHDR shares the capture device and snapshots NGX output in GPU memory. PyroWave shares the capture D3D11 device, converts to planar textures on the GPU and synchronizes Vulkan imports through a shared fence. Only its encoded bitstream returns to the CPU. Textures and per-frame HDR metadata remain owned until native codec references release them. Frame pools, native encoder queues and per-client PyroWave pending queues are bounded. Software and unsupported native formats retain the compatibility path. Shader math preserves absolute ST.2084 luminance and resizes scRGB in linear light. Reported AMF latency includes asynchronous codec completion. WebRTC, SudoVDA, ViGEm and the legacy display helper remain outside the Butterpollo baseline's scope.
+The [Svelte console](web) is packaged with the host; server-rendered pages remain a fallback. The [architecture guide](../docs/architecture.md) explains compute queues, producer/output fences, service-mode WGC, HDR and PyroWave.
 
-Video FEC generation is measured at 1.26–1.40× the speed of the original C++ baseline on representative video blocks, with every parity byte identical and 21–29% less CPU time. The AVX2 implementation shares input loads across parity rows and preserves SSSE3/scalar fallbacks. The package includes `butterpollo-protocol-performance.exe`; [PERFORMANCE.md](PERFORMANCE.md) explains the exact reference sources and reproduction. This is a component measurement; the separate historical whole-stream comparison against Vibepollo 2.0 has its own workload and limits.
+Useful implementation entry points:
 
-Static frames respect `minimum_fps_target`; force it to `1000` for repeat-frame throughput measurements. Windows UDP segmentation batches equal-size video packets while preserving independent datagrams and falls back to ordinary sends when unsupported. `video_max_batch_size_kb` accepts the previous 16/32/64 KiB limits; pacing also caps each burst to two milliseconds of its wire budget.
+- [compute.rs](windows/src/compute.rs): Radeon copies, RGB-to-YUV conversion and D3D12 handoff to AMF.
+- [Windows source](windows/src): capture, encoders, virtual displays and native integration.
+- [Host source](host/src): session scheduling, configuration, administration and media transport.
+- [Core source](core/src): protocol and durable-state primitives.
+
+PyroWave shares D3D11/Vulkan planar textures and returns only the encoded bitstream to the CPU. Native NVENC uses the installed driver, with D3D11 4:2:0/8-bit 4:4:4 and CUDA interop for ten-bit 4:4:4; `nvenc_legacy` selects the FFmpeg compatibility path. Quick Sync imports D3D11 frames. Hardware execution evidence is tracked per path in [PARITY.md](PARITY.md).
 
 ## Validation
 
-The rc.10 workspace passed 263 ordinary tests, with 27 environment-dependent tests excluded by default; formatting, Clippy with warnings denied and release builds passed. Eleven HDR-state tests cover HDR versus wide-gamut SDR, API fallback, transition retries, pending requests and rollback failures; six hotplug tests cover inactive-target selection, clone/mode preservation, identity changes and deadlines. A separately selected native controller test verified the signed VHF driver for DS4 and DualSense. The rc.9 codec, WGC recovery and Moonlight streaming evidence is retained in PERFORMANCE.md; it is not a claim that every hardware matrix ran again on rc.10. See the release validation record for package and installation results.
+Within the configured Windows SDK environment:
 
-The final rc.10 host passed a default-path 720p60 SDR freshness check at 59.999 distinct FPS and separate native virtual-HDR pixel checks for HEVC and AV1. Both HDR runs captured FP16 pixels, decoded every received frame, met the original color thresholds and restored the display topology. HEVC had no long arrival gaps; AV1 had 31 intervals above 25 ms despite complete picture coverage, so it is not a gap-free smoothness result. These checks exclude physical-panel calibration and client scanout; see [the exact results](PERFORMANCE.md#final-native-virtual-hdr-pixels-excluding-physical-panel-calibration).
+```powershell
+cargo fmt --all -- --check
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+```
 
-Native Windows unit tests cover malformed wire input, authenticated encryption, replay rejection, legacy CBC/GCM behavior, FEC packet boundaries and sequence wraps, scalar/SIMD equivalence, audio rates/channel masks, atomic profile migration, scoped API tokens and Windows job teardown. Independent `tests/interop.py` and `tests/moonlight_client.c` perform real PIN pairing, encrypted RTSP, video transport/decryption/FEC, FFmpeg decode and Opus decode. The pinned Nonary transport in `tests/build-pyrowave-client.ps1` and `tests/pyrowave_stream_client.c` verifies continuous SDR/HDR 4:2:0/4:4:4 PyroWave streams, HDR control flags and the authenticated bandwidth probe. `tests/pyrowave_client.c` and `tests/pyrowave_transport.py` independently check twelve vendor-decoded profiles, 24 encrypted/plain FEC cases and deliberate partial loss.
+The rc.10 ordinary validation recorded **263 passing tests**, with 27 environment-dependent tests excluded from that count. This is the release's recorded result, rather than a claim that documentation edits rerun native hardware fixtures.
 
-The test machine is an AMD RX 7900 XT with an HDR display. Sustained release streams at 640×480, 30 fps passed H.264, HEVC, AV1, HEVC Main10 HDR and AV1 Main10 HDR decoding. New 20-second HEVC HDR tests sustained 120 fps host output at 1080p and scaled 4K; independent software decoding reached about 119 fps with no decode errors. HDR frames contain ten-bit BT.2020/PQ metadata. See [performance evidence and reproducible probes](PERFORMANCE.md) for timings, decoder limits and test scope. The RX 7900 XT pads 1080p AV1 to 1082 lines; the strict dimension probe rejects that result, so exact 1080p uses HEVC. PyroWave SDR and HDR container decoding also passed; that vendor decoder probe checks the HDR container flag and decoded output, not a complete ten-bit client rendering path. Unoptimized Rust builds are unsuitable for streaming performance checks.
+| Validation layer | Entry points and scope |
+| --- | --- |
+| Ordinary tests | Wire parsing, encryption/replay, FEC, input, state, migration, ownership and recovery policy. |
+| Administration and browser | [web_api.py](tests/web_api.py), [console_browser.cjs](tests/console_browser.cjs), [session_restart.py](tests/session_restart.py), [otp_pairing.py](tests/otp_pairing.py). |
+| Independent standard-codec streams | [interop.py](tests/interop.py), [moonlight_client.c](tests/moonlight_client.c): real pairing, encrypted RTSP, transport/FEC, FFmpeg and Opus decode. |
+| Independent PyroWave streams | [build-pyrowave-client.ps1](tests/build-pyrowave-client.ps1), [pyrowave_stream_client.c](tests/pyrowave_stream_client.c), [pyrowave_transport.py](tests/pyrowave_transport.py). |
+| Native GPU, driver and display tests | Explicitly selected ignored tests; requirements and commands in [PARITY.md](PARITY.md#reproducible-verification). |
+| Performance and pixel accuracy | Release probes and fixtures indexed in [PERFORMANCE.md](PERFORMANCE.md#reproduce-on-another-machine). |
 
-Administration checks exercise CSRF, method-specific scopes behind Rust forms, escaped HTML, one-time token secrets, refresh/revocation, app CRUD/order, live TrueHDR overrides, covers, output redirection, exit monitoring, display layouts, baseline comparison, maintenance and support ZIP integrity. The console exposes global, application and client settings through ordinary HTML forms and preserves unknown fields. Browser checks run with JavaScript disabled at desktop and mobile sizes. Independent client checks verify permission boundaries. Native tests cover process-tree termination, minidumps, UDP datagram boundaries, texture retention, GPU colour reference points, strict loss-recovery decoding for all three AMD codecs and 21 actual Opus surround/quality/duration round trips.
+Native fixtures may require an active moving desktop, codec DLLs, compatible drivers and particular hardware. Display-changing fixtures record restoration separately. Follow each fixture's prerequisites and run them in a suitable idle test session.
 
-NVIDIA/Intel hardware encoding, NVIDIA TrueHDR conversion and secure-desktop input still require their respective hardware/privileges. Selected VHF, VDD and installed-service checks have scoped evidence above; they do not certify every input or display path. Isolated fixtures preserve the installed service and profile, and display-changing fixtures record restoration separately. Earlier tests that changed display modes are identified in PERFORMANCE.md.
+The strict AMD AV1 raw-bitstream geometry test retains its known failure at some unaligned sizes. Moonlight PC 6.2.0's crop handling has separate recorded client checks. Likewise, complete frame decoding, native HDR reference pixels and displayed TV appearance are distinct validation layers. [The compatibility matrix](PARITY.md#evidence) preserves those distinctions.
 
 ## Previous feature support
 
-Full production parity is not yet established. Retained remote monitors, previous remote catalogue controls and confirmations, independent input sessions, permanent monitor counts, stable monitor identities, render scaling, exact fractional refresh, old golden snapshots, exclusive/isolated arrangements, HDR ICC leases, client hooks, application lifecycle policies, RTSS/NVAPI frame limiting, Vulkan interception, native crash reports and periodic release checks are implemented. Application overrides take precedence over client overrides; resolution and refresh policies remain independent. Imported app IDs continue to resolve after cover changes. Permanent counts are applied only when explicitly configured. Recovery restores only host-owned changes that the user has not subsequently altered.
+The Rust host imports the Vibepollo/Apollo profile format and implements the Windows feature set recorded in [PARITY.md](PARITY.md). Application overrides take precedence over client overrides; display recovery restores host-owned changes that the user has not subsequently altered.
 
-The Rust implementation now also includes NVIDIA power/presentation/HAGS policy leases, opt-in WGC publication alignment, TrueHDR visible-window and asynchronous driver-profile selection, native HDR bypass, MHC2 calibration luminance, permanent-only IPv4 UPnP leases and IGDv2 IPv6 pinholes. Remembered browser sessions migrate from the previous state format, survive restart, rotate refresh tokens and preserve revocation. The Rust console reuses all 22 previous locale catalogues, with English fallback for new messages. Virtual displays carry client/application labels and luminance, renew their owner leases and recreate lost owned monitors; display policies and capture reconnect after recreation. Moonlight receives the MAC address of its local network interface for wake-on-LAN.
+The old `src/`, CMake and installer tree is retained for migration research. Use the [archived C++ references](../docs/legacy/README.md) for that implementation. The released Rust package is built through [build.ps1](build.ps1).
 
-See [the baseline feature inventory and validation matrix](PARITY.md). Platform code is implemented, but full production parity is not certified: display activation/DPI/recreation needs a privileged host and the compatible VDD driver; NVIDIA/Intel/TrueHDR/VHF operations need their respective hardware. The legacy `src`, CMake and installer sources remain as migration references; this Rust build does not compile them.
-
-Useful probes: `--diagnostics`, `--capture-smoke --hdr`, `--encoder-smoke amf --codec hevc --hdr` and `--encoder-smoke pyrowave --codec pyrowave --encoder-output frame.bin`. Display recovery journals only changes owned by the host and restores them after parent-process death, provided the user has not subsequently changed that setting.
+An optional [Moonlight 6.2.0 source patch](compatibility/moonlight-6.2.0/README.md) addresses cold-cache CSV artwork shutdown. Its focused Qt validation is recorded separately from the official Windows client's streaming checks.
 
 ## Updates
 
-Maintenance → Updates checks the official Butterpollo releases and offers **Install when idle**. Updates notify first; **Settings → General → Install updates automatically** is off by default. The existing **Include pre-releases** setting controls whether release candidates are offered. Setting the check interval to zero disables automatic checks and installation; manual checks and installation still work.
+[Configuration](../docs/configuration.md) describes the notify-first controls and idle-install policy. The updater requires the installed service, verifies the official GitHub installer's advertised size and SHA-256 digest, then waits for one minute without active/pending streams, remote monitors or host apps.
 
-Installation requires the normal Windows service. Butterpollo verifies the installer against GitHub's SHA-256 digest and advertised size, then waits until streams, pending connections, remote monitors and host apps have stopped for one minute. A disconnected Desktop session can retain an app: quit it from the client or console to let the update proceed. A new connection defers an in-progress download until the host is idle again. A queued download can be cancelled before installation begins. The console reconnects after the restart.
+Setup backs up replaced package files, verifies that the requested host version starts and restores those files on copying or startup failure. A failed version is not retried automatically; the console offers a manual retry. Recovery records stay under the service profile's `updates` directory.
 
-Updates preserve settings, paired devices, apps and existing drivers. Setup backs up replaced package files, verifies that the requested host version starts, and restores those files if copying or startup fails. A failed version is not retried automatically; Maintenance shows the result and offers a manual retry. Backups of a failed installation stay under the service profile's `updates` folder. This recovery covers ordinary installation/startup errors, not every possible power loss or configuration migration failure.
-
-The installers are still unsigned. The updater's integrity check uses the digest returned over HTTPS by the fixed official GitHub repository; it is not an Authenticode signature. Portable hosts continue to use the release-page download.
+The installer is unsigned. Its digest check over HTTPS is an integrity check against the official release, distinct from an Authenticode signature. Portable hosts use release-page downloads. [Release notes](RELEASE_NOTES.md) and the release's validation record describe package provenance.

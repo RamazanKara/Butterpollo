@@ -1,194 +1,102 @@
-# API
+# HTTP API
 
-Sunshine has a RESTful API which can be used to interact with the service.
+[Docs](README.md) · [Getting started](getting-started.md) · [Configuration](configuration.md)
 
-Unless otherwise specified, authentication is required for all API calls. You can authenticate using either basic authentication with the admin username and password, or with an API token that provides fine-grained access control.
+Butterpollo's Windows Rust host serves its administration API at `https://localhost:47990/api`. The console uses the same API. Changing the base `port` setting moves the console to `port + 1`.
 
-## CSRF Protection
-
-State-changing API endpoints (POST, DELETE) are protected against Cross-Site Request Forgery (CSRF) attacks.
-
-**For Web Browsers:**
-- Requests from same-origin (configured via `csrf_allowed_origins`) are automatically allowed
-- Cross-origin requests require a CSRF token
-
-**For Non-Browser Applications:**
-- Non-browser clients (for example `curl`, scripts, or custom apps) are exempt from CSRF protection
-- CSRF attacks require a browser to silently attach credentials to a cross-origin request; this threat does not apply to non-browser clients that explicitly provide credentials with every request
-- Requests with no `Origin` or `Referer` header are automatically allowed without a CSRF token
-
-**Example:**
-```bash
-curl -u user:pass https://localhost:47990/api/csrf-token
-curl -u user:pass -H "X-CSRF-Token: your_token_here" \
-  -X POST https://localhost:47990/api/restart
-```
-
-## API Token Security Model and Best Practices
-
-Sunshine API tokens are designed for security and fine-grained access control:
-
-- **Token Creation:** When you generate an API token, Sunshine creates a secure random 32-character string. Only a cryptographic hash of the token is stored on disk and in memory. The raw token is shown to you only once—immediately after creation. If you lose it, you must generate a new token.
-- **Security:** Because only the hash is stored, even if the state file is compromised, attackers cannot recover the original token value.
-- **Principle of Least Privilege:** When creating a token, always grant access only to the specific API paths and HTTP methods required for your use case. Avoid giving broad or unnecessary permissions.
-- **Token Management:**
-  - Store your token securely after creation. Never share or log it.
-  - Revoke tokens immediately if they are no longer needed or if you suspect they are compromised.
-  - Use HTTPS to protect tokens in transit.
-- **Listing and Revocation:** You can list all active tokens (metadata only, not the token value) and revoke any token at any time using the API.
-
-API Tokens can also be managed in the Web UI under the "API Token" tab in the navigation bar.
-
-See below for details on token endpoints and usage examples.
-
-## GET /api/csrf-token
-@copydoc confighttp::getCSRFToken()
-
-## GET /api/apps
-@copydoc confighttp::getApps()
-
-## POST /api/apps
-@copydoc confighttp::saveApp()
-
-## POST /api/apps/close
-@copydoc confighttp::closeApp()
-
-## DELETE /api/apps/{index}
-@copydoc confighttp::deleteApp()
-
-## GET /api/clients/list
-@copydoc confighttp::getClients()
-
-## POST /api/clients/unpair
-@copydoc confighttp::unpair()
-
-## POST /api/clients/unpair-all
-@copydoc confighttp::unpairAll()
-
-## GET /api/config
-@copydoc confighttp::getConfig()
-
-
-## GET /api/configLocale
-@copydoc confighttp::getLocale()
-
-## POST /api/config
-@copydoc confighttp::saveConfig()
-
-## GET /api/covers/{index}
-@copydoc confighttp::getCover()
-
-## POST /api/covers/upload
-@copydoc confighttp::uploadCover()
-
-## GET /api/logs
-@copydoc confighttp::getLogs()
-
-- Returns the most recent session log from the managed `logs` folder (Sunshine keeps the last 30 sessions, with each session capped at about 10 MiB by rolling ~2MB log files).
-
-## GET /api/logs/export
-Downloads a ZIP archive containing logs useful for troubleshooting (Windows only).
-
-- Includes: Sunshine session logs (current and up to 29 previous sessions, including rollovers), launcher helper logs (`sunshine_launcher-*.log*` and legacy `sunshine_launcher.log`), display helper logs (`sunshine_display_helper-*.log*` and legacy `sunshine_display_helper.log`), and WGC helper logs (`sunshine_wgc_helper-*.log*` and legacy `sunshine_wgc_helper.log`) when present.
-- Requires authentication.
-
-## POST /api/password
-@copydoc confighttp::savePassword()
-
-## POST /api/pin
-@copydoc confighttp::savePin()
-
-## POST /api/reset-display-device-persistence
-@copydoc confighttp::resetDisplayDevicePersistence()
-
-## POST /api/restart
-@copydoc confighttp::restart()
-
-## GET /api/updates
-@copydoc confighttp::getUpdates()
-
-## POST /api/updates/check
-@copydoc confighttp::postUpdateCheck()
+This guide covers the current Rust implementation in [web.rs](../rust/host/src/web.rs). Moonlight pairing, app discovery and streaming use separate protocol endpoints in [nvhttp.rs](../rust/host/src/nvhttp.rs). The [historical C++ API guide](legacy/api-cpp.md) is retained as a migration reference.
 
 ## Authentication
 
-All API calls require authentication. You can use either:
-- **Basic Authentication**: Use your admin username and password.
-- **API Token (recommended for automation)**: Use a generated token with fine-grained access control.
+Create the administrator account through the local console first. Initial account creation is restricted to requests from the host PC. Access to the web interface also follows `origin_web_ui_allowed`: `pc`, `lan` (the default), or `wan`.
 
-### Generating an API Token
+| Method | Use |
+| --- | --- |
+| HTTP Basic | Send the administrator username and password over HTTPS. Useful for interactive scripts. |
+| Scoped API token | Send `Authorization: Bearer <token>`. Each token grants only the selected path and HTTP methods. |
+| Web session | Sign in with `POST /api/auth/login`. The host issues secure, HttpOnly session and refresh cookies; it also returns the access, refresh and CSRF tokens in JSON. |
 
-**POST /api/token**
+The public API routes are `/api/auth/status`, `/api/auth/login`, `/api/auth/refresh`, `/api/csrf-token` and `/api/configLocale`. Other API routes require authentication, apart from local first-time account creation.
 
-Authenticate with Basic Auth. The request body should specify the allowed API paths and HTTP methods for the token:
+### Scoped tokens
+
+Use the console's API token controls, or these administrator-authenticated routes:
+
+| Method and path | Result |
+| --- | --- |
+| `GET /api/token/routes` | Available scope paths and their allowed methods. |
+| `POST /api/token` | Create a token from a `scopes` array; returns its secret once. |
+| `GET /api/tokens` | Token hashes, ownership, creation times and scopes. |
+| `DELETE /api/token/{hash}` | Revoke a token. |
+
+A read-only token request body can be:
 
 ```json
 {
   "scopes": [
-    { "path": "/api/apps", "methods": ["GET", "POST"] },
-    { "path": "/api/logs", "methods": ["GET"] }
+    { "path": "/api/metadata", "methods": ["GET"] },
+    { "path": "/api/session/status", "methods": ["GET"] }
   ]
 }
 ```
 
-**Response:**
-```json
-{ "token": "...your-new-token..." }
+Choose paths exactly as returned by `/api/token/routes`, including any pattern entries. The host validates the selected methods and matches each scope against the whole request path. Token-management routes cannot themselves be granted as token scopes. Secrets are stored as hashes; keep the creation response if the token will be used later.
+
+### Sessions and CSRF
+
+Browser sign-in takes `username`, `password` and optional `remember_me`. `POST /api/auth/refresh` rotates the refresh token; `POST /api/auth/logout` revokes the current session. `GET /api/auth/sessions` lists sessions, and `DELETE /api/auth/sessions/{id}` revokes one. Remembered sessions survive host restarts.
+
+For requests that change state:
+
+- If an `Origin` header is present, it must match the host's HTTPS origin or an entry in `csrf_allowed_origins`. A CSRF token does not override a rejected origin.
+- Session authentication, whether through a cookie or a Bearer access token, requires `X-CSRF-Token` on protected routes. Read the session's token from `GET /api/csrf-token` using the same session.
+- Basic authentication and valid scoped API tokens do not require a session CSRF token. Origin checks still apply.
+- Before browser sign-in or first-time account creation, fetch `/api/csrf-token`, retain its anonymous cookie, and send the returned token as `X-CSRF-Token`. If that cookie is present, the host requires a matching header.
+
+## Read-only examples
+
+These PowerShell examples read host status without launching an app or changing settings. Replace the certificate path with the public certificate from the active profile and `admin` with your administrator name. `curl.exe --user admin` prompts for the password instead of putting it in the command.
+
+A newly created Rust profile includes `localhost` in its certificate. For an imported or custom certificate, use its matching HTTPS name and trusted certificate instead.
+
+```powershell
+$certificate = 'C:\path\to\profile\credentials\cacert.pem'
+curl.exe --fail-with-body --silent --show-error --cacert $certificate --user admin https://localhost:47990/api/metadata
+curl.exe --fail-with-body --silent --show-error --cacert $certificate --user admin https://localhost:47990/api/session/status
+curl.exe --fail-with-body --silent --show-error --cacert $certificate --user admin https://localhost:47990/api/token/routes
 ```
-> The token is only shown once. Store it securely.
 
-### Using an API Token
+`/api/metadata` reports the host version, codec probe status, configured capture backend, displays, audio endpoints and virtual-display capabilities. Results are cached for up to five seconds; reading them does not start a codec probe. Codec state is `checking`, `ready` or `failed`.
 
-Send the token in the `Authorization` header:
-```
-Authorization: Bearer <token>
-```
+`/api/session/status` includes `activeSessions`, `appRunning`, `appName`, `paused` and `running`. An app can remain running after its stream disconnects, so these fields describe different states.
 
-The token grants access only to the specified paths and HTTP methods.
+## Endpoint groups
 
-### Managing API Tokens
+The routes below are implemented by the Rust host. JSON requests use `Content-Type: application/json`; most responses include a Boolean `status`. Display lists, images and log downloads have their own response formats.
 
-- **List tokens:** `GET /api/tokens` (shows metadata, not token values)
-- **Revoke token:** `DELETE /api/token/{hash}`
+| Area | Read | Change |
+| --- | --- | --- |
+| Host settings | `GET /api/config`, `GET /api/metadata`, `GET /api/configLocale` | `POST` or `PATCH /api/config` |
+| Applications | `GET /api/apps`, `GET /api/apps/{id}/cover` | `POST /api/apps`, `DELETE /api/apps/{id}`, `POST /api/apps/reorder`, `POST /api/apps/launch`, `POST /api/apps/close` |
+| Paired devices | `GET /api/clients/list`, `GET /api/clients/pending` | `POST /api/pin`, `POST /api/otp`, `POST /api/clients/update`, `POST /api/clients/disconnect`, `POST /api/clients/unpair`, `POST /api/clients/unpair-all` |
+| Active sessions | `GET /api/session/status`, `GET /api/rtsp/sessions` | Use the application or device controls above. |
+| Displays | `GET /api/display-devices`, `GET /api/clients/display-layout`, `GET /api/clients/hdr-profiles`, `GET /api/display/golden_status` | `PUT /api/clients/display-layout`, `POST /api/display/export_golden`, `POST /api/display/restore_golden`, `DELETE /api/display/golden`, `POST /api/display/terminate_virtual`, `POST /api/reset-display-device-persistence` |
+| Frame limiting and HDR | `GET /api/frame-limiter/status`, `GET /api/rtss/status`, `GET /api/health/vulkan-hdr-layer`, `GET /api/framegen/edid-refresh?device_id=...` | `POST /api/health/vulkan-hdr-layer/register`, `POST /api/apps/rtx_hdr/live` |
+| Steam | `GET /api/steam/status`, `GET /api/steam/games` | `POST /api/steam/force_sync`, `POST /api/steam/launch` |
+| Playnite | `GET /api/playnite/status`, `GET /api/playnite/games`, `GET /api/playnite/categories` | `POST /api/playnite/install`, `POST /api/playnite/uninstall`, `POST /api/playnite/force_sync` |
+| Library extras | `GET /api/covers/{id}`, `GET /api/lossless_scaling/status` | `POST /api/covers/upload`, `POST /api/apps/purge_autosync` |
+| Updates | `GET /api/updates` | `POST /api/updates/check`, `POST /api/updates/install`, `POST /api/updates/cancel` |
+| Diagnostics | `GET /api/logs`, `GET /api/logs/tail`, `GET /api/logs/export`, `GET /api/logs/export_crash`, `GET /api/logs/export_crash/manifest`, `GET /api/health/crashdump` | `POST /api/health/crashdump/dismiss` |
+| Administration | Authentication and token routes above. | `POST /api/password`, `POST /api/restart`, `POST /api/quit` |
 
-### Managing Remembered Sessions
+Useful response and request details:
 
-- **Stay signed in:** Include an optional `"remember_me": true` flag in the JSON body when calling `POST /api/auth/login`. Sunshine will issue a hardened `__Host-` cookie with an extended lifetime.
-- **Refresh silently:** `POST /api/auth/refresh` rotates the short-lived session token using the HttpOnly refresh cookie. The response sets fresh cookies and also returns the new access token in the JSON payload.
-- **List active sessions:** `GET /api/auth/sessions` returns all devices that currently hold a valid Sunshine session cookie. Each entry includes creation time, last activity, expiry, remote address, and whether it was a “remember me” session.
-- **Revoke a specific session:** `DELETE /api/auth/sessions/{hash}` immediately removes the matching session from disk. If the current device is revoked, its cookie is cleared and the browser must sign in again.
+- Configuration writes merge submitted fields and return `restart_required: true`. Treat the response as a saved configuration, not confirmation that every active stream has adopted it.
+- Applications are updated by their `uuid`; deletion accepts the UUID or numeric app ID. Read `/api/apps` before making changes rather than treating an array index as the identity.
+- `/api/logs` and `/api/logs/export` return up to the last 8 MiB of the current log as text. `/api/logs/export_crash` creates the support ZIP. The ordinary log export is not a ZIP.
+- `/api/logs/tail` accepts `offset` and `max`, then returns `text`, the next `offset`, `size` and a `reset` flag for log rotation.
+- Update installation is queued for an idle installed service. Read `/api/updates` for progress and the result.
 
-All session metadata is stored hashed and persisted in the same state file as API tokens so Sunshine can validate cookies across service restarts.
+Authentication failures return HTTP `401`; denied origins or network reach return `403`; invalid requests commonly return `400` with `{"status":false,"error":"..."}`. Login rate limiting returns `429`. Check the HTTP status and response body together.
 
-<div class="section_buttons">
-
-| Previous                                    |                                  Next |
-|:--------------------------------------------|--------------------------------------:|
-| [Performance Tuning](performance_tuning.md) | [Troubleshooting](troubleshooting.md) |
-
-</div>
-
-<details style="display: none;">
-  <summary></summary>
-  [TOC]
-</details>
-
-### Host readiness metadata
-
-`GET /api/metadata` includes optional status fields for the web interface. Existing fields
-and configuration write formats remain compatible.
-
-- `encoder_status`: `state` (`ready`, `failed`, or `unknown`) and `h264`, `hevc`, `av1`
-  support from the current encoder-probe cache. Reading metadata never initiates a probe.
-- Provider actions are shown only when the corresponding `providers` capability is explicitly
-  true. A missing capability means unavailable.
-- Linux `virtual_display.reason`: empty when ready; otherwise
-  `driver_or_outputs_unavailable` or `session_or_output_unavailable`.
-- Linux `capture_status`: `configured_backend`, `virtual_display_configured`,
-  `observed_backend`, and `managed_event_driven`. An observed `kms` backend with
-  `managed_event_driven: true` means a managed presentation-event capture loop is currently
-  running. Outside that capture lifetime the observed backend is `unknown`. This does not
-  claim that another backend is unavailable or that a configured capture path was verified.
-
-Clients must tolerate absent status fields from older hosts and distinguish unknown status
-from verified readiness. Virtual-display readiness is not required for physical capture.
+For exact request fields beyond this overview, follow [the API handler](../rust/host/src/web.rs), [token scope validation](../rust/core/src/auth.rs) and [administration checks](../rust/tests/web_api.py).

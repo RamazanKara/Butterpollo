@@ -1,5 +1,9 @@
 # Butterpollo and Vibepollo 2.0
 
+[Documentation](../docs/README.md) · [Getting started](../docs/getting-started.md) · [Configuration](../docs/configuration.md) · [Performance overview](../docs/performance.md)
+
+**Compatibility index:** [Defaults](#deliberate-differences) · [Feature matrix](#feature-by-feature) · [Recorded evidence](#evidence) · [Reproduce checks](#reproducible-verification)
+
 Butterpollo's Rust host is meant to replace Vibepollo 2.0.0 (commit `8a8c4b03a280ab9f567beb380110abb80f5220b8`) on Windows. This file lists what matches, what differs on purpose and what is still missing, as of 2026-10-06. "Same" means the Rust host reads the same settings and files and gives clients the same answers; it does not mean every hardware path has been exercised. Evidence is at the end.
 
 Left out on purpose: WebRTC streaming, session history and host statistics pages, the ViGEm and SudoVDA fallbacks, and Linux and macOS hosting.
@@ -14,7 +18,7 @@ The table compares the current defaults. Since rc.9, Automatic capture prefers W
 | `amd_quality` | `balanced` | `speed` |
 | `frame_limiter_auto_virtual_framegen` | `enabled` (virtual display at 4x the stream rate) | `legacy` (2x); a VRR request still gets 1000 Hz |
 
-Settings changed in the console are saved at once and most take effect from the next stream; Vibepollo applies some (log level, display revert, RTX HDR) to a running host. The console says when a restart is needed.
+Select **Save changes** in the console to write settings. Most saved stream settings take effect on the next stream; startup settings such as network listeners and advertised codec support need a host restart. See [configuration](../docs/configuration.md#save-reconnect-and-restart) for the current save and restart behavior.
 
 ## Feature by feature
 
