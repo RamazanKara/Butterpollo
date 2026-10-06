@@ -146,10 +146,13 @@ if (-not $NoInstall) {
         Start-Sleep -Seconds 2
     }
     $selfTest = "$run\elevated\display-self-test.json"
+    $selfTestPassed = $null
     if (Test-Path $selfTest) {
-        $report = Get-Content $selfTest -Raw | ConvertFrom-Json
-        Write-Host "  display self-test passed: $($report.passed)"
-        if (-not $report.passed) { Write-Warning "Display self-test failed: $selfTest" }
+        $selfTestPassed = [bool](Get-Content $selfTest -Raw | ConvertFrom-Json).passed
+        Write-Host "  display self-test passed: $selfTestPassed"
+        if (-not $selfTestPassed) { Write-Warning "Display self-test failed: $selfTest" }
+    } else {
+        Write-Warning "The display self-test wrote no report; see $run\elevated\transcript.txt"
     }
 }
 
@@ -174,8 +177,11 @@ do {
 Set-Content "$run\ci.json" "$ci"
 if (-not $Scope) {
     $gpu = (Get-CimInstance Win32_VideoController | Where-Object Name -NotMatch 'Virtual|Basic|Idd' | Select-Object -First 1).Name
-    $Scope = "End-to-end streams, protocol checks$(if (-not $NoInstall) { ', display self-test and install' }) on the " +
-        "release workstation ($gpu, Windows $([Environment]::OSVersion.Version.Build)). Other hardware was not tested."
+    $checks = 'End-to-end streams, protocol checks'
+    if ($null -ne $selfTestPassed) { $checks += ", display self-test ($(if ($selfTestPassed) { 'passed' } else { 'failed' }))" }
+    if (-not $NoInstall) { $checks += ' and install' }
+    $Scope = "$checks on the release workstation ($gpu, Windows $([Environment]::OSVersion.Version.Build)). " +
+        'Other hardware was not tested.'
 }
 $finalize = @('--out', $out, '--work', $run, '--changes', "$run\changes.txt", '--ci', "$run\ci.json", '--scope', $Scope)
 if (-not $NoInstall) { $finalize += '--installed' }

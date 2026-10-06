@@ -15,17 +15,29 @@ Start-Transcript (Join-Path $out 'transcript.txt') -Force | Out-Null
 try {
     if (-not $SkipSelfTest) {
         # The virtual display driver only accepts SYSTEM: a one-shot task,
-        # deleted afterwards. The service spawns the host into the console session.
-        $report = Join-Path $out 'display-self-test.json'
+        # deleted afterwards. The service spawns the host into the console
+        # session. schtasks.exe, not the ScheduledTask cmdlets: a task from
+        # Register-ScheduledTask never ran on the release workstation. Its
+        # command line is limited to 261 characters, hence the short report path.
+        $report = Join-Path $env:ProgramData 'Butterpollo\release-self-test.json'
+        Remove-Item $report -ErrorAction SilentlyContinue
         $task = 'ButterpolloDisplaySelfTest'
-        $action = New-ScheduledTaskAction -Execute (Join-Path $Package 'butterpollo-service.exe') -Argument "--display-self-test `"$report`""
-        $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-        Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Force | Out-Null
-        Start-ScheduledTask -TaskName $task
+        $command = "`"$(Join-Path $Package 'butterpollo-service.exe')`" --display-self-test `"$report`""
+        if ($command.Length -gt 261) { throw "self-test command line too long ($($command.Length))" }
+        schtasks /Create /TN $task /TR $command /SC ONCE /ST 23:59 /RU SYSTEM /RL HIGHEST /F | Out-Host
+        schtasks /Run /TN $task | Out-Host
         $deadline = (Get-Date).AddMinutes(5)
-        do { Start-Sleep -Seconds 2 } until (((Test-Path $report) -and (Get-ScheduledTask -TaskName $task).State -ne 'Running') -or (Get-Date) -gt $deadline)
-        Unregister-ScheduledTask -TaskName $task -Confirm:$false
-        if (Test-Path $report) { Get-Content $report } else { 'no self-test report' }
+        do {
+            Start-Sleep -Seconds 2
+            $state = (schtasks /Query /TN $task /FO LIST /V | Select-String '^(Status|Last Result|Letztes Ergebnis):').Line -join ' | '
+        } until (((Test-Path $report) -and $state -notmatch 'Running|Wird ausgef') -or (Get-Date) -gt $deadline)
+        "self-test task: $state"
+        if (-not (Test-Path $report)) { schtasks /End /TN $task | Out-Host }
+        schtasks /Delete /TN $task /F | Out-Host
+        if (Test-Path $report) {
+            Move-Item $report (Join-Path $out 'display-self-test.json') -Force
+            Get-Content (Join-Path $out 'display-self-test.json')
+        } else { 'no self-test report' }
     }
 
     $setup = Start-Process -FilePath $Installer -ArgumentList '--quiet' -Wait -PassThru
