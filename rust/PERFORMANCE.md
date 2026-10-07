@@ -1933,6 +1933,11 @@ the probe rendered at 60-66 Hz instead of 120, as on October 4, so the
 fixture's source-rate check fails on load rows as it did then; their
 picture-age statistics are complete. One rc.2 idle run's probe exited
 with an error after the stream had ended. Artifacts: `bench-rc17\cmp-*`.
+
+rc.19 (`88e8fd322e8b1a6a`), three idle runs with WGC later the same day on
+the same fixture: 14.95 / 16.49, 14.96 / 16.14 and 14.74 / 15.94 ms, 60.4
+new pictures a second without a repeat, as rc.17. Artifacts:
+`bench-rc17\rc19wgc-*`.
 ## October 7: PyroWave conversion on the compute queue
 
 PyroWave's colour conversion (RGB to its Y, Cb and Cr planes) ran as three

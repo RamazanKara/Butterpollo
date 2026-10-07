@@ -29,20 +29,26 @@ MUTED = (150, 157, 172)
 DIM = (68, 74, 90)
 RULE = (36, 40, 52)
 CARD = (19, 22, 30)
-STARTS = (0, 6, 18, 30, 37, 47, 54)
+STARTS = (0, 6, 17, 26, 33, 38, 47, 54)
 ENDS = STARTS[1:] + (60,)
-CHAPTERS = ('RC.17', 'FOLLOW ONE FRAME', 'RADEON COMPUTE', 'BUILT TOGETHER',
+CHAPTERS = ('RC.19', 'FOLLOW ONE FRAME', 'RADEON COMPUTE', 'NEW IN RC.19', 'BUILT TOGETHER',
             'MADE FOR PLAY', 'TRY IT SAFELY', 'BUTTERPOLLO')
 WIPE = .7
 
-# rc.17 with its default capture (WGC), idle desktop: October 7, 2026, three
-# runs alternating with rc.2 in one batch on the October 4 fixture (RX 7900 XT,
-# 1080p60 HEVC HDR, 20 Mbps, 120 Hz virtual display). Timestamped game frame
-# to the decoded picture of a local client.
-IDLE = {'mean': 14.86, 'p95': 16.04, 'fresh': 60.36}
+# rc.19 with its default capture (WGC), idle desktop: October 7, 2026, three
+# runs on the October 4 fixture (RX 7900 XT, 1080p60 HEVC HDR, 20 Mbps,
+# 120 Hz virtual display). Timestamped game frame to the decoded picture of a
+# local client.
+IDLE = {'mean': 14.88, 'p95': 16.19, 'fresh': 60.38}
 # Same build, compute off and on, beside a game-like load: October 4, 2026,
 # two runs per path (README and rust/PERFORMANCE.md).
 COMPUTE = {'mean': (41.0, 33.5), 'p95': (54.4, 42.3), 'host': (16.2, 11.2), 'game_fps': 174}
+# rc.18 against rc.19, October 7, 2026, RX 7900 XT: PyroWave 1080p 120 fps HDR
+# 4:4:4 at 400 Mbps beside the game-like load, ms per frame (5.62-5.75 against
+# 0.54-0.57; rust/PERFORMANCE.md), and a full encoder, 5120x1440 HEVC 240 fps
+# at 150 Mbps, game frame to packet (the rc.19 notes).
+PYROWAVE = (5.7, 0.55)
+FULL_ENCODER = (42.7, 11.1)
 
 def clamp(x):
     return min(1., max(0., x))
@@ -175,7 +181,7 @@ def glow_sprite():
 
 
 # Where the warm light sits in each scene; it drifts between them.
-GLOW = ((1480, 300), (1650, 980), (260, 920), (1500, 760), (300, 220), (1600, 300), (960, 560))
+GLOW = ((1480, 300), (1650, 980), (260, 920), (960, 900), (1500, 760), (300, 220), (1600, 300), (960, 560))
 
 
 def glow_at(t):
@@ -243,7 +249,7 @@ def hook(t):
     reveal(im, 100, 322, 'never the problem.', 120, t, at=.2, color=BUTTER)
     reveal(im, 106, 498, 'Written in Rust. Built for Radeon. Made for Moonlight.', 40, t,
            at=.55, color=INK, weight='semibold')
-    reveal(im, 106, 556, 'Butterpollo rc.17 · Windows game streaming for Radeon owners', 30, t,
+    reveal(im, 106, 556, 'Butterpollo rc.19 · Windows game streaming for Radeon owners', 30, t,
            at=.7, color=MUTED, weight='regular')
     p = ease((t-1.3)/.6)
     if p:
@@ -261,7 +267,7 @@ def hook(t):
     if q:
         token(im, 1490, 470+40*(1-q), 230, q)
         txt(im, 1490, 630, 'FOLLOW THE FRAME', 22, MUTED, 'mono', 'center', ease((t-2)/.5))
-    foot(im, 'Average · rc.17 default capture (WGC) · idle desktop · RX 7900 XT · 1080p60 HEVC HDR · 20 Mbps',
+    foot(im, 'Average · rc.19 default capture (WGC) · idle desktop · RX 7900 XT · 1080p60 HEVC HDR · 20 Mbps',
          'October 7, 2026 · timestamped game frame to the decoded picture of a local Moonlight client · three runs')
     return im
 
@@ -316,7 +322,7 @@ def icon(im, kind, cx, cy, color):
 
 
 def pipeline(t):
-    im = base(t+6)
+    im = base(t+STARTS[1])
     title(im, 'Follow one frame.', t, 'The Radeon path from your game to the picture in Moonlight.')
     rail_y = 386
     first, last = station_x(0)+CARD_W/2, station_x(5)+CARD_W/2
@@ -348,7 +354,7 @@ def pipeline(t):
         right = 104+width_of(f"{IDLE['mean']:.1f} ms", 104, 'bold')+56
         txt(im, right, y+50, f"average · {IDLE['p95']:.1f} ms for the slowest 5%", 34, INK, 'semibold', opacity=p)
         txt(im, right, y+100, f"{IDLE['fresh']:.0f} new pictures every second, none repeated", 30, MUTED, opacity=p)
-    foot(im, 'Schematic order of work · measured: rc.17 default capture (WGC), idle desktop, 1080p60 HEVC HDR, 20 Mbps',
+    foot(im, 'Schematic order of work · measured: rc.19 default capture (WGC), idle desktop, 1080p60 HEVC HDR, 20 Mbps',
          'RX 7900 XT · October 7, 2026 · timestamped game frame to a local client\u2019s decoded picture · three runs')
     return im
 
@@ -369,7 +375,7 @@ def bars(im, x, y, width, heading_text, values, t, delay=0., unit='ms', top=60.)
 
 
 def compute(t):
-    im = base(t+18)
+    im = base(t+STARTS[2])
     title(im, 'Radeon compute, measured.', t,
           'Same Butterpollo build, one setting changed, a game loading the GPU.')
     bars(im, 104, 360, 760, 'Average delay', COMPUTE['mean'], t, .5)
@@ -387,10 +393,46 @@ def compute(t):
     return im
 
 
-# 4 · Built together -----------------------------------------------------------
+# 4 · New in rc.19 -------------------------------------------------------------
+
+def fixed(im, x, label, values, caption, note, local, at):
+    p = ease((local-at)/.7)
+    if p <= 0:
+        return
+    y = 352+24*(1-p)
+    rect(im, (x, y, x+820, y+452), mix(BG, CARD, p), mix(BG, RULE, p), 2, radius=24)
+    txt(im, x+40, y+36, label, 22, MUTED, 'mono', opacity=p)
+    before, after = (f'{v:g}' for v in values)
+    txt(im, x+34, y+80, before, 96, (128, 134, 150), 'light', opacity=p)
+    bw = width_of(before, 96, 'light')
+    q = ease((local-at-.5)/.6)
+    if q:
+        arrow(im, x+34+bw+28, y+142, x+34+bw+28+92*q, y+142, mix(BG, BUTTER, q), 5)
+    txt(im, x+34+bw+156, y+80, after, 96, BUTTER, 'bold', opacity=q)
+    aw = width_of(after, 96, 'bold')
+    txt(im, x+34+bw+168+aw, y+138, 'ms', 40, BUTTER, 'semibold', opacity=q)
+    txt(im, x+40, y+250, caption, 32, INK, 'semibold', opacity=q)
+    for j, value in enumerate(wrap(note, 26, 740)):
+        txt(im, x+40, y+310+j*36, value, 26, MUTED, opacity=q)
+
+
+def rc19(t):
+    im = base(t+STARTS[3])
+    title(im, 'New in rc.19.', t, 'Two places a Radeon still waited. Measured, then fixed.')
+    fixed(im, 104, 'PYROWAVE BESIDE A GAME', PYROWAVE, 'per 1080p HDR 4:4:4 frame',
+          'Its colour conversion moved to the compute queue: as fast beside the game as idle.', t, .4)
+    fixed(im, 996, 'WHEN THE ENCODER IS FULL', FULL_ENCODER, 'game frame to packet, same 220 fps',
+          'At most two frames wait in the encoder: 4K at high refresh, or one HEVC engine on an RX 9070 XT.',
+          t, 1.4)
+    foot(im, 'RX 7900 XT · rc.18 against rc.19 · PyroWave 1080p 120 fps, 400 Mbps, beside a game-like load',
+         'Full encoder: 5120x1440 HEVC 240 fps, 150 Mbps · October 7, 2026 · rust/PERFORMANCE.md and the rc.19 notes')
+    return im
+
+
+# 5 · Built together -----------------------------------------------------------
 
 def together(t):
-    im = base(t+30)
+    im = base(t+STARTS[4])
     title(im, 'Built on good work.', t,
           'Butterpollo began as a fork of Vibepollo and rebuilds the host in Rust around the Radeon path.')
     names = (('Vibepollo', 'Nonary'), ('Apollo', 'ClassicOldSong'), ('Sunshine', 'LizardByte and contributors'),
@@ -415,13 +457,13 @@ def together(t):
     return im
 
 
-# 5 · Made for play ------------------------------------------------------------
+# 6 · Made for play ------------------------------------------------------------
 
 FEATURES = (('Radeon quirks', 'Driver bugs worked around, and the fix removed once AMD ships one.', 'chip'),
             ('Steam Deck', 'Gyro and touchpad work: it becomes a virtual DualSense.', 'deck'),
             ('Wi-Fi', 'Video and voice go first on your home network.', 'wifi'),
             ('HDR', '5,173 of 5,173 frames decoded in native HDR tests.', 'hdr'),
-            ('PyroWave', '10-bit HDR 4:4:4: full colour at every pixel.', 'pixels'),
+            ('PyroWave', '10-bit HDR 4:4:4, now converted on Radeon compute.', 'pixels'),
             ('VRR', 'Nonary\u2019s 1000 Hz mode: frames follow your game.', 'vrr'))
 
 
@@ -456,7 +498,7 @@ def feature_icon(im, kind, x, y, color):
 
 
 def play(t):
-    im = base(t+37)
+    im = base(t+STARTS[5])
     title(im, 'Made for how you play.', t)
     cw, ch, gx, gy = 548, 250, 34, 30
     for i, (name, text, kind) in enumerate(FEATURES):
@@ -476,10 +518,10 @@ def play(t):
     return im
 
 
-# 6 · Try it safely ------------------------------------------------------------
+# 7 · Try it safely ------------------------------------------------------------
 
 def safely(t):
-    im = base(t+47)
+    im = base(t+STARTS[6])
     title(im, 'Trying it costs nothing.', t, 'Already streaming with another host? Setup brings your profile along.')
     for i, name in enumerate(('Sunshine', 'Apollo', 'Vibeshine', 'Vibepollo')):
         p = ease((t-.4-i*.15)/.5)
@@ -503,10 +545,10 @@ def safely(t):
     return im
 
 
-# 7 · Ending -------------------------------------------------------------------
+# 8 · Ending -------------------------------------------------------------------
 
 def ending(t):
-    im = base(t+54)
+    im = base(t+STARTS[7])
     p = ease((t-.1)/.7)
     mark = width_of('Butterpollo', 156, 'bold')
     left = (W-(150+48+mark))/2
@@ -526,7 +568,7 @@ def ending(t):
     return im
 
 
-SCENES = (hook, pipeline, compute, together, play, safely, ending)
+SCENES = (hook, pipeline, compute, rc19, together, play, safely, ending)
 
 def scene_at(t):
     index = next((i for i, end in enumerate(ENDS) if t < end), len(ENDS)-1)
@@ -552,7 +594,7 @@ def frame(t):
 
 
 def storyboard(destination):
-    times = (.5, 3.5, 7.5, 11, 14.5, 20, 24, 28.5, 33, 36, 40, 45, 49, 53, 56, 59.5)
+    times = (.5, 3.5, 8, 12, 15.5, 20, 24, 29, 32, 36, 41, 45, 49, 53, 56, 59.5)
     sheet = Image.new('RGB', (1920, 4*300), BG)
     for i, t in enumerate(times):
         tile = frame(t).resize((480, 270), Image.Resampling.LANCZOS)

@@ -399,7 +399,7 @@ def encode_gif(source, destination):
         palette = str(Path(directory) / 'palette.png')
         base = [ffmpeg, '-hide_banner', '-loglevel', 'error', '-y', '-threads', '4']
         subprocess.run(base + ['-i', str(source), '-vf',
-                       'fps=12,scale=960:540:flags=lanczos,palettegen=max_colors=128:stats_mode=diff',
+                       'fps=12,scale=960:540:flags=lanczos,palettegen=max_colors=96:stats_mode=diff',
                        '-frames:v', '1', palette], check=True)
         subprocess.run(base + ['-i', str(source), '-i', palette, '-filter_complex',
                        '[0:v]fps=12,scale=960:540:flags=lanczos[x];'
