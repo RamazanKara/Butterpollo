@@ -612,6 +612,11 @@ impl Media {
                                 target = prepared.capture_target();
                             }
                         }
+                        // Reset before the helper's announcements are read: one
+                        // that comes after them ends the wait below.
+                        if let Some(signal) = capture.frame_signal() {
+                            signal.reset()?;
+                        }
                         match capture.next_gpu() {
                             Ok(Some(image)) => {
                                 let captured = image.captured;
@@ -623,7 +628,15 @@ impl Media {
                                     worker.poll_interval(poll_interval)
                                 } else { poll_interval };
                                 let deadline = Instant::now() + interval;
-                                timer.until(capture.publication_deadline().unwrap_or(deadline).min(deadline));
+                                let until = capture.publication_deadline().unwrap_or(deadline).min(deadline);
+                                match capture.frame_signal() {
+                                    // The helper's frame wakes this at once instead
+                                    // of at the next poll, up to 0.5 ms later.
+                                    Some(signal) => {
+                                        timer.until_or_signal(until, signal)?;
+                                    }
+                                    None => timer.until(until),
+                                }
                             }
                             Err(e) => {
                                 tracing::warn!(error=%format!("{e:#}"), output=%target.0, backend=capture.backend(), "capture restarting");

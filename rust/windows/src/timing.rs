@@ -65,6 +65,10 @@ impl Signal {
         }
         Ok(())
     }
+    /// The event, to hand to another process.
+    pub(crate) fn raw(&self) -> HANDLE {
+        self.0
+    }
     /// Reset while holding the protected capture-image lock, before waiting.
     pub fn reset(&self) -> Result<()> {
         unsafe {
@@ -319,6 +323,27 @@ fn close_wlan(handle: usize) {
         }
     }
 }
+/// Windows 11 otherwise ignores timer requests from a process without a
+/// visible window, and may run it on efficiency cores: the host, and the
+/// capture helper in the user's session.
+pub fn disable_power_throttling() {
+    let state = PROCESS_POWER_THROTTLING_STATE {
+        Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+            | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+        StateMask: 0,
+    };
+    if let Err(error) = unsafe {
+        SetProcessInformation(
+            GetCurrentProcess(),
+            ProcessPowerThrottling,
+            (&state as *const PROCESS_POWER_THROTTLING_STATE).cast(),
+            std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+        )
+    } {
+        tracing::debug!(%error, "power throttling opt-out unavailable");
+    }
+}
 impl StreamingScope {
     pub fn enter() -> Self {
         let mut streams = STREAMS.lock().unwrap();
@@ -332,22 +357,7 @@ impl StreamingScope {
             }
             unsafe {
                 let process = GetCurrentProcess();
-                // Windows 11 otherwise ignores timer requests from a process
-                // without a visible window, and may run it on efficiency cores.
-                let state = PROCESS_POWER_THROTTLING_STATE {
-                    Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
-                    ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED
-                        | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
-                    StateMask: 0,
-                };
-                if let Err(error) = SetProcessInformation(
-                    process,
-                    ProcessPowerThrottling,
-                    (&state as *const PROCESS_POWER_THROTTLING_STATE).cast(),
-                    std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
-                ) {
-                    tracing::debug!(%error, "power throttling opt-out unavailable");
-                }
+                disable_power_throttling();
                 let _ = windows::Win32::Media::timeBeginPeriod(1);
                 streams.priority = GetPriorityClass(process);
                 if let Err(error) = SetPriorityClass(process, HIGH_PRIORITY_CLASS) {

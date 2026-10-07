@@ -20,7 +20,7 @@ use windows::Win32::{
 };
 use windows::core::HRESULT;
 
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const SLOTS: usize = 3;
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 const PIPE_PREFIX: &str = r"\\.\pipe\Butterpollo.Wgc.";
@@ -40,6 +40,9 @@ enum Request {
         name: String,
         hdr: bool,
         config: Config,
+        /// An event of the host's, duplicated into the helper, set after
+        /// each frame it announces.
+        wake: u64,
     },
     Release {
         slot: usize,
@@ -232,6 +235,9 @@ pub struct Session {
     last_reply: Instant,
     staging: Option<ID3D11Texture2D>,
     process: crate::process::Process,
+    /// Set by the helper after each frame: the capture worker wakes for it
+    /// instead of finding it on its next poll.
+    frame: crate::timing::Signal,
 }
 impl Session {
     pub(super) fn new(name: &str, hdr: bool, config: &Config) -> Result<Self> {
@@ -271,11 +277,13 @@ impl Session {
             ensure!(Instant::now() < deadline, "WGC helper connection timed out");
             std::thread::sleep(Duration::from_millis(2));
         }
+        let frame = crate::timing::Signal::new()?;
         pipe.send(&Request::Start {
             version: VERSION,
             name: gpu.display.display_name.clone(),
             hdr,
             config: capture_config(config),
+            wake: process.duplicate_into(frame.raw())?,
         })?;
         let (handles, width, height, format, worker_compute) = loop {
             match pipe.receive::<Reply>()? {
@@ -356,7 +364,11 @@ impl Session {
             last_reply: now,
             staging: None,
             process,
+            frame,
         })
+    }
+    pub(super) fn frame_signal(&self) -> &crate::timing::Signal {
+        &self.frame
     }
     pub(super) fn set_claim_grid(&mut self, grid: Option<Arc<Mutex<ClaimGrid>>>) {
         self.grid = grid;
@@ -521,16 +533,19 @@ fn worker(pipe: &Pipe) -> Result<()> {
         "WGC helper must run as the signed-in user"
     );
     let deadline = Instant::now() + START_TIMEOUT;
-    let (name, hdr, config) = loop {
+    let (name, hdr, config, wake) = loop {
         match pipe.receive::<Request>()? {
             Some(Request::Start {
                 version,
                 name,
                 hdr,
                 config,
+                wake,
             }) => {
                 ensure!(version == VERSION, "unsupported WGC protocol version");
-                break (name, hdr, capture_config(&config));
+                // The host duplicated it into this process; closed on exit.
+                let wake = owned(HANDLE(usize::try_from(wake)? as *mut _));
+                break (name, hdr, capture_config(&config), wake);
             }
             Some(Request::Stop) => return Ok(()),
             Some(_) => bail!("unexpected WGC startup command"),
@@ -544,6 +559,7 @@ fn worker(pipe: &Pipe) -> Result<()> {
     };
     let _com = ComGuard::new()?;
     let _priority = Priority::new();
+    crate::timing::disable_power_throttling();
     let _streaming = config
         .boolean("wgc_helper_streaming_scope", false)
         .then(crate::timing::StreamingScope::enter);
@@ -689,6 +705,9 @@ fn worker(pipe: &Pipe) -> Result<()> {
                     sequence,
                     qpc,
                 })?;
+                unsafe {
+                    let _ = windows::Win32::System::Threading::SetEvent(raw(&wake));
+                }
             }
             // A slow host drops updates. It never owns all of WGC's native
             // frame-pool entries or grows a queue of stale pictures.
@@ -775,6 +794,7 @@ mod tests {
             name: "display".into(),
             hdr: true,
             config: filtered,
+            wake: 0x1234,
         };
         let encoded = serde_json::to_vec(&message).unwrap();
         assert!(encoded.len() < crate::ipc::MESSAGE_LIMIT);

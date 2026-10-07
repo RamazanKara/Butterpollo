@@ -23,6 +23,7 @@ parser.add_argument('--mode', help='defaults to 720 pixels high at 60 FPS, match
 parser.add_argument('--seconds', default='12')
 parser.add_argument('--bitrate', default='20000')
 parser.add_argument('--vrr', action='store_true', help='launch as a client asking for VRR')
+parser.add_argument('--config', action='append', default=[], metavar='KEY=VALUE', help='an extra sunshine.conf line for the host, e.g. wgc_user_helper=true')
 args = parser.parse_args()
 interop = pathlib.Path(__file__).resolve().parents[1] / 'tests' / 'interop.py'
 
@@ -62,7 +63,8 @@ assert sink, 'Steam Streaming Speakers is required for the isolated audio test'
     'frame_limiter_enable = false', 'install_steam_audio_drivers = false', 'stream_audio = true',
     'audio_sink_capture_only = true', 'auto_capture_sink = false', f"audio_sink = {sink['id']}",
     'keep_sink_default = false', 'upnp = false', 'enable_discovery = false', 'vulkan_hdr_layer = false',
-    'system_tray = false', 'update_check_interval = 0', 'pyrowave = false', '']))
+    'system_tray = false', 'update_check_interval = 0', 'pyrowave = false',
+    *(line.replace('=', ' = ', 1) for line in args.config), '']))
 (profile / 'apps.json').write_text(json.dumps({'apps': [{'name': 'Desktop', 'cmd': '', 'virtual-display': False}]}))
 # interop.py's fixture account, in the previous host's format.
 salt = os.urandom(8).hex()

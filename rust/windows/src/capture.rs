@@ -1220,6 +1220,15 @@ impl Capture {
             _ => None,
         }
     }
+    /// Set when the user-session capture helper announces a frame. A wait for
+    /// the next poll that also ends on it sees the frame at once instead of
+    /// up to a poll interval later; the polling itself stays.
+    pub fn frame_signal(&self) -> Option<&crate::timing::Signal> {
+        match self {
+            Self::WgcWorker(worker) => Some(worker.frame_signal()),
+            _ => None,
+        }
+    }
     /// Opt in to notifications for capture probes. Normal streams keep polling:
     /// pure event waits measured slower detection under GPU load on the test PC.
     pub fn enable_frame_notifications(&mut self) -> Result<()> {

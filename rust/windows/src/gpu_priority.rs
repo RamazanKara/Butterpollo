@@ -81,7 +81,14 @@ pub fn configure(
             hags,
             config.boolean("nvenc_realtime_hags", true),
         );
-        let code = set(GetCurrentProcess().0, priority);
+        let mut priority = priority;
+        let mut code = set(GetCurrentProcess().0, priority);
+        // Realtime needs administrator rights, which the capture helper in
+        // the user's session lacks: high is the next best, not the default.
+        if code < 0 && priority > 4 {
+            priority = 4;
+            code = set(GetCurrentProcess().0, priority);
+        }
         if code < 0 {
             bail!("GPU process scheduling priority was denied ({code:#x})");
         }

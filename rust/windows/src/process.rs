@@ -329,6 +329,23 @@ impl Process {
             Ok(owned(duplicate))
         }
     }
+    /// A handle of this process duplicated into the child, as the value the
+    /// child uses; the child's handle closes when it exits.
+    pub(crate) fn duplicate_into(&self, handle: HANDLE) -> Result<u64> {
+        unsafe {
+            let mut duplicate = HANDLE::default();
+            DuplicateHandle(
+                GetCurrentProcess(),
+                handle,
+                raw(&self.handle),
+                &mut duplicate,
+                0,
+                false,
+                DUPLICATE_SAME_ACCESS,
+            )?;
+            Ok(duplicate.0 as u64)
+        }
+    }
     /// Keep the supervisor's unnamed stop event alive for the entire child.
     /// The child duplicates a wait-only handle; handle inheritance cannot cross
     /// Windows sessions, and session-local object names cannot reach the service.
