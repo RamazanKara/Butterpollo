@@ -1,10 +1,18 @@
-# Butterpollo 2.0.0-rc.15 release candidate for Windows
+# Butterpollo 2.0.0-rc.16 release candidate for Windows
 
 [Documentation](../docs/README.md) · [Install and migrate](../docs/getting-started.md) · [Configuration](../docs/configuration.md) · [Compatibility](PARITY.md)
 
-**Release history:** [rc.15](#new-in-rc15) · [rc.14](#new-in-rc14) · [rc.13](#new-in-rc13) · [rc.12](#new-in-rc12) · [rc.11](#new-in-rc11) · [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
+**Release history:** [rc.16](#new-in-rc16) · [rc.15](#new-in-rc15) · [rc.14](#new-in-rc14) · [rc.13](#new-in-rc13) · [rc.12](#new-in-rc12) · [rc.11](#new-in-rc11) · [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
 
-Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.15 installer is named `butterpollo-setup-2.0.0-rc.15.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.16 installer is named `butterpollo-setup-2.0.0-rc.16.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+
+## New in rc.16
+
+- **Audio without dropouts.** Since rc.14 the host sent silence as soon as Windows had delivered no sound for 10 ms, but Windows delivers sound in chunks of about that size, so ordinary scheduling jitter put short gaps of silence into the stream. Silence now starts only after 50 ms without sound.
+- **The uninstaller removes only Butterpollo's files.** Run outside an installation, it could take the folder it ran from (Downloads, for example) for the installation and delete all of it, and a custom install folder lost everything else in it. It now refuses when Butterpollo is not installed, deletes only the files the installation lists, and removes a folder only when nothing else is left in it.
+- **Touch, pen and absolute mouse land where you tap on a letterboxed stream.** When the PC's display has another shape than the client (a 16:9 PC on a 4:3 iPad), taps were off by up to a few hundred pixels and the bottom of the screen, taskbar included, could not be reached. Input now skips the black bars as the original host did.
+- **Password guessing over the network is limited.** Sign-ins sent with each request (Basic credentials) were not counted, so a device on the network could try passwords at full speed. They now share the login page's limit of 10 attempts a minute per address, this PC is never locked out, and a flood of addresses can no longer block sign-in.
+- Two crashes that ended every stream are fixed: a controller whose profile changed after it connected, and one malformed cover-image request.
 
 ## New in rc.15
 
@@ -177,8 +185,8 @@ Current automated validation: 263 ordinary tests passed, with 27 environment-dep
 
 ## Install
 
-- `butterpollo-setup-2.0.0-rc.15.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
-- For a portable copy, extract `butterpollo-rust-2.0.0-rc.15-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
+- `butterpollo-setup-2.0.0-rc.16.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
+- For a portable copy, extract `butterpollo-rust-2.0.0-rc.16-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
 - These are unsigned test builds. Keep a copy of your configuration and the previous installer for rollback.
 
 ## Lower latency
