@@ -17,6 +17,8 @@ pub fn run(folder: &Path, start: bool, progress: &Progress) -> Result<()> {
     let service =
         system::service_program(detect::SERVICE).context("Butterpollo service is not installed")?;
     check_service_folder(&service, &install)?;
+    // A reinstall may find the profile folder deleted; the lock lives in it.
+    std::fs::create_dir_all(&profile)?;
     // A non-shared handle rejects another updater until this transaction ends.
     use std::os::windows::fs::OpenOptionsExt;
     let _lock = std::fs::OpenOptions::new()

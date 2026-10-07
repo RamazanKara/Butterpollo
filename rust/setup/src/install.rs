@@ -130,7 +130,14 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
             &install.join("butterpollo-service.exe"),
         )?;
         crate::update::run(&install, options.start, progress)?;
-        // A reinstall also repairs the firewall rule, as it did before.
+        // A reinstall also repairs the profile's permissions and the firewall
+        // rule, as it did before.
+        if let Err(error) = secure_profile(&profile) {
+            notes.push(format!(
+                "The permissions of {} could not be restricted: {error:#}",
+                profile.display()
+            ));
+        }
         if let Err(error) = system::firewall_allow("Butterpollo", &install.join("butterpollo.exe"))
         {
             notes.push(format!(
