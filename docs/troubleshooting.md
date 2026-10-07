@@ -7,6 +7,21 @@ Start with the current stream's settings, the console and the logs. Record the t
 **Find a symptom:** [Pairing](#moonlight-cannot-find-or-pair-with-the-pc) · [Console or port](#the-console-will-not-open-or-a-port-is-occupied) · [Black screen](#black-picture-no-display-or-wgc-fails) · [Blurred PyroWave](#pyrowave-shows-blurred-grey-blocks) · [HDR colour](#hdr-looks-washed-out-too-bright-or-different-between-clients) · [Stutter](#low-latency-is-reported-but-motion-still-stutters) · [Playnite](#playnite-does-not-launch) · [RTSS](#rtss-does-not-start-or-the-game-ignores-the-cap) · [Display restoration](#monitors-stay-on-or-the-display-layout-does-not-return) · [Updates](#an-update-stays-queued) · [Logs and support](#logs-and-a-useful-report)
 **Find a symptom:** [Pairing](#moonlight-cannot-find-or-pair-with-the-pc) · [Console or port](#the-console-will-not-open-or-a-port-is-occupied) · [Black screen](#black-picture-no-display-or-wgc-fails) · [Audio](#audio-cuts-out-or-lags) · [Blurred PyroWave](#pyrowave-shows-blurred-grey-blocks) · [HDR colour](#hdr-looks-washed-out-too-bright-or-different-between-clients) · [Stutter](#low-latency-is-reported-but-motion-still-stutters) · [RTSS](#rtss-does-not-start-or-the-game-ignores-the-cap) · [Display restoration](#monitors-stay-on-or-the-display-layout-does-not-return) · [Updates](#an-update-stays-queued) · [Logs and support](#logs-and-a-useful-report)
 
+## What the stream card warnings mean
+
+The stream card shows the active encoder and warnings for the current session. Each warning also writes a `WARN` log with its cause and a next step. Capture recovery and audio capture warnings clear when those paths recover; packet drops and device changes remain as events from this session. A warning describes a fallback or limitation, not a measured latency penalty.
+
+- **Software or CPU frame copies:** CPU work can limit fps. Automatic no longer switches from failed native AMF/NVENC to another encoder or to software. On AMD, check the AMF error and driver; Software must be selected explicitly, preferably at a lower resolution and frame rate.
+- **Graphics queue conversion/copies:** compute setup failed. A busy game can delay capture or conversion. Lower game GPU load or check the AMD driver.
+- **Desktop Duplication / capture interrupted:** WGC or its helper could not capture. UAC and lock screens can cause a temporary change. Unlock the desktop; if the warning persists, check the helper error. A display size change causes capture to reopen.
+- **Physical display, refresh, HDR or limiter:** the requested setup is unavailable, unsupported or owned by another stream. Check the actual display mode and RTSS. A 60 Hz source cannot supply 116 fresh pictures per second.
+- **Audio:** a missing virtual sink can send sound to the host's speakers. Device changes and capture failures can pause sound; host-loss warnings count late reads and unsent packets. Check the playback device, then lower video bitrate if loss continues.
+- **Bitrate, pacing or FEC:** the encoder/wire budget was limited, packets were dropped, or large frames lost FEC protection. Check Maximum bitrate and the client bitrate. Runtime bitrate updates have a 500 Mbps cap. Leave headroom for audio, packet headers and FEC.
+- **Input:** the selected driver or Windows input API is unavailable. Video continues; repair the named driver or choose a supported profile.
+- **PyroWave:** the client negotiated another codec, or bitrate/recovery protection is insufficient. Use a compatible Nonary Moonlight client and a fast wired network, or choose HEVC/AV1.
+
+NVIDIA users should use [Vibepollo](https://github.com/Nonary/Vibepollo).
+
 ## Moonlight cannot find or pair with the PC
 
 - Open **https://localhost:47990** on the host. If it does not open, check the host/service first.

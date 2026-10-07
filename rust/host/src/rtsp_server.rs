@@ -231,6 +231,18 @@ async fn connection(
                 negotiated.validate()?;
                 negotiated.vrr_low_latency |= launch.vrr_requested;
                 let flags = h.codecs.load(std::sync::atomic::Ordering::Acquire);
+                if let Some(message) = rtsp::codec_warning(
+                    config.get("encoder", "auto"),
+                    negotiated.codec,
+                    flags & 0x0780_0000 != 0,
+                ) {
+                    launch.warnings.set("pyrowave_negotiation", message);
+                } else {
+                    launch.warnings.clear("pyrowave_negotiation");
+                }
+                if negotiated.codec == 3 && !negotiated.pyrowave_records {
+                    launch.warnings.set("pyrowave_fec", "PyroWave adaptive FEC was not negotiated by the client; recovery protection is reduced. Use a compatible Nonary Moonlight client, or HEVC/AV1 on a lossy network.");
+                }
                 let bit = match (negotiated.codec, negotiated.ten_bit()) {
                     (0, false) => 1,
                     (1, false) => 0x100,

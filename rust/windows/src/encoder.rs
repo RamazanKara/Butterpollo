@@ -681,7 +681,12 @@ impl Encoder {
         let preference = butterpollo_core::encoder_policy::canonical_name(preference);
         if config.codec == 3 {
             return Ok(Self::Pyrowave(Box::new(
-                crate::pyrowave::Encoder::new_device(config, image.gpu.clone(), tuning)?,
+                crate::pyrowave::Encoder::new_device_reported(
+                    config,
+                    image.gpu.clone(),
+                    tuning,
+                    warnings.clone(),
+                )?,
             )));
         }
         if config.codec < 3

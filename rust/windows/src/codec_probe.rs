@@ -109,6 +109,9 @@ pub fn pyrowave(config: &Config) -> Result<u32> {
     match reply {
         Reply::Done { flags, errors } => {
             ensure!(flags & !FLAGS == 0, "invalid optional codec flags");
+            if flags == 0 {
+                tracing::warn!(errors = %errors.join("; "), "PyroWave has no usable codec mode; clients may select H.264, HEVC or AV1 instead. Check the packaged PyroWave DLL and AMD graphics driver, then reconnect");
+            }
             for error in errors {
                 tracing::debug!(%error, "optional codec mode unavailable");
             }

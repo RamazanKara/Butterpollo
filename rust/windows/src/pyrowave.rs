@@ -260,6 +260,7 @@ impl ComputePlanes {
     }
 }
 pub struct Encoder {
+    warnings: Arc<butterpollo_core::session::Warnings>,
     api: Arc<Api>,
     device: p::pyrowave_device,
     encoder: p::pyrowave_encoder,
@@ -286,12 +287,21 @@ impl Encoder {
         d3d: Device,
         tuning: &butterpollo_core::config::Config,
     ) -> Result<Self> {
+        Self::new_device_reported(config, d3d, tuning, Default::default())
+    }
+    pub fn new_device_reported(
+        config: &Negotiated,
+        d3d: Device,
+        tuning: &butterpollo_core::config::Config,
+        warnings: Arc<butterpollo_core::session::Warnings>,
+    ) -> Result<Self> {
         let api = Api::load()?;
         let desc = unsafe { d3d.device.cast::<IDXGIDevice>()?.GetAdapter()?.GetDesc()? };
         let mut luid = p::pyrowave_luid { luid: [0; 8] };
         luid.luid[..4].copy_from_slice(&desc.AdapterLuid.LowPart.to_le_bytes());
         luid.luid[4..].copy_from_slice(&desc.AdapterLuid.HighPart.to_le_bytes());
         let mut s = Self {
+            warnings,
             api,
             device: ptr::null_mut(),
             encoder: ptr::null_mut(),
@@ -322,8 +332,12 @@ impl Encoder {
             if !(s.api.device_confirm_interop_support)(s.device) {
                 bail!("Vulkan device cannot import D3D11 textures and fences");
             }
-            let _ =
-                (s.api.device_set_queue_type)(s.device, p::VkQueueFlagBits_VK_QUEUE_COMPUTE_BIT);
+            if let Err(error) = check((s.api.device_set_queue_type)(
+                s.device,
+                p::VkQueueFlagBits_VK_QUEUE_COMPUTE_BIT,
+            )) {
+                s.warnings.set("pyrowave_queue", format!("PyroWave compute queue selection failed ({error:#}); using the runtime's default queue. Game rendering may delay encoding; update the AMD driver or lower game GPU load."));
+            }
             let info = p::pyrowave_encoder_create_info {
                 device: s.device,
                 width: config.width as i32,
@@ -359,6 +373,7 @@ impl Encoder {
                     texture.clone(),
                 )?);
             }
+            self.warnings.clear("pyrowave_conversion");
             if self.use_compute {
                 match ComputePlanes::new(
                     &self.d3d,
@@ -368,7 +383,7 @@ impl Encoder {
                 ) {
                     Ok(planes) => self.compute = Some(planes),
                     Err(error) => {
-                        tracing::warn!(error = %format!("{error:#}"), "PyroWave compute conversion unavailable; converting on the graphics queue")
+                        self.warnings.set("pyrowave_conversion", format!("PyroWave compute conversion unavailable ({error:#}); converting on the graphics queue. Game rendering may delay frames; update the AMD driver or lower GPU load."))
                     }
                 }
             }

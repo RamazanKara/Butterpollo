@@ -313,9 +313,40 @@ pub fn describe(
     s.push_str("a=fmtp:97 surround-params=21101\r\na=fmtp:97 surround-params=642014523\r\na=fmtp:97 surround-params=85301456723\r\na=fmtp:97 surround-params=21101\r\na=fmtp:97 surround-params=660014523\r\na=fmtp:97 surround-params=88001456723\r\n");
     s
 }
+pub fn codec_warning(preference: &str, codec: u8, pyrowave_available: bool) -> Option<String> {
+    if preference != "pyrowave" || codec == 3 {
+        return None;
+    }
+    let selected = ["H.264", "HEVC", "AV1"][codec as usize];
+    let reason = if pyrowave_available {
+        "the client selected another codec"
+    } else {
+        "the host did not advertise a usable PyroWave mode"
+    };
+    Some(format!(
+        "PyroWave was selected on the host, but the client negotiated {selected}: {reason}. Quality and latency may differ; use a compatible Nonary Moonlight client and check PyroWave capability-probe warnings, or select HEVC/AV1 intentionally."
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pyrowave_downgrades_report_the_negotiated_codec_without_rewriting_it() {
+        assert!(
+            codec_warning("pyrowave", 0, false)
+                .unwrap()
+                .contains("negotiated H.264")
+        );
+        assert!(
+            codec_warning("pyrowave", 1, true)
+                .unwrap()
+                .contains("client selected another codec")
+        );
+        assert!(codec_warning("auto", 0, false).is_none());
+        assert!(codec_warning("pyrowave", 3, true).is_none());
+    }
+
     #[test]
     fn fragmented_rtsp_and_duplicate_lengths() {
         let b = b"ANNOUNCE rtsp://host RTSP/1.0\r\nCSeq: 2\r\nContent-Length: 5\r\n\r\nhello";
