@@ -236,21 +236,57 @@ fn restore(directory: &Path) -> Result<()> {
     }
     let policy = Policy::new()?;
     let current = defaults()?;
+    // Every role and the format are tried: one device that is unavailable
+    // (Bluetooth off, a TV's audio not back yet) must not leave the others.
+    // On failure the journal stays; a retry only changes roles still on the
+    // endpoint this host set.
+    let mut failed = None;
     for (index, role) in ROLES.into_iter().enumerate() {
         if current[index].as_deref() == Some(&journal.applied)
             && let Some(before) = &journal.before[index]
+            && let Err(error) = policy.set_default(before, role)
         {
-            policy
-                .set_default(before, role)
-                .context("restoring the previous audio endpoint")?;
+            failed.get_or_insert(error.context("restoring the previous audio endpoint"));
         }
     }
-    if let Some(format) = &journal.format
-        && policy.format(&format.id)? == format.applied
-    {
-        policy.set_format(&format.id, &format.before)?;
+    if let Some(format) = &journal.format {
+        match policy.format(&format.id) {
+            Ok(current) if current == format.applied => {
+                if let Err(error) = policy.set_format(&format.id, &format.before) {
+                    failed.get_or_insert(error);
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                failed.get_or_insert(error);
+            }
+        }
+    }
+    if let Some(error) = failed {
+        return Err(error);
     }
     save(directory, &Journal::default())
+}
+/// The journal of a restore that has not completed yet, if any.
+fn pending(directory: &Path) -> Option<Journal> {
+    let journal: Journal = serde_json::from_slice(&std::fs::read(path(directory)).ok()?).ok()?;
+    (!journal.applied.is_empty() || journal.format.is_some()).then_some(journal)
+}
+/// The defaults to restore after this stream. When a restore is still
+/// pending (the speakers were off when the last stream ended), a role that
+/// is still on the endpoint this host set keeps the original from then: the
+/// current default would be the virtual sink, and the user's speakers would
+/// be lost for good.
+fn originals(current: [Option<String>; 3], pending: Option<&Journal>) -> [Option<String>; 3] {
+    let Some(pending) = pending.filter(|journal| !journal.applied.is_empty()) else {
+        return current;
+    };
+    std::array::from_fn(|index| match &pending.before[index] {
+        Some(original) if current[index].as_deref() == Some(pending.applied.as_str()) => {
+            Some(original.clone())
+        }
+        _ => current[index].clone(),
+    })
 }
 pub fn recover(directory: &Path) -> Result<()> {
     let active = ACTIVE
@@ -467,7 +503,8 @@ impl Route {
         }
         let mut available = endpoints()?;
         // Taken before any driver installation, which can move the defaults.
-        let before = defaults()?;
+        let pending = pending(directory);
+        let before = originals(defaults()?, pending.as_ref());
         if !host_audio && !capture_only && install_steam(config, &available) {
             // The new endpoint appears shortly after installation.
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -541,7 +578,15 @@ impl Route {
         let result = (|| -> Result<()> {
             if managed_virtual && !capture_only {
                 let policy = policy.as_ref().unwrap();
-                let before = policy.format(&selected.id)?;
+                let current = policy.format(&selected.id)?;
+                // A pending restore's original format wins over the one this
+                // host left, as for the default devices.
+                let before = match pending.as_ref().and_then(|j| j.format.as_ref()) {
+                    Some(format) if format.id == selected.id && format.applied == current => {
+                        format.before.clone()
+                    }
+                    _ => current,
+                };
                 let default_format = policy.format(&default.id)?;
                 let bits = valid_bits(&default_format);
                 journal.format = Some(FormatChange {
@@ -671,6 +716,31 @@ impl Drop for Route {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_pending_restore_keeps_the_users_original_speakers() {
+        let some = |id: &str| Some(id.to_owned());
+        let current = [some("virtual"), some("virtual"), some("headset")];
+        // Nothing pending: the current defaults are the originals.
+        assert_eq!(originals(current.clone(), None), current);
+        // The last restore failed while the speakers were off: roles still on
+        // the virtual sink keep the speakers; a role the user changed since
+        // keeps the user's choice.
+        let pending = Journal {
+            before: [some("speakers"), some("speakers"), some("speakers")],
+            applied: "virtual".into(),
+            format: None,
+        };
+        assert_eq!(
+            originals(current.clone(), Some(&pending)),
+            [some("speakers"), some("speakers"), some("headset")]
+        );
+        // A capture-only journal sets no defaults.
+        let capture_only = Journal {
+            applied: String::new(),
+            ..pending
+        };
+        assert_eq!(originals(current.clone(), Some(&capture_only)), current);
+    }
     #[test]
     fn sinks_match_by_id_name_description_or_adapter() {
         let endpoint = |id: &str, name: &str, description: &str, adapter: &str| Endpoint {
