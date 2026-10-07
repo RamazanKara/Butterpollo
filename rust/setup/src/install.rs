@@ -120,6 +120,32 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
     let mut notes = Vec::new();
     let mut restart_needed = false;
 
+    if let Some(current) = &found.service_install {
+        if current.canonicalize()? != install.canonicalize()? {
+            bail!(
+                "Update Butterpollo in its existing folder at {} so the previous version can be restored if needed",
+                current.display()
+            );
+        }
+        crate::update::run(&install, options.start, progress)?;
+        restart_needed |= install_drivers(&install, options, progress, &mut notes);
+        if let Err(error) = system::shortcut(
+            &start_menu_link(),
+            &install.join("Start Butterpollo.exe"),
+            "Open the Butterpollo console",
+        ) {
+            notes.push(format!(
+                "The Start menu shortcut could not be created: {error:#}"
+            ));
+        }
+        return Ok(Outcome {
+            web_port: web_port(&profile),
+            install,
+            restart_needed,
+            notes,
+        });
+    }
+
     progress.set("Unpacking Butterpollo…");
     let staging = system::program_data().join("Butterpollo").join("setup");
     let _ = std::fs::remove_dir_all(&staging);
@@ -273,33 +299,7 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
     }
     secure_profile(&profile)?;
 
-    if options.display_driver && install.join("drivers\\display\\install.ps1").is_file() {
-        progress.set("Installing the virtual display driver…");
-        let script = install.join("drivers\\display\\install.ps1");
-        restart_needed |= run_driver_script(
-            &script,
-            &["-InstallerBestEffort"],
-            &mut notes,
-            "virtual display",
-        );
-        // The host registers its own HDR Vulkan layer; Vibepollo's must not
-        // be active at the same time.
-        run_driver_script(
-            &script,
-            &["-UnregisterVulkanLayerOnly"],
-            &mut Vec::new(),
-            "Vulkan layer",
-        );
-    }
-    if options.gamepad_driver && install.join("drivers\\gamepad\\install.ps1").is_file() {
-        progress.set("Installing the virtual gamepad driver…");
-        restart_needed |= run_driver_script(
-            &install.join("drivers\\gamepad\\install.ps1"),
-            &["-InstallerBestEffort", "-AllowLocalTestCertificate:0"],
-            &mut notes,
-            "virtual gamepad",
-        );
-    }
+    restart_needed |= install_drivers(&install, options, progress, &mut notes);
 
     progress.set("Adding Butterpollo to Start and Apps…");
     if let Err(error) = system::shortcut(
@@ -499,6 +499,40 @@ fn copy_tree(source: &Path, target: &Path) -> Result<()> {
     }
     Ok(())
 }
+fn install_drivers(
+    install: &Path,
+    options: &Options,
+    progress: &Progress,
+    notes: &mut Vec<String>,
+) -> bool {
+    let mut restart_needed = false;
+    if options.display_driver && install.join("drivers\\display\\install.ps1").is_file() {
+        progress.set("Installing the virtual display driver…");
+        let script = install.join("drivers\\display\\install.ps1");
+        restart_needed |=
+            run_driver_script(&script, &["-InstallerBestEffort"], notes, "virtual display");
+        // The host registers its own HDR Vulkan layer; Vibepollo's must not
+        // be active at the same time.
+        run_driver_script(
+            &script,
+            &["-UnregisterVulkanLayerOnly"],
+            &mut Vec::new(),
+            "Vulkan layer",
+        );
+    }
+    if options.gamepad_driver && install.join("drivers\\gamepad\\install.ps1").is_file() {
+        progress.set("Installing the virtual gamepad driver…");
+        restart_needed |= run_driver_script(
+            &install.join("drivers\\gamepad\\install.ps1"),
+            &["-InstallerBestEffort", "-AllowLocalTestCertificate:0"],
+            notes,
+            "virtual gamepad",
+        );
+    }
+
+    restart_needed
+}
+
 /// Run a Vibepollo driver script as SYSTEM. A failure is reported, not
 /// fatal: the host still starts without the driver. Returns whether Windows
 /// needs a restart.

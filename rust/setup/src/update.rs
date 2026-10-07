@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-pub fn run(folder: &Path, progress: &Progress) -> Result<()> {
+pub fn run(folder: &Path, start: bool, progress: &Progress) -> Result<()> {
     detect::scan().check_version()?;
     let profile = install::profile();
     let result = profile.join("update-result.json");
@@ -49,7 +49,7 @@ pub fn run(folder: &Path, progress: &Progress) -> Result<()> {
         .extract(&staged)?;
     let entries = payload::verify(&staged)?;
     let previous = payload::manifest(&install)
-        .context("The installed package has no manifest; run the installer manually")?;
+        .context("The installed package has no readable manifest; restore manifest.json from that release before upgrading")?;
     let paths = previous
         .iter()
         .chain(&entries)
@@ -104,8 +104,10 @@ pub fn run(folder: &Path, progress: &Progress) -> Result<()> {
             )?;
             payload::write_stub(&install.join("uninstall.exe"))?;
             progress.set("Checking that Butterpollo starts…");
-            system::start_service(detect::SERVICE)?;
-            install::wait_ready(install::probe(&profile), Some(env!("CARGO_PKG_VERSION")))?;
+            if start {
+                system::start_service(detect::SERVICE)?;
+                install::wait_ready(install::probe(&profile), Some(env!("CARGO_PKG_VERSION")))?;
+            }
             install::register(&install, &entries)?;
             Ok(())
         },
@@ -360,6 +362,87 @@ impl Backup {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rc_upgrades_and_reinstalls_keep_profiles_and_recover_each_interrupted_copy() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let install = root.path().join("Çağrı Müller/installed");
+        let profile = root.path().join("Çağrı Müller/config");
+        let staged = root.path().join("staged");
+        std::fs::create_dir_all(install.join("assets/web"))?;
+        std::fs::create_dir_all(staged.join("assets/web"))?;
+        std::fs::create_dir_all(profile.join("credentials"))?;
+        let profile_files = [
+            "sunshine.conf",
+            "sunshine_state.json",
+            "sunshine_credentials.json",
+            "apps.json",
+            "vibeshine_state.json",
+            "credentials/cacert.pem",
+            "credentials/cakey.pem",
+            "display-state.json",
+            "cover.png",
+        ];
+        for name in profile_files {
+            std::fs::write(profile.join(name), format!("user-owned {name}"))?;
+        }
+        let files = [
+            "butterpollo.exe",
+            "butterpollo-service.exe",
+            "assets/web/index.html",
+        ];
+        let paths = files
+            .iter()
+            .map(|name| (*name).into())
+            .chain(["new.dll".into()])
+            .collect();
+        for version in ["2.0.0-rc.20", "2.0.0-rc.21"] {
+            for copied in 0..=files.len() {
+                for name in files {
+                    std::fs::write(install.join(name), "2.0.0-rc.20")?;
+                    std::fs::write(staged.join(name), version)?;
+                }
+                let backup = root.path().join(format!("previous-{version}-{copied}"));
+                let saved = Backup::create(&install, &backup, &paths)?;
+                let result = profile.join("update-result.json");
+                write_record(
+                    &result,
+                    &json!({"version":version,"phase":"installing","backup":backup,"install":install}),
+                )?;
+                for name in files.iter().take(copied) {
+                    install::replace_file(&staged.join(name), &install.join(name))?;
+                }
+                std::fs::write(install.join("new.dll"), b"new")?;
+                recover_locked(&result)?;
+                for name in files {
+                    assert_eq!(std::fs::read(install.join(name))?, b"2.0.0-rc.20");
+                }
+                assert!(!install.join("new.dll").exists());
+                attempt_install(
+                    &saved,
+                    &install,
+                    || {
+                        for name in files {
+                            install::replace_file(&staged.join(name), &install.join(name))?;
+                        }
+                        Ok(())
+                    },
+                    || panic!("successful update must not roll back"),
+                    || panic!(),
+                )
+                .map_err(|failure| failure.error)?;
+                for name in files {
+                    assert_eq!(std::fs::read(install.join(name))?, version.as_bytes());
+                }
+                for name in profile_files {
+                    assert_eq!(
+                        std::fs::read(profile.join(name))?,
+                        format!("user-owned {name}").as_bytes()
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
     #[test]
     fn startup_failure_restores_files_before_restarting_the_previous_host() -> Result<()> {
         let root = tempfile::tempdir()?;

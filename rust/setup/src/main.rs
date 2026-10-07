@@ -123,7 +123,7 @@ fn main() {
             Some(folder) if args.quiet && !args.uninstall => {
                 let folder = folder.clone();
                 match ui::progress(TITLE, "Updating Butterpollo", true, move |progress| {
-                    update::run(&folder, &progress)
+                    update::run(&folder, true, &progress)
                 }) {
                     Ok(()) => 0,
                     Err(error) => failed(true, "Butterpollo could not be updated", &error),
