@@ -612,7 +612,10 @@ fn load_library(path: &std::path::Path, default: Value) -> Result<Value> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(default),
         Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
     };
-    let parsed = serde_json::from_slice::<Value>(&bytes)
+    let Some(json) = butterpollo_core::state::json_bytes(&bytes) else {
+        return Ok(default);
+    };
+    let parsed = serde_json::from_slice::<Value>(json)
         .map_err(anyhow::Error::from)
         .and_then(|document| {
             serde_json::from_value::<Vec<App>>(document.get("apps").cloned().unwrap_or(json!([])))?;
@@ -656,9 +659,17 @@ mod tests {
         );
         std::fs::write(&path, b"{\"apps\":[{\"name\":\"Game\"}]}").unwrap();
         assert_eq!(
-            load_library(&path, default).unwrap()["apps"][0]["name"],
+            load_library(&path, default.clone()).unwrap()["apps"][0]["name"],
             "Game"
         );
+        // Notepad's byte order mark, and a blank file Vibepollo reads as missing.
+        std::fs::write(&path, b"\xef\xbb\xbf{\"apps\":[{\"name\":\"Noted\"}]}").unwrap();
+        assert_eq!(
+            load_library(&path, default.clone()).unwrap()["apps"][0]["name"],
+            "Noted"
+        );
+        std::fs::write(&path, b"\r\n").unwrap();
+        assert_eq!(load_library(&path, default.clone()).unwrap(), default);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

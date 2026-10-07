@@ -9,11 +9,24 @@ use std::{
     path::Path,
 };
 
+/// The JSON in a state file, as Vibepollo reads it: a UTF-8 byte order mark
+/// is dropped, and a blank file holds nothing (None).
+pub fn json_bytes(bytes: &[u8]) -> Option<&[u8]> {
+    let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
+    bytes
+        .iter()
+        .any(|b| !b" \t\r\n\x0b\x0c".contains(b))
+        .then_some(bytes)
+}
 /// Never turn an unreadable existing identity file into a fresh empty host.
+/// A blank file has nothing to lose and reads as a missing one.
 pub fn load_json(path: &Path, default: Value) -> Result<Value> {
     match std::fs::read(path) {
-        Ok(b) => serde_json::from_slice(&b)
-            .with_context(|| format!("invalid JSON in {}", path.display())),
+        Ok(b) => match json_bytes(&b) {
+            Some(json) => serde_json::from_slice(json)
+                .with_context(|| format!("invalid JSON in {}", path.display())),
+            None => Ok(default),
+        },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(default),
         Err(e) => Err(e.into()),
     }
@@ -330,6 +343,27 @@ mod tests {
         std::fs::write(&p, b"broken").unwrap();
         assert!(PairedState::load(&p).is_err());
         assert_eq!(std::fs::read(&p).unwrap(), b"broken");
+    }
+    #[test]
+    fn a_byte_order_mark_is_skipped_and_a_blank_file_reads_as_missing() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("state.json");
+        std::fs::write(&p, b"\xef\xbb\xbf{\"root\":{\"uniqueid\":\"same-id\"}}").unwrap();
+        assert_eq!(
+            load_json(&p, json!(null)).unwrap(),
+            json!({"root":{"uniqueid":"same-id"}})
+        );
+        assert_eq!(PairedState::load(&p).unwrap().unique_id, "same-id");
+        for blank in [&b""[..], b"\xef\xbb\xbf", b" \r\n\t"] {
+            std::fs::write(&p, blank).unwrap();
+            assert_eq!(
+                load_json(&p, json!({"apps":[]})).unwrap(),
+                json!({"apps":[]})
+            );
+            assert!(PairedState::load(&p).unwrap().clients.is_empty());
+        }
+        std::fs::write(&p, b"\xef\xbb\xbf broken").unwrap();
+        assert!(load_json(&p, json!(null)).is_err());
     }
     #[test]
     fn atomic_state_replacement_and_unknown_fields() {
