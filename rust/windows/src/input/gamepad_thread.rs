@@ -127,7 +127,7 @@ impl GamepadThread {
     pub fn send(&self, event: Event) {
         let mut queue = self.shared.queue.lock().unwrap();
         if !enqueue(&mut queue.events, event) && !std::mem::replace(&mut queue.full, true) {
-            self.shared.warnings.set("input_gamepad_queue", "Virtual gamepad driver is not keeping up; controller input was dropped. Check the virtual gamepad driver or choose another supported profile.");
+            self.shared.warnings.event("input_gamepad_queue", "Virtual gamepad driver is not keeping up; controller input was dropped. Check the virtual gamepad driver or choose another supported profile.", butterpollo_core::session::EVENT_PERIOD);
         }
         drop(queue);
         self.shared.wake.notify_one();
@@ -236,7 +236,7 @@ fn run<P: Pads>(
             }
             let Some(pads) = &mut pads else { continue };
             match pads.apply(&event) {
-                Err(error) => shared.warnings.set("input_gamepad_injection", format!("Controller input failed ({error:#}); some controls may not work. Check the selected gamepad profile and virtual driver.")),
+                Err(error) => shared.warnings.event("input_gamepad_injection", format!("Controller input failed ({error:#}); some controls may not work. Check the selected gamepad profile and virtual driver."), butterpollo_core::session::EVENT_PERIOD),
                 Ok(()) => {
                     if let Event::Arrival {
                         id, capabilities, ..

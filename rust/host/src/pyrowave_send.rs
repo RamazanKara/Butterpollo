@@ -75,6 +75,11 @@ impl Sender {
                     let mut last_stamp = start;
                     let mut link_due = start;
                     let mut link = 0;
+                    let mut fec_reported: Option<Instant> = None;
+                    let requested_fec = config.integer("pyrowave_critical_fec_percentage", 20);
+                    if requested_fec != requested_fec.clamp(0, 255) {
+                        current.launch.warnings.set("pyrowave_fec_config", format!("PyroWave critical FEC {requested_fec}% is outside 0-255; using {}%. Correct the critical FEC setting.", requested_fec.clamp(0, 255)));
+                    }
                     while !shared.stop.load(Ordering::Acquire)
                         && !current.stopping()
                         && !host.stop.load(Ordering::Acquire)
@@ -119,10 +124,6 @@ impl Sender {
                             .integer("pyrowave_critical_fec_percentage", 20)
                             .clamp(0, 255)
                             as usize;
-                        let requested_fec = config.integer("pyrowave_critical_fec_percentage", 20);
-                        if requested_fec != requested_fec.clamp(0, 255) {
-                            current.launch.warnings.set("pyrowave_fec_config", format!("PyroWave critical FEC {requested_fec}% is outside 0-255; using {critical_percentage}%. Correct the critical FEC setting."));
-                        }
                         let bitrate = current.bitrate.load(Ordering::Relaxed);
                         let kbps = if current.config.configured_bitrate_kbps > 0 {
                             (u64::from(current.config.configured_bitrate_kbps) * u64::from(bitrate)
@@ -153,12 +154,15 @@ impl Sender {
                         ) {
                             Ok(packets) => packets,
                             Err(error) => {
-                                current.launch.warnings.set("pyrowave_frame", format!("PyroWave frame dropped ({error:#}); the client may hold the previous picture. Lower bitrate or resolution to stay within Moonlight's packet limit, or use HEVC/AV1."));
+                                current.launch.warnings.event("pyrowave_frame", format!("PyroWave frame dropped ({error:#}); the client may hold the previous picture. Lower bitrate or resolution to stay within Moonlight's packet limit, or use HEVC/AV1."), butterpollo_core::session::EVENT_PERIOD);
                                 continue;
                             }
                         };
-                        if fec_limited {
-                            current.launch.warnings.set("pyrowave_fec_frame", "PyroWave critical FEC was omitted: the coarse picture, parity or packet alignment cannot fit the supported wire blocks. Recovery protection is reduced; restore the default packet size, lower resolution/FEC, or use HEVC/AV1 on a lossy link.");
+                        if fec_limited
+                            && fec_reported.is_none_or(|at| at.elapsed() >= Duration::from_secs(1))
+                        {
+                            fec_reported = Some(Instant::now());
+                            current.launch.warnings.event("pyrowave_fec_frame", "PyroWave critical FEC was omitted: the coarse picture, parity or packet alignment cannot fit the supported wire blocks. Recovery protection is reduced; restore the default packet size, lower resolution/FEC, or use HEVC/AV1 on a lossy link.", butterpollo_core::session::EVENT_PERIOD);
                         }
                         let overhead = butterpollo_core::network_pacing::overhead(peer.is_ipv6());
                         let packet_bytes = current.config.packet_size
@@ -215,7 +219,7 @@ impl Sender {
                             }
                         }
                         if batch.dropped != dropped {
-                            current.launch.warnings.set("network_send", "PyroWave video packets were dropped by the host after transient socket send failures. Lower bitrate and check the network adapter; the log includes the socket error code.");
+                            current.launch.warnings.event("network_send", "PyroWave video packets were dropped by the host after transient socket send failures. Lower bitrate and check the network adapter; the log includes the socket error code.", butterpollo_core::session::EVENT_PERIOD);
                         }
                         current.stats.latency_us.store(latency, Ordering::Relaxed);
                         current.stats.frames.fetch_add(1, Ordering::Relaxed);

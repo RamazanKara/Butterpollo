@@ -9,7 +9,7 @@ Start with the current stream's settings, the console and the logs. Record the t
 
 ## What the stream card warnings mean
 
-The stream card shows the active encoder and warnings for the current session. Each warning also writes a `WARN` log with its cause and a next step. Capture recovery and audio capture warnings clear when those paths recover; packet drops and device changes remain as events from this session. A warning describes a fallback or limitation, not a measured latency penalty.
+The stream card shows the active encoder and warnings for the current session. Each warning also writes a `WARN` log with its cause and a next step. Capture recovery and audio capture warnings clear when those paths recover. Dropped packets, frames and input, and audio device changes, stay on the card for 30 seconds after they last happened. A warning describes a fallback or limitation, not a measured latency penalty.
 
 - **Software or CPU frame copies:** CPU work can limit fps. Automatic no longer switches from failed native AMF/NVENC to another encoder or to software. On AMD, check the AMF error and driver; Software must be selected explicitly, preferably at a lower resolution and frame rate.
 - **Graphics queue conversion/copies:** compute setup failed. A busy game can delay capture or conversion. Lower game GPU load or check the AMD driver.

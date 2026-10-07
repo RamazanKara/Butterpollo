@@ -979,7 +979,7 @@ impl Encoder {
             .is_some_and(|s| s.started.elapsed() > Duration::from_secs(2))
         {
             let stale = self.in_flight.pop_front();
-            self.warnings.set("encoder_dropped", format!("AMF returned no output for frame {:?} within two seconds; dropping it and requesting a keyframe. You may see a pause; lower game GPU load or update the AMD driver if this repeats.", stale.map(|s| s.pts)));
+            self.warnings.event("encoder_dropped", format!("AMF returned no output for frame {:?} within two seconds; dropping it and requesting a keyframe. You may see a pause; lower game GPU load or update the AMD driver if this repeats.", stale.map(|s| s.pts)), butterpollo_core::session::EVENT_PERIOD);
             self.recover = true;
         }
         unsafe {
@@ -1189,6 +1189,7 @@ impl Encoder {
                 return Ok(());
             }
             self.warnings.clear("encoder_bitrate");
+            let mut buffer_applied = true;
             for suffix in [
                 "PeakBitrate",
                 "VBVBufferSize",
@@ -1234,10 +1235,14 @@ impl Encoder {
                             scaled = scaled.min((*info).maxValue.__bindgen_anon_1.int64Value);
                         }
                         if let Err(error) = self.property_raw(&name, int(scaled)) {
+                            buffer_applied = false;
                             self.warnings.set("encoder_buffer", format!("AMF rate-control buffer update rejected ({error:#}); the driver retained its old buffer and may exceed the expected frame budget. Reconnect at the desired bitrate or update the AMD driver."));
                         }
                     }
                 }
+            }
+            if buffer_applied {
+                self.warnings.clear("encoder_buffer");
             }
             self.bitrate = bitrate;
         }

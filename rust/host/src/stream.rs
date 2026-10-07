@@ -993,6 +993,7 @@ impl Media {
                     let mut link = None;
                     let mut link_due = Instant::now();
                     let mut reported_pacing = None;
+                    let mut fec_reported = None;
                     let batch_kb = match c.integer("video_max_batch_size_kb", 64) {
                         16 => 16,
                         32 => 32,
@@ -1031,13 +1032,19 @@ impl Media {
                             let packets = match packetizer.encode_recovery(&frame.bytes,frame.idr,frame.after_invalidation,timestamp,processing) {
                                 Ok(packets) => packets,
                                 Err(error) => {
-                                    s.launch.warnings.set("network_frame", format!("Encoded video frame dropped ({error:#}); requesting a recovery frame. Lower bitrate or resolution to stay within Moonlight's packet limit."));
+                                    s.launch.warnings.event("network_frame", format!("Encoded video frame dropped ({error:#}); requesting a recovery frame. Lower bitrate or resolution to stay within Moonlight's packet limit."), butterpollo_core::session::EVENT_PERIOD);
                                     s.request_idr();
                                     continue;
                                 }
                             };
-                            if packetizer.fec_limited(frame.bytes.len()) {
-                                s.launch.warnings.set("network_fec", "FEC was omitted for large video frames because they exceed the four-block wire limit. Packet loss is harder to recover; lower bitrate or resolution to keep FEC protection.");
+                            // A keyframe, as at the start of every stream, may be too
+                            // large for FEC; only ordinary frames make this worth showing.
+                            if !frame.idr
+                                && packetizer.fec_limited(frame.bytes.len())
+                                && fec_reported.is_none_or(|at: Instant| at.elapsed() >= Duration::from_secs(1))
+                            {
+                                fec_reported = Some(Instant::now());
+                                s.launch.warnings.event("network_fec", "FEC was omitted for large video frames because they exceed the four-block wire limit. Packet loss is harder to recover; lower bitrate or resolution to keep FEC protection.", butterpollo_core::session::EVENT_PERIOD);
                             }
                             next_wire_frame.set(u64::from(packetizer.frame));
                             let frame_bytes = packets.iter().map(|p|p.len() as u64).sum();
@@ -1077,7 +1084,7 @@ impl Media {
                                 s.stats.bytes.fetch_add(bytes as u64, Ordering::Relaxed);
                             }
                             if batch.dropped != dropped {
-                                s.launch.warnings.set("network_send", "Video packets were dropped by the host after transient socket send failures. You may see stutter or recovery frames; lower bitrate and check the network adapter. The log includes the socket error code.");
+                                s.launch.warnings.event("network_send", "Video packets were dropped by the host after transient socket send failures. You may see stutter or recovery frames; lower bitrate and check the network adapter. The log includes the socket error code.", butterpollo_core::session::EVENT_PERIOD);
                             }
                             s.stats.frames.fetch_add(1, Ordering::Relaxed);
                             let sent = Instant::now();
@@ -1667,7 +1674,7 @@ impl Media {
                     };
                     if selected != sink {
                         if !sink.is_empty() {
-                            s.launch.warnings.set("audio_device_changed", "Audio capture device changed because the Windows default playback device changed. WASAPI is reopening and sound may briefly pause; select a fixed capture sink if the change was unintended.");
+                            s.launch.warnings.event("audio_device_changed", "Audio capture device changed because the Windows default playback device changed. WASAPI is reopening and sound may briefly pause; select a fixed capture sink if the change was unintended.", butterpollo_core::session::EVENT_PERIOD);
                         }
                         capture = None;
                         sink = selected;
@@ -2088,20 +2095,20 @@ impl Media {
                     let inputs = std::mem::take(&mut p.inputs);
                     if let Some(i) = &mut p.injector {
                         for e in i.apply_all(&inputs) {
-                            s.launch.warnings.set("input_injection", format!("Input injection failed ({e:#}); keyboard, mouse, touch or pen actions may be missing. Unlock the desktop and check Windows input permissions or disable native touch/pen if unsupported."));
+                            s.launch.warnings.event("input_injection", format!("Input injection failed ({e:#}); keyboard, mouse, touch or pen actions may be missing. Unlock the desktop and check Windows input permissions or disable native touch/pen if unsupported."), butterpollo_core::session::EVENT_PERIOD);
                         }
                     }
                     if !poll_feedback
                         && let Some(i) = &mut p.injector
                         && let Err(e) = i.due()
                     {
-                        s.launch.warnings.set("input_repeat", format!("Input release or repeat failed ({e:#}); held controls may not update. Unlock the desktop or reconnect."));
+                        s.launch.warnings.event("input_repeat", format!("Input release or repeat failed ({e:#}); held controls may not update. Unlock the desktop or reconnect."), butterpollo_core::session::EVENT_PERIOD);
                     }
                     if poll_feedback
                         && let Some(i) = &mut p.injector
                         && let Err(e) = i.refresh()
                     {
-                        s.launch.warnings.set("input_pointer", format!("Touch/pen pointer refresh failed ({e:#}); pointer updates may be missing. Unlock the desktop or disable native touch/pen if Windows does not support it."));
+                        s.launch.warnings.event("input_pointer", format!("Touch/pen pointer refresh failed ({e:#}); pointer updates may be missing. Unlock the desktop or disable native touch/pen if Windows does not support it."), butterpollo_core::session::EVENT_PERIOD);
                     }
                     // The gamepad thread polls feedback every 8 ms; pass on
                     // what it found, and the sensors an arrived pad has.
