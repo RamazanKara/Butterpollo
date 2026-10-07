@@ -579,12 +579,15 @@ fn run_driver_script(script: &Path, args: &[&str], notes: &mut Vec<String>, name
             return false;
         }
     };
-    if output.contains("DRIVER_WARNING") || code != 0 {
+    driver_result(code, &output, notes, name)
+}
+fn driver_result(code: i32, output: &str, notes: &mut Vec<String>, name: &str) -> bool {
+    if output.contains("DRIVER_WARNING") || !matches!(code, 0 | 3010) {
         notes.push(format!(
             "The {name} driver reported a problem; see the setup log."
         ));
     }
-    output.contains("RESTART_REQUIRED") || output.contains("A reboot is required")
+    code == 3010 || output.contains("RESTART_REQUIRED") || output.contains("A reboot is required")
 }
 fn remove_legacy(product: &crate::detect::Product) -> Result<()> {
     let command = product
@@ -717,6 +720,22 @@ pub(crate) fn wait_ready(address: SocketAddr, version: Option<&str>) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn driver_reboot_exit_codes_are_successful_but_warnings_are_shown() {
+        let mut notes = Vec::new();
+        assert!(driver_result(3010, "", &mut notes, "display"));
+        assert!(notes.is_empty());
+        assert!(!driver_result(0, "", &mut notes, "gamepad"));
+        assert!(!driver_result(
+            0,
+            "VIRTUAL_DISPLAY_DRIVER_WARNING",
+            &mut notes,
+            "display"
+        ));
+        assert_eq!(notes.len(), 1);
+        assert!(!driver_result(1, "failed", &mut notes, "gamepad"));
+        assert_eq!(notes.len(), 2);
+    }
     #[test]
     fn setup_refuses_streams_pending_connections_apps_and_unknown_status() {
         for counts in [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]] {
