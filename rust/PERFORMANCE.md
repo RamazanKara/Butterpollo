@@ -2646,6 +2646,162 @@ the driver's value (`AMF split-frame encoding left to the driver` or
 7900 XT `auto` writes nothing. Whether a driver that ships with it off then
 splits frames, and whether RDNA2 cards with two engines do, was not
 measured here.
+## 2026-10-07: send PyroWave FEC blocks sooner
+
+These measurements use an AMD RX 7900 XT (driver 32.0.31041.1004) and Ryzen
+7 5800X3D. The baseline is `523aa283794690a3cd3beb3ca3ed2b172ecd87bb`.
+NVIDIA users should use [Vibepollo](https://github.com/Nonary/Vibepollo);
+this experiment does not measure NVIDIA hardware.
+
+The sender now prepares and sends one FEC block at a time. The coarse block
+and its parity leave before later blocks are copied into RTP shards and
+encrypted; preparing the next block can use part of the previous batch's
+pacing interval. Record packing sizes its fit tree to the records present
+and stops updating ancestors once their earliest record is unchanged.
+`DetailFec` uses a pre-sized hash map for record lookup; it never depends on
+map iteration order. Its stability thresholds, wire budget and FEC plans
+are unchanged. An abandoned iterator advances the frame number once a
+block has escaped and keeps the consumed sequence numbers and nonces.
+
+Temporary probes timed mapped-bitstream access and SDK packetizing,
+`record_frame`, `DetailFec::observe`, layout/FEC planning, shard allocation
+and copying, parity, encryption, pacing waits and Winsock calls. They also
+recorded the first send batch and final send relative to capture claim and
+presentation. These logs are removed from production; the existing
+`stream timings` counters remain. "Sent" here means the socket call
+returned, not a hardware timestamp on a physical link. The first-batch
+measurement includes sending every datagram in that batch.
+
+The encoder probe used `windows/examples/performance.rs --codec pyrowave
+--records --hdr --yuv444 --paced --synthetic 8 --seconds 6`, with
+`--width 1920 --height 1080 --fps 120 --bitrate 400000` and
+`--width 3840 --height 2160 --fps 60 --bitrate 800000`. All eight probes in
+the two complete A/B pairs reached the requested cadence. Mean encoder
+submission-to-output time, including packetizing and record packing, was
+0.969–0.972 ms before / 0.963–0.969 ms after at 1080p, and 2.467–2.565 ms
+before / 2.612–2.850 ms after at 4K. These are not GPU-only encode times.
+
+The 12-second encrypted host runs used the isolated `release/e2e.py`
+fixtures and the pinned Nonary transport referenced above, with GPU decode
+removed from a temporary receiver. The receiver still decrypts and
+assembles the stream; its inherited "decoded" counter counts delivered
+frames in this mode. The source was a 5120×1440 SDR desktop with the motion
+strip, scaled to the requested HDR 4:4:4 output. This does not validate
+native HDR capture or client display latency. `pacing_max_bitrate_kbps=0`
+was unchanged: loopback has no reported physical link speed, so the
+measured pacing rates were about 442 Mbps and 880 Mbps, including the
+existing headroom/traffic-demand rule. The requested codec rates were
+400 and 800 Mbps; negotiation reported 398,988 and 798,988 kbps.
+
+The installed service log ended in `CLIENT DISCONNECTED` before every
+GPU batch. Other worktrees were compiling and running GPU tests. Runs
+alternated A/B/A/B; a port collision interrupted an intermediate pair,
+which is excluded. The repeat used unused fixture ports 51618–51644.
+Complete transport runs are `target/pw-pipeline/transport-{before,after}-{1,3}`;
+per-stage summaries are in `target/pw-pipeline/transport-summary.json`.
+These local artifacts are not shipped.
+
+Mean time per frame in the first complete pair, milliseconds (before → after):
+
+| Stage | 1080p120 / 400 Mbps | 4K60 / 800 Mbps |
+|---|---:|---:|
+| Mapped access and SDK packetizing | 0.554 → 0.538 | 1.168 → 1.162 |
+| Record packing | 0.239 → 0.231 | 0.968 → 0.877 |
+| Adaptive detail FEC observation | 0.299 → 0.212 | 0.929 → 0.124 |
+| Layout and FEC planning | 0.035 → 0.042 | 0.174 → 0.266 |
+| RTP shard allocation/copying | 0.037 → 0.046 | 0.128 → 0.102 |
+| Parity computation | 0.001 → 0.002 | 0.007 → 0.007 |
+| Headers and encryption | 0.296 → 0.299 | 0.871 → 0.804 |
+| Pacing waits | 7.439 → 7.598 | 12.120 → 11.438 |
+| Socket sends | 1.264 → 1.455 | 3.393 → 2.744 |
+
+Stage means use each stage's completed frames; frames replaced while
+waiting for the sender mean these columns are not one additive timeline.
+The large 4K detail-observation change also reflects more frames arriving
+within the nominal interval, where the existing controller skips hashing.
+It is not a measurement of the map replacement alone. In the second pair,
+4K record packing was 1.198 → 1.345 ms and socket sends 4.281 → 4.705 ms,
+showing the background-load variation.
+
+Ranges of the two run means, milliseconds:
+
+| Measurement | 1080p before | 1080p after | 4K before | 4K after |
+|---|---:|---:|---:|---:|
+| Encoder return → first send batch | 5.18–5.23 | 4.35–4.47 | 9.96–10.77 | 2.06–8.84 |
+| Encoder return → last send | 13.60–13.61 | 13.38–13.71 | 25.33–26.99 | 17.03–26.05 |
+| Present → first send batch | 6.50–8.07 | 5.68–5.80 | 13.02–13.97 | 6.93–14.23 |
+| Present → last send | 14.87–16.49 | 14.72–15.05 | 28.39–30.20 | 21.90–31.44 |
+
+Present-to-last-send p95 ranged from 18.77–23.23 ms before to
+18.71–19.10 ms after at 1080p, and 36.42–37.96 ms before to
+30.91–41.09 ms after at 4K. The stream's own rolling `stream timings`
+reported mean present-to-send of 14.85–19.41 → 14.60–14.85 ms and
+28.49–30.56 → 20.48–31.34 ms respectively. This supports earlier first
+sends after encoder return, but not a consistent 4K present-latency or
+1080p completion improvement under this shared load.
+
+A CPU replay separates preparation from that background GPU/capture load.
+It used identical synthetic, structurally valid records (not encoded
+pictures), 419,536 / 1,679,240 raw bytes,
+and verified both packers produced identical framed bytes. It alternated
+the old/new packer and controller and the eager/incremental packet APIs
+150 times per size after ten warmups, with encrypted 1360-byte packetizer
+settings and 20% critical FEC. Detail observation used unchanged frames
+20 ms apart. This measures CPU work, not socket or presentation latency:
+
+| Replay stage, mean / p95 ms | 1080p before | 1080p after | 4K before | 4K after |
+|---|---:|---:|---:|---:|
+| Record packing | 0.403 / 0.542 | 0.307 / 0.405 | 1.177 / 1.481 | 1.067 / 1.380 |
+| Detail observation | 0.275 / 0.364 | 0.200 / 0.268 | 1.164 / 1.418 | 0.614 / 0.822 |
+| First block ready, including planning | 0.489 / 0.583 | 0.064 / 0.099 | 1.749 / 2.051 | 0.214 / 0.279 |
+
+The eager API must finish every block before returning the first. Building
+and releasing all blocks still took 0.531 → 0.467 ms and 1.828 → 1.791 ms;
+most of the first-block saving moves later work out of its way. The replay
+and its log remain in `target/pw-pipeline/pyrowave_pipeline_probe.rs` and
+`target/pw-pipeline/cpu-replay.log`.
+
+Pacing remains the largest cost. The existing sender already uses
+`WSASendMsg` scatter/gather with UDP segmentation and `Timer::until_precise`;
+there is no additional payload concatenation in the socket path. Sending
+at FEC boundaries increased mean socket calls from about 7 to 9 at 1080p
+and 21 to 22 at 4K. Critical parity cost only microseconds in these runs,
+so no parity worker or timer change was added. The SDK still packetizes
+into its reusable CPU buffer before record packing; skipping that copy
+would require replacing SDK packetization, not simply borrowing its raw
+mapped buffer. Encryption remains in place in the final shards.
+
+Compatibility checks preserve the ordering required by
+[Nonary's pinned FEC queue](https://github.com/Nonary/moonlight-common-c/blob/d6a11bc685b41037b352a96f29d08276fe5359ba/src/RtpVideoQueue.c)
+and the critical-packet count and restart markers used by its
+[depacketizer](https://github.com/Nonary/moonlight-common-c/blob/d6a11bc685b41037b352a96f29d08276fe5359ba/src/VideoDepacketizer.c).
+Twelve golden packet fingerprints were regenerated from the baseline
+source and match, including framing, critical/detail parity, encryption,
+unaligned payload fallback, minimum parity and sequence/frame wraps over
+two consecutive frames. Separate tests cover abandoning a partial frame
+and the old controller's exact decisions through record reordering,
+sequence changes, motion, a nominal-cadence reset and a pause.
+
+The final release build generated all 24 native record/container transport
+fixtures. `tests/pyrowave_transport.py` matched parity against the original
+C++ nanors DLL, recovered 12 deliberately lost coarse shards across the
+protected fixtures, and decoded every recovered frame with the independent
+vendor decoder. The final encrypted live decoder runs also passed the
+receiver's interoperability checks: 1,180/1,180 frames at 1080p and 537/537
+at 4K, with zero partial frames or decoding failures. They do not establish
+120/60 fps playback. Earlier shared-GPU decoder runs logged queue overflows
+and failures in both versions; the latency comparison therefore uses the
+transport-only receiver described above.
+
+The generic e2e evaluator still returns failure because this receiver
+does not emit its picture/motion/tone timing fields. These are transport
+and PyroWave decode checks, not a strict e2e evaluator pass. Final checks:
+`cargo fmt --all`; clippy for core, host and Windows with all targets and
+warnings denied; 158 core tests passed; 46 host tests passed with two
+pre-existing ignored tests; and the release host/examples build passed.
+No web files changed. The installed service and display configuration
+were not changed.
+
 ## Limits
 
 This machine validates AMD AMF. Native NVENC now calls the installed NVIDIA driver directly, supports reviewed API versions 11.0–13.0, reference frame invalidation, D3D11 4:2:0/8-bit 4:4:4 and GPU-only CUDA interop for ten-bit 4:4:4. Seven mock-driver tests exercise compatibility, asynchronous ownership, timeout teardown, metadata lifetime, loss recovery and bitrate changes; NVIDIA execution/performance still needs NVIDIA hardware. QSV has native D3D11 imports, and TrueHDR has a shared-device GPU path; these need Intel/NVIDIA hardware respectively. PyroWave uses shared D3D11/Vulkan planar GPU inputs and reads back only the encoded bitstream. Unsupported native formats and software encoding use CPU compatibility paths. The wired LAN checks above do not establish Wi-Fi performance, multiple concurrent 4K sessions, dynamic game content, native 4K capture or end-to-end input/display latency. The GPU texture pools and native encoder queues are bounded to eight retained frames; capacity runs may intentionally keep those queues occupied. [PARITY.md](PARITY.md) separates implemented features from native validation.

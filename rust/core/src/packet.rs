@@ -162,6 +162,18 @@ impl VideoPacketizer {
     ) -> Result<Vec<Vec<u8>>> {
         self.encode_frame(payload, true, false, timestamp, latency_us, Some(fec))
     }
+    /// Prepare each FEC block only when the sender needs it. Earlier blocks
+    /// can leave while later blocks still need framing, parity and encryption.
+    /// Dropping the iterator discards the unsent remainder of this frame.
+    pub fn pyrowave_blocks<'a>(
+        &'a mut self,
+        payload: &'a [u8],
+        timestamp: u32,
+        latency_us: u64,
+        fec: PyrowaveFec,
+    ) -> Result<(usize, impl Iterator<Item = Result<Vec<Vec<u8>>>> + 'a)> {
+        self.frame_blocks(payload, true, false, timestamp, latency_us, Some(fec))
+    }
     fn encode_frame(
         &mut self,
         payload: &[u8],
@@ -171,6 +183,29 @@ impl VideoPacketizer {
         latency_us: u64,
         pyrowave: Option<PyrowaveFec>,
     ) -> Result<Vec<Vec<u8>>> {
+        let (count, blocks) = self.frame_blocks(
+            payload,
+            idr,
+            after_invalidation,
+            timestamp,
+            latency_us,
+            pyrowave,
+        )?;
+        let mut packets = Vec::with_capacity(count);
+        for block in blocks {
+            packets.extend(block?);
+        }
+        Ok(packets)
+    }
+    fn frame_blocks<'a>(
+        &'a mut self,
+        payload: &'a [u8],
+        idr: bool,
+        after_invalidation: bool,
+        timestamp: u32,
+        latency_us: u64,
+        pyrowave: Option<PyrowaveFec>,
+    ) -> Result<(usize, impl Iterator<Item = Result<Vec<Vec<u8>>>> + 'a)> {
         if !(256..=1400).contains(&self.packet_size) || self.fec_percent > 100 {
             bail!("invalid packetizer parameters");
         }
@@ -261,9 +296,9 @@ impl VideoPacketizer {
             .iter()
             .map(|b| b.data + crate::pyrowave::parity(b.data, b.percentage, minimum))
             .sum();
-        let mut packets = Vec::with_capacity(packet_count);
         let mut first_shard = 0;
-        for (block, planned) in plan.iter().enumerate() {
+        let frame = self.frame;
+        let blocks = plan.into_iter().enumerate().map(move |(block, planned)| {
             if first_shard >= total_shards {
                 bail!("invalid FEC block split");
             }
@@ -296,7 +331,7 @@ impl VideoPacketizer {
                 s[32 + h..32 + h + n].copy_from_slice(&payload[begin..begin + n]);
                 s[16..20]
                     .copy_from_slice(&(self.sequence.wrapping_add(i as u32) << 8).to_le_bytes());
-                s[20..24].copy_from_slice(&self.frame.to_le_bytes());
+                s[20..24].copy_from_slice(&frame.to_le_bytes());
                 s[24] = 1 | if i == 0 { 4 } else { 0 } | if i == count - 1 { 2 } else { 0 };
                 s[26] = 0x10;
                 if layout
@@ -314,13 +349,13 @@ impl VideoPacketizer {
                     cauchy_encode_offset::<32>(&mut shards, count, fec)?;
                 }
             }
-            for (i, mut shard) in shards.into_iter().enumerate() {
+            for (i, shard) in shards.iter_mut().enumerate() {
                 let s = &mut shard[envelope..];
                 let seq = self.sequence.wrapping_add(i as u32) as u16;
                 s[0] = 0x90;
                 s[2..4].copy_from_slice(&seq.to_be_bytes());
                 s[4..8].copy_from_slice(&timestamp.to_be_bytes());
-                s[20..24].copy_from_slice(&self.frame.to_le_bytes());
+                s[20..24].copy_from_slice(&frame.to_le_bytes());
                 s[27] = ((block as u8) << 4) | (((blocks - 1) as u8) << 6);
                 let info = ((i as u32) << 12) | ((count as u32) << 22) | ((effective as u32) << 4);
                 s[28..32].copy_from_slice(&info.to_le_bytes());
@@ -336,16 +371,19 @@ impl VideoPacketizer {
                     // now encrypted in place with no extra allocation or move.
                     let tag = sealer.seal(&iv, s)?;
                     shard[..12].copy_from_slice(&iv);
-                    shard[12..16].copy_from_slice(&self.frame.to_le_bytes());
+                    shard[12..16].copy_from_slice(&frame.to_le_bytes());
                     shard[16..32].copy_from_slice(&tag);
                 }
-                packets.push(shard);
             }
             self.sequence = self.sequence.wrapping_add((count + fec) as u32);
             first_shard += count;
-        }
-        self.frame = self.frame.wrapping_add(1);
-        Ok(packets)
+            // Packets can escape now, even if the sender abandons later blocks.
+            if block == 0 {
+                self.frame = self.frame.wrapping_add(1);
+            }
+            Ok(shards)
+        });
+        Ok((packet_count, blocks))
     }
 }
 pub fn control_header(b: &[u8]) -> Result<(u16, &[u8])> {
@@ -746,6 +784,218 @@ fn cauchy_encode_offset<const OFFSET: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn abandoning_pyrowave_blocks_keeps_frame_and_nonce_progress() {
+        let payload = vec![7; 400_000];
+        let mut p = VideoPacketizer {
+            sequence: 0,
+            iv_counter: 0,
+            frame: 1,
+            packet_size: 1392,
+            fec_percent: 0,
+            min_fec: 2,
+            key: Some([42; 16]),
+        };
+        let fec = || PyrowaveFec {
+            records: false,
+            critical_percentage: 20,
+            detail_percentage: 0,
+            wire_budget: 0,
+            ipv6: false,
+        };
+        let (total, mut blocks) = p.pyrowave_blocks(&payload, 9000, 543, fec()).unwrap();
+        let first = blocks.next().unwrap().unwrap();
+        assert!(first.len() < total);
+        drop(blocks);
+        assert_eq!(p.sequence, first.len() as u32);
+        assert_eq!(p.iv_counter, first.len() as u64);
+        assert_eq!(p.frame, 2);
+        assert_eq!(&first[0][12..16], &1u32.to_le_bytes());
+
+        let next = p.encode_pyrowave(&payload, 9750, 543, fec()).unwrap();
+        assert_eq!(next.len(), total);
+        assert_eq!(&next[0][..8], &(first.len() as u64).to_le_bytes());
+        assert_eq!(&next[0][12..16], &2u32.to_le_bytes());
+        assert_eq!(p.frame, 3);
+        assert_eq!(p.sequence, (first.len() + total) as u32);
+        assert_eq!(p.iv_counter, (first.len() + total) as u64);
+    }
+
+    #[test]
+    fn pyrowave_blocks_match_pre_pipeline_bytes() {
+        use crate::pyrowave;
+        // Captured before incremental sending, including parity, record restart
+        // flags, encryption, and two frames crossing the sequence/frame wrap.
+        let cases = [
+            (
+                1392,
+                true,
+                800,
+                0,
+                2,
+                619,
+                "b2b826c26f16471691fe0ca4d2207a6ffef47cd0c51ce2a5222856f5e7f9acec",
+                [
+                    "169af59cd64cc956d735e679ebeaa8442224acc11f2c7f341cf1ac4e276b3539",
+                    "bb105d41f7fd6c13a6c16bd31213c8364ba4c514c8375d900a64e0a996b4f992",
+                ],
+            ),
+            (
+                1392,
+                true,
+                800,
+                50,
+                2,
+                805,
+                "b2b826c26f16471691fe0ca4d2207a6ffef47cd0c51ce2a5222856f5e7f9acec",
+                [
+                    "06de60def4c061f8e9835050aa6233f71d8e6b8cae6734b2f5cea1713dd6e50d",
+                    "bada91533e981e5c142d2860ad726c9f2943b7cb40625b8dc759b4284d50ae5f",
+                ],
+            ),
+            (
+                1390,
+                true,
+                800,
+                50,
+                2,
+                590,
+                "4d6e3b3dc7f7f37d09442e2a532b7562e222d38a0541e14cd87190d33e5b8421",
+                [
+                    "22573bace717c714caa86542103f4b494181c9f448b3225118f618fd2da5d071",
+                    "64900b28c9b4e171d0dad8898e15f6e243e21eb99b1bbed2b4e651e3340a4a80",
+                ],
+            ),
+            (
+                1400,
+                false,
+                800,
+                0,
+                2,
+                585,
+                "abb0c4381be111b03f15691e8d7a056e135f851358a2f8e46d4452a86c2740c5",
+                [
+                    "e89b3bfb00e3087a807b5cb18df98b46645c866ea48199506123ca9944617979",
+                    "de8233c384c800bbc88f9f34395562a81ddcaff97e2a906f6ec9e93fbbcd5a6e",
+                ],
+            ),
+            (
+                256,
+                true,
+                24,
+                50,
+                4,
+                102,
+                "3e05f81bb5698a8d8b86b0613fcda7bf1c9ae99cde33ce1d9168e8ffea446e70",
+                [
+                    "08962468200244aa2219af92e5058848da77016a1d08e55b87d6dcb330b63a66",
+                    "199475562fd3b81146a67a55f11307cab5c95106e63c4d19f341cae9cc354f89",
+                ],
+            ),
+            (
+                1392,
+                true,
+                24,
+                0,
+                2,
+                20,
+                "be5a30a5632247d5eff24f07c3bdc1de4f53237a02f6cd2b023b50d901b4aea4",
+                [
+                    "1f5230361b737209b8fae71640a49c831527599629e69446884d839dd37e4252",
+                    "5514b5aefaf96cb6d6779a3fb57dfd1e8c0c08d1ce69df47a12d399cacba04fd",
+                ],
+            ),
+        ];
+        for (size, records, count, detail, minimum, packet_count, framed_hash, wire_hashes) in cases
+        {
+            let mut raw = Vec::new();
+            raw.extend_from_slice(&(0x80000000u32 | 1919 | (1079 << 14)).to_le_bytes());
+            raw.extend_from_slice(&(count as u32).to_le_bytes());
+            for i in 0..count {
+                let bytes = 8 + (i * 73 % 504) * 4;
+                raw.extend_from_slice(&((bytes as u32 / 4) << 16).to_le_bytes());
+                raw.extend_from_slice(&((((i * 37) % count) as u32) << 8).to_le_bytes());
+                raw.extend((0..bytes - 8).map(|j| (i * 31 + j * 17) as u8));
+            }
+            let framed = if records {
+                pyrowave::record_frame(
+                    &raw,
+                    pyrowave::aligned_payload(size),
+                    pyrowave::max_frame_bytes(size, true),
+                )
+                .unwrap()
+            } else {
+                pyrowave::container(&raw, &[(0, 8), (8, raw.len() - 8)]).unwrap()
+            };
+            assert_eq!(hex::encode(crypto::hash(&framed)), framed_hash);
+            for (encrypted, expected) in [false, true].into_iter().zip(wire_hashes) {
+                let mut p = VideoPacketizer {
+                    sequence: u32::MAX - 5,
+                    iv_counter: 65534,
+                    frame: u32::MAX,
+                    packet_size: size,
+                    fec_percent: 0,
+                    min_fec: minimum,
+                    key: encrypted.then(|| std::array::from_fn(|i| i as u8)),
+                };
+                let mut all = Vec::new();
+                for _ in 0..2 {
+                    let (total, blocks) = p
+                        .pyrowave_blocks(
+                            &framed,
+                            9000,
+                            543,
+                            PyrowaveFec {
+                                records,
+                                critical_percentage: 20,
+                                detail_percentage: detail,
+                                wire_budget: 2_000_000,
+                                ipv6: true,
+                            },
+                        )
+                        .unwrap();
+                    assert_eq!(total, packet_count);
+                    let mut emitted = 0;
+                    for (block_index, block) in blocks.enumerate() {
+                        let block = block.unwrap();
+                        emitted += block.len();
+                        for packet in block {
+                            let plain = if encrypted {
+                                crypto::gcm_open(
+                                    &std::array::from_fn(|i| i as u8),
+                                    &packet[..12],
+                                    &packet[16..32],
+                                    &packet[32..],
+                                )
+                                .unwrap()
+                            } else {
+                                packet.clone()
+                            };
+                            assert_eq!((plain[27] >> 4) & 3, block_index as u8);
+                            all.extend(packet);
+                        }
+                    }
+                    assert_eq!(emitted, total);
+                }
+                assert_eq!(hex::encode(crypto::hash(&all)), expected);
+                assert_eq!(p.frame, 1);
+                assert_eq!(
+                    p.sequence,
+                    (u32::MAX - 5).wrapping_add(2 * packet_count as u32)
+                );
+                assert_eq!(
+                    p.iv_counter,
+                    65534
+                        + if encrypted {
+                            2 * packet_count as u64
+                        } else {
+                            0
+                        }
+                );
+            }
+        }
+    }
     #[test]
     fn fec_excludes_the_reserved_envelope_and_preserves_all_row_tails() {
         for (data, parity, size) in [

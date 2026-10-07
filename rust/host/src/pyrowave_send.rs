@@ -135,7 +135,7 @@ impl Sender {
                             };
                         // Every PyroWave frame stands alone: drop one Moonlight
                         // cannot carry, not the session.
-                        let packets = match packetizer.encode_pyrowave(
+                        let (packet_count, blocks) = match packetizer.pyrowave_blocks(
                             &frame.bytes,
                             timestamp,
                             processing.as_micros().min(u128::from(u64::MAX)) as u64,
@@ -154,7 +154,10 @@ impl Sender {
                             }
                         };
                         let overhead = butterpollo_core::network_pacing::overhead(peer.is_ipv6());
-                        let wire_bytes = packets.iter().map(|p| p.len() + overhead).sum::<usize>();
+                        let packet_bytes = current.config.packet_size
+                            + 16
+                            + if current.config.encryption & 2 != 0 { 32 } else { 0 };
+                        let wire_bytes = packet_count * (packet_bytes + overhead);
                         let demand = (wire_bytes as u64)
                             .saturating_mul(u64::from(current.config.fps_millihz()))
                             / 1000
@@ -165,37 +168,40 @@ impl Sender {
                             link,
                             demand,
                         );
-                        let mut remaining = packets.as_slice();
                         let mut sent = 0;
-                        while !remaining.is_empty() {
-                            if shared.stop.load(Ordering::Acquire) || current.stopping() {
-                                return Ok(());
+                        for packets in blocks {
+                            let packets = packets?;
+                            let mut remaining = packets.as_slice();
+                            while !remaining.is_empty() {
+                                if shared.stop.load(Ordering::Acquire) || current.stopping() {
+                                    return Ok(());
+                                }
+                                if pacer.due() > Instant::now() {
+                                    timer.until_precise(pacer.due());
+                                }
+                                let budget =
+                                    (bps / 4000).clamp(remaining[0].len() as u64, 64 * 1024) as usize;
+                                let count = Batch::count(remaining, budget);
+                                let bytes = batch.send(&socket, &remaining[..count], peer)?;
+                                sent += bytes;
+                                // No catch-up credit after a send waited for room.
+                                pacer.sent(
+                                    Instant::now(),
+                                    bytes,
+                                    if bytes > 0 { count } else { 0 },
+                                    peer.is_ipv6(),
+                                    bps,
+                                );
+                                current
+                                    .stats
+                                    .packets
+                                    .fetch_add(count as u64, Ordering::Relaxed);
+                                current
+                                    .stats
+                                    .bytes
+                                    .fetch_add(bytes as u64, Ordering::Relaxed);
+                                remaining = &remaining[count..];
                             }
-                            if pacer.due() > Instant::now() {
-                                timer.until_precise(pacer.due());
-                            }
-                            let budget =
-                                (bps / 4000).clamp(remaining[0].len() as u64, 64 * 1024) as usize;
-                            let count = Batch::count(remaining, budget);
-                            let bytes = batch.send(&socket, &remaining[..count], peer)?;
-                            sent += bytes;
-                            // No catch-up credit after a send waited for room.
-                            pacer.sent(
-                                Instant::now(),
-                                bytes,
-                                if bytes > 0 { count } else { 0 },
-                                peer.is_ipv6(),
-                                bps,
-                            );
-                            current
-                                .stats
-                                .packets
-                                .fetch_add(count as u64, Ordering::Relaxed);
-                            current
-                                .stats
-                                .bytes
-                                .fetch_add(bytes as u64, Ordering::Relaxed);
-                            remaining = &remaining[count..];
                         }
                         current.stats.latency_us.store(latency, Ordering::Relaxed);
                         current.stats.frames.fetch_add(1, Ordering::Relaxed);

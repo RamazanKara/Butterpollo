@@ -1,7 +1,7 @@
 //! Vibepollo 2.0 PyroWave framing, partial recovery and transport budgets.
 use anyhow::{Context, Result, bail};
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{HashMap, VecDeque},
     time::{Duration, Instant},
 };
 pub const BITSTREAM_ID: &str = "186f0393";
@@ -133,23 +133,25 @@ struct Fits {
 }
 impl Fits {
     fn new(records: &[Record]) -> Self {
+        let size = (records.iter().map(|r| r.size / 4).max().unwrap_or(0) + 1).next_power_of_two();
         let mut s = Self {
-            queues: vec![VecDeque::new(); 4096],
-            tree: vec![usize::MAX; 8192],
+            queues: vec![VecDeque::new(); size],
+            tree: vec![usize::MAX; size * 2],
         };
         for (i, r) in records.iter().enumerate() {
             s.queues[r.size / 4].push_back(i);
         }
-        for i in 0..4096 {
-            s.tree[4096 + i] = s.queues[i].front().copied().unwrap_or(usize::MAX);
+        for i in 0..size {
+            s.tree[size + i] = s.queues[i].front().copied().unwrap_or(usize::MAX);
         }
-        for i in (1..4096).rev() {
+        for i in (1..size).rev() {
             s.tree[i] = s.tree[2 * i].min(s.tree[2 * i + 1]);
         }
         s
     }
     fn fitting(&self, words: usize) -> usize {
-        let (mut lo, mut hi, mut result) = (4096, 4096 + words.min(4095) + 1, usize::MAX);
+        let size = self.queues.len();
+        let (mut lo, mut hi, mut result) = (size, size + words.min(size - 1) + 1, usize::MAX);
         while lo < hi {
             if lo & 1 != 0 {
                 result = result.min(self.tree[lo]);
@@ -165,15 +167,22 @@ impl Fits {
         result
     }
     fn exact(&self, words: usize) -> usize {
-        self.tree.get(4096 + words).copied().unwrap_or(usize::MAX)
+        self.tree
+            .get(self.queues.len() + words)
+            .copied()
+            .unwrap_or(usize::MAX)
     }
     fn remove(&mut self, words: usize) {
         self.queues[words].pop_front();
-        let mut at = 4096 + words;
+        let mut at = self.queues.len() + words;
         self.tree[at] = self.queues[words].front().copied().unwrap_or(usize::MAX);
         while at > 1 {
             at /= 2;
-            self.tree[at] = self.tree[2 * at].min(self.tree[2 * at + 1]);
+            let first = self.tree[2 * at].min(self.tree[2 * at + 1]);
+            if self.tree[at] == first {
+                break;
+            }
+            self.tree[at] = first;
         }
     }
 }
@@ -429,7 +438,7 @@ pub struct DetailFec {
     previous: Option<Instant>,
     interval: f64,
     stable: f64,
-    blocks: BTreeMap<u32, (u64, usize)>,
+    blocks: HashMap<u32, (u64, usize)>,
 }
 impl DetailFec {
     pub fn new(fps_millihz: u32) -> Self {
@@ -438,7 +447,7 @@ impl DetailFec {
             previous: None,
             interval: 0.,
             stable: 0.,
-            blocks: BTreeMap::new(),
+            blocks: HashMap::new(),
         }
     }
     pub fn observe(&mut self, frame: &[u8], now: Instant, kbps: u32) -> Result<(usize, usize)> {
@@ -453,9 +462,10 @@ impl DetailFec {
             self.interval = elapsed;
             return Ok((0, 0));
         }
-        let mut next = BTreeMap::new();
+        let records = records(frame)?;
+        let mut next = HashMap::with_capacity(records.len());
         let (mut total, mut unchanged) = (0, 0);
-        for r in records(frame)? {
+        for r in records {
             let hash = record_hash(&frame[r.offset..r.offset + r.size]);
             if self.blocks.get(&r.index) == Some(&(hash, r.size)) {
                 unchanged += r.size;
@@ -576,6 +586,51 @@ mod tests {
                 .sum::<usize>(),
             0
         );
+    }
+    #[test]
+    fn detail_fec_matches_pre_pipeline_decisions() {
+        let mut controller = DetailFec::new(120_000);
+        let start = Instant::now();
+        let mut elapsed = Duration::ZERO;
+        for i in 0..80u32 {
+            let order = if i % 2 == 0 {
+                [0, 30, 31, 32]
+            } else {
+                [32, 31, 0, 30]
+            };
+            let mut raw = frame(&order.map(|index| (index, 20)));
+            raw[3] |= ((i % 8) << 4) as u8;
+            for (at, index) in order.into_iter().enumerate() {
+                let offset = 8 + at * 20;
+                raw[offset + 3] |= ((i % 8) << 4) as u8;
+                if ((20..40).contains(&i) && index == 30) || ((40..50).contains(&i) && index >= 31)
+                {
+                    raw[offset + 8..offset + 20].fill(i as u8);
+                }
+            }
+            elapsed += Duration::from_millis(match i {
+                60 => 8,
+                79 => 100,
+                _ => 20,
+            });
+            // Captured with the ordered map: sequence changes and record order
+            // do not alter stability, while motion and nominal cadence reset it.
+            let expected = match i {
+                14..40 => (50, 2_000_000),
+                74 => (50, 1_947_223),
+                75 => (50, 1_957_778),
+                76 => (50, 1_966_223),
+                77 => (50, 1_972_978),
+                78 => (50, 1_978_382),
+                79 => (50, 3_582_706),
+                _ => (0, 0),
+            };
+            assert_eq!(
+                controller.observe(&raw, start + elapsed, 800_000).unwrap(),
+                expected,
+                "frame {i}"
+            );
+        }
     }
     #[test]
     fn low_cadence_static_detail_gets_parity_and_motion_disables_it() {
