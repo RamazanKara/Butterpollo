@@ -668,10 +668,10 @@ impl Topology {
         let applied = || -> Result<bool> {
             let current = mode(&monitor.display_name)?;
             let actual = Self::query()?.refresh(&monitor.device_id)?;
-            Ok(
-                (current.dmPelsWidth, current.dmPelsHeight) == (width, height)
-                    && actual.0.abs_diff(rate.0) <= 500,
-            )
+            Ok(timing_matches(
+                (width, height, rate.0),
+                (current.dmPelsWidth, current.dmPelsHeight, actual.0),
+            ))
         };
         if applied()? {
             return Ok(());
@@ -2017,7 +2017,49 @@ impl VirtualDisplay {
             self.refresh_name()?;
             self.startup_protection = None;
         }
+        self.apply_mode(stage);
         Ok(())
+    }
+    /// Set the stream's mode on the display. The driver offers it, but
+    /// Windows picks the mode it saved for this display identity, or the
+    /// EDID's preferred timing, which the driver caps at 60 Hz for 4K. It
+    /// does so on arrival, when it switches the display back on and when a
+    /// layout is applied. A refused mode is logged, not retried: the stream
+    /// continues at the display's mode and its card reports the difference.
+    fn apply_mode(&self, stage: &str) {
+        let (width, height, rate) = self.mode;
+        let result = Topology::set_mode_rate(
+            &self.name,
+            width,
+            height,
+            butterpollo_core::framegen::Rate(rate),
+        );
+        let actual = current_timing(&self.name);
+        let requested = format_timing(self.mode);
+        match mode_outcome(self.mode, actual.as_ref().ok().copied()) {
+            ModeOutcome::Applied => tracing::info!(
+                output = %self.name,
+                stage,
+                requested = %requested,
+                actual = %requested,
+                "virtual display mode applied"
+            ),
+            outcome => {
+                let actual_text = match outcome {
+                    ModeOutcome::Kept(actual) => format_timing(actual),
+                    _ => "unknown".into(),
+                };
+                tracing::warn!(
+                    output = %self.name,
+                    stage,
+                    requested = %requested,
+                    actual = %actual_text,
+                    offered_hz = ?offered_rates(&supported_modes(&self.name), width, height),
+                    error = ?result.err().or(actual.err()).map(|e| format!("{e:#}")),
+                    "virtual display mode not applied; streaming at the mode Windows chose"
+                )
+            }
+        }
     }
     fn renew(&mut self) -> Result<()> {
         let mut request = NAMESPACE.to_vec();
@@ -2116,6 +2158,57 @@ struct Settings {
 }
 /// Width, height and refresh in millihertz.
 type Timing = (u32, u32, u32);
+/// Whether a display shows a mode: the same size, and a refresh within half a
+/// hertz, as Windows reports rational rates such as 59.94 Hz.
+fn timing_matches(requested: Timing, actual: Timing) -> bool {
+    (requested.0, requested.1) == (actual.0, actual.1) && requested.2.abs_diff(actual.2) <= 500
+}
+fn format_timing((width, height, rate): Timing) -> String {
+    format!("{width}x{height}@{:.3}", f64::from(rate) / 1000.)
+}
+/// The mode a display shows now.
+fn current_timing(output: &str) -> Result<Timing> {
+    let topology = Topology::query()?;
+    let monitor = topology
+        .monitors()
+        .into_iter()
+        .find(|m| m.matches(output))
+        .context("display unavailable")?;
+    let current = mode(&monitor.display_name)?;
+    Ok((
+        current.dmPelsWidth,
+        current.dmPelsHeight,
+        topology.refresh(&monitor.device_id)?.0,
+    ))
+}
+/// What became of a request for a virtual display's mode. Windows choosing
+/// another mode is not an error: the stream continues and reports it.
+#[derive(Debug, PartialEq)]
+enum ModeOutcome {
+    Applied,
+    /// Windows shows another mode, or refused the request.
+    Kept(Timing),
+    /// The display's mode could not be read back.
+    Unknown,
+}
+fn mode_outcome(requested: Timing, actual: Option<Timing>) -> ModeOutcome {
+    match actual {
+        Some(actual) if timing_matches(requested, actual) => ModeOutcome::Applied,
+        Some(actual) => ModeOutcome::Kept(actual),
+        None => ModeOutcome::Unknown,
+    }
+}
+/// The refresh rates, in hertz, a display offers at a resolution.
+fn offered_rates(modes: &[(u32, u32, u32)], width: u32, height: u32) -> Vec<u32> {
+    let mut rates: Vec<_> = modes
+        .iter()
+        .filter(|mode| (mode.0, mode.1) == (width, height))
+        .map(|mode| mode.2)
+        .collect();
+    rates.sort_unstable();
+    rates.dedup();
+    rates
+}
 static SETTINGS: std::sync::Mutex<std::collections::BTreeMap<String, Settings>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 /// The displays streams, paused game displays, launches being prepared and
@@ -2575,6 +2668,14 @@ impl Guard {
         }
         Ok(guard)
     }
+    /// Set the stream's mode on an owned virtual display again, after a step
+    /// that lets Windows recall another one, such as applying a layout. A
+    /// refusal is logged; callers verify and report the mode themselves.
+    pub fn apply_virtual_mode(&self, stage: &str) {
+        if let Some(display) = &self.virtual_display {
+            display.lock().unwrap().apply_mode(stage);
+        }
+    }
     pub fn feed(&mut self) -> Result<bool> {
         if let Some(display) = &mut self.virtual_display {
             let mut display = display.lock().unwrap();
@@ -2775,7 +2876,15 @@ impl Retained {
                     if pending && Instant::now() >= retry_at {
                         retry_at = Instant::now() + Duration::from_secs(1);
                         match on_recovery.as_ref().map(|callback| callback()).transpose() {
-                            Ok(_) => pending = false,
+                            Ok(applied) => {
+                                pending = false;
+                                // Applying the layout can recall a saved mode.
+                                if applied.is_some()
+                                    && let Some(guard) = worker_guard.lock().unwrap().as_ref()
+                                {
+                                    guard.apply_virtual_mode("after layout recovery");
+                                }
+                            }
                             Err(error) => {
                                 tracing::warn!(%error, "retained monitor layout recovery failed")
                             }
@@ -3384,6 +3493,105 @@ mod tests {
         Ok(())
     }
     #[test]
+    #[ignore = "creates and expires owned 4K virtual displays and changes their mode and HDR"]
+    fn native_virtual_display_recovery_restores_the_requested_mode_and_mode_list() -> Result<()> {
+        let _ = tracing_subscriber::fmt()
+            .with_test_writer()
+            .with_ansi(false)
+            .try_init();
+        let before = Snapshot::capture()?;
+        let result = (|| -> Result<()> {
+            for rate in [116_000, 1_000_000] {
+                let mut display = VirtualDisplay::create_rate(
+                    &format!("mode-recovery-test-{}-{rate}", std::process::id()),
+                    3840,
+                    2160,
+                    rate,
+                )
+                .with_context(|| format!("create 4K{}", rate / 1000))?;
+                display
+                    .finish_hotplug("test startup")
+                    .with_context(|| format!("settle 4K{}", rate / 1000))?;
+                let supported = supported_modes(&display.name);
+                anyhow::ensure!(supported.contains(&(3840, 2160, rate / 1000)));
+                anyhow::ensure!(supported.contains(&(1920, 1080, 60)));
+                // The driver's EDID prefers 4K60; creation must set the
+                // stream's rate rather than leave Windows' choice.
+                let created = current_timing(&display.name)?;
+                anyhow::ensure!(
+                    timing_matches((3840, 2160, rate), created),
+                    "created at {}",
+                    format_timing(created)
+                );
+                Topology::set_mode_rate(
+                    &display.name,
+                    2560,
+                    1440,
+                    butterpollo_core::framegen::Rate(60_000),
+                )?;
+                // A healthy heartbeat must allow a game's own mode change.
+                display.last_feed = Instant::now() - Duration::from_secs(2);
+                display.feed()?;
+                anyhow::ensure!(mode(&display.name)?.dmPelsWidth == 2560);
+                anyhow::ensure!(display.generation == 0);
+
+                let mut request = NAMESPACE.to_vec();
+                request.extend_from_slice(&display.lease.to_le_bytes());
+                request.extend_from_slice(&0u64.to_le_bytes());
+                display.driver.ioctl(0x904, 3, &request, 0)?;
+                let deadline = Instant::now() + Duration::from_secs(20);
+                while display.generation == 0 {
+                    let recovered = display.feed();
+                    if Instant::now() >= deadline {
+                        recovered?;
+                        bail!("owned virtual display did not recover");
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                let owned = display.hotplug_monitor()?.clone();
+                set_hdr(&owned, true)?;
+                display
+                    .finish_hotplug("test recovery after HDR")
+                    .with_context(|| format!("finish recovered 4K{}", rate / 1000))?;
+                let actual = current_timing(&display.name)?;
+                anyhow::ensure!(
+                    timing_matches((3840, 2160, rate), actual),
+                    "recovered at {}",
+                    format_timing(actual)
+                );
+                let recovered = supported_modes(&display.name);
+                anyhow::ensure!(
+                    supported.iter().all(|mode| recovered.contains(mode)),
+                    "recovery restricted the mode list"
+                );
+                println!(
+                    "recovered {} at 3840x2160@{} with {} modes after a 2560x1440@60 recall",
+                    display.name,
+                    rate / 1000,
+                    recovered.len()
+                );
+                drop(display);
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while Topology::query_all()?.paths.iter().any(|path| {
+                    path.targetInfo.adapterId == owned.adapter
+                        && path.targetInfo.id == owned.target
+                        && path.targetInfo.targetAvailable.as_bool()
+                }) {
+                    anyhow::ensure!(Instant::now() < deadline, "owned display did not depart");
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+            Ok(())
+        })();
+        before.restore()?;
+        result?;
+        anyhow::ensure!(
+            serde_json::to_value(Snapshot::capture()?)? == serde_json::to_value(before)?,
+            "the pre-test layout was not restored"
+        );
+        Ok(())
+    }
+    #[test]
     fn previous_golden_snapshot_import_preserves_fractional_rates_clones_hdr_and_origins() {
         let document = serde_json::json!({
             "topology":[["a","b"]],"primary":"a",
@@ -3450,6 +3658,83 @@ mod tests {
         version[16] = 4;
         assert!(DriverProtocol::parse(&version).is_err());
         Ok(())
+    }
+    #[test]
+    fn a_vrr_display_requests_1000_hz_in_the_drivers_millihertz_field() {
+        // libvirtualdisplay's CreateTemporaryDisplayRequest: physical size in
+        // millimetres at 40/44, refresh_rate_millihz at 48 (no rational and
+        // no VRR flag), lease timeout in ms at 52, flags at 88.
+        let field =
+            |request: &[u8], at: usize| u32::from_le_bytes(request[at..at + 4].try_into().unwrap());
+        for (rate, hz) in [(1_000_000, 1000), (116_000, 116), (59_940, 59)] {
+            let request = temporary_request(
+                1,
+                2,
+                (3840, 2160, rate),
+                &VirtualOptions::default(),
+                DriverProtocol::Secure36,
+                &[0; 32],
+            );
+            assert_eq!(
+                [32, 36, 40, 44, 48, 52].map(|at| field(&request, at)),
+                [3840, 2160, 600, 340, rate, 10000]
+            );
+            assert_eq!(field(&request, 88), 0);
+            assert_eq!(field(&request, 48) / 1000, hz);
+        }
+        // Windows takes the mode as a reduced rational.
+        assert_eq!(
+            butterpollo_core::framegen::Rate(1_000_000).rational(),
+            (1000, 1)
+        );
+        assert_eq!(
+            butterpollo_core::framegen::Rate(116_000).rational(),
+            (116, 1)
+        );
+        assert_eq!(
+            butterpollo_core::framegen::Rate(59_940).rational(),
+            (2997, 50)
+        );
+    }
+    #[test]
+    fn a_virtual_display_mode_is_applied_only_at_its_size_and_rate() {
+        let requested = (3840, 2160, 1_000_000);
+        assert_eq!(
+            mode_outcome(requested, Some((3840, 2160, 1_000_000))),
+            ModeOutcome::Applied
+        );
+        assert_eq!(
+            mode_outcome(requested, Some((3840, 2160, 999_600))),
+            ModeOutcome::Applied
+        );
+        // The report: Windows recalled a 60 Hz mode for the display.
+        assert_eq!(
+            mode_outcome(requested, Some((3840, 2160, 60_000))),
+            ModeOutcome::Kept((3840, 2160, 60_000))
+        );
+        assert_eq!(
+            mode_outcome(requested, Some((2560, 1440, 1_000_000))),
+            ModeOutcome::Kept((2560, 1440, 1_000_000))
+        );
+        assert_eq!(mode_outcome(requested, None), ModeOutcome::Unknown);
+        assert!(timing_matches((1920, 1080, 60_000), (1920, 1080, 59_940)));
+        assert!(!timing_matches(
+            (1920, 1080, 116_000),
+            (1920, 1080, 120_000)
+        ));
+        assert_eq!(format_timing((3840, 2160, 59_940)), "3840x2160@59.940");
+    }
+    #[test]
+    fn offered_rates_list_each_refresh_of_the_requested_size_once() {
+        let modes = [
+            (3840, 2160, 60),
+            (3840, 2160, 2000),
+            (2560, 1440, 1000),
+            (3840, 2160, 1000),
+            (3840, 2160, 60),
+        ];
+        assert_eq!(offered_rates(&modes, 3840, 2160), [60, 1000, 2000]);
+        assert!(offered_rates(&modes, 1920, 1080).is_empty());
     }
     #[test]
     fn permanent_monitor_payload_matches_driver_v3_contract() {
