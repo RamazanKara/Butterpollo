@@ -50,6 +50,23 @@ impl DroppedFrames {
         }
     }
 }
+/// Wire rate to send a frame of `packets` within one frame period.
+fn demand_bps(
+    packets: usize,
+    packet_size: usize,
+    encrypted: bool,
+    ipv6: bool,
+    fps_millihz: u32,
+) -> u64 {
+    let packet_bytes = packet_size + 16 + if encrypted { 32 } else { 0 };
+    let wire_bytes = packets * (packet_bytes + butterpollo_core::network_pacing::overhead(ipv6));
+    (wire_bytes as u64).saturating_mul(u64::from(fps_millihz)) / 1000 * 8
+}
+/// Bytes per socket call: 2 ms at the pacing rate, at least one datagram and
+/// at most one 64 KB segmented send.
+fn batch_limit(bps: u64, packet: usize) -> usize {
+    (bps / 4000).clamp(packet as u64, 64 * 1024) as usize
+}
 struct Slot {
     pending: Mutex<Option<Frame>>,
     changed: Condvar,
@@ -207,19 +224,13 @@ impl Sender {
                             fec_reported = Some(Instant::now());
                             current.launch.warnings.event("pyrowave_fec_frame", "PyroWave critical FEC was omitted: the coarse picture, parity or packet alignment cannot fit the supported wire blocks. Recovery protection is reduced; restore the default packet size, lower resolution/FEC, or use HEVC/AV1 on a lossy link.", butterpollo_core::session::EVENT_PERIOD);
                         }
-                        let overhead = butterpollo_core::network_pacing::overhead(peer.is_ipv6());
-                        let packet_bytes = current.config.packet_size
-                            + 16
-                            + if current.config.encryption & 2 != 0 {
-                                32
-                            } else {
-                                0
-                            };
-                        let wire_bytes = packet_count * (packet_bytes + overhead);
-                        let demand = (wire_bytes as u64)
-                            .saturating_mul(u64::from(current.config.fps_millihz()))
-                            / 1000
-                            * 8;
+                        let demand = demand_bps(
+                            packet_count,
+                            current.config.packet_size,
+                            current.config.encryption & 2 != 0,
+                            peer.is_ipv6(),
+                            current.config.fps_millihz(),
+                        );
                         let bps = butterpollo_core::network_pacing::pyrowave_rate_bps(
                             config.integer("pacing_max_bitrate_kbps", 0),
                             kbps,
@@ -249,13 +260,11 @@ impl Sender {
                                 if pacer.due() > Instant::now() {
                                     timer.until_precise(pacer.due());
                                 }
-                                let budget = (bps / 4000)
-                                    .clamp(remaining[0].len() as u64, 64 * 1024)
-                                    as usize;
-                                let count = Batch::count(remaining, budget);
+                                let count =
+                                    Batch::count(remaining, batch_limit(bps, remaining[0].len()));
                                 let bytes = batch.send(&socket, &remaining[..count], peer)?;
                                 sent += bytes;
-                                // No catch-up credit after a send waited for room.
+                                // A send that waited for room earns at most SEND_SLACK of credit.
                                 pacer.sent(
                                     Instant::now(),
                                     bytes,
@@ -484,5 +493,145 @@ mod tests {
             Some(42)
         );
         assert_eq!(dropped.reported, Some(now + Duration::from_secs(5)));
+    }
+
+    /// An encrypted 1080p60 frame filling the encoder's 400 Mbps budget, as
+    /// the sender's blocks, and the rate the sender paces it at.
+    fn budget_sized_1080p_frame() -> (Vec<Vec<Vec<u8>>>, u64, Duration) {
+        use butterpollo_core::pyrowave;
+        let (packet_size, kbps, fps_millihz) = (1360, 400_000, 60_000);
+        let period = Duration::from_secs_f64(1000. / f64::from(fps_millihz));
+        let budget = pyrowave::budget(kbps, period, packet_size, true, true);
+        let size = |i: usize| 8 + (i * 73 % 504) * 4;
+        let (mut count, mut total) = (0, 8);
+        while total + size(count) <= budget {
+            total += size(count);
+            count += 1;
+        }
+        let mut raw = Vec::with_capacity(total);
+        raw.extend_from_slice(&(0x80000000u32 | 1919 | (1079 << 14)).to_le_bytes());
+        raw.extend_from_slice(&(count as u32).to_le_bytes());
+        for i in 0..count {
+            raw.extend_from_slice(&((size(i) as u32 / 4) << 16).to_le_bytes());
+            raw.extend_from_slice(&((((i * 37) % count) as u32) << 8).to_le_bytes());
+            raw.extend((0..size(i) - 8).map(|j| (i * 31 + j * 17) as u8));
+        }
+        let framed = pyrowave::record_frame(
+            &raw,
+            pyrowave::aligned_payload(packet_size),
+            pyrowave::max_frame_bytes(packet_size, true),
+        )
+        .unwrap();
+        let mut packetizer = VideoPacketizer {
+            sequence: 0,
+            iv_counter: 0,
+            frame: 1,
+            packet_size,
+            fec_percent: 0,
+            min_fec: 2,
+            key: Some([42; 16]),
+        };
+        let fec = PyrowaveFec {
+            records: true,
+            critical_percentage: 20,
+            detail_percentage: 0,
+            wire_budget: 0,
+            ipv6: false,
+        };
+        let (packets, _, blocks) = packetizer.pyrowave_blocks(&framed, 0, 0, fec).unwrap();
+        let blocks = blocks.collect::<Result<Vec<_>>>().unwrap();
+        let demand = demand_bps(packets, packet_size, true, false, fps_millihz);
+        let bps = butterpollo_core::network_pacing::pyrowave_rate_bps(0, kbps, 0, demand);
+        (blocks, bps, period)
+    }
+
+    #[test]
+    fn paced_budget_sized_1080p_frame_leaves_within_85_percent_of_the_period() {
+        let (blocks, bps, period) = budget_sized_1080p_frame();
+        // Loopback costs on the RX 7900 XT machine: a 64 KB segmented send
+        // takes about 0.2 ms and the precise timer wakes up to 0.1 ms late.
+        let (send, wake) = (Duration::from_micros(250), Duration::from_micros(100));
+        let start = Instant::now();
+        let mut pacer = butterpollo_core::network_pacing::Pacer::new(start);
+        let mut now = start;
+        let mut batches = 0;
+        for block in &blocks {
+            let mut remaining = block.as_slice();
+            while !remaining.is_empty() {
+                if pacer.due() > now {
+                    now = pacer.due() + wake;
+                }
+                let count = Batch::count(remaining, batch_limit(bps, remaining[0].len()));
+                let bytes = remaining[..count].iter().map(Vec::len).sum();
+                now += send;
+                pacer.sent(now, bytes, count, false, bps);
+                remaining = &remaining[count..];
+                batches += 1;
+            }
+        }
+        let spent = now - start;
+        assert!(
+            spent <= period.mul_f64(0.85),
+            "{batches} batches at {bps} bps took {spent:?} of a {period:?} frame"
+        );
+    }
+
+    /// Timing-dependent: run at normal priority on an otherwise idle machine
+    /// with `cargo test -p butterpollo pyrowave_loopback -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "measures real loopback sends; needs an idle machine"]
+    fn pyrowave_loopback_sends_a_budget_sized_1080p_frame_within_85_percent_of_the_period()
+    -> Result<()> {
+        let (blocks, bps, period) = budget_sized_1080p_frame();
+        let receiver = UdpSocket::bind("127.0.0.1:0")?;
+        socket2::SockRef::from(&receiver).set_recv_buffer_size(64 << 20)?;
+        receiver.set_read_timeout(Some(Duration::from_millis(50)))?;
+        let peer = receiver.local_addr()?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let drain = {
+            let stop = stop.clone();
+            thread::spawn(move || {
+                let mut buffer = [0; 2048];
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = receiver.recv(&mut buffer);
+                }
+            })
+        };
+        let socket = UdpSocket::bind("127.0.0.1:0")?;
+        socket.set_nonblocking(true)?;
+        butterpollo_windows::net::configure_udp(&socket)?;
+        let timer = Timer::new()?;
+        let mut batch = Batch::default();
+        let mut pacer = butterpollo_core::network_pacing::Pacer::new(Instant::now());
+        let mut spans = Vec::new();
+        for _ in 0..180 {
+            let begin = Instant::now();
+            for block in &blocks {
+                let mut remaining = block.as_slice();
+                while !remaining.is_empty() {
+                    if pacer.due() > Instant::now() {
+                        timer.until_precise(pacer.due());
+                    }
+                    let count = Batch::count(remaining, batch_limit(bps, remaining[0].len()));
+                    let bytes = batch.send(&socket, &remaining[..count], peer)?;
+                    pacer.sent(Instant::now(), bytes, count, false, bps);
+                    remaining = &remaining[count..];
+                }
+            }
+            spans.push(begin.elapsed());
+            timer.until_precise(begin + period);
+        }
+        stop.store(true, Ordering::Relaxed);
+        drain.join().unwrap();
+        spans.sort();
+        let median = spans[spans.len() / 2];
+        println!(
+            "{bps} bps, frame send median {median:?}, p95 {:?}, max {:?}, period {period:?}, dropped {}",
+            spans[spans.len() * 95 / 100],
+            spans[spans.len() - 1],
+            batch.dropped
+        );
+        assert!(median <= period.mul_f64(0.85));
+        Ok(())
     }
 }
