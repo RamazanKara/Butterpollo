@@ -1687,7 +1687,7 @@ impl Media {
             },
         )?;
         let _com = ComGuard::new()?;
-        let _priority = Priority::new();
+        let _priority = Priority::input();
         let mut peers: HashMap<PeerID, ControlPeer> = HashMap::new();
         let input_timer = butterpollo_windows::timing::Timer::new()?;
         let mut feedback_at = Instant::now();

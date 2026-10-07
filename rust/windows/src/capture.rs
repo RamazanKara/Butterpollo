@@ -166,6 +166,29 @@ impl Default for Priority {
 
 impl Priority {
     pub fn new() -> Self {
+        let priority = Self::games();
+        unsafe {
+            use windows::Win32::System::Threading::*;
+            let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+        }
+        priority
+    }
+    /// For the input thread: the MMCSS boost alone. The thread priority that
+    /// new() sets afterwards cancels the boost (14 instead of 18), and input
+    /// then waited milliseconds, not microseconds, behind busy time-critical
+    /// threads. Without MMCSS the thread is raised as new() raises it.
+    pub fn input() -> Self {
+        let priority = Self::games();
+        if priority.handle.is_invalid() {
+            unsafe {
+                use windows::Win32::System::Threading::*;
+                let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+            }
+        }
+        priority
+    }
+    /// Register the thread with MMCSS's "Games" task at high priority.
+    fn games() -> Self {
         unsafe {
             use windows::Win32::System::Threading::*;
             let name: Vec<u16> = "Games\0".encode_utf16().collect();
@@ -178,7 +201,6 @@ impl Priority {
             if !handle.is_invalid() {
                 let _ = AvSetMmThreadPriority(handle, AVRT_PRIORITY_HIGH);
             }
-            let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
             Self { handle }
         }
     }
