@@ -2021,6 +2021,27 @@ fn plan<T: PartialEq>(users: usize, recorded: Option<&T>, current: &T, requested
         Plan::Change
     }
 }
+/// What a stream's HDR request needs from a display. One without HDR is
+/// left alone and the stream continues in SDR, as libdisplaydevice leaves
+/// a display without an HDR state: the launch must not fail on it.
+#[derive(Debug, PartialEq)]
+enum HdrAction {
+    Keep,
+    Skip,
+    Set(bool),
+}
+fn hdr_action(supported: bool, current: bool, requested: Option<bool>) -> HdrAction {
+    match requested {
+        Some(enabled) if enabled != current => {
+            if enabled && !supported {
+                HdrAction::Skip
+            } else {
+                HdrAction::Set(enabled)
+            }
+        }
+        _ => HdrAction::Keep,
+    }
+}
 pub struct Guard {
     pub output: String,
     virtual_display: Option<DisplayLease>,
@@ -2280,23 +2301,31 @@ impl Guard {
                     applied?;
                 }
             }
-            if let Some(enabled) = hdr {
-                let applied = settings.color.as_ref().map(|(_, _, applied)| applied);
-                if plan(settings.users, applied, &chosen.hdr_enabled, &enabled) == Plan::Change {
-                    crate::display_recovery::hdr(
-                        &guard.identity,
-                        &guard.output,
-                        chosen.hdr_enabled,
-                        enabled,
-                    )?;
-                    settings.color = Some((chosen.clone(), chosen.hdr_enabled, enabled));
-                    set_hdr(&chosen, enabled)?;
-                } else if enabled != chosen.hdr_enabled {
-                    tracing::info!(
-                        output = %guard.output,
-                        hdr = chosen.hdr_enabled,
-                        "another stream uses this display; keeping its HDR state"
-                    );
+            match hdr_action(chosen.hdr_supported, chosen.hdr_enabled, hdr) {
+                HdrAction::Keep => {}
+                HdrAction::Skip => tracing::info!(
+                    output = %guard.output,
+                    "display does not support HDR; the stream continues in SDR"
+                ),
+                HdrAction::Set(enabled) => {
+                    let applied = settings.color.as_ref().map(|(_, _, applied)| applied);
+                    if plan(settings.users, applied, &chosen.hdr_enabled, &enabled) == Plan::Change
+                    {
+                        crate::display_recovery::hdr(
+                            &guard.identity,
+                            &guard.output,
+                            chosen.hdr_enabled,
+                            enabled,
+                        )?;
+                        settings.color = Some((chosen.clone(), chosen.hdr_enabled, enabled));
+                        set_hdr(&chosen, enabled)?;
+                    } else {
+                        tracing::info!(
+                            output = %guard.output,
+                            hdr = chosen.hdr_enabled,
+                            "another stream uses this display; keeping its HDR state"
+                        );
+                    }
                 }
             }
             Ok(())
@@ -2596,6 +2625,16 @@ mod tests {
         assert_eq!(plan(2, Some(&current), &current, &requested), Plan::Keep);
         assert_eq!(plan(2, None, &false, &true), Plan::Keep);
         assert_eq!(plan(1, None, &false, &true), Plan::Change);
+    }
+    #[test]
+    fn hdr_on_a_display_without_hdr_is_skipped_rather_than_failing_the_launch() {
+        assert_eq!(hdr_action(false, false, Some(true)), HdrAction::Skip);
+        assert_eq!(hdr_action(true, false, Some(true)), HdrAction::Set(true));
+        assert_eq!(hdr_action(true, true, Some(false)), HdrAction::Set(false));
+        assert_eq!(hdr_action(false, true, Some(false)), HdrAction::Set(false));
+        assert_eq!(hdr_action(false, false, Some(false)), HdrAction::Keep);
+        assert_eq!(hdr_action(true, true, Some(true)), HdrAction::Keep);
+        assert_eq!(hdr_action(true, false, None), HdrAction::Keep);
     }
     #[test]
     fn extending_a_cloned_desktop_assigns_distinct_sources_and_rejects_impossible_routes() {
