@@ -61,6 +61,11 @@ pub fn overhead(ipv6: bool) -> usize {
     if ipv6 { 86 } else { 66 }
 }
 
+/// Time spent in the send call or waking late that still counts toward the
+/// batch's interval. It covers a typical 64 KB send (about 0.2 ms) plus timer
+/// lateness; a longer stall or idle gap earns no more than this.
+pub const SEND_SLACK: Duration = Duration::from_micros(500);
+
 pub struct Pacer {
     due: Instant,
 }
@@ -71,8 +76,10 @@ impl Pacer {
     pub fn due(&self) -> Instant {
         self.due
     }
-    /// Called immediately after a batch is sent. Sending and short timer
-    /// overshoots consume the interval; a stall discards overdue credit.
+    /// Called immediately after a batch is sent. Up to `SEND_SLACK` of send
+    /// time and timer overshoot consumes the interval; beyond that, a stall or
+    /// idle gap earns no catch-up credit, so the next batch waits at least the
+    /// interval less `SEND_SLACK`.
     /// Account for bytes on the wire, including one header per datagram.
     pub fn sent(
         &mut self,
@@ -84,7 +91,7 @@ impl Pacer {
     ) {
         let bytes = payload.saturating_add(packets.saturating_mul(overhead(ipv6)));
         let interval = Duration::from_secs_f64(bytes as f64 * 8. / bps.max(1) as f64);
-        self.due = (self.due + interval).max(completed);
+        self.due = (self.due + interval).max(completed + interval.saturating_sub(SEND_SLACK));
     }
 }
 
@@ -187,6 +194,15 @@ mod tests {
             pacer.sent(completed, 934, 1, false, 8_000_000);
             assert_eq!(pacer.due(), start + Duration::from_millis(batch));
         }
+        // Sends slower than the slack fall behind without building debt.
+        for _ in 0..5 {
+            let completed = pacer.due() + Duration::from_micros(700);
+            pacer.sent(completed, 934, 1, false, 8_000_000);
+            assert_eq!(
+                pacer.due(),
+                completed + Duration::from_millis(1) - SEND_SLACK
+            );
+        }
     }
 
     #[test]
@@ -194,19 +210,20 @@ mod tests {
         let start = Instant::now();
         let mut pacer = Pacer::new(start);
         // One millisecond of IPv4 traffic at 8 Mbps.
+        let interval = Duration::from_millis(1);
         pacer.sent(start, 934, 1, false, 8_000_000);
-        assert_eq!(pacer.due(), start + Duration::from_millis(1));
+        assert_eq!(pacer.due(), start + interval);
+        // A 5 ms stall earns only the bounded slack, not a catch-up burst.
         let after_stall = start + Duration::from_millis(6);
         pacer.sent(after_stall, 934, 1, false, 8_000_000);
-        assert_eq!(pacer.due(), after_stall);
-        pacer.sent(after_stall, 934, 1, false, 8_000_000);
-        assert_eq!(pacer.due(), after_stall + Duration::from_millis(1));
+        assert_eq!(pacer.due(), after_stall + interval - SEND_SLACK);
+        let on_time = pacer.due();
+        pacer.sent(on_time, 934, 1, false, 8_000_000);
+        assert_eq!(pacer.due(), on_time + interval);
         // Starting the next frame after a long idle period creates no debt.
         let next_frame = start + Duration::from_secs(1);
         pacer.sent(next_frame, 934, 1, false, 8_000_000);
-        assert_eq!(pacer.due(), next_frame);
-        pacer.sent(next_frame, 934, 1, false, 8_000_000);
-        assert_eq!(pacer.due(), next_frame + Duration::from_millis(1));
+        assert_eq!(pacer.due(), next_frame + interval - SEND_SLACK);
     }
 
     #[test]
