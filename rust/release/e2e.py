@@ -55,7 +55,7 @@ assert audio_probe.is_file() and motion_probe.is_file(), 'build the audio and mo
 endpoints = json.loads(subprocess.check_output([str(audio_probe), '--list'], env=env, text=True))
 sink = next((e for e in endpoints if e['virtual_sink']), None)
 assert sink, 'Steam Streaming Speakers is required for the isolated audio test'
-(profile / 'sunshine.conf').write_text('\n'.join([
+defaults = [
     'port = 48523', 'encoder = amf', 'capture = wgc', f"output_name = {monitor['device_id']}",
     f'minimum_fps_target = {fps}', 'virtual_display_mode = disabled', 'dd_configuration_option = disabled',
     'dd_resolution_option = disabled', 'dd_refresh_rate_option = disabled', 'dd_hdr_option = disabled',
@@ -63,8 +63,13 @@ assert sink, 'Steam Streaming Speakers is required for the isolated audio test'
     'frame_limiter_enable = false', 'install_steam_audio_drivers = false', 'stream_audio = true',
     'audio_sink_capture_only = true', 'auto_capture_sink = false', f"audio_sink = {sink['id']}",
     'keep_sink_default = false', 'upnp = false', 'enable_discovery = false', 'vulkan_hdr_layer = false',
-    'system_tray = false', 'update_check_interval = 0', 'pyrowave = false',
-    *(line.replace('=', ' = ', 1) for line in args.config), '']))
+    'system_tray = false', 'update_check_interval = 0', 'pyrowave = false']
+# A --config line replaces the default line of the same key.
+key = lambda line: line.split('=', 1)[0].strip()
+overrides = [f'{key(line)} = {line.split("=", 1)[1].strip()}' for line in args.config]
+overridden = {key(line) for line in args.config}
+(profile / 'sunshine.conf').write_text('\n'.join(
+    [line for line in defaults if key(line) not in overridden] + overrides + ['']))
 (profile / 'apps.json').write_text(json.dumps({'apps': [{'name': 'Desktop', 'cmd': '', 'virtual-display': False}]}))
 # interop.py's fixture account, in the previous host's format.
 salt = os.urandom(8).hex()

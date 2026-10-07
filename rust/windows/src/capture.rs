@@ -459,8 +459,20 @@ impl Duplication {
         let Some((info, resource)) = self.acquire_frame(0)? else {
             return Ok(None);
         };
+        let shown = self.cursor.shown();
         let result = (|| {
             self.cursor.update(&self.gpu, &self.duplicate, &info)?;
+            // A pointer-only update while the pointer stays hidden (mouse-look
+            // in a game) changes nothing on screen. Publishing the picture
+            // again spent the pacing slot of the game's next frame. The frame
+            // is released at the next acquisition.
+            if info.LastPresentTime == 0
+                && self.last_desktop.is_some()
+                && !shown
+                && !self.cursor.shown()
+            {
+                return Ok(None);
+            }
             let texture: ID3D11Texture2D = resource.context("empty captured texture")?.cast()?;
             let mut image = self.owned.desktop_snapshot(
                 &self.gpu,

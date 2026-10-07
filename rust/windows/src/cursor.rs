@@ -264,6 +264,10 @@ impl State {
         }
         Ok(())
     }
+    /// Whether the pointer is on screen: a shape and visible.
+    pub fn shown(&self) -> bool {
+        self.cursor.is_some() && self.visible
+    }
     pub fn snapshot(&self) -> Option<Cursor> {
         self.cursor
             .as_ref()
