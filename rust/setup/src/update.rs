@@ -16,9 +16,7 @@ pub fn run(folder: &Path, start: bool, progress: &Progress) -> Result<()> {
     let install = std::fs::canonicalize(folder)?;
     let service =
         system::service_program(detect::SERVICE).context("Butterpollo service is not installed")?;
-    if std::fs::canonicalize(service)? != install.join("butterpollo-service.exe") {
-        bail!("The update folder does not belong to the installed Butterpollo service");
-    }
+    check_service_folder(&service, &install)?;
     // A non-shared handle rejects another updater until this transaction ends.
     use std::os::windows::fs::OpenOptionsExt;
     let _lock = std::fs::OpenOptions::new()
@@ -161,6 +159,19 @@ pub fn run(folder: &Path, start: bool, progress: &Progress) -> Result<()> {
             bail!("{message}")
         }
     }
+}
+
+fn check_service_folder(service: &Path, install: &Path) -> Result<()> {
+    // The executable itself can be missing after an interrupted replacement.
+    if !service
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("butterpollo-service.exe"))
+        || std::fs::canonicalize(service.parent().context("service program has no folder")?)?
+            != install
+    {
+        bail!("The update folder does not belong to the installed Butterpollo service");
+    }
+    Ok(())
 }
 
 /// Roll back an update that power loss or a crash interrupted, unless a
@@ -364,6 +375,33 @@ impl Backup {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_missing_service_executable_does_not_prevent_recovery() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let install = root.path().join("installed");
+        std::fs::create_dir(&install)?;
+        let install = install.canonicalize()?;
+        let service = install.join("butterpollo-service.exe");
+        std::fs::write(&service, b"previous service")?;
+        let backup = root.path().join("backup");
+        Backup::create(
+            &install,
+            &backup,
+            &["butterpollo-service.exe".into()].into_iter().collect(),
+        )?;
+        let record = root.path().join("update-result.json");
+        write_record(
+            &record,
+            &json!({"phase":"installing","backup":backup,"install":install}),
+        )?;
+        std::fs::remove_file(&service)?;
+        check_service_folder(&service, &install)?;
+        recover_locked(&record)?;
+        assert_eq!(std::fs::read(service)?, b"previous service");
+        assert!(check_service_folder(&install.join("another-service.exe"), &install).is_err());
+        assert!(check_service_folder(&backup.join("butterpollo-service.exe"), &install).is_err());
+        Ok(())
+    }
     #[test]
     fn rc_upgrades_and_reinstalls_keep_profiles_and_recover_each_interrupted_copy() -> Result<()> {
         let root = tempfile::tempdir()?;
