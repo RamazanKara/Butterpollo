@@ -2093,6 +2093,94 @@ which the startup probe already treats as unavailable, so an AMD host never
 offers it; Moonlight PC then warns "Your host PC doesn't support YUV 4:4:4
 streaming" and uses 4:2:0. PyroWave remains the full-chroma path on AMD,
 including 10-bit HDR 4:4:4.
+
+## October 7: where WGC loses a millisecond
+
+On the RX 7900 XT, an 8×1-pixel window in the display's bottom-right corner
+encoded a changing picture ID. `windows/examples/capture_phase_probe.rs`
+matched captured IDs to QPC samples immediately before the renderer's
+`Present(1)` call, recorded host acquisition, and waited for a D3D11 event
+query after the host-owned texture copy. Only then did it read the eight
+pixels. Thus Present-to-copied includes composition, capture delivery and
+the completed host copy, but excludes encoder claim, conversion, encoding,
+networking and decoding. It is not a stream or input-to-display measurement.
+
+The main batch used a 1920×1080 virtual display reporting 120 Hz, kept alive
+by a test-owned SYSTEM task. The probes themselves ran as the signed-in
+user. `helper` forces the production WGC helper process and its three shared
+textures; `wgc` captures in-process; `ddx` uses Desktop Duplication. Each
+condition ran WGC, helper, DDX, DDX, helper, WGC, nine seconds per run,
+excluding the first second and final 250 ms. The loaded runs used
+`gpu_load SECONDS 1000 0 200`. The fixture checked the installed host log for
+a connected client before runs; the JSON does not record other agents' GPU
+activity. The range below retains that batch's spread.
+
+Arithmetic means of two per-run means, with their range in parentheses:
+
+| Present to completed host copy, ms | DDX | WGC in-process | WGC helper |
+| --- | ---: | ---: | ---: |
+| Idle, 59.3 Hz source | 5.05 (5.03–5.08) | 5.88 (5.62–6.15) | 6.05 (5.95–6.16) |
+| Idle, vsync-paced source | 6.38 (6.31–6.46) | 6.78 (6.70–6.86) | 7.08 (7.02–7.13) |
+| Heavy GPU load, 59.3 Hz requested | 35.62 (35.36–35.89) | 35.23 (34.92–35.55) | 34.28 (31.77–36.79) |
+
+The second row requested 500 Hz and used vsync. Although the virtual display
+reported 120 Hz, the recorded Present intervals were about 4.167 ms
+(240 calls/s), not 8.333 ms. It should not be described as a verified
+120 Hz source. The slow idle source measured 16.863 ms between Presents.
+Idle picture coverage was 100%, except one fast DDX run at 99.57%. Under
+load it was 86.1–88.7% for DDX, 95.6–96.5% for direct WGC and 89.8–92.6%
+for the helper; the table measures pictures actually captured.
+
+Subtracting these batch means, the helper was 1.00 ms behind DDX at 59.3 Hz
+and 0.69 ms behind it in the vsync-paced case. The helper-minus-direct WGC
+differences were only 0.17 and 0.29 ms. These alternating-run differences
+estimate the broker hop, rather than measuring the hop on the same frame.
+Most of the idle gap therefore lies in WGC delivery itself. Loaded per-run
+means were roughly 32–37 ms; the helper alone varied by 5.02 ms, so there is
+no established latency saving from bypassing it under this load.
+
+The earlier SYSTEM-host batch corroborated the idle gap: at 59.3 Hz,
+helper/DDX means were 5.85/4.89 ms, and in the vsync-paced case 7.43/6.38 ms.
+Its loaded batch ended with a helper first-frame timeout, so it is not a
+complete loaded comparison. On the physical display, the initial 59.3 Hz
+batch recorded 6.35 ms for direct WGC, 6.21/6.61 ms for the helper and
+4.76/4.70 ms for DDX. The final direct-WGC run captured only 36.1% of IDs;
+do not pool it into that comparison. Capturing two paths simultaneously
+also changed their timings, so the side-by-side runs are excluded above.
+
+The intermediate `stamp_qpc` in these files is the host's legacy capture
+stamp: DDX's last presentation/cursor update or WGC's **clamped**
+`SystemRelativeTime`. It is not an independent DWM-present observation on
+WGC. The separate `wgc_stamp_probe` found 92% of physical-display stamps
+in the future at arrival, with mean arrival-minus-stamp about -0.79 ms.
+That explains why `detect_mean_ms` could say about 0.12 ms while the
+picture-ID probe measured a real delivery gap. New signed
+`wgc_stamp_to_host_*` fields and valid/future stamp counts expose this
+limitation; the legacy age fields and pacing clock remain unchanged.
+[Metric definitions](../docs/performance.md#what-the-numbers-mean) distinguish
+these offsets from actual Present-to-copied measurements.
+
+An unbuilt direct IddCx frame ring is estimated to save about 1 ms at idle
+if it avoids this WGC delivery gap, and nothing measurable under the tested
+load. Only about 0.2–0.3 ms is the helper hop. It is not worth building for
+latency now. This is an estimate, not a measurement of an IddCx ring.
+The [rc.17 end-to-end fixture](#october-7-rc17-against-rc2-on-the-october-4-fixture)
+also puts the component result in context: DDX and WGC picture age were
+only 0.15 ms apart idle (14.71 versus 14.86 ms), while WGC was about 2 ms
+better under load (33.42 versus 35.36 ms). Component differences do not
+predict that entire journey.
+
+Raw artifacts are under
+`C:\Users\ramaz\AppData\Local\Temp\claude\C--src-butterpollo\7e5651cf-4ad6-4e53-8a70-43a4eede758f\scratchpad\`:
+`vphase/u-01` through `u-18` supply the main table, `vphase/v-*` the earlier
+SYSTEM batch, and `phase/idle59-*`, `phase/t-*` and `phase/stampsrc-*` the
+physical checks. The raw stamp probe's aggregate above was reported by the
+original study; those JSON files do not retain its raw stamp samples. Reproduce
+with the usage headers in `capture_phase_probe.rs`, `wgc_stamp_probe.rs`
+and `session_command_long.rs`. Virtual runs require a test-owned SYSTEM
+scheduled task (the `bench-rc17` harness), no active stream, and task/display
+cleanup afterward. No capture wait or pool-size optimization was made here.
+
 ## Limits
 
 This machine validates AMD AMF. Native NVENC now calls the installed NVIDIA driver directly, supports reviewed API versions 11.0–13.0, reference frame invalidation, D3D11 4:2:0/8-bit 4:4:4 and GPU-only CUDA interop for ten-bit 4:4:4. Seven mock-driver tests exercise compatibility, asynchronous ownership, timeout teardown, metadata lifetime, loss recovery and bitrate changes; NVIDIA execution/performance still needs NVIDIA hardware. QSV has native D3D11 imports, and TrueHDR has a shared-device GPU path; these need Intel/NVIDIA hardware respectively. PyroWave uses shared D3D11/Vulkan planar GPU inputs and reads back only the encoded bitstream. Unsupported native formats and software encoding use CPU compatibility paths. The wired LAN checks above do not establish Wi-Fi performance, multiple concurrent 4K sessions, dynamic game content, native 4K capture or end-to-end input/display latency. The GPU texture pools and native encoder queues are bounded to eight retained frames; capacity runs may intentionally keep those queues occupied. [PARITY.md](PARITY.md) separates implemented features from native validation.
