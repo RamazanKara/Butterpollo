@@ -1,5 +1,5 @@
 import json, pathlib, subprocess, sys, tempfile, unittest
-from e2e_result import active_clients, evaluate
+from e2e_result import active_clients, evaluate, host_frames
 
 
 GOOD = '''RESULT frames=1800 decoded_frames=1800 audio_packets=6000 failures=0
@@ -156,6 +156,22 @@ class ReleaseMeasurements(unittest.TestCase):
                               ('max_ms=30.000', 'max_ms=3001.000'), ('PICTURE_AGE', 'NO_PICTURE_AGE')):
             with self.subTest(after=after):
                 self.assertFalse(evaluate(PYROWAVE.replace(before, after), 0, 'pyrowave', '1920x1080x60')['passed'])
+
+    def test_pyrowave_fails_when_the_host_replaces_over_1_percent_of_frames(self):
+        with tempfile.TemporaryDirectory() as folder:
+            receiver = pathlib.Path(folder)
+            self.assertEqual(host_frames(receiver), (None, None))
+            samples = [dict(sessions=[]), dict(sessions=[dict(frames_sent=900, frames_replaced=3)]),
+                       dict(sessions=[dict(frames_sent=1800, frames_replaced=18)])]
+            (receiver / 'stream-pyrowave-1920-1080-60-threads4.json').write_text(json.dumps(dict(samples=samples)))
+            self.assertEqual(host_frames(receiver), (1800, 18))
+        for frames, passed in (((1800, 0), True), ((1800, 18), True), ((1800, 19), False), ((None, None), False)):
+            with self.subTest(frames=frames):
+                result = evaluate(PYROWAVE, 0, 'pyrowave', '1920x1080x60', host_frames=frames)
+                self.assertEqual(result['passed'], passed, result['failures'])
+        # Only e2e.py samples the host; soak runs and other codecs are unaffected.
+        self.assertTrue(evaluate(PYROWAVE, 0, 'pyrowave', '1920x1080x60')['passed'])
+        self.assertTrue(evaluate(GOOD, 0, 'hevc', '1280x720x60', host_frames=(None, None))['passed'])
 
 
 if __name__ == '__main__':

@@ -1,4 +1,5 @@
 """Acceptance checks for the independent receiver's release-test measurements."""
+import json
 import re
 from collections import Counter
 
@@ -20,7 +21,17 @@ def active_clients(log):
     return sorted(client for client, count in active.items() if count)
 
 
-def evaluate(client, rc, codec, mode, vrr=False, tone_log=''):
+def host_frames(receiver):
+    """Frames the host sent and replaced unsent, from interop.py's last session sample."""
+    for report in sorted(receiver.glob('stream-*.json')):
+        sessions = [session for sample in json.loads(report.read_text()).get('samples', [])
+                    for session in sample.get('sessions', [])]
+        if sessions:
+            return sessions[-1].get('frames_sent'), sessions[-1].get('frames_replaced')
+    return None, None
+
+
+def evaluate(client, rc, codec, mode, vrr=False, tone_log='', host_frames=None):
     def find(pattern, cast=float):
         match = re.search(pattern, client, re.MULTILINE)
         return cast(match.group(1)) if match else None
@@ -58,6 +69,8 @@ def evaluate(client, rc, codec, mode, vrr=False, tone_log=''):
             picture_age_p99_ms=find(r'^PICTURE_AGE .*?p99_ms=([0-9.]+)'),
             picture_age_max_ms=find(r'^PICTURE_AGE .*?max_ms=([0-9.]+)'),
         )
+        if host_frames is not None:
+            result.update(host_frames_sent=host_frames[0], host_frames_replaced=host_frames[1])
     failures = []
     missing = [key for key, value in result.items() if value is None]
     if missing:
@@ -86,6 +99,9 @@ def evaluate(client, rc, codec, mode, vrr=False, tone_log=''):
                     or not 0 <= result['picture_age_mean_ms'] <= result['picture_age_max_ms'] <= 3000
                     or not 0 <= result['picture_age_p95_ms'] <= result['picture_age_p99_ms'] <= result['picture_age_max_ms']):
                 failures.append('PyroWave picture age was missing or invalid')
+            # A replaced frame was still unsent when a newer one arrived.
+            if host_frames is not None and result['host_frames_replaced'] > result['host_frames_sent'] * .01:
+                failures.append('the host replaced more than 1% of PyroWave frames before sending them')
     # Older fixtures cannot distinguish a starving tone source from host loss.
     underruns = (len(re.findall(r'^AUDIO_RENDER_UNDERRUN\b', tone_log, re.MULTILINE))
                  if re.search(r'^AUDIO_RENDER\b', tone_log, re.MULTILINE) else None)

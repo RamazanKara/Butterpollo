@@ -12,7 +12,7 @@ Writes WORK/e2e-CODEC/result.json.
 import argparse, json, pathlib, subprocess, sys, time
 import xml.etree.ElementTree as ET
 import requests
-from e2e_result import evaluate
+from e2e_result import evaluate, host_frames
 from e2e_host import installed_idle, prepare, receiver_environment
 
 parser = argparse.ArgumentParser()
@@ -77,7 +77,8 @@ finally:
 
 client = (case / 'client.log').read_text(errors='replace')
 result = evaluate(client, rc, args.codec, args.mode, args.vrr,
-                  tone_log=(case / 'tone.log').read_text(errors='replace'))
+                  tone_log=(case / 'tone.log').read_text(errors='replace'),
+                  host_frames=host_frames(case / 'receiver'))
 (case / 'result.json').write_text(json.dumps(result, indent=2))
 print(json.dumps(result))
 sys.exit(0 if result['passed'] else 1)
