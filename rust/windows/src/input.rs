@@ -496,7 +496,8 @@ pub struct Injector {
     profile: u16,
     refreshed: std::time::Instant,
     pub gamepads: Option<Gamepads>,
-    rect: RECT,
+    /// The display's desktop rectangle, None until the display exists.
+    rect: Option<RECT>,
     policy: butterpollo_core::input_policy::Policy,
     key_flags: BTreeMap<u32, u8>,
     /// Repeating key, its flags, the modifiers it adds and when it repeats.
@@ -509,6 +510,8 @@ pub struct Injector {
     /// including the bars around a display of another shape.
     stream: Option<(u32, u32)>,
     rect_read: std::time::Instant,
+    /// When absolute input was last reported ignored for a missing display.
+    display_warned: Option<std::time::Instant>,
     /// When to try the virtual gamepad driver again after it failed to open.
     gamepad_retry: Option<std::time::Instant>,
     /// Whether the client last moved the mouse by absolute position, and a
@@ -518,6 +521,11 @@ pub struct Injector {
 }
 /// How long a left release waits after absolute input, as in Sunshine.
 const LEFT_RELEASE_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
+/// How often a display's rectangle is read again, and a missing display
+/// looked up again: the lookup enumerates every display.
+const RECT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+/// How often absolute input ignored for a missing display is reported.
+const MISSING_DISPLAY_WARNING: std::time::Duration = std::time::Duration::from_secs(10);
 /// The desktop rectangle of `output`: a GDI name, a device ID, or empty for
 /// the first display.
 fn display_rect(output: &str) -> Result<RECT> {
@@ -568,7 +576,11 @@ impl Injector {
         profile: &str,
         config: &butterpollo_core::config::Config,
     ) -> Result<Self> {
-        let rect = display_rect(output)?;
+        // Keyboard, relative mouse and controllers must work before the
+        // stream's display exists: a controller's arrival is sent only once.
+        let rect = display_rect(output)
+            .inspect_err(|error| tracing::debug!(%error, output, "input display unavailable"))
+            .ok();
         Ok(Self {
             keys: BTreeSet::new(),
             buttons: BTreeSet::new(),
@@ -599,6 +611,7 @@ impl Injector {
             output: output.to_owned(),
             stream: None,
             rect_read: std::time::Instant::now(),
+            display_warned: None,
             gamepad_retry: None,
             absolute: false,
             left_release: None,
@@ -612,9 +625,10 @@ impl Injector {
     /// Where the display's picture sits in the stream, when it does not fill it.
     fn picture(&self) -> Option<(Size, Picture)> {
         let stream = self.stream?;
+        let rect = self.rect?;
         let display = (
-            u32::try_from(self.rect.right - self.rect.left).ok()?,
-            u32::try_from(self.rect.bottom - self.rect.top).ok()?,
+            u32::try_from(rect.right - rect.left).ok()?,
+            u32::try_from(rect.bottom - rect.top).ok()?,
         );
         butterpollo_core::display_policy::picture(display, stream).map(|picture| (stream, picture))
     }
@@ -635,17 +649,54 @@ impl Injector {
     /// Map absolute input onto `output` from now on: the stream's display can
     /// be created, recreated or renamed after input began.
     pub fn set_output(&mut self, output: &str) {
-        if output.is_empty() || output.eq_ignore_ascii_case(&self.output) {
+        if output.is_empty() {
+            return;
+        }
+        let renamed = !output.eq_ignore_ascii_case(&self.output);
+        if self.rect.is_none() {
+            // Until the display exists, follow the session's name, and look
+            // the same name up again only every RECT_INTERVAL.
+            if renamed || self.rect_read.elapsed() >= RECT_INTERVAL {
+                self.output = output.to_owned();
+                self.resolve_rect();
+            }
+            return;
+        }
+        if !renamed {
             return;
         }
         match display_rect(output) {
             Ok(rect) => {
-                self.rect = rect;
+                self.rect = Some(rect);
                 self.output = output.to_owned();
                 self.rect_read = std::time::Instant::now();
             }
             Err(error) => tracing::debug!(%error, output, "input display unavailable"),
         }
+    }
+    /// Look up a display that did not exist yet.
+    fn resolve_rect(&mut self) {
+        self.rect_read = std::time::Instant::now();
+        if let Ok(rect) = display_rect(&self.output) {
+            tracing::debug!(output = %self.output, "input display found");
+            self.rect = Some(rect);
+        }
+    }
+    /// The display's rectangle. Until the display exists, absolute mouse,
+    /// touch and pen input is ignored, and that is reported now and then.
+    fn display(&mut self) -> Option<RECT> {
+        if self.rect.is_none()
+            && self
+                .display_warned
+                .is_none_or(|at| at.elapsed() >= MISSING_DISPLAY_WARNING)
+        {
+            self.display_warned = Some(std::time::Instant::now());
+            tracing::warn!(
+                output = %self.output,
+                "input display not found yet; absolute mouse, touch and pen input is ignored"
+            );
+        }
+        self.rect
     }
     /// Inject input, following the input desktop when Windows refuses it:
     /// a UAC prompt or the lock screen runs on the secure desktop.
@@ -747,13 +798,11 @@ impl Injector {
             flag,
         )
     }
-    fn location(&self, x: f32, y: f32) -> POINT {
+    fn location(&self, rect: RECT, x: f32, y: f32) -> POINT {
         let (x, y) = self.on_display(x, y);
         POINT {
-            x: self.rect.left
-                + ((self.rect.right - self.rect.left - 1).max(0) as f32 * x.clamp(0., 1.)) as i32,
-            y: self.rect.top
-                + ((self.rect.bottom - self.rect.top - 1).max(0) as f32 * y.clamp(0., 1.)) as i32,
+            x: rect.left + ((rect.right - rect.left - 1).max(0) as f32 * x.clamp(0., 1.)) as i32,
+            y: rect.top + ((rect.bottom - rect.top - 1).max(0) as f32 * y.clamp(0., 1.)) as i32,
         }
     }
     fn inject_touches(&self) -> Result<()> {
@@ -786,6 +835,11 @@ impl Injector {
         minor: f32,
         rotation: u16,
     ) -> Result<()> {
+        // No contact exists before the display does: the rectangle is never
+        // forgotten once known.
+        let Some(rect) = self.display() else {
+            return Ok(());
+        };
         unsafe {
             if self.touch_device.is_none() {
                 self.touch_device = Some(CreateSyntheticPointerDevice(
@@ -825,7 +879,7 @@ impl Injector {
                     ..Default::default()
                 }
             };
-            pointer_event(&mut p.pointerInfo, event, self.location(x, y));
+            pointer_event(&mut p.pointerInfo, event, self.location(rect, x, y));
             if event != 5 {
                 p.touchMask = TOUCH_MASK_NONE;
                 if p.pointerInfo.pointerFlags & POINTER_FLAG_INCONTACT != POINTER_FLAG_NONE {
@@ -850,18 +904,18 @@ impl Injector {
                         });
                         let width = ((angle.cos().abs() * major + angle.sin().abs() * minor)
                             * scale_x
-                            * (self.rect.right - self.rect.left) as f32)
+                            * (rect.right - rect.left) as f32)
                             .max(1.);
                         let height = ((angle.sin().abs() * major + angle.cos().abs() * minor)
                             * scale_y
-                            * (self.rect.bottom - self.rect.top) as f32)
+                            * (rect.bottom - rect.top) as f32)
                             .max(1.);
                         let center = p.pointerInfo.ptPixelLocation;
                         p.rcContact = RECT {
-                            left: (center.x - (width / 2.).ceil() as i32).max(self.rect.left),
-                            right: (center.x + (width / 2.).ceil() as i32).min(self.rect.right),
-                            top: (center.y - (height / 2.).ceil() as i32).max(self.rect.top),
-                            bottom: (center.y + (height / 2.).ceil() as i32).min(self.rect.bottom),
+                            left: (center.x - (width / 2.).ceil() as i32).max(rect.left),
+                            right: (center.x + (width / 2.).ceil() as i32).min(rect.right),
+                            top: (center.y - (height / 2.).ceil() as i32).max(rect.top),
+                            bottom: (center.y + (height / 2.).ceil() as i32).min(rect.bottom),
                         };
                         p.touchMask |= TOUCH_MASK_CONTACTAREA;
                     }
@@ -907,6 +961,10 @@ impl Injector {
         rotation: u16,
         tilt: u8,
     ) -> Result<()> {
+        // The pen cannot be active before the display exists.
+        let Some(rect) = self.display() else {
+            return Ok(());
+        };
         unsafe {
             if self.pen_device.is_none() {
                 self.pen_device = Some(CreateSyntheticPointerDevice(
@@ -915,7 +973,7 @@ impl Injector {
                     POINTER_FEEDBACK_NONE,
                 )?);
             }
-            let location = self.location(x, y);
+            let location = self.location(rect, x, y);
             self.pen.pointerInfo.pointerType = PT_PEN;
             self.pen.pointerInfo.pointerId = 1;
             pointer_event(
@@ -997,11 +1055,16 @@ impl Injector {
                 &self.with_modifiers(self.key_scan(key, true, flags), modifiers),
             ));
         }
-        // A game can change its display's resolution or position mid-stream.
-        if self.rect_read.elapsed() >= std::time::Duration::from_millis(500) {
-            self.rect_read = now;
-            if let Some(rect) = current_rect(&self.output) {
-                self.rect = rect;
+        // A game can change its display's resolution or position mid-stream,
+        // and the stream's display can appear after input began.
+        if self.rect_read.elapsed() >= RECT_INTERVAL {
+            if self.rect.is_none() {
+                self.resolve_rect();
+            } else {
+                self.rect_read = now;
+                if let Some(rect) = current_rect(&self.output) {
+                    self.rect = Some(rect);
+                }
             }
         }
         if self.refreshed.elapsed() >= std::time::Duration::from_millis(250) {
@@ -1045,6 +1108,9 @@ impl Injector {
                 height,
             } => unsafe {
                 self.absolute = true;
+                let Some(rect) = self.display() else {
+                    return Ok(());
+                };
                 let left = GetSystemMetrics(SM_XVIRTUALSCREEN);
                 let top = GetSystemMetrics(SM_YVIRTUALSCREEN);
                 let w = GetSystemMetrics(SM_CXVIRTUALSCREEN).max(1);
@@ -1053,8 +1119,8 @@ impl Injector {
                 // first pixel of its neighbour.
                 let (width, height) = (i64::from(*width).max(1), i64::from(*height).max(1));
                 let (span_x, span_y) = (
-                    i64::from((self.rect.right - self.rect.left - 1).max(0)),
-                    i64::from((self.rect.bottom - self.rect.top - 1).max(0)),
+                    i64::from((rect.right - rect.left - 1).max(0)),
+                    i64::from((rect.bottom - rect.top - 1).max(0)),
                 );
                 let (px, py) = match self.picture() {
                     // The client's size is the stream's picture with its bars.
@@ -1068,13 +1134,13 @@ impl Injector {
                             picture,
                         );
                         (
-                            self.rect.left + (fx * span_x as f64) as i32,
-                            self.rect.top + (fy * span_y as f64) as i32,
+                            rect.left + (fx * span_x as f64) as i32,
+                            rect.top + (fy * span_y as f64) as i32,
                         )
                     }
                     None => (
-                        self.rect.left + (i64::from(*x).clamp(0, width) * span_x / width) as i32,
-                        self.rect.top + (i64::from(*y).clamp(0, height) * span_y / height) as i32,
+                        rect.left + (i64::from(*x).clamp(0, width) * span_x / width) as i32,
+                        rect.top + (i64::from(*y).clamp(0, height) * span_y / height) as i32,
                     ),
                 };
                 Self::send(&[Self::mouse(
@@ -1738,6 +1804,53 @@ mod tests {
             &empty_held,
             alternatives
         ));
+    }
+
+    #[test]
+    fn input_starts_before_the_stream_display_exists_and_ignores_absolute_input() {
+        // Keyboard and controller input, including a controller's one-time
+        // arrival, needs an injector before the stream's display exists.
+        let mut injector = Injector::new(r"\\.\DISPLAY99", "vhf").unwrap();
+        // Nothing below may reach Windows: there is no display to map onto.
+        assert!(injector.rect.is_none());
+        for event in [
+            Event::Absolute {
+                x: 10,
+                y: 20,
+                width: 100,
+                height: 100,
+            },
+            Event::Touch {
+                event: 1,
+                id: 7,
+                x: 0.5,
+                y: 0.5,
+                pressure: 0.5,
+                major: 0.1,
+                minor: 0.1,
+                rotation: u16::MAX,
+            },
+            Event::Pen {
+                event: 1,
+                tool: 1,
+                buttons: 0,
+                x: 0.5,
+                y: 0.5,
+                pressure: 0.5,
+                rotation: u16::MAX,
+                tilt: u8::MAX,
+            },
+        ] {
+            injector.apply(&event).unwrap();
+        }
+        assert!(injector.absolute);
+        assert!(injector.touches.is_empty());
+        assert!(injector.touch_device.is_none() && injector.pen_device.is_none());
+        assert_eq!(injector.pen.pointerInfo.pointerFlags, POINTER_FLAG_NONE);
+        // The session's display is followed while it is still missing.
+        injector.set_output(r"\\.\DISPLAY98");
+        assert!(injector.rect.is_none());
+        assert_eq!(injector.output, r"\\.\DISPLAY98");
     }
 
     #[test]
