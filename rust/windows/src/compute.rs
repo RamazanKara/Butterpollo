@@ -70,14 +70,21 @@ pub struct Compute {
 // D3D12 devices, queues and fences are free-threaded; the rest is locked.
 unsafe impl Send for Compute {}
 unsafe impl Sync for Compute {}
+fn completed_value(value: u64) -> Result<u64> {
+    // D3D12 signals UINT64_MAX on device removal, including shared fences.
+    if value == u64::MAX {
+        bail!("D3D12 device removed; GPU fence completion is invalid");
+    }
+    Ok(value)
+}
 /// Wait on the CPU until `fence` reaches `value`, for at most two seconds.
 /// The copies wait for fences another device signals; after that device is
 /// lost they may never complete, and an unbounded wait froze the stream for
 /// good with no error to recover from.
 fn wait_fence(fence: &ID3D12Fence, value: u64) -> Result<()> {
-    use windows::Win32::{Foundation::WAIT_OBJECT_0, System::Threading::*};
+    use windows::Win32::System::Threading::*;
     unsafe {
-        if fence.GetCompletedValue() >= value {
+        if completed_value(fence.GetCompletedValue())? >= value {
             return Ok(());
         }
         let event = CreateEventW(None, false, false, PCWSTR::null())?;
@@ -85,7 +92,9 @@ fn wait_fence(fence: &ID3D12Fence, value: u64) -> Result<()> {
             .SetEventOnCompletion(value, event)
             .map(|()| WaitForSingleObject(event, 2000));
         let _ = CloseHandle(event);
-        if waited? != WAIT_OBJECT_0 && fence.GetCompletedValue() < value {
+        waited?;
+        // Device removal wakes the event too; check the fence after any wake.
+        if completed_value(fence.GetCompletedValue())? < value {
             bail!("GPU work did not finish within two seconds");
         }
         Ok(())
@@ -166,7 +175,9 @@ impl Compute {
             .iter()
             .filter(|(owner, _)| *owner == key)
             .filter_map(|(_, compute)| compute.upgrade())
-            .find(|compute| !compute.stuck.load(std::sync::atomic::Ordering::Acquire))
+            .find(|compute| {
+                !compute.stuck.load(std::sync::atomic::Ordering::Acquire) && compute.completed(0)
+            })
         {
             return Ok(compute);
         }
@@ -196,7 +207,13 @@ impl Compute {
         self.signal()
     }
     pub fn completed(&self, value: u64) -> bool {
-        unsafe { self.fence.GetCompletedValue() >= value }
+        match completed_value(unsafe { self.fence.GetCompletedValue() }) {
+            Ok(done) => done >= value,
+            Err(_) => {
+                self.stuck.store(true, std::sync::atomic::Ordering::Release);
+                false
+            }
+        }
     }
     /// Wait on the CPU until the queue has passed `value`. A queue that does
     /// not get there is not used again: [`Compute::for_device`] makes a new one.
@@ -412,7 +429,7 @@ impl Handoff {
     }
     /// A command list the copy queue has finished with.
     fn list(&mut self) -> Result<usize> {
-        let done = unsafe { self.copied.0.GetCompletedValue() };
+        let done = completed_value(unsafe { self.copied.0.GetCompletedValue() })?;
         if let Some(index) = self.lists.iter().position(|(_, _, last, _)| *last <= done) {
             return Ok(index);
         }
@@ -573,9 +590,9 @@ impl Target {
     }
     /// Free when nothing holds the texture and nothing will still signal
     /// its fence.
-    fn free(&self) -> bool {
-        Arc::strong_count(&self.texture) == 1
-            && unsafe { self.fence.GetCompletedValue() } >= self.last()
+    fn free(&self) -> Result<bool> {
+        let done = completed_value(unsafe { self.fence.GetCompletedValue() })?;
+        Ok(Arc::strong_count(&self.texture) == 1 && done >= self.last())
     }
 }
 struct Slot {
@@ -790,8 +807,10 @@ impl Converter {
     }
     /// A free output texture's index.
     fn target(&mut self) -> Result<usize> {
-        if let Some(index) = self.targets.iter().position(Target::free) {
-            return Ok(index);
+        for (index, target) in self.targets.iter().enumerate() {
+            if target.free()? {
+                return Ok(index);
+            }
         }
         if self.targets.len() >= 8 {
             bail!("compute conversion queue reached its bounded limit");
@@ -1164,5 +1183,21 @@ fn buffer_desc(size: u64) -> D3D12_RESOURCE_DESC {
         Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
         Flags: D3D12_RESOURCE_FLAG_NONE,
         Alignment: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn removed_device_fence_never_counts_as_completed_work() {
+        for value in [0, 1, 100, u64::MAX - 1] {
+            assert_eq!(completed_value(value).unwrap(), value);
+        }
+        assert_eq!(
+            completed_value(u64::MAX).unwrap_err().to_string(),
+            "D3D12 device removed; GPU fence completion is invalid"
+        );
     }
 }
