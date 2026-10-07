@@ -292,6 +292,23 @@ pub fn stop_service(name: &str) -> Result<()> {
     }
     bail!("the {name} service did not stop")
 }
+/// Wait until the service has stopped; false if it is still running at
+/// `timeout`.
+pub fn wait_stopped(name: &str, timeout: Duration) -> bool {
+    let Some(service) = open_service(name) else {
+        return true;
+    };
+    let deadline = Instant::now() + timeout;
+    loop {
+        if service_state(&service) == Some(SERVICE_STOPPED) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
 pub fn start_service(name: &str) -> Result<()> {
     let service = open_service(name).with_context(|| format!("the {name} service is missing"))?;
     line(format!("starting service {name}"));

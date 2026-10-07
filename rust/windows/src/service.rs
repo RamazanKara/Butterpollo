@@ -162,7 +162,13 @@ fn supervise() -> Result<()> {
             }
             retry_at = now + delay;
         }
-        if child.is_none() && session != u32::MAX && Instant::now() >= retry_at {
+        // A stop can arrive while a host shuts down above; a new host would
+        // only delay it.
+        if child.is_none()
+            && session != u32::MAX
+            && Instant::now() >= retry_at
+            && !stop.load(Ordering::Acquire)
+        {
             match crate::process::Process::spawn_host(
                 &executable,
                 &args,

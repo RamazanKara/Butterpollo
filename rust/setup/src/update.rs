@@ -1,11 +1,12 @@
 //! In-place service updates. The verified package is staged before shutdown;
 //! changed files are backed up and restored if copying or startup fails.
-use crate::{detect, install, payload, system, ui::Progress};
+use crate::{detect, install, log::line, payload, system, ui::Progress};
 use anyhow::{Context, Result, bail};
 use serde_json::json;
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 pub fn run(folder: &Path, progress: &Progress) -> Result<()> {
@@ -62,7 +63,16 @@ pub fn run(folder: &Path, progress: &Progress) -> Result<()> {
         .collect::<BTreeSet<_>>();
     write_result(&result, "installing", None)?;
     progress.set("Stopping Butterpollo…");
-    system::stop_service(detect::SERVICE)?;
+    stop_for_update(
+        &result,
+        || system::stop_service(detect::SERVICE),
+        || {
+            if !system::wait_stopped(detect::SERVICE, Duration::from_secs(120)) {
+                line("the service is still stopping");
+            }
+            system::start_service(detect::SERVICE)
+        },
+    )?;
     // Nothing has been overwritten if the backup fails.
     let saved = match Backup::create(&install, &backup, &paths) {
         Ok(saved) => saved,
@@ -141,6 +151,24 @@ pub fn run(folder: &Path, progress: &Progress) -> Result<()> {
             bail!("{message}")
         }
     }
+}
+
+/// Stop the service before any file changes. If it does not stop in time,
+/// the update fails before changing anything, and the service is started
+/// again once it has stopped, so the host is not left stopped.
+fn stop_for_update(
+    result: &Path,
+    stop: impl FnOnce() -> Result<()>,
+    start_again: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    let Err(error) = stop() else {
+        return Ok(());
+    };
+    if let Err(start) = start_again() {
+        line(format!("the service could not be started again: {start:#}"));
+    }
+    write_result(result, "failed", Some(&format!("{error:#}")))?;
+    Err(error)
 }
 
 #[derive(Debug)]
@@ -293,6 +321,33 @@ mod tests {
             std::fs::read(root.path().join("backup/host.exe"))?,
             b"previous"
         );
+        Ok(())
+    }
+    #[test]
+    fn a_service_that_does_not_stop_is_started_again_and_the_update_fails() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let result = root.path().join("update-result.json");
+        write_result(&result, "installing", None)?;
+        let started = std::cell::Cell::new(false);
+        let error = stop_for_update(
+            &result,
+            || bail!("the ApolloService service did not stop"),
+            || {
+                started.set(true);
+                bail!("still stopping")
+            },
+        )
+        .unwrap_err();
+        assert!(started.get());
+        assert!(error.to_string().contains("did not stop"));
+        let written: serde_json::Value = serde_json::from_slice(&std::fs::read(&result)?)?;
+        assert_eq!(written["phase"], "failed");
+        assert!(written["error"].as_str().unwrap().contains("did not stop"));
+        stop_for_update(
+            &result,
+            || Ok(()),
+            || panic!("a stopped service is not started"),
+        )?;
         Ok(())
     }
     #[test]
