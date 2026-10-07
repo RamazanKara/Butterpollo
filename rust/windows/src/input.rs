@@ -1029,22 +1029,18 @@ impl Injector {
         self.pen_refreshed = std::time::Instant::now();
         result
     }
-    pub fn refresh(&mut self) -> Result<()> {
-        // Every step runs even when an earlier one fails; the first error is
-        // reported. A failed step is not retried before its next due time.
-        let mut first = None;
-        let mut keep = |result: Result<()>| {
-            if let Err(error) = result {
-                first.get_or_insert(error);
-            }
-        };
-        if let Some(gamepads) = &mut self.gamepads {
-            keep(gamepads.refresh());
-        }
+    /// What is due to the millisecond: the delayed left release after
+    /// absolute input and key repeat. The control loop calls this on every
+    /// pass; on its 8 ms refresh tick a release landed 10-18 ms after the
+    /// client's, not 10.
+    pub fn due(&mut self) -> Result<()> {
         let now = std::time::Instant::now();
+        let mut first = None;
         if self.left_release.is_some_and(|due| now >= due) {
             self.left_release = None;
-            keep(Self::held(false, 1, false, true, Self::button(1, false)));
+            if let Err(error) = Self::held(false, 1, false, true, Self::button(1, false)) {
+                first.get_or_insert(error);
+            }
         }
         if let Some((key, flags, modifiers, due)) = self.repeat
             && now >= due
@@ -1058,8 +1054,26 @@ impl Injector {
                 &HELD.lock().unwrap(),
                 self.policy.always_send_scancodes,
             );
-            keep(Self::send(&inputs));
+            if let Err(error) = Self::send(&inputs) {
+                first.get_or_insert(error);
+            }
         }
+        first.map_or(Ok(()), Err)
+    }
+    pub fn refresh(&mut self) -> Result<()> {
+        // Every step runs even when an earlier one fails; the first error is
+        // reported. A failed step is not retried before its next due time.
+        let mut first = None;
+        let mut keep = |result: Result<()>| {
+            if let Err(error) = result {
+                first.get_or_insert(error);
+            }
+        };
+        if let Some(gamepads) = &mut self.gamepads {
+            keep(gamepads.refresh());
+        }
+        keep(self.due());
+        let now = std::time::Instant::now();
         // A game can change its display's resolution or position mid-stream,
         // and the stream's display can appear after input began.
         if self.rect_read.elapsed() >= RECT_INTERVAL {

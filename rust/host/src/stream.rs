@@ -1865,6 +1865,12 @@ impl Media {
                             }
                         }
                     }
+                    if !poll_feedback
+                        && let Some(i) = &mut p.injector
+                        && let Err(e) = i.due()
+                    {
+                        tracing::debug!(error=%e,"input release or repeat failed");
+                    }
                     if poll_feedback {
                         let mut messages = Vec::new();
                         if let Some(i) = &mut p.injector
