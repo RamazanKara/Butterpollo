@@ -14,6 +14,8 @@ mod system;
 mod ui;
 mod uninstall;
 mod update;
+#[path = "../../core/src/update_files.rs"]
+mod update_files;
 
 use std::path::PathBuf;
 

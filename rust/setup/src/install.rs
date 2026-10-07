@@ -427,22 +427,7 @@ fn copy_package(staging: &Path, install: &Path, entries: &[payload::Entry]) -> R
     Ok(())
 }
 pub(crate) fn replace_file(source: &Path, target: &Path) -> Result<()> {
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    if std::fs::copy(source, target).is_ok() {
-        return Ok(());
-    }
-    // In use: move it aside, delete it at restart and copy the new file.
-    let aside = target.with_extension(format!(
-        "{}.old-{}",
-        target.extension().and_then(|e| e.to_str()).unwrap_or(""),
-        std::process::id()
-    ));
-    std::fs::rename(target, &aside).with_context(|| format!("replacing {}", target.display()))?;
-    system::remove_file_later(&aside);
-    std::fs::copy(source, target).with_context(|| format!("installing {}", target.display()))?;
-    Ok(())
+    crate::update_files::replace(source, target, system::remove_file_later)
 }
 fn copy_tree(source: &Path, target: &Path) -> Result<()> {
     std::fs::create_dir_all(target)?;

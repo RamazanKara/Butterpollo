@@ -107,21 +107,7 @@ fn restore(backup: &Path, install: &Path) -> Result<()> {
 /// Setup's replace_file: a file in use (the running service) is renamed
 /// aside, deleted when Windows restarts, and the copy put in its place.
 fn replace(source: &Path, target: &Path) -> Result<()> {
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    if std::fs::copy(source, target).is_ok() {
-        return Ok(());
-    }
-    let aside = target.with_extension(format!(
-        "{}.old-{}",
-        target.extension().and_then(|e| e.to_str()).unwrap_or(""),
-        std::process::id()
-    ));
-    std::fs::rename(target, &aside).with_context(|| format!("replacing {}", target.display()))?;
-    delete_at_restart(&aside);
-    std::fs::copy(source, target).with_context(|| format!("restoring {}", target.display()))?;
-    Ok(())
+    crate::update_files::replace(source, target, delete_at_restart)
 }
 fn delete_at_restart(path: &Path) {
     #[cfg(windows)]

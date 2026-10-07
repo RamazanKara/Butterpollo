@@ -125,9 +125,14 @@ pub fn write_stub(destination: &Path) -> Result<()> {
     let exe = std::env::current_exe()?;
     let length = layout(&exe)?.map_or(std::fs::metadata(&exe)?.len(), |(start, _)| start);
     let mut source = File::open(&exe)?.take(length);
-    let mut target = File::create(destination)?;
-    std::io::copy(&mut source, &mut target)?;
-    Ok(())
+    crate::update_files::write(
+        destination,
+        |file| {
+            std::io::copy(&mut source, file)?;
+            Ok(())
+        },
+        crate::system::remove_file_later,
+    )
 }
 
 #[derive(serde::Deserialize)]

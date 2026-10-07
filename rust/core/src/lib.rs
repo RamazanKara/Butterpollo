@@ -34,4 +34,5 @@ pub mod state;
 pub mod steam;
 pub mod stream_policy;
 pub mod topology;
+mod update_files;
 pub mod update_recovery;
