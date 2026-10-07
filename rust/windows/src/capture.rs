@@ -389,6 +389,24 @@ impl Duplication {
     }
     fn new_device(gpu: Device, hdr: bool) -> Result<Self> {
         let output = gpu.output()?.clone();
+        // Desktop Duplication works only on the GPU the display is connected
+        // to; WGC also captures it for a device on another GPU.
+        if let (Ok(device), Ok(owner)) = (
+            gpu.device
+                .cast::<IDXGIDevice>()
+                .and_then(|d| unsafe { d.GetAdapter() }),
+            unsafe { output.GetParent::<IDXGIAdapter>() },
+        ) && let (Ok(device), Ok(owner)) = unsafe { (device.GetDesc(), owner.GetDesc()) }
+            && (device.AdapterLuid.LowPart, device.AdapterLuid.HighPart)
+                != (owner.AdapterLuid.LowPart, owner.AdapterLuid.HighPart)
+        {
+            bail!(
+                "Desktop Duplication captures {} only on the GPU it is connected to ({}), not on {}; use WGC capture to encode on another GPU",
+                gpu.display.display_name,
+                wide(&owner.Description),
+                wide(&device.Description)
+            );
+        }
         let native_hdr = hdr
             && output
                 .cast::<IDXGIOutput6>()

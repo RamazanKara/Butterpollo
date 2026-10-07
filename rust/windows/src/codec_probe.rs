@@ -47,6 +47,9 @@ fn early_exit(code: u32) -> anyhow::Error {
 #[serde(deny_unknown_fields)]
 struct Request {
     output: String,
+    /// The encoding GPU the settings name, as the stream will use it.
+    adapter_name: String,
+    adapter_pnp_id: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -89,6 +92,8 @@ pub fn pyrowave(config: &Config) -> Result<u32> {
     }
     pipe.send(&Request {
         output: config.get("output_name", "").into(),
+        adapter_name: config.get("adapter_name", "").into(),
+        adapter_pnp_id: config.get("adapter_pnp_id", "").into(),
     })?;
     let reply = loop {
         if let Some(reply) = pipe.receive::<Reply>()? {
@@ -125,6 +130,15 @@ fn probe(request: &Request) -> Result<Reply> {
     };
     let mut flags = 0;
     let mut errors = Vec::new();
+    let mut gpu = Config::default();
+    for (key, value) in [
+        ("adapter_name", &request.adapter_name),
+        ("adapter_pnp_id", &request.adapter_pnp_id),
+    ] {
+        if !value.is_empty() {
+            gpu.values.insert(key.into(), value.clone());
+        }
+    }
     for (hdr, yuv444, bit) in [
         (false, false, 0x0080_0000),
         (false, true, 0x0100_0000),
@@ -142,8 +156,7 @@ fn probe(request: &Request) -> Result<Reply> {
             ..Default::default()
         };
         let result = (|| -> Result<bool> {
-            let mut encoder =
-                Encoder::new_options(&mode, "auto", &request.output, &Config::default())?;
+            let mut encoder = Encoder::new_options(&mode, "auto", &request.output, &gpu)?;
             for frame in 0..8 {
                 if !encoder
                     .encode(&image, frame == 0, mode.bitrate_kbps)?

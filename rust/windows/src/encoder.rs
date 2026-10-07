@@ -840,36 +840,49 @@ impl Encoder {
         tuning: &butterpollo_core::config::Config,
     ) -> Result<Self> {
         let preference = butterpollo_core::encoder_policy::canonical_name(preference);
+        // The GPU the encoding adapter setting names, as capture opens it;
+        // the display's own GPU only when nothing is set. A Radeon beside an
+        // NVIDIA card that drives the monitor must probe on the Radeon.
+        let device = || {
+            crate::capture::Device::new_adapter(
+                display,
+                tuning.get("adapter_name", ""),
+                tuning.get("adapter_pnp_id", ""),
+            )
+        };
         if config.codec == 3 {
             return Ok(Self::Pyrowave(Box::new(
-                crate::pyrowave::Encoder::new_device(
-                    config,
-                    crate::capture::Device::new(display)?,
-                    tuning,
-                )?,
+                crate::pyrowave::Encoder::new_device(config, device()?, tuning)?,
             )));
         }
         if matches!(preference, "nvenc" | "nvenc_experimental") {
             return Ok(Self::Nvenc(Box::new(
-                crate::nvenc::Encoder::new_device_options(
-                    config,
-                    crate::capture::Device::new(display)?,
-                    tuning,
-                )?,
+                crate::nvenc::Encoder::new_device_options(config, device()?, tuning)?,
             )));
         }
+        let mut tried_amf = false;
         if matches!(preference, "" | "auto")
-            && let Ok(device) = crate::capture::Device::new(display)
-            && device
+            && let Ok(device) = device()
+        {
+            // The GPU's own encoder first, as on the streaming path: FFmpeg's
+            // NVENC below runs on an NVIDIA card whichever GPU was chosen.
+            if device
                 .display
                 .adapter
                 .to_ascii_lowercase()
                 .contains("nvidia")
-        {
-            match crate::nvenc::Encoder::new_device_options(config, device, tuning) {
-                Ok(e) => return Ok(Self::Nvenc(Box::new(e))),
-                Err(error) => {
-                    tracing::warn!(%error, "Native NVENC unavailable; trying compatible encoders")
+            {
+                match crate::nvenc::Encoder::new_device_options(config, device, tuning) {
+                    Ok(e) => return Ok(Self::Nvenc(Box::new(e))),
+                    Err(error) => {
+                        tracing::warn!(%error, "Native NVENC unavailable; trying compatible encoders")
+                    }
+                }
+            } else if device.display.adapter.contains("Radeon") {
+                tried_amf = true;
+                match crate::amf::Encoder::new_device_options(config, device, tuning) {
+                    Ok(e) => return Ok(Self::Amf(Box::new(e))),
+                    Err(error) => tracing::warn!(%error, "AMF unavailable; trying other encoders"),
                 }
             }
         }
@@ -881,11 +894,7 @@ impl Encoder {
         };
         if preference == "amf" {
             return Ok(Self::Amf(Box::new(
-                crate::amf::Encoder::new_device_options(
-                    config,
-                    crate::capture::Device::new(display)?,
-                    tuning,
-                )?,
+                crate::amf::Encoder::new_device_options(config, device()?, tuning)?,
             )));
         }
         let candidates: Vec<String> = match preference {
@@ -909,13 +918,11 @@ impl Encoder {
             }
         }
         if preference.is_empty() || preference == "auto" {
-            match crate::amf::Encoder::new_device_options(
-                config,
-                crate::capture::Device::new(display)?,
-                tuning,
-            ) {
-                Ok(e) => return Ok(Self::Amf(Box::new(e))),
-                Err(e) => errors.push(format!("AMF: {e}")),
+            if !tried_amf {
+                match crate::amf::Encoder::new_device_options(config, device()?, tuning) {
+                    Ok(e) => return Ok(Self::Amf(Box::new(e))),
+                    Err(e) => errors.push(format!("AMF: {e}")),
+                }
             }
             let name = match config.codec {
                 0 => "libx264",
@@ -963,5 +970,26 @@ mod tests {
         }
         let chroma = unsafe { *(*convert.frame).data[1].add(2) };
         assert_eq!(chroma, 128);
+    }
+    /// Opens a GPU device.
+    #[test]
+    fn encoders_open_on_the_configured_gpu() {
+        let stream = Negotiated {
+            width: 640,
+            height: 480,
+            fps: 30,
+            bitrate_kbps: 2000,
+            ..Default::default()
+        };
+        // A GPU that is not there: the encoder must not quietly use the
+        // display's GPU instead, as the codec probe did with two GPUs.
+        let tuning =
+            butterpollo_core::config::Config::parse("adapter_name = No Such GPU\n").unwrap();
+        for preference in ["amf", "nvenc"] {
+            let error = Encoder::new_options(&stream, preference, "", &tuning)
+                .err()
+                .expect("an encoder on a missing GPU");
+            assert!(format!("{error:#}").contains("No Such GPU"), "{error:#}");
+        }
     }
 }
