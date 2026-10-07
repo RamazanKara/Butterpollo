@@ -1,7 +1,7 @@
 //! What is installed: Butterpollo itself, Vibepollo-family MSI packages
 //! (Vibepollo, Butterpollo C++, Apollo, Sunshine) and legacy NSIS installs.
 use crate::system::{registry_dword, registry_string_view, service_program, subkeys};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_WOW64_32KEY, KEY_WOW64_64KEY, REG_SAM_FLAGS,
 };
@@ -67,18 +67,81 @@ impl Found {
     }
 }
 
+/// The program folder of an Uninstall entry: its InstallLocation, else the
+/// folder of the program its DisplayIcon or UninstallString names. Some
+/// installers leave InstallLocation out.
+fn resolve_location(
+    install_location: Option<&str>,
+    display_icon: Option<&str>,
+    uninstall: Option<&str>,
+) -> Option<PathBuf> {
+    if let Some(location) = install_location.map(str::trim).filter(|l| !l.is_empty()) {
+        return Some(PathBuf::from(location.trim_end_matches('\\')));
+    }
+    [display_icon, uninstall]
+        .into_iter()
+        .flatten()
+        .find_map(|text| program_folder(&program(text)?))
+}
+/// The program a DisplayIcon ("C:\App\app.exe,0") or a command line
+/// ("\"C:\App\uninstall.exe\" /S") names, if it is a full path.
+fn program(text: &str) -> Option<PathBuf> {
+    let text = text.trim();
+    let path = match text.strip_prefix('"') {
+        Some(quoted) => quoted.split('"').next()?,
+        None => match text.to_ascii_lowercase().find(".exe") {
+            Some(end) => &text[..end + 4],
+            None => text
+                .rsplit_once(',')
+                .filter(|(_, index)| index.trim().parse::<i32>().is_ok())
+                .map_or(text, |(path, _)| path),
+        },
+    };
+    let path = PathBuf::from(path.trim());
+    path.is_absolute().then_some(path)
+}
+/// The folder a host's program is installed in (its service runs from
+/// tools). Windows Installer's msiexec and icon cache belong to no host.
+fn program_folder(program: &Path) -> Option<PathBuf> {
+    if program
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("msiexec.exe"))
+        || program
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .contains("\\windows\\installer\\")
+    {
+        return None;
+    }
+    let folder = program.parent()?;
+    if folder
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("tools"))
+    {
+        return folder.parent().map(Path::to_path_buf);
+    }
+    Some(folder.to_path_buf())
+}
+/// Whether a previous host's folder holds settings to import.
+fn has_profile(root: &Path) -> bool {
+    root.join("config").join("sunshine.conf").is_file() || root.join("sunshine.conf").is_file()
+}
+
 fn read(root: HKEY, view: REG_SAM_FLAGS, key: &str) -> Option<Product> {
     let path = format!("{UNINSTALL}\\{key}");
     let name = registry_string_view(root, &path, "DisplayName", view)?;
-    let location = registry_string_view(root, &path, "InstallLocation", view)
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| PathBuf::from(l.trim().trim_end_matches('\\')));
+    let uninstall = registry_string_view(root, &path, "UninstallString", view);
+    let location = resolve_location(
+        registry_string_view(root, &path, "InstallLocation", view).as_deref(),
+        registry_string_view(root, &path, "DisplayIcon", view).as_deref(),
+        uninstall.as_deref(),
+    );
     Some(Product {
         key: key.to_owned(),
         name: name.trim().to_owned(),
         version: registry_string_view(root, &path, "DisplayVersion", view).unwrap_or_default(),
         location,
-        uninstall: registry_string_view(root, &path, "UninstallString", view),
+        uninstall,
         quiet_uninstall: registry_string_view(root, &path, "QuietUninstallString", view),
         msi: registry_dword(root, &path, "WindowsInstaller", view) == Some(1),
         root,
@@ -114,21 +177,30 @@ pub fn scan() -> Found {
         }
     }
     // The hidden MSI entry has no location; take it from Vibepollo's entry.
+    // Otherwise, as for any entry without one, the previous host's service
+    // tells where it is installed.
+    let service = OLD_SERVICES
+        .iter()
+        .filter_map(|name| service_program(name))
+        .filter(|program| {
+            program
+                .file_name()
+                .is_some_and(|n| n.eq_ignore_ascii_case("sunshinesvc.exe"))
+        })
+        .find_map(|program| program_folder(&program));
     let location = found
         .vibepollo_entries
         .iter()
         .find_map(|p| p.location.clone())
-        .or_else(|| {
-            service_program(SERVICE)
-                .filter(|p| {
-                    p.file_name()
-                        .is_some_and(|n| n.eq_ignore_ascii_case("sunshinesvc.exe"))
-                })
-                .and_then(|p| p.parent()?.parent().map(PathBuf::from))
-        });
+        .or_else(|| service.clone());
     for package in &mut found.packages {
         if package.location.is_none() {
             package.location = location.clone();
+        }
+    }
+    for product in found.vibepollo_entries.iter_mut().chain(&mut found.legacy) {
+        if product.location.is_none() {
+            product.location = service.clone();
         }
     }
     found.service_install = service_program(SERVICE)
@@ -162,11 +234,99 @@ pub fn summary(found: &Found, install: &std::path::Path) -> String {
             .iter()
             .find(|entry| entry.location.is_some() && entry.location == product.location)
             .map_or(product.version.as_str(), |entry| entry.version.as_str());
-        lines.push(format!(
-            "{} {version} will be replaced. Its settings, paired devices, apps and drivers are kept.",
-            product.name
-        ));
+        lines.push(if product.location.as_deref().is_some_and(has_profile) {
+            format!(
+                "{} {version} will be replaced. Its settings, paired devices, apps and drivers are kept.",
+                product.name
+            )
+        } else {
+            format!(
+                "{} {version} will be replaced. Its settings were not found, so they cannot be kept.",
+                product.name
+            )
+        });
     }
     lines.push(format!("Install folder: {}", install.display()));
     lines.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn locations_come_from_the_icon_the_uninstaller_or_the_service() {
+        let path = |p: &str| Some(PathBuf::from(p));
+        let sunshine = path(r"C:\Program Files\Sunshine");
+        assert_eq!(
+            resolve_location(Some(r" C:\Program Files\Sunshine\ "), None, None),
+            sunshine
+        );
+        for (icon, uninstall) in [
+            (Some(r"C:\Program Files\Sunshine\sunshine.exe,0"), None),
+            (Some(r#""C:\Program Files\Sunshine\sunshine.exe",0"#), None),
+            (Some(r"C:\Program Files\Sunshine\sunshine.ico"), None),
+            (
+                Some(""),
+                Some(r#""C:\Program Files\Sunshine\uninstall.exe" /S"#),
+            ),
+            (None, Some(r"C:\Program Files\Sunshine\Uninstall.EXE /S")),
+            (
+                Some(r"C:\Windows\Installer\{0A1B}\ProductIcon.ico"),
+                Some(r"C:\Program Files\Sunshine\tools\uninstall.exe"),
+            ),
+        ] {
+            assert_eq!(
+                resolve_location(Some("  "), icon, uninstall),
+                sunshine,
+                "{icon:?} {uninstall:?}"
+            );
+        }
+        // Windows Installer's own programs and relative paths name no folder.
+        assert_eq!(
+            resolve_location(
+                None,
+                Some(r"C:\WINDOWS\Installer\{0A1B}\icon.ico,0"),
+                Some(r"MsiExec.exe /X{0A1B}")
+            ),
+            None
+        );
+        assert_eq!(
+            resolve_location(
+                None,
+                Some("sunshine.exe"),
+                Some(r"C:\Windows\System32\msiexec.exe /X{0A1B}")
+            ),
+            None
+        );
+        assert_eq!(
+            program_folder(Path::new(r"C:\Program Files\Apollo\tools\sunshinesvc.exe")),
+            path(r"C:\Program Files\Apollo")
+        );
+    }
+    #[test]
+    fn the_summary_promises_settings_only_when_there_are_some() {
+        let root = tempfile::tempdir().unwrap();
+        let product = Product {
+            key: "{0A1B}".into(),
+            name: "Apollo".into(),
+            version: "0.4.6".into(),
+            location: Some(root.path().to_path_buf()),
+            uninstall: None,
+            quiet_uninstall: None,
+            msi: true,
+            root: HKEY_LOCAL_MACHINE,
+        };
+        let found = Found {
+            packages: vec![product],
+            ..Default::default()
+        };
+        let install = Path::new(r"C:\Program Files\Butterpollo");
+        assert!(summary(&found, install).contains("Its settings were not found"));
+        std::fs::create_dir(root.path().join("config")).unwrap();
+        std::fs::write(root.path().join("config").join("sunshine.conf"), "").unwrap();
+        assert!(
+            summary(&found, install)
+                .contains("Its settings, paired devices, apps and drivers are kept.")
+        );
+    }
 }
