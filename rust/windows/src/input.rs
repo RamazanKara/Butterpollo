@@ -10,6 +10,7 @@ use windows::{
         Devices::DeviceAndDriverInstallation::*,
         Foundation::*,
         Storage::FileSystem::*,
+        System::StationsAndDesktops::*,
         UI::{
             Controls::*,
             Input::{KeyboardAndMouse::*, Pointer::*},
@@ -1606,16 +1607,30 @@ fn inject(inputs: &[INPUT]) -> usize {
     }
     sent
 }
+struct InputDesktop {
+    original: HDESK,
+    current: HDESK,
+}
+impl Drop for InputDesktop {
+    fn drop(&mut self) {
+        unsafe {
+            // Windows refuses to close a handle while a thread is attached to it.
+            let _ = SetThreadDesktop(self.original);
+            let _ = CloseDesktop(self.current);
+        }
+    }
+}
+thread_local! {
+    static INPUT_DESKTOP: std::cell::RefCell<Option<InputDesktop>> = const { std::cell::RefCell::new(None) };
+}
+
 /// Move the calling thread to the desktop that receives input, which is the
 /// secure desktop while a UAC prompt or the lock screen shows. Only a host
 /// running as SYSTEM may attach to it; elsewhere this fails harmlessly.
 /// Returns whether the thread is now on the input desktop.
 pub fn follow_input_desktop() -> bool {
-    use windows::Win32::System::StationsAndDesktops::{
-        CloseDesktop, DESKTOP_ACCESS_FLAGS, DF_ALLOWOTHERACCOUNTHOOK, OpenInputDesktop,
-        SetThreadDesktop,
-    };
-    unsafe {
+    use windows::Win32::System::Threading::GetCurrentThreadId;
+    INPUT_DESKTOP.with_borrow_mut(|attachment| unsafe {
         let Ok(desktop) = OpenInputDesktop(
             DF_ALLOWOTHERACCOUNTHOOK,
             false,
@@ -1623,10 +1638,26 @@ pub fn follow_input_desktop() -> bool {
         ) else {
             return false;
         };
-        let attached = SetThreadDesktop(desktop).is_ok();
-        let _ = CloseDesktop(desktop);
-        attached
-    }
+        let original = GetThreadDesktop(GetCurrentThreadId());
+        let Ok(original) = original else {
+            let _ = CloseDesktop(desktop);
+            return false;
+        };
+        if SetThreadDesktop(desktop).is_err() {
+            let _ = CloseDesktop(desktop);
+            return false;
+        }
+        if let Some(attached) = attachment {
+            let previous = std::mem::replace(&mut attached.current, desktop);
+            let _ = CloseDesktop(previous);
+        } else {
+            *attachment = Some(InputDesktop {
+                original,
+                current: desktop,
+            });
+        }
+        true
+    })
 }
 /// Inject touch or pen input, retrying once on the input desktop.
 unsafe fn inject_pointer(
@@ -1867,6 +1898,48 @@ mod native_touch_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires an unlocked Windows desktop"]
+    fn input_desktop_handles_close_on_reattachment_and_thread_exit() {
+        use std::os::windows::process::CommandExt;
+        use windows::Win32::System::Threading::*;
+        if std::env::var_os("BUTTERPOLLO_DESKTOP_HANDLE_TEST").is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "input::tests::input_desktop_handles_close_on_reattachment_and_thread_exit",
+                    "--ignored",
+                ])
+                .env("BUTTERPOLLO_DESKTOP_HANDLE_TEST", "1")
+                .creation_flags(CREATE_NO_WINDOW.0)
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        let run = || {
+            std::thread::spawn(|| {
+                for _ in 0..8 {
+                    assert!(follow_input_desktop());
+                }
+            })
+            .join()
+            .unwrap();
+        };
+        run();
+        let handles = || {
+            let mut count = 0;
+            unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut count).unwrap() };
+            count
+        };
+        // A subprocess keeps unrelated parallel tests out of this measurement.
+        let before = handles();
+        for _ in 0..32 {
+            run();
+        }
+        assert_eq!(handles(), before);
+    }
 
     fn submit_touch(
         pointers: &mut BTreeMap<(u8, u32), u8>,
