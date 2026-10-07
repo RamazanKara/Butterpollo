@@ -867,11 +867,14 @@ impl Topology {
     /// Whether a path still leads to this monitor, as `monitors` would list
     /// it: the lease heartbeat's check each second, without the DXGI and
     /// colour queries that take nearly all of the half millisecond.
-    fn shows(&self, monitor: &Monitor) -> bool {
-        self.paths.iter().any(|p| unsafe {
-            if p.targetInfo.adapterId != monitor.adapter || p.targetInfo.id != monitor.target {
-                return false;
-            }
+    fn shows(
+        &self,
+        monitor: &Monitor,
+        mut device_info: impl FnMut(&mut DISPLAYCONFIG_DEVICE_INFO_HEADER) -> i32,
+    ) -> Result<bool> {
+        for p in self.paths.iter().filter(|p| {
+            p.targetInfo.adapterId == monitor.adapter && p.targetInfo.id == monitor.target
+        }) {
             let mut source = DISPLAYCONFIG_SOURCE_DEVICE_NAME {
                 header: header(
                     DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
@@ -890,11 +893,13 @@ impl Topology {
                 ),
                 ..Default::default()
             };
-            DisplayConfigGetDeviceInfo(&mut source.header) == 0
-                && DisplayConfigGetDeviceInfo(&mut target.header) == 0
-                && wide(&target.monitorDevicePath)
-                    .eq_ignore_ascii_case(&monitor.monitor_device_path)
-        })
+            check(device_info(&mut source.header))?;
+            check(device_info(&mut target.header))?;
+            if wide(&target.monitorDevicePath).eq_ignore_ascii_case(&monitor.monitor_device_path) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }
 pub fn monitors() -> Result<Vec<Monitor>> {
@@ -1774,6 +1779,23 @@ fn display_lease(
     displays.insert(id.into(), std::sync::Arc::downgrade(&display));
     Ok(display)
 }
+fn renewed_lease(result: Result<()>) -> Result<bool> {
+    match result {
+        Ok(()) => Ok(true),
+        // The driver reports STATUS_NOT_FOUND for an expired/missing lease.
+        // BUSY and other I/O failures say nothing about monitor ownership.
+        Err(error)
+            if error
+                .downcast_ref::<windows::core::Error>()
+                .is_some_and(|e| {
+                    e.code() == windows::core::HRESULT::from_win32(ERROR_NOT_FOUND.0)
+                }) =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(error),
+    }
+}
 impl VirtualDisplay {
     pub fn create(stable_id: &str, width: u32, height: u32, fps: u32) -> Result<Self> {
         Self::create_rate(
@@ -1977,18 +1999,36 @@ impl VirtualDisplay {
     pub fn feed(&mut self) -> Result<()> {
         if self.last_feed.elapsed() >= Duration::from_secs(1) {
             self.last_feed = Instant::now();
-            let renewed = self.renew();
-            let present = Topology::query().map(|topology| {
-                self.resolved_target
-                    .as_ref()
-                    .is_some_and(|owned| topology.shows(owned))
-            });
-            if renewed.is_ok() && present? {
+            let renewed = renewed_lease(self.renew());
+            if renewed.is_err() {
+                // Reopen a stale transport for the next heartbeat, without
+                // mistaking its error for permission to create another monitor.
+                if let Ok(driver) = Driver::open() {
+                    self.driver = driver;
+                }
+            }
+            if renewed? {
+                let owned = self.hotplug_monitor()?;
+                let device_info = |header: &mut DISPLAYCONFIG_DEVICE_INFO_HEADER| unsafe {
+                    DisplayConfigGetDeviceInfo(header)
+                };
+                if Topology::query()?.shows(owned, device_info)? {
+                    return Ok(());
+                }
+                // A live lease can be switched off by a Windows layout recall.
+                // Activate that same target; creating its ID again returns BUSY.
+                anyhow::ensure!(
+                    Topology::query_all()?.shows(owned, device_info)?,
+                    "owned virtual display is temporarily absent from Windows topology"
+                );
+                activate_target(owned.adapter, owned.target)?;
+                self.refresh_name()?;
+                self.generation = self.generation.wrapping_add(1);
+                tracing::info!(output=%self.name, "owned virtual display reactivated");
                 return Ok(());
             }
-            // Recreate with the same owner lease and stable display ID. The
-            // driver can renew an existing owned monitor or recover an expired
-            // one, without adopting an unrelated display with the same name.
+            // Only a confirmed missing lease permits creation. Retain the
+            // stream's descriptor and identity, never a recalled desktop mode.
             self.driver = Driver::open()?;
             let request = temporary_request(
                 self.lease,
@@ -2750,20 +2790,89 @@ mod tests {
     #[test]
     fn heartbeat_check_finds_the_monitors_that_monitors_lists() -> Result<()> {
         let topology = Topology::query()?;
+        let device_info = |header: &mut DISPLAYCONFIG_DEVICE_INFO_HEADER| unsafe {
+            DisplayConfigGetDeviceInfo(header)
+        };
         for monitor in monitors()? {
-            assert!(topology.shows(&monitor), "{}", monitor.monitor_device_path);
+            assert!(
+                topology.shows(&monitor, device_info)?,
+                "{}",
+                monitor.monitor_device_path
+            );
             let other = Monitor {
                 monitor_device_path: format!("{}#other", monitor.monitor_device_path),
                 ..monitor.clone()
             };
-            assert!(!topology.shows(&other));
+            assert!(!topology.shows(&other, device_info)?);
             let moved = Monitor {
                 target: monitor.target ^ 0x8000_0000,
                 ..monitor
             };
-            assert!(!topology.shows(&moved));
+            assert!(!topology.shows(&moved, device_info)?);
         }
         Ok(())
+    }
+    #[test]
+    fn heartbeat_device_info_errors_are_not_monitor_loss() {
+        let owned = monitor("owned", 1, false);
+        let mut path = DISPLAYCONFIG_PATH_INFO::default();
+        path.targetInfo.adapterId = owned.adapter;
+        path.targetInfo.id = owned.target;
+        let topology = Topology {
+            paths: vec![path],
+            modes: vec![],
+        };
+        for fail_call in [1, 2] {
+            let mut calls = 0;
+            let result = topology.shows(&owned, |_| {
+                calls += 1;
+                if calls == fail_call {
+                    ERROR_BUSY.0 as i32
+                } else {
+                    0
+                }
+            });
+            assert_eq!(
+                result
+                    .unwrap_err()
+                    .downcast_ref::<std::io::Error>()
+                    .unwrap()
+                    .raw_os_error(),
+                Some(ERROR_BUSY.0 as i32)
+            );
+        }
+        let empty = Topology {
+            paths: vec![],
+            modes: vec![],
+        };
+        assert!(
+            !empty
+                .shows(&owned, |_| panic!("no target to query"))
+                .unwrap()
+        );
+    }
+    #[test]
+    fn only_a_missing_driver_lease_allows_recreation() {
+        assert!(renewed_lease(Ok(())).unwrap());
+        for code in [
+            ERROR_BUSY,
+            ERROR_RETRY,
+            ERROR_GEN_FAILURE,
+            ERROR_ACCESS_DENIED,
+            ERROR_INVALID_HANDLE,
+        ] {
+            let error =
+                windows::core::Error::from_hresult(windows::core::HRESULT::from_win32(code.0));
+            assert!(renewed_lease(Err(error.into())).is_err(), "{code:?}");
+            assert!(
+                renewed_lease(Ok(())).unwrap(),
+                "the next heartbeat can succeed"
+            );
+        }
+        let error = windows::core::Error::from_hresult(windows::core::HRESULT::from_win32(
+            ERROR_NOT_FOUND.0,
+        ));
+        assert!(!renewed_lease(Err(error.into())).unwrap());
     }
     #[test]
     fn only_a_displays_sole_stream_changes_its_mode_or_hdr() {
@@ -3111,7 +3220,7 @@ mod tests {
     #[ignore = "creates a virtual display and briefly switches it off"]
     fn native_virtual_display_left_off_by_windows_is_switched_on_without_retiming_others()
     -> Result<()> {
-        let display = VirtualDisplay::create(
+        let mut display = VirtualDisplay::create(
             &format!("activation-test-{}", std::process::id()),
             1280,
             720,
@@ -3164,9 +3273,11 @@ mod tests {
             !monitors()?.iter().any(ours),
             "virtual display stayed on after switching it off"
         );
-        let kept = activate_target(owned.adapter, owned.target)?;
+        display.last_feed = Instant::now() - Duration::from_secs(2);
+        display.feed()?;
         anyhow::ensure!(monitors()?.iter().any(ours), "virtual display stayed off");
-        assert_eq!(kept, Some(true));
+        assert_eq!(display.generation, 1);
+        assert!(display.owns_monitor(&owned));
         assert_eq!(timings()?, before);
         println!(
             "switched on {} beside {} displays",
