@@ -4,7 +4,7 @@
 
 Butterpollo is a Windows x64 streaming host written in Rust, with a GPU path tuned and measured on AMD Radeon. Moonlight runs on the device you play from. Start with one client and a 1080p60 SDR stream, then add HDR, higher frame rates or a virtual display.
 
-**On this page:** [Install](#install-or-run-portable) · [Import a profile](#bring-an-existing-profile) · [Open the console](#open-the-console) · [Pair Moonlight](#pair-moonlight-and-start-desktop) · [Stream formats](#choose-your-stream-format) · [Displays and updates](#virtual-displays-and-updates)
+**On this page:** [Install](#install-or-run-portable) · [Import a profile](#bring-an-existing-profile) · [Upgrading](#upgrading) · [Open the console](#open-the-console) · [Pair Moonlight](#pair-moonlight-and-start-desktop) · [Stream formats](#choose-your-stream-format) · [Displays and updates](#virtual-displays-and-updates)
 
 ## Install or run portable
 
@@ -35,6 +35,15 @@ The default profiles are separate:
 | Portable launcher | `%LOCALAPPDATA%\ButterpolloRust\config` |
 
 Opening the launcher again returns to the running profile's console. When launched from the installed package, it uses that package's Windows service profile.
+
+## Upgrading
+
+- Disconnect streams and remote monitors, then quit host-launched apps. Stop Vibepollo, Apollo or Sunshine before migrating; older hosts cannot tell setup whether they are idle.
+- Back up the whole profile folder from the table above (or the previous host's `config` folder). Include `sunshine.conf`, `apps.json`, covers, both identity files in `credentials`, `sunshine_state.json`, `sunshine_credentials.json` if present, and `vibeshine_state.json`. Also back up files named by custom paths in the configuration. Keep this backup private: it contains credentials and device certificates.
+- Run the new installer in the existing installation folder, or use **Maintenance → Updates → Install when idle**. Settings, unknown configuration keys, paired devices, credentials, apps, device/display settings and saved session data stay in the profile. Active streams do not survive a restart. The service and web console use the new package; installed drivers remain available. Legacy AMD encoder names such as `amdvce_experimental` still select AMF.
+- For a portable update, close the portable host and extract the complete new ZIP into a separate folder. The launcher reuses `%LOCALAPPDATA%\ButterpolloRust\config`; keep the old ZIP and your profile backup until the new version works. Portable mode does not install a service or drivers. Avoid opening an older ZIP against a newer profile.
+- If setup cannot identify one source profile, or Butterpollo already has settings alongside another host's profile, resolve that choice before removing either host. Imports preserve recognized files and unknown fields; old logs and oversized or linked optional files can be skipped, so keep the original backup.
+- Check that the console opens, existing clients connect, apps and covers appear, and display/controller settings still work. Restart Playnite if its connector was updated. If an update fails, keep the profile's `updates` folder and `update-result.json` for recovery. Installer downgrades are refused. Normal uninstall keeps the profile and drivers; **factory reset** and **remove drivers** explicitly delete them.
 
 ## Open the console
 

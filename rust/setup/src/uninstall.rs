@@ -217,6 +217,19 @@ mod tests {
         write(&root.join("notes.txt"), "mine");
         write(&root.join("assets\\mine.png"), "mine");
         write(&root.join("drivers\\other\\tool.sys"), "mine");
+        let profile_files = [
+            "sunshine.conf",
+            "sunshine_state.json",
+            "sunshine_credentials.json",
+            "apps.json",
+            "vibeshine_state.json",
+            "credentials/cacert.pem",
+            "credentials/cakey.pem",
+            "covers/game.png",
+        ];
+        for name in profile_files {
+            write(&root.join("config").join(name), "user profile");
+        }
         std::fs::create_dir_all(root.join("empty")).unwrap();
         remove_package(root);
         for gone in [
@@ -236,6 +249,12 @@ mod tests {
             "empty",
         ] {
             assert!(root.join(kept).exists(), "{kept} was deleted");
+        }
+        for name in profile_files {
+            assert_eq!(
+                std::fs::read(root.join("config").join(name)).unwrap(),
+                b"user profile"
+            );
         }
     }
     #[test]
