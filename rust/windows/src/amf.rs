@@ -26,6 +26,26 @@ pub(crate) fn int(n: i64) -> AMFVariantStruct {
 pub(crate) fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
+fn guard_smart_access_video(properties: &mut [butterpollo_core::encoder_policy::Property]) {
+    use butterpollo_core::encoder_policy::Value;
+    // The legacy backend also excludes this combination after HEVC HDR runs
+    // wedged AMF and reset the GPU (src/amf/amf_lifecycle.h).
+    if properties.iter().any(|property| {
+        property.name == "LowLatencyInternal" && property.value == Value::Boolean(true)
+    }) && let Some(property) = properties.iter_mut().find(|property| {
+        matches!(
+            property.name.as_str(),
+            "EnableEncoderSmartAccessVideo" | "HevcEnableEncoderSmartAccessVideo"
+        ) && property.value == Value::Boolean(true)
+    }) {
+        property.value = Value::Boolean(false);
+        // Do not proceed with both paths enabled if the driver refuses this.
+        property.required = true;
+        tracing::warn!(
+            "AMF SmartAccess Video disabled because forced low latency can reset the GPU"
+        );
+    }
+}
 struct Submission {
     pts: i64,
     started: Instant,
@@ -231,7 +251,9 @@ impl Encoder {
                 hdr_metadata: None,
                 compute,
             };
-            for property in butterpollo_core::encoder_policy::amf(options, config)? {
+            let mut properties = butterpollo_core::encoder_policy::amf(options, config)?;
+            guard_smart_access_video(&mut properties);
+            for property in properties {
                 if let Err(error) = e.apply(&property) {
                     if property.required {
                         return Err(error)
@@ -556,6 +578,9 @@ impl Encoder {
                 "QualityPreset",
                 "RateControlMethod",
                 "LowLatencyInternal",
+                "EnableEncoderSmartAccessVideo",
+                "BPicturesPattern",
+                "EnablePreAnalysis",
                 "RateControlPreanalysisEnable",
                 "EnableVBAQ",
                 "SlicesPerFrame",
@@ -577,7 +602,9 @@ impl Encoder {
                 "HevcQualityPreset",
                 "HevcRateControlMethod",
                 "LowLatencyInternal",
+                "HevcEnableEncoderSmartAccessVideo",
                 "HevcMultiHwInstanceEncode",
+                "HevcEnablePreAnalysis",
                 "HevcRateControlPreAnalysisEnable",
                 "HevcEnableVBAQ",
                 "HevcSlicesPerFrame",
@@ -599,7 +626,10 @@ impl Encoder {
                 "Av1QualityPreset",
                 "Av1RateControlMethod",
                 "Av1EncodingLatencyMode",
+                "Av1EnableEncoderSmartAccessVideo",
+                "Av1BPicturesPattern",
                 "Av1MultiHwInstanceEncode",
+                "Av1EnablePreAnalysis",
                 "Av1RateControlPreEncode",
                 "Av1AQMode",
                 "Av1NumTilesPerFrame",
