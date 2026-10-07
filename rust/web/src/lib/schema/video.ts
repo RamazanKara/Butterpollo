@@ -645,6 +645,67 @@ const amd: Setting[] = [
     visibleWhen: amf,
   },
   {
+    key: 'amd_peak_bitrate_ratio',
+    label: 'Peak bitrate',
+    description:
+      'Peak bitrate as a multiple of the requested stream bitrate. 0 keeps the driver default. This controls rate allocation; it does not cap individual keyframes.',
+    category: 'encoders',
+    group: 'AMD AMF',
+    control: {
+      kind: 'select',
+      options: [
+        { value: '0', label: 'Driver default' },
+        { value: '1', label: '1× stream bitrate' },
+        { value: '1.5', label: '1.5× stream bitrate' },
+        { value: '2', label: '2× stream bitrate' },
+      ],
+    },
+    default: 0,
+    visibleWhen: amf,
+    advanced: true,
+  },
+  {
+    key: 'amd_vbv_buffer_frames',
+    label: 'Rate-control buffer',
+    description:
+      'Buffer budget in frames at the requested bitrate and frame rate. 0 keeps the driver default. Smaller budgets can reduce bursts at the cost of picture quality.',
+    category: 'encoders',
+    group: 'AMD AMF',
+    control: {
+      kind: 'select',
+      options: [
+        { value: '0', label: 'Driver default' },
+        { value: '0.5', label: 'Half a frame' },
+        { value: '1', label: 'One frame' },
+        { value: '2', label: 'Two frames' },
+      ],
+    },
+    default: 0,
+    visibleWhen: amf,
+    advanced: true,
+  },
+  {
+    key: 'amd_max_frame_size',
+    label: 'Maximum frame size',
+    description:
+      'Requests a size limit for every frame, including recovery keyframes, in multiples of one frame’s bitrate budget. 0 keeps the driver default. Driver support and enforcement vary; tight limits can reduce picture quality.',
+    category: 'encoders',
+    group: 'AMD AMF',
+    control: {
+      kind: 'select',
+      options: [
+        { value: '0', label: 'Driver default' },
+        { value: '1', label: '1× frame budget' },
+        { value: '2', label: '2× frame budget' },
+        { value: '4', label: '4× frame budget' },
+        { value: '8', label: '8× frame budget' },
+      ],
+    },
+    default: 0,
+    visibleWhen: amf,
+    advanced: true,
+  },
+  {
     key: 'amd_qvbr_quality_level',
     label: 'Quality VBR level',
     description:

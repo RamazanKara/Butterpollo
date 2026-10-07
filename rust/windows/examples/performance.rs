@@ -38,6 +38,7 @@ fn main() -> anyhow::Result<()> {
 Repeat-frame throughput excludes capture, network, decoding and display latency.\n\
 --width 1920 --height 1080 --fps 120 --seconds 8 --bitrate 20000\n\
 --codec hevc (h264/hevc/av1/pyrowave) --encoder auto --capture wgc --display NAME\n\
+--synthetic 16: moving pictures; --idr-interval N: request a recovery keyframe every N measured submissions (0: none)\n\
 --hdr: HDR10 output; --sdr-10bit; --yuv444; --slices N: slices (AV1 tiles) a client asks for; --intra-refresh; --records: PyroWave record framing; --cpu: CPU conversion/readback path; --paced: requested frame cadence; --live-capture: keep the shared capture device active; --arrival: with --live-capture, encode each new picture as it arrives"
             );
             return Ok(());
@@ -71,6 +72,7 @@ Repeat-frame throughput excludes capture, network, decoding and display latency.
                 | "--config"
                 | "--synthetic"
                 | "--slices"
+                | "--idr-interval"
         ) {
             fields.insert(key, args.next().context("option requires a value")?);
         } else {
@@ -103,6 +105,7 @@ Repeat-frame throughput excludes capture, network, decoding and display latency.
         ..Default::default()
     };
     let seconds = number("--seconds", "8")?;
+    let idr_interval = u64::from(number("--idr-interval", "0")?);
     if !(2..=8192).contains(&config.width)
         || !(2..=8192).contains(&config.height)
         || !config.width.is_multiple_of(2)
@@ -226,13 +229,28 @@ Repeat-frame throughput excludes capture, network, decoding and display latency.
             encoder.encode_gpu(&image, idr, config.bitrate_kbps)
         }
     };
-    for frame in 0..20 {
-        encode(&mut encoder, frame == 0)?;
-    }
     let timer = Timer::new()?;
+    let mut startup_idr_bytes = Vec::new();
+    let warmup_start = Instant::now();
+    // CBR can default to a second of VBV; let its startup budget settle.
+    let warmup_frames = if paced { config.fps * 2 } else { 20 };
+    for frame in 0..warmup_frames {
+        if paced {
+            timer.until(warmup_start + rate.period() * frame);
+        }
+        for output in encode(&mut encoder, frame == 0)? {
+            if output.idr {
+                startup_idr_bytes.push(output.bytes.len());
+            }
+        }
+    }
     let warmup_deadline = Instant::now() + Duration::from_secs(2);
     while encoder.pending() {
-        encoder.poll()?;
+        for output in encoder.poll()? {
+            if output.idr {
+                startup_idr_bytes.push(output.bytes.len());
+            }
+        }
         if Instant::now() >= warmup_deadline {
             bail!("encoder did not complete warmup frames");
         }
@@ -244,6 +262,7 @@ Repeat-frame throughput excludes capture, network, decoding and display latency.
     let mut due = start;
     let (mut frames, mut bytes, mut submits) = (0u64, 0u64, 0u64);
     let (mut calls, mut latencies) = (Vec::new(), Vec::new());
+    let (mut steady_bytes, mut idr_bytes) = (Vec::new(), Vec::new());
     // Live capture: from DWM presenting a picture to its bitstream, counted
     // once per presented picture (the paced loop may encode one twice).
     let (mut present, mut last_presented) = (Vec::new(), None);
@@ -251,6 +270,11 @@ Repeat-frame throughput excludes capture, network, decoding and display latency.
         for frame in output {
             frames += 1;
             bytes += frame.bytes.len() as u64;
+            if frame.idr {
+                idr_bytes.push(frame.bytes.len());
+            } else {
+                steady_bytes.push(frame.bytes.len());
+            }
             if let Some(latency) = frame.latency {
                 latencies.push(latency.as_secs_f64() * 1000.);
             }
@@ -291,11 +315,22 @@ Repeat-frame throughput excludes capture, network, decoding and display latency.
             due = due.max(Instant::now());
         }
         let tick = Instant::now();
-        consume(encode(&mut encoder, false)?);
+        let idr = idr_interval > 0 && submits > 0 && submits.is_multiple_of(idr_interval);
+        consume(encode(&mut encoder, idr)?);
         calls.push(tick.elapsed().as_secs_f64() * 1000.);
         submits += 1;
     }
     let elapsed = start.elapsed().as_secs_f64();
+    let drain_deadline = Instant::now() + Duration::from_secs(2);
+    while encoder.pending() {
+        consume(encoder.poll()?);
+        if Instant::now() >= drain_deadline {
+            bail!("encoder did not complete measured frames");
+        }
+        if encoder.pending() {
+            timer.until(Instant::now() + Duration::from_micros(250));
+        }
+    }
     capture_stop.store(true, std::sync::atomic::Ordering::Release);
     if let Some(worker) = live_capture {
         worker
@@ -307,11 +342,18 @@ Repeat-frame throughput excludes capture, network, decoding and display latency.
             return serde_json::Value::Null;
         }
         values.sort_by(f64::total_cmp);
-        json!({"mean_ms":values.iter().sum::<f64>() / values.len() as f64,"p50_ms":values[(values.len()-1)/2],"p95_ms":values[(values.len()-1)*95/100],"samples":values.len()})
+        json!({"mean_ms":values.iter().sum::<f64>() / values.len() as f64,"p50_ms":values[(values.len()-1)/2],"p95_ms":values[(values.len()-1)*95/100],"p99_ms":values[(values.len()-1)*99/100],"max_ms":values[values.len()-1],"samples":values.len()})
     }
+    steady_bytes.sort_unstable();
+    let steady_size = if steady_bytes.is_empty() {
+        serde_json::Value::Null
+    } else {
+        let mean = steady_bytes.iter().sum::<usize>() as f64 / steady_bytes.len() as f64;
+        json!({"samples":steady_bytes.len(),"mean_bytes":mean,"p50_bytes":steady_bytes[(steady_bytes.len()-1)/2],"p99_bytes":steady_bytes[(steady_bytes.len()-1)*99/100],"max_bytes":steady_bytes[steady_bytes.len()-1],"idr_max_to_mean":idr_bytes.iter().max().map(|n| *n as f64 / mean)})
+    };
     println!(
         "{}",
-        json!({"scope":if fields.contains_key("--live-capture") { "live capture encoder probe; timing begins at encoder submission, excludes capture age, network, decode and display latency" } else { "repeat-frame encoder throughput; excludes capture, network, decode and display latency" }, "capture_backend":capture_backend,"live_capture":fields.contains_key("--live-capture"),"capture_width":image.width,"capture_height":image.height,"adapter":image.gpu.display.adapter,"width":config.width,"height":config.height,"fps":config.fps,"codec":config.codec,"hdr":config.hdr,"cpu":cpu,"paced":paced,"seconds":elapsed,"submits":submits,"completed_frames":frames,"encoded_fps":frames as f64 / elapsed,"bytes":bytes,"encode_call":stats(calls),"submission_to_observed_output":stats(latencies),"present_to_output":if live_capture_requested { stats(present) } else { serde_json::Value::Null }})
+        json!({"scope":if fields.contains_key("--live-capture") { "live capture encoder probe; timing begins at encoder submission, excludes capture age, network, decode and display latency" } else { "repeat-frame encoder throughput; excludes capture, network, decode and display latency" }, "capture_backend":capture_backend,"live_capture":fields.contains_key("--live-capture"),"capture_width":image.width,"capture_height":image.height,"adapter":image.gpu.display.adapter,"width":config.width,"height":config.height,"fps":config.fps,"codec":config.codec,"hdr":config.hdr,"cpu":cpu,"paced":paced,"seconds":elapsed,"submits":submits,"completed_frames":frames,"encoded_fps":frames as f64 / elapsed,"bytes":bytes,"bitrate_kbps":config.bitrate_kbps,"intra_refresh":config.intra_refresh,"idr_interval":idr_interval,"warmup_frames":warmup_frames,"startup_idr_bytes":startup_idr_bytes,"idr_bytes":idr_bytes,"steady_frame_size":steady_size,"encode_call":stats(calls),"submission_to_observed_output":stats(latencies),"present_to_output":if live_capture_requested { stats(present) } else { serde_json::Value::Null }})
     );
     Ok(())
 }

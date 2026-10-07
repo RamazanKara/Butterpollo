@@ -55,6 +55,18 @@ Set `pacing_max_bitrate_kbps` to a positive value in **kbps** to override the au
 
 **Leave split-frame encoding on Automatic.** AMF can split one HEVC or AV1 frame across a Radeon's two encoder engines (`amd_split_frame`), and the driver decides whether it does. Automatic asks for it only when the GPU has two engines and the driver has it off, as the original host did; On asks for it whenever there are two engines, and Off turns it off. On an RX 7900 XT the driver already has it on, and on, off and unset encoded every frame in the same time, from 1080p to 7680×2160: one stream used one engine either way. H.264 has no such property, and GPUs with one engine, such as the RX 9070 XT, get nothing written. [Measurements →](../rust/PERFORMANCE.md#october-7-amf-split-frame-encoding)
 
+**AMF rate-control limits are optional.** In **Settings → Encoders → AMD AMF**, the advanced controls below use the client's requested bitrate and frame rate. All default to `0`, which leaves the corresponding property to the driver. Reconnect after saving. An unsupported explicit request is reported as an AMF setting error; the effective values appear in `AMF encoder settings`.
+
+| Key | Values | Meaning |
+| --- | --- | --- |
+| `amd_peak_bitrate_ratio` | `0`, or `1`–`2` | Peak bitrate as a multiple of the stream bitrate; the console offers 1×, 1.5× and 2×. This is not an individual-frame cap. |
+| `amd_vbv_buffer_frames` | `0`, or `0.5`–`2` | Rate-control buffer in nominal frame budgets. One budget is bitrate divided by frame rate, including fractional rates. |
+| `amd_max_frame_size` | `0`, or `1`–`8` | Requested maximum encoded frame size in nominal frame budgets, including recovery keyframes. Uses `MaxAUSize` for H.264, `HevcMaxAUSize` for HEVC and `Av1MaxCompressedFrameSize` for AV1. |
+
+These are encoder bit budgets, not extra queued frames or packet-pacing settings. A driver can exceed a requested frame cap, especially at startup; a smaller budget can also reduce picture quality. Intra refresh remains client-negotiated and does not replace an explicit recovery-keyframe request. See the [rate-control measurements](../rust/PERFORMANCE.md#october-7-2026-amf-rate-control-and-recovery-keyframes) before changing these controls. NVIDIA users should use [Vibepollo](https://github.com/Nonary/Vibepollo).
+
+`amd_rc` remains `vbr_latency` by default. For an affected AMD stream, `amd_max_frame_size=1` or `2` lets you compare smaller recovery frames against picture quality; `0` restores the driver default. These caps helped on an RX 7900 XT, but were not strict size bounds and were not tested on RDNA4. With frequent recovery requests the tighter cap also reduced actual bit usage and slightly increased HEVC encode time, so it is not enabled automatically. Switching to CBR or shrinking VBV alone did not consistently reduce bursts.
+
 ## Displays and RTSS
 
 Under **Settings → Display**, select a physical display or choose a virtual display per device/shared by all devices. **Exclusive** switches other monitors off; choose **Extended** to keep the existing desktop active. The primary and isolated variants control where the virtual display sits in that desktop.

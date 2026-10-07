@@ -287,6 +287,10 @@ impl Encoder {
                 },
             )?;
             e.property("TargetBitrate", int(i64::from(config.bitrate_kbps) * 1000))?;
+            for property in butterpollo_core::encoder_policy::amf_rate_control(options, config)? {
+                e.apply(&property)
+                    .with_context(|| format!("AMF setting {}", property.name))?;
+            }
             let _ = e.property("BPicturesPattern", int(0));
             if config.codec == 0 {
                 // Keyframes only when asked, as the original backend sets it:
@@ -593,6 +597,8 @@ impl Encoder {
                 "TargetBitrate",
                 "PeakBitrate",
                 "VBVBufferSize",
+                "MaxAUSize",
+                "IntraRefreshMBsNumberPerSlot",
                 "EnforceHRD",
                 "FillerDataEnable",
                 "RateControlSkipFrameEnable",
@@ -617,6 +623,8 @@ impl Encoder {
                 "HevcTargetBitrate",
                 "HevcPeakBitrate",
                 "HevcVBVBufferSize",
+                "HevcMaxAUSize",
+                "HevcIntraRefreshCTBsNumberPerSlot",
                 "HevcEnforceHRD",
                 "HevcFillerDataEnable",
                 "HevcRateControlSkipFrameEnable",
@@ -642,6 +650,9 @@ impl Encoder {
                 "Av1TargetBitrate",
                 "Av1PeakBitrate",
                 "Av1VBVBufferSize",
+                "Av1MaxCompressedFrameSize",
+                "Av1IntraRefreshMode",
+                "Av1IntraRefreshNumOfStripes",
                 "Av1EnforceHRD",
                 "Av1FillerData",
                 "Av1RateControlSkipFrame",
@@ -1169,7 +1180,15 @@ impl Encoder {
                 self.bitrate = bitrate;
                 return Ok(());
             }
-            for suffix in ["PeakBitrate", "VBVBufferSize", "MaxAUSize"] {
+            for suffix in [
+                "PeakBitrate",
+                "VBVBufferSize",
+                if self.codec == 2 {
+                    "MaxCompressedFrameSize"
+                } else {
+                    "MaxAUSize"
+                },
+            ] {
                 let prefix = match self.codec {
                     0 => "",
                     1 => "Hevc",

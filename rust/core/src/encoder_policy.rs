@@ -104,6 +104,54 @@ pub fn amf_split_frame(
     })
 }
 
+/// Apply after the frame rate and target bitrate: usage presets derive their
+/// buffer sizes from those, unless the user requests an explicit limit.
+pub fn amf_rate_control(config: &Config, stream: &Negotiated) -> Result<Vec<Property>> {
+    let prefix = match stream.codec {
+        0 => "",
+        1 => "Hevc",
+        2 => "Av1",
+        _ => bail!("invalid AMF codec"),
+    };
+    let bitrate = f64::from(stream.bitrate_kbps) * 1000.;
+    let frame_bits = bitrate * 1000. / f64::from(stream.fps_millihz());
+    let mut output = Vec::new();
+    for (key, suffix, minimum, maximum, scale) in [
+        ("amd_peak_bitrate_ratio", "PeakBitrate", 1., 2., bitrate),
+        (
+            "amd_vbv_buffer_frames",
+            "VBVBufferSize",
+            0.5,
+            2.,
+            frame_bits,
+        ),
+        (
+            "amd_max_frame_size",
+            if stream.codec == 2 {
+                "MaxCompressedFrameSize"
+            } else {
+                "MaxAUSize"
+            },
+            1.,
+            8.,
+            frame_bits,
+        ),
+    ] {
+        let value = config.get(key, "0").trim().trim_matches('"').parse::<f64>();
+        let value = match value {
+            Ok(0.) => continue,
+            Ok(value) if (minimum..=maximum).contains(&value) => value,
+            _ => bail!("{key} must be 0 (driver default) or {minimum}–{maximum}"),
+        };
+        output.push(Property {
+            name: format!("{prefix}{suffix}"),
+            value: Value::Integer((value * scale).round() as i64),
+            required: true,
+        });
+    }
+    Ok(output)
+}
+
 pub fn amf(config: &Config, stream: &Negotiated) -> Result<Vec<Property>> {
     let codec = stream.codec;
     let intra_refresh = amf_intra_refresh(stream);
@@ -486,6 +534,69 @@ pub fn ffmpeg(config: &Config, stream: &Negotiated, name: &str) -> Result<Vec<(S
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn amf_rate_limits_preserve_driver_defaults_and_use_codec_names_and_bits() {
+        for (codec, prefix, cap) in [
+            (0, "", "MaxAUSize"),
+            (1, "Hevc", "MaxAUSize"),
+            (2, "Av1", "MaxCompressedFrameSize"),
+        ] {
+            let stream = Negotiated {
+                codec,
+                bitrate_kbps: 40_000,
+                fps: 60,
+                rate_millihz: 59_940,
+                ..Default::default()
+            };
+            for text in [
+                "",
+                "amd_peak_bitrate_ratio=0\namd_vbv_buffer_frames=0\namd_max_frame_size=0",
+            ] {
+                assert!(
+                    amf_rate_control(&Config::parse(text).unwrap(), &stream)
+                        .unwrap()
+                        .is_empty()
+                );
+            }
+            for (peak, vbv, cap_frames, expected) in [
+                (1., 0.5, 1., [40_000_000, 333_667, 667_334]),
+                (1.5, 1., 2., [60_000_000, 667_334, 1_334_668]),
+                (2., 2., 4., [80_000_000, 1_334_668, 2_669_336]),
+            ] {
+                let config = Config::parse(&format!(
+                    "amd_peak_bitrate_ratio={peak}\namd_vbv_buffer_frames={vbv}\namd_max_frame_size={cap_frames}"
+                )).unwrap();
+                let properties = amf_rate_control(&config, &stream).unwrap();
+                for ((property, suffix), expected) in properties
+                    .iter()
+                    .zip(["PeakBitrate", "VBVBufferSize", cap])
+                    .zip(expected)
+                {
+                    assert_eq!(property.name, format!("{prefix}{suffix}"));
+                    assert_eq!(property.value, Value::Integer(expected));
+                    assert!(property.required);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn amf_rate_limits_reject_invalid_settings() {
+        for (key, invalid) in [
+            ("amd_peak_bitrate_ratio", "0.9"),
+            ("amd_peak_bitrate_ratio", "2.1"),
+            ("amd_vbv_buffer_frames", "0.4"),
+            ("amd_vbv_buffer_frames", "2.1"),
+            ("amd_max_frame_size", "0.5"),
+            ("amd_max_frame_size", "8.1"),
+        ] {
+            for value in [invalid, "-1", "NaN", "inf", "invalid"] {
+                let config = Config::parse(&format!("{key}={value}")).unwrap();
+                assert!(amf_rate_control(&config, &Negotiated::default()).is_err());
+            }
+        }
+    }
+
     #[test]
     fn legacy_nvenc_retained_picture_budget_matches_negotiated_references() {
         let config = Config::default();
