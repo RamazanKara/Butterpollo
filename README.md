@@ -32,7 +32,7 @@ There are far better Sunshine forks, like [Vibepollo](https://github.com/Nonary/
 
 ## Why Butterpollo
 
-Butterpollo goes deep on one thing: streaming latency on AMD Radeon. It began as a fork of [Vibepollo](https://github.com/Nonary/Vibepollo), whose native AMF encoder came from the same author ([#342](https://github.com/Nonary/Vibepollo/pull/342)), and rebuilds the host in Rust around the Radeon frame path. Vibepollo stays the full-featured host for every GPU, and anything that works out here is GPL-3.0 for it to take.
+Butterpollo began as a fork of [Vibepollo](https://github.com/Nonary/Vibepollo), whose native AMF encoder came from the same author ([#342](https://github.com/Nonary/Vibepollo/pull/342)), and rebuilds the host in Rust around the Radeon frame path. Anything that works out here is GPL-3.0 for Vibepollo to take.
 
 **On NVIDIA, use Vibepollo.** Butterpollo includes NVENC, but it has not been tested on NVIDIA hardware.
 
