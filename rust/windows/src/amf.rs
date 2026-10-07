@@ -188,15 +188,26 @@ impl Encoder {
                 return Err(e);
             }
             let compute = match (d3d12, compute) {
-                (Some(interface), Some(compute)) => Some(Box::new(ComputeInput {
-                    converter: crate::compute::Converter::new(
-                        compute,
-                        config.width,
-                        config.height,
-                        config.ten_bit(),
-                    )?,
-                    context: interface,
-                })),
+                (Some(interface), Some(compute)) => match crate::compute::Converter::new(
+                    compute,
+                    config.width,
+                    config.height,
+                    config.ten_bit(),
+                ) {
+                    Ok(converter) => Some(Box::new(ComputeInput {
+                        converter,
+                        context: interface,
+                    })),
+                    // Released as above: recovery retries every 100 ms, and each
+                    // leaked component would hold an encoder session.
+                    Err(e) => {
+                        drop(interface);
+                        ((*(*component).pVtbl).Release.unwrap())(component);
+                        ((*(*context).pVtbl).Terminate.unwrap())(context);
+                        ((*(*context).pVtbl).Release.unwrap())(context);
+                        return Err(e);
+                    }
+                },
                 _ => None,
             };
             let mut e = Self {
