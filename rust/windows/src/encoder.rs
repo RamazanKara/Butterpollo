@@ -604,9 +604,55 @@ impl Drop for Ffmpeg {
         }
     }
 }
-fn native_failure(backend: &str, error: anyhow::Error) -> anyhow::Error {
-    tracing::warn!(error = %format!("{error:#}"), backend, "Hardware encoder failed; refusing an automatic encoder downgrade. Check the GPU driver and codec, or explicitly select Software at a lower resolution and frame rate");
-    error.context(format!("{backend} failed; refusing an automatic encoder downgrade. Check the GPU driver and codec, or explicitly select Software at a lower resolution and frame rate"))
+/// Automatic's own encoder for a GPU: AMF on AMD, NVENC on NVIDIA. By PCI
+/// vendor, so AMD adapters not named "Radeon" (FirePro, the Steam Deck's
+/// "AMD Custom GPU") still use AMF; the name covers a failed vendor query.
+fn native_backend(vendor: u32, adapter: &str) -> Option<&'static str> {
+    match vendor {
+        0x1002 => Some("amf"),
+        0x10de => Some("nvenc"),
+        _ if adapter.contains("Radeon") => Some("amf"),
+        _ if adapter.to_ascii_lowercase().contains("nvidia") => Some("nvenc"),
+        _ => None,
+    }
+}
+fn native_for(device: &crate::capture::Device) -> Option<&'static str> {
+    use windows::{Win32::Graphics::Dxgi::IDXGIDevice, core::Interface};
+    let vendor = unsafe {
+        device
+            .device
+            .cast::<IDXGIDevice>()
+            .and_then(|device| device.GetAdapter())
+            .and_then(|adapter| adapter.GetDesc())
+            .map_or(0, |desc| desc.VendorId)
+    };
+    native_backend(vendor, &device.display.adapter)
+}
+fn native_name(backend: &str) -> &'static str {
+    if backend == "amf" { "AMF" } else { "NVENC" }
+}
+/// Automatic keeps a stream on another hardware encoder when the GPU's own
+/// one fails, and says so; it never falls back to software.
+fn fallback_warning(native: &str, error: &str, active: &str) -> String {
+    format!(
+        "{} could not start ({error}); Automatic is encoding with {active} instead. Expect different quality, latency and GPU load; check the GPU driver and codec, then reconnect.",
+        native_name(native)
+    )
+}
+fn refused(native: Option<(&str, anyhow::Error)>, others: &[String]) -> anyhow::Error {
+    let others = if others.is_empty() {
+        "no other hardware encoder applies".to_owned()
+    } else {
+        format!("other hardware encoders failed: {}", others.join("; "))
+    };
+    let remedy = "Automatic never encodes in software. Check the GPU driver and the selected codec, or explicitly select Software at a lower resolution and frame rate";
+    match native {
+        Some((backend, error)) => error.context(format!(
+            "{} failed and {others}. {remedy}",
+            native_name(backend)
+        )),
+        None => anyhow::anyhow!("unable to initialize encoder: {others}. {remedy}"),
+    }
 }
 
 fn ffmpeg_candidates(codec: u8, preference: &str) -> Result<Vec<String>> {
@@ -689,26 +735,20 @@ impl Encoder {
                 )?,
             )));
         }
-        if config.codec < 3
-            && (matches!(preference, "nvenc" | "nvenc_experimental")
-                || (matches!(preference, "" | "auto")
-                    && image
-                        .gpu
-                        .display
-                        .adapter
-                        .to_ascii_lowercase()
-                        .contains("nvidia")))
-        {
+        let automatic = matches!(preference, "" | "auto");
+        let native = automatic.then(|| native_for(&image.gpu)).flatten();
+        let mut native_error = None;
+        if matches!(preference, "nvenc" | "nvenc_experimental") || native == Some("nvenc") {
             match crate::nvenc::Encoder::new_device_options(config, image.gpu.clone(), tuning) {
-                Ok(encoder) => return Ok(Self::Nvenc(Box::new(encoder))),
-                Err(error) => return Err(native_failure("NVENC", error)),
+                Ok(encoder) => {
+                    warnings.clear("encoder_fallback");
+                    return Ok(Self::Nvenc(Box::new(encoder)));
+                }
+                Err(error) if !automatic => return Err(error),
+                Err(error) => native_error = Some(("nvenc", error)),
             }
         }
-        if config.codec != 3
-            && (preference == "amf"
-                || ((preference.is_empty() || preference == "auto")
-                    && image.gpu.display.adapter.contains("Radeon")))
-        {
+        if preference == "amf" || native == Some("amf") {
             // Colour conversion on a compute queue keeps running beside a
             // game that fills the GPU's graphics queue.
             // AMF rejects 4:4:4 regardless of which queue converts the input.
@@ -744,11 +784,28 @@ impl Encoder {
             match created {
                 Ok(mut encoder) => {
                     encoder.warnings = warnings.clone();
+                    warnings.clear("encoder_fallback");
                     return Ok(Self::Amf(Box::new(encoder)));
                 }
-                Err(error) => return Err(native_failure("AMF", error)),
+                Err(error) if !automatic => return Err(error),
+                Err(error) => {
+                    warnings.clear("encoder_conversion");
+                    native_error = Some(("amf", error));
+                }
             }
         }
+        if let Some((backend, error)) = &native_error {
+            tracing::warn!(error = %format!("{error:#}"), backend, "native encoder failed; trying other hardware encoders");
+        }
+        let fallback = |encoder: Self, native_error: Option<(&str, anyhow::Error)>| {
+            if let Some((backend, error)) = native_error {
+                warnings.set(
+                    "encoder_fallback",
+                    fallback_warning(backend, &format!("{error:#}"), encoder.backend()),
+                );
+            }
+            encoder
+        };
         let mut import_errors = Vec::new();
         if !config.yuv444
             && config.codec < 3
@@ -772,7 +829,7 @@ impl Encoder {
                 match Ffmpeg::new_gpu_options(config, &name, tuning, image) {
                     Ok(encoder) => {
                         tracing::info!(%name,"native D3D11 codec frame import enabled");
-                        return Ok(Self::Ffmpeg(Box::new(encoder)));
+                        return Ok(fallback(Self::Ffmpeg(Box::new(encoder)), native_error));
                     }
                     Err(error) => {
                         import_errors.push(format!("{name}: {error:#}"));
@@ -780,8 +837,23 @@ impl Encoder {
                 }
             }
         }
-        let encoder =
-            Self::new_options(config, preference, &image.gpu.display.display_name, tuning)?;
+        let (encoder, native_error) = if native_error.is_some() {
+            // The native encoder already failed on this GPU: go straight to
+            // the other hardware encoders rather than opening it again.
+            match Self::other_hardware(config, preference, tuning) {
+                Ok(encoder) => (encoder, native_error),
+                Err(mut others) => {
+                    others.splice(0..0, import_errors);
+                    return Err(refused(native_error, &others));
+                }
+            }
+        } else {
+            (
+                Self::new_options(config, preference, &image.gpu.display.display_name, tuning)?,
+                None,
+            )
+        };
+        let encoder = fallback(encoder, native_error);
         if matches!(&encoder, Self::Ffmpeg(e) if e.native.is_none()) {
             warnings.set("encoder_readback", format!("Encoding with {} using CPU frame copies and colour conversion: {}. This can lower fps and increase latency; select AMF on AMD, or reduce resolution and frame rate.", encoder.backend(), if import_errors.is_empty() { "this codec/input mode has no native GPU import".into() } else { import_errors.join("; ") }));
         }
@@ -917,27 +989,49 @@ impl Encoder {
         }
         if matches!(preference, "" | "auto") {
             let device = device().context("Automatic encoder selection could not open the configured GPU; check the adapter setting")?;
-            if device
-                .display
-                .adapter
-                .to_ascii_lowercase()
-                .contains("nvidia")
-            {
-                return crate::nvenc::Encoder::new_device_options(config, device, tuning)
-                    .map(|e| Self::Nvenc(Box::new(e)))
-                    .map_err(|error| native_failure("NVENC", error));
-            } else if device.display.adapter.contains("Radeon") {
-                return crate::amf::Encoder::new_device_options(config, device, tuning)
-                    .map(|e| Self::Amf(Box::new(e)))
-                    .map_err(|error| native_failure("AMF", error));
-            }
+            let native_error = match native_for(&device) {
+                Some("nvenc") => {
+                    match crate::nvenc::Encoder::new_device_options(config, device, tuning) {
+                        Ok(e) => return Ok(Self::Nvenc(Box::new(e))),
+                        Err(error) => Some(("nvenc", error)),
+                    }
+                }
+                Some(_) => match crate::amf::Encoder::new_device_options(config, device, tuning) {
+                    Ok(e) => return Ok(Self::Amf(Box::new(e))),
+                    Err(error) => Some(("amf", error)),
+                },
+                None => None,
+            };
+            return match Self::other_hardware(config, preference, tuning) {
+                Ok(encoder) => {
+                    if let Some((backend, error)) = native_error {
+                        let message =
+                            fallback_warning(backend, &format!("{error:#}"), encoder.backend());
+                        tracing::warn!("{message}");
+                    }
+                    Ok(encoder)
+                }
+                Err(others) => Err(refused(native_error, &others)),
+            };
         }
         if preference == "amf" {
             return Ok(Self::Amf(Box::new(
                 crate::amf::Encoder::new_device_options(config, device()?, tuning)?,
             )));
         }
-        let candidates = ffmpeg_candidates(config.codec, preference)?;
+        Self::other_hardware(config, preference, tuning).map_err(|errors| {
+            anyhow::anyhow!("unable to initialize encoder: {}", errors.join("; "))
+        })
+    }
+    /// FFmpeg's encoders for `preference`; for Automatic, only its hardware
+    /// ones (NVENC, Quick Sync). The errors when none starts.
+    fn other_hardware(
+        config: &Negotiated,
+        preference: &str,
+        tuning: &butterpollo_core::config::Config,
+    ) -> std::result::Result<Self, Vec<String>> {
+        let candidates =
+            ffmpeg_candidates(config.codec, preference).map_err(|e| vec![e.to_string()])?;
         let mut errors = vec![];
         for name in candidates {
             match Ffmpeg::new_options(config, &name, tuning) {
@@ -945,10 +1039,7 @@ impl Encoder {
                 Err(e) => errors.push(format!("{name}: {e}")),
             }
         }
-        bail!(
-            "unable to initialize encoder: {}. Automatic never falls back to software; check the GPU driver and selected codec, or explicitly select Software for a lower-load stream",
-            errors.join("; ")
-        )
+        Err(errors)
     }
     pub fn encode(&mut self, image: &Image, idr: bool, bitrate: u32) -> Result<Vec<Encoded>> {
         match self {
@@ -975,11 +1066,27 @@ mod tests {
             }
             assert!(ffmpeg_candidates(codec, "software").unwrap()[0].starts_with("lib"));
         }
-        let error = native_failure("AMF", anyhow::anyhow!("driver rejected mode"));
+        let error = refused(
+            Some(("amf", anyhow::anyhow!("driver rejected mode"))),
+            &["h264_qsv: not found".into()],
+        );
         let message = format!("{error:#}");
-        assert!(message.contains("AMF failed"));
-        assert!(message.contains("refusing an automatic encoder downgrade"));
+        assert!(message.contains("AMF failed and other hardware encoders failed: h264_qsv"));
+        assert!(message.contains("never encodes in software"));
         assert!(message.contains("driver rejected mode"));
+        let warning = fallback_warning("amf", "driver rejected mode", "qsv");
+        assert!(warning.starts_with("AMF could not start (driver rejected mode)"));
+        assert!(warning.contains("encoding with qsv instead"));
+    }
+    #[test]
+    fn automatic_picks_the_native_encoder_by_vendor() {
+        // The Steam Deck and FirePro adapters are AMD without "Radeon".
+        assert_eq!(native_backend(0x1002, "AMD Custom GPU 0405"), Some("amf"));
+        assert_eq!(native_backend(0x1002, "AMD FirePro W7100"), Some("amf"));
+        assert_eq!(native_backend(0x10de, "Quadro RTX 4000"), Some("nvenc"));
+        assert_eq!(native_backend(0, "AMD Radeon RX 7900 XT"), Some("amf"));
+        assert_eq!(native_backend(0, "NVIDIA GeForce RTX 4090"), Some("nvenc"));
+        assert_eq!(native_backend(0x8086, "Intel(R) Arc(TM) A770"), None);
     }
     /// Needs the packaged FFmpeg libraries on PATH.
     #[test]

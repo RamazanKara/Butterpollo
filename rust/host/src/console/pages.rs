@@ -536,7 +536,7 @@ pub(super) async fn render(
                     .to_owned()
             };
             let mut content = "<p class=\"intro\">Choose the capture, encoder, display, and sound for your stream.</p>".to_owned();
-            content += "<p class=\"muted\">Automatic chooses an encoder when the stream starts: AMF on AMD Radeon GPUs or NVENC on NVIDIA GPUs, and fails if that native encoder cannot start. Software encoding requires selecting Software explicitly. Encoder settings below apply only when that encoder is used. The stream card and log show the encoder actually used.</p>";
+            content += "<p class=\"muted\">Automatic chooses an encoder when the stream starts: AMF on AMD GPUs or NVENC on NVIDIA GPUs. If that encoder cannot start, it uses another hardware encoder when one works and shows a warning on the stream card; it never falls back to software. Software encoding requires selecting Software explicitly. Encoder settings below apply only when that encoder is used. The stream card and log show the encoder actually used.</p>";
             let editor = field(
                 "sunshine_name",
                 "Host name",
