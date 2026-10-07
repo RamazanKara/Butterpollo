@@ -376,17 +376,37 @@ fn poll_feedback(
     mut poll: impl FnMut(u32) -> Result<Option<(u16, Vec<u8>)>>,
 ) -> Vec<(u16, u16, Vec<u8>)> {
     let mut output = vec![];
+    let due = |failure: &FeedbackFailure| {
+        failure
+            .reported
+            .is_none_or(|at| now.duration_since(at) >= Duration::from_secs(5))
+    };
     for (&id, &global) in active {
         let report = match poll(u32::from(global)) {
-            Ok(Some(report)) => report,
-            Ok(None) => continue,
+            Ok(report) => {
+                // Report the failures the interval held back once the pad
+                // recovers, under the same interval, so none go unlogged.
+                if let Some(failure) = failures.get_mut(&id)
+                    && failure.unreported > 0
+                    && due(failure)
+                {
+                    tracing::warn!(
+                        controller = id,
+                        slot = global,
+                        backend,
+                        failures = failure.unreported,
+                        "controller feedback polls recovered after failing"
+                    );
+                    failure.unreported = 0;
+                    failure.reported = Some(now);
+                }
+                let Some(report) = report else { continue };
+                report
+            }
             Err(error) => {
                 let failure = failures.entry(id).or_default();
                 failure.unreported += 1;
-                if failure
-                    .reported
-                    .is_none_or(|at| now.duration_since(at) >= Duration::from_secs(5))
-                {
+                if due(failure) {
                     tracing::warn!(controller = id, slot = global, backend, failures = failure.unreported, error = %format!("{error:#}"), "controller feedback poll failed");
                     failure.unreported = 0;
                     failure.reported = Some(now);
@@ -2084,6 +2104,35 @@ mod tests {
             let lines: Vec<_> = log.lines().collect();
             assert_eq!(lines.len(), 5, "{log}");
             assert!(lines[3..].iter().all(|line| line.contains("failures=1")));
+
+            // Failures held back by the interval are reported once the pads
+            // recover, and only once.
+            for (millis, result) in [(5005, false), (5006, true), (10_004, true), (10_005, true)] {
+                poll_feedback(
+                    &active,
+                    &mut last,
+                    &mut failures,
+                    "fake",
+                    now + Duration::from_millis(millis),
+                    |_| {
+                        if result {
+                            Ok(None)
+                        } else {
+                            bail!("held back failure")
+                        }
+                    },
+                );
+            }
+            let log = std::fs::read_to_string(&path).unwrap();
+            let lines: Vec<_> = log.lines().collect();
+            assert_eq!(lines.len(), 7, "{log}");
+            assert!(lines[5].contains("controller=0 slot=2"));
+            assert!(lines[6].contains("controller=1 slot=5"));
+            assert!(lines[5..].iter().all(|line| {
+                line.contains("controller feedback polls recovered after failing")
+                    && line.contains("failures=1")
+            }));
+            assert!(failures.values().all(|failure| failure.unreported == 0));
         });
     }
 
