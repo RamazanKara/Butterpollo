@@ -208,6 +208,7 @@ impl<T> Latest<T> {
         timer: &Timer,
         wake: &Signal,
         deadline: Instant,
+        precise: bool,
         predicate: impl FnOnce(&State<T>) -> bool,
     ) -> Result<()> {
         let state = self.state.lock().unwrap();
@@ -215,7 +216,11 @@ impl<T> Latest<T> {
         if predicate(&state) {
             wake.reset()?;
             drop(state);
-            timer.until_or_signal(deadline, wake)?;
+            if precise {
+                timer.until_or_signal_precise(deadline, wake)?;
+            } else {
+                timer.until_or_signal(deadline, wake)?;
+            }
         }
         Ok(())
     }
@@ -225,7 +230,7 @@ impl<T> Latest<T> {
         wake: &Consumer,
         deadline: Instant,
     ) -> Result<Option<Arc<T>>> {
-        self.wait_if(timer, wake, deadline, |state| {
+        self.wait_if(timer, wake, deadline, false, |state| {
             // A reset must release the encoder immediately, not wait another
             // frame period while the capture worker waits for its release.
             state.image.is_none() && wake.released.load(Ordering::Acquire) == state.generation
@@ -239,7 +244,23 @@ impl<T> Latest<T> {
         image: &Arc<T>,
         deadline: Instant,
     ) -> Result<()> {
-        self.wait_if(timer, wake, deadline, |state| {
+        self.wait_if(timer, wake, deadline, false, |state| {
+            state
+                .image
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, image))
+        })
+    }
+    /// wait_if_current to a frame's claim deadline, met to the tenth of a
+    /// millisecond: a late wake delays that frame.
+    pub(super) fn wait_if_current_precise(
+        &self,
+        timer: &Timer,
+        wake: &Signal,
+        image: &Arc<T>,
+        deadline: Instant,
+    ) -> Result<()> {
+        self.wait_if(timer, wake, deadline, true, |state| {
             state
                 .image
                 .as_ref()

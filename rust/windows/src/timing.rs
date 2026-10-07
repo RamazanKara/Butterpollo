@@ -131,6 +131,25 @@ impl Timer {
             std::thread::yield_now();
         }
     }
+    /// until_or_signal to the deadline itself: a timer wakes 0.13-0.47 ms
+    /// late, so it is armed 0.6 ms early and the rest yields, still ending
+    /// on the signal. For a frame's claim deadline, not for polls.
+    pub fn until_or_signal_precise(&self, deadline: Instant, signal: &Signal) -> Result<bool> {
+        const SPIN: Duration = Duration::from_micros(600);
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining > SPIN + Duration::from_micros(100)
+            && self.until_or_signal(deadline - SPIN, signal)?
+        {
+            return Ok(true);
+        }
+        while Instant::now() < deadline {
+            if unsafe { WaitForSingleObject(signal.0, 0) } == WAIT_OBJECT_0 {
+                return Ok(true);
+            }
+            std::thread::yield_now();
+        }
+        Ok(false)
+    }
     /// Wait for capture or the precise encoder/static-frame deadline, without
     /// a coarse condition-variable timeout or a polling/spinning thread.
     pub fn until_or_signal(&self, deadline: Instant, signal: &Signal) -> Result<bool> {

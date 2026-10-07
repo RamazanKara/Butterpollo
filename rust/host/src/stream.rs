@@ -1129,7 +1129,13 @@ impl Media {
                                 } else {
                                     deadline
                                 };
-                                latest.wait_if_current(&timer, &capture_wake, &image, until)?;
+                                // The claim itself is met precisely; a poll for the
+                                // encoder's output is not worth spinning for.
+                                if until == deadline {
+                                    latest.wait_if_current_precise(&timer, &capture_wake, &image, until)?;
+                                } else {
+                                    latest.wait_if_current(&timer, &capture_wake, &image, until)?;
+                                }
                                 continue;
                             }
                             let repeat_due = if arrival_pacing {
