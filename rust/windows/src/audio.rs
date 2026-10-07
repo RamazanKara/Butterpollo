@@ -4,6 +4,9 @@ use windows::Win32::{Media::Audio::*, System::Com::*};
 pub struct Loopback {
     client: IAudioClient,
     capture: IAudioCaptureClient,
+    /// Set by Windows when captured audio is ready; None where event mode
+    /// could not be opened, and the caller polls.
+    ready: Option<windows::Win32::Foundation::HANDLE>,
     channels: usize,
     bits: u16,
     float: bool,
@@ -25,7 +28,7 @@ impl Loopback {
                 let id: Vec<u16> = sink.encode_utf16().chain(Some(0)).collect();
                 enumerator.GetDevice(windows::core::PCWSTR(id.as_ptr()))?
             };
-            let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
+            let mut client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
             let format = client.GetMixFormat()?;
             if format.is_null() {
                 bail!("empty WASAPI mix format");
@@ -44,16 +47,53 @@ impl Loopback {
                 butterpollo_core::audio::mix_matrix(f.nChannels as usize, mask, output_channels);
             let resampler =
                 butterpollo_core::audio::Resampler::new(f.nSamplesPerSec, output_channels);
-            let result = client.Initialize(
-                AUDCLNT_SHAREMODE_SHARED,
-                AUDCLNT_STREAMFLAGS_LOOPBACK,
-                100000,
-                0,
-                format,
+            // Event mode wakes the sender the moment audio is captured, as the
+            // C++ host does; a 1 ms poll cost 0.6 ms on average. Where Windows
+            // refuses it for loopback, a fresh client polls as before.
+            let ready = windows::Win32::System::Threading::CreateEventW(
                 None,
-            );
+                false,
+                false,
+                windows::core::PCWSTR::null(),
+            )
+            .ok();
+            let mut result = Err(windows::core::Error::empty());
+            if let Some(event) = ready {
+                result = client
+                    .Initialize(
+                        AUDCLNT_SHAREMODE_SHARED,
+                        AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                        100000,
+                        0,
+                        format,
+                        None,
+                    )
+                    .and_then(|()| client.SetEventHandle(event));
+            }
+            let ready = if result.is_ok() {
+                ready
+            } else {
+                if let Some(event) = ready {
+                    let _ = windows::Win32::Foundation::CloseHandle(event);
+                }
+                client = device.Activate(CLSCTX_ALL, None)?;
+                result = client.Initialize(
+                    AUDCLNT_SHAREMODE_SHARED,
+                    AUDCLNT_STREAMFLAGS_LOOPBACK,
+                    100000,
+                    0,
+                    format,
+                    None,
+                );
+                None
+            };
             CoTaskMemFree(Some(format as *const c_void));
-            result?;
+            if let Err(error) = result {
+                if let Some(event) = ready {
+                    let _ = windows::Win32::Foundation::CloseHandle(event);
+                }
+                return Err(error.into());
+            }
             let matrix = matrix?;
             let resampler = resampler?;
             if !matches!(f.wBitsPerSample, 16 | 24 | 32) || (float && f.wBitsPerSample != 32) {
@@ -64,6 +104,7 @@ impl Loopback {
             Ok(Self {
                 client,
                 capture,
+                ready,
                 channels: f.nChannels as usize,
                 bits: f.wBitsPerSample,
                 float,
@@ -72,6 +113,23 @@ impl Loopback {
                 output_channels,
             })
         }
+    }
+    /// Wait up to `timeout` for captured audio, or the whole timeout without
+    /// event mode. An idle endpoint sends no events; the timeout keeps the
+    /// caller's silence on time.
+    pub fn wait(&self, timeout: std::time::Duration) {
+        match self.ready {
+            Some(event) => unsafe {
+                let _ = windows::Win32::System::Threading::WaitForSingleObject(
+                    event,
+                    timeout.as_millis().clamp(1, u128::from(u32::MAX)) as u32,
+                );
+            },
+            None => std::thread::sleep(timeout),
+        }
+    }
+    pub fn event_driven(&self) -> bool {
+        self.ready.is_some()
     }
     pub fn read(&mut self, frames: usize) -> Result<Option<Vec<f32>>> {
         unsafe {
@@ -144,6 +202,9 @@ impl Drop for Loopback {
     fn drop(&mut self) {
         unsafe {
             let _ = self.client.Stop();
+            if let Some(event) = self.ready {
+                let _ = windows::Win32::Foundation::CloseHandle(event);
+            }
         }
     }
 }

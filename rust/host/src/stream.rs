@@ -1429,7 +1429,18 @@ impl Media {
         let timer = butterpollo_windows::timing::Timer::new()?;
         let silence = vec![0.; frames * s.config.audio_channels as usize];
         while !s.stopping() && !h.stop.load(Ordering::Acquire) {
-            timer.until(Instant::now() + Duration::from_millis(1));
+            match capture
+                .as_ref()
+                .filter(|capturing| capturing.event_driven())
+            {
+                // Woken the moment audio is captured. An idle endpoint sends
+                // no events: the wait ends at its next silence, at most 5 ms.
+                Some(capturing) => capturing.wait(
+                    next.saturating_duration_since(Instant::now())
+                        .clamp(Duration::from_millis(1), Duration::from_millis(5)),
+                ),
+                None => timer.until(Instant::now() + Duration::from_millis(1)),
+            }
             if !muted && Instant::now() >= audio_check {
                 audio_check = Instant::now() + Duration::from_secs(1);
                 if route.is_none() {
@@ -1477,13 +1488,14 @@ impl Media {
                         }
                         match Loopback::new_sink(s.config.audio_channels as usize, &sink) {
                             Ok(value) => {
+                                tracing::info!(
+                                    channels = s.config.audio_channels,
+                                    event_driven = value.event_driven(),
+                                    "WASAPI audio capture started"
+                                );
                                 capture = Some(value);
                                 capture_failed = false;
                                 audio_error = None;
-                                tracing::info!(
-                                    channels = s.config.audio_channels,
-                                    "WASAPI audio capture started"
-                                );
                             }
                             Err(error) => {
                                 capture_failed = true;
