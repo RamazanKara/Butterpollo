@@ -29,12 +29,20 @@ async function refreshCsrf(): Promise<void> {
   }
 }
 
-async function refreshSession(): Promise<boolean> {
-  const response = await fetch('/api/auth/refresh', { method: 'POST', credentials: 'same-origin' });
-  if (!response.ok) return false;
-  const body = (await response.json()) as IssuedSession;
-  csrfToken = body.csrf_token;
-  return true;
+// One refresh at a time: the host rotates the refresh token, so a second
+// request with the old one would fail and sign the user out.
+let refreshing: Promise<boolean> | null = null;
+function refreshSession(): Promise<boolean> {
+  refreshing ??= (async () => {
+    const response = await fetch('/api/auth/refresh', { method: 'POST', credentials: 'same-origin' });
+    if (!response.ok) return false;
+    const body = (await response.json()) as IssuedSession;
+    csrfToken = body.csrf_token;
+    return true;
+  })().finally(() => {
+    refreshing = null;
+  });
+  return refreshing;
 }
 
 type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';

@@ -917,6 +917,22 @@ pub(crate) async fn api(
     if path == "/api/auth/status" {
         let configured = h.credentials.read().unwrap().is_some();
         let authenticated = authenticated(&h, &headers, Some(connection.peer.ip()));
+        // The web app asks this on load. A remembered browser whose access
+        // cookie lapsed (after session_token_ttl_seconds) is renewed here, as
+        // the console page does, instead of being sent to the login page.
+        if configured
+            && !authenticated
+            && let Some(issued) = refresh_browser(&h, &headers, &connection)
+            && issued.status().is_success()
+        {
+            let mut result = Json(json!({"authenticated":true,"credentials_configured":true,"login_required":false,"status":true})).into_response();
+            for value in issued.headers().get_all(header::SET_COOKIE) {
+                result
+                    .headers_mut()
+                    .append(header::SET_COOKIE, value.clone());
+            }
+            return result;
+        }
         return Json(json!({"authenticated":authenticated,"credentials_configured":configured,"login_required":configured&&!authenticated,"status":true})).into_response();
     }
     if path == "/api/auth/login" {
