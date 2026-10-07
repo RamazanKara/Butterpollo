@@ -19,6 +19,23 @@ pub fn rate_bps(configured_kbps: i64, stream_kbps: u32, link_bps: u64) -> u64 {
     }
 }
 
+/// PyroWave uses the available wired link by default, but an explicit cap
+/// takes precedence over the bandwidth needed to send every intra frame.
+pub fn pyrowave_rate_bps(
+    configured_kbps: i64,
+    stream_kbps: u32,
+    link_bps: u64,
+    demand_bps: u64,
+) -> u64 {
+    if configured_kbps > 0 {
+        rate_bps(configured_kbps, stream_kbps, link_bps)
+    } else if link_bps > 0 {
+        link_bps.saturating_mul(95) / 100
+    } else {
+        demand_bps.max(u64::from(stream_kbps) * 1100).max(1_000_000)
+    }
+}
+
 /// Ethernet framing, inter-packet gap, IP and UDP, beyond the UDP payload.
 pub fn overhead(ipv6: bool) -> usize {
     if ipv6 { 86 } else { 66 }
@@ -53,6 +70,24 @@ impl Pacer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pyrowave_demand_cannot_override_an_explicit_cap_or_link_limit() {
+        let demand = 512_000 * 60 * 8;
+        assert_eq!(
+            pyrowave_rate_bps(30_000, 30_000, 100_000_000, demand),
+            33_000_000
+        );
+        assert_eq!(
+            pyrowave_rate_bps(100_000, 100_000, 100_000_000, demand),
+            80_000_000
+        );
+        assert_eq!(
+            pyrowave_rate_bps(0, 30_000, 1_000_000_000, demand),
+            950_000_000
+        );
+        assert_eq!(pyrowave_rate_bps(0, 30_000, 0, demand), demand);
+    }
 
     #[test]
     fn slow_routes_bound_default_and_explicit_rates_without_changing_fast_routes() {

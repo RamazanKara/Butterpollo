@@ -159,20 +159,12 @@ impl Sender {
                             .saturating_mul(u64::from(current.config.fps_millihz()))
                             / 1000
                             * 8;
-                        // PyroWave is for fast wired links, so it keeps 95% of a
-                        // known Ethernet link rather than the other codecs'
-                        // 800 Mbps ceiling. The configured limit, for a client
-                        // behind a slower link such as Wi-Fi, was ignored; it
-                        // still lets this frame leave within its interval.
-                        let configured = config.integer("pacing_max_bitrate_kbps", 0);
-                        let bps = if configured > 0 {
-                            butterpollo_core::network_pacing::rate_bps(configured, kbps, link)
-                                .max(demand)
-                        } else if link > 0 {
-                            link * 95 / 100
-                        } else {
-                            demand.max(u64::from(kbps) * 1100).max(1_000_000)
-                        };
+                        let bps = butterpollo_core::network_pacing::pyrowave_rate_bps(
+                            config.integer("pacing_max_bitrate_kbps", 0),
+                            kbps,
+                            link,
+                            demand,
+                        );
                         let mut remaining = packets.as_slice();
                         let mut sent = 0;
                         while !remaining.is_empty() {
