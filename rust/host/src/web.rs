@@ -1173,6 +1173,7 @@ pub(crate) async fn api(
                 let mut config = h.config.write().unwrap();
                 let mut next = config.clone();
                 next.update(&object)?;
+                next.check_saved(object.keys())?;
                 state::atomic_write(&h.config_path, next.text().as_bytes())?;
                 let warning =
                     butterpollo_windows::vulkan::reconcile(next.boolean("vulkan_hdr_layer", true))

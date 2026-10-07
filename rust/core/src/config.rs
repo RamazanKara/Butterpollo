@@ -234,11 +234,46 @@ impl Config {
             }
             next.values.insert(key.clone(), value);
         }
-        if next.values.contains_key("port") && !PORTS.contains(&next.integer("port", 0)) {
+        // Only what changes is checked: a value the file already had (the
+        // host reads it leniently) must not block every other save.
+        let changed = |key: &str| object.contains_key(key) && next.values.contains_key(key);
+        if changed("port") && !PORTS.contains(&next.integer("port", 0)) {
             bail!("port must be between 1029 and 65514");
         }
-        crate::framegen::Rate::parse(next.get("frame_limiter_fps_limit", "0"))?;
+        if changed("frame_limiter_fps_limit") {
+            crate::framegen::Rate::parse(next.get("frame_limiter_fps_limit", "0"))?;
+        }
         *self = next;
+        Ok(())
+    }
+    /// Before `keys` are written to sunshine.conf: values the file would not
+    /// give back, and settings that would keep the host from starting.
+    pub fn check_saved<'a>(&self, keys: impl IntoIterator<Item = &'a String>) -> Result<()> {
+        for key in keys {
+            let Some(value) = self.values.get(key) else {
+                continue;
+            };
+            // '#' starts a comment and a value opening [ or { runs until it
+            // closes, so such a value would be cut short, or swallow the
+            // settings after it, on the next start.
+            let expected = value.lines().map(str::trim).collect::<Vec<_>>().join("\n");
+            let stored = Self::parse(&format!("{key} = {value}\n"))?;
+            if stored.values.get(key).map(String::as_str) != Some(expected.trim()) {
+                bail!(
+                    "{key} cannot be saved: in the configuration file # starts a comment and a value opening [ or {{ has to close it"
+                );
+            }
+            let value = unquote(value.trim());
+            if key == "bind_address" && value.parse::<std::net::IpAddr>().is_err() {
+                bail!("bind_address must be an IP address of this PC, or blank for all of them");
+            }
+            if key == "log_path"
+                && (value.ends_with(['\\', '/'])
+                    || (Path::new(value).is_absolute() && Path::new(value).is_dir()))
+            {
+                bail!("log_path must name a file, not a folder");
+            }
+        }
         Ok(())
     }
     pub fn path(&self, key: &str, directory: &Path, default: &str) -> PathBuf {
@@ -611,6 +646,60 @@ impl Ports {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A change saved to sunshine.conf, as the settings API does it.
+    fn change(config: &mut Config, key: &str, value: &str) -> Result<()> {
+        let mut object = serde_json::Map::new();
+        object.insert(key.into(), value.into());
+        let mut next = config.clone();
+        next.update(&object)?;
+        next.check_saved(object.keys())?;
+        *config = next;
+        Ok(())
+    }
+    #[test]
+    fn overrides_that_are_never_saved_may_hold_a_comment_sign() {
+        let mut config = Config::default();
+        let mut object = serde_json::Map::new();
+        object.insert("sunshine_name".into(), "Gaming PC #2".into());
+        config.update(&object).unwrap();
+        assert_eq!(config.get("sunshine_name", ""), "Gaming PC #2");
+    }
+    #[test]
+    fn a_bad_value_already_in_the_file_does_not_block_other_saves() {
+        let mut config = Config::parse("port = 70000\nframe_limiter_fps_limit = -1\n").unwrap();
+        change(&mut config, "encoder", "amf").unwrap();
+        assert_eq!(config.get("encoder", ""), "amf");
+        assert!(change(&mut config, "port", "70000").is_err());
+        change(&mut config, "port", "48000").unwrap();
+    }
+    #[test]
+    fn values_the_file_cannot_give_back_are_refused() {
+        let mut config = Config::default();
+        // A comment would cut it short.
+        assert!(change(&mut config, "sunshine_name", "Gaming PC #2").is_err());
+        change(&mut config, "sunshine_name", "\"Gaming PC #2\"").unwrap();
+        // An unclosed bracket would swallow the settings after it.
+        assert!(change(&mut config, "adapter_name", "[Radeon").is_err());
+        assert!(!config.values.contains_key("adapter_name"));
+        // Spaces around a value and indented lists come back as the file reads them.
+        change(&mut config, "sunshine_name", "  Living room  ").unwrap();
+        change(&mut config, "global_prep_cmd", "[\n  {\"do\": \"a\"}\n]").unwrap();
+        let reread = Config::parse(&config.text()).unwrap();
+        assert_eq!(reread.get("sunshine_name", ""), "Living room");
+        assert_eq!(reread.get("global_prep_cmd", ""), "[\n{\"do\": \"a\"}\n]");
+    }
+    #[test]
+    fn bind_address_and_log_path_that_would_stop_the_host_are_refused() {
+        let mut config = Config::default();
+        assert!(change(&mut config, "bind_address", "Ethernet").is_err());
+        change(&mut config, "bind_address", "192.168.1.5").unwrap();
+        change(&mut config, "bind_address", "").unwrap();
+        assert!(!config.values.contains_key("bind_address"));
+        assert!(change(&mut config, "log_path", "C:\\Logs\\").is_err());
+        let folder = std::env::temp_dir();
+        assert!(change(&mut config, "log_path", folder.to_str().unwrap()).is_err());
+        change(&mut config, "log_path", "D:\\Logs\\host.log").unwrap();
+    }
     #[test]
     fn display_policies_keep_resolution_and_refresh_independent() {
         let config =

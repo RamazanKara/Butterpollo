@@ -187,8 +187,18 @@ async fn main() -> Result<()> {
         .read()
         .unwrap()
         .path("log_path", &h.directory, "logs/butterpollo.log");
-    std::fs::create_dir_all(log_path.parent().context("log directory missing")?)?;
-    let appender = butterpollo_core::logfile::RotatingFile::open_default(&log_path)?;
+    let open = |path: &std::path::Path| -> Result<_> {
+        std::fs::create_dir_all(path.parent().context("log directory missing")?)?;
+        Ok(butterpollo_core::logfile::RotatingFile::open_default(path)?)
+    };
+    // A log_path that cannot be used (a folder, a missing drive) falls back to
+    // the default file instead of keeping the host, and its console, down.
+    let default_log = h.directory.join("logs/butterpollo.log");
+    let (appender, unusable_log) = match open(&log_path) {
+        Ok(appender) => (appender, None),
+        Err(error) if log_path != default_log => (open(&default_log)?, Some((log_path, error))),
+        Err(error) => return Err(error),
+    };
     let log_level = h.config.read().unwrap().log_level();
     let (writer, _log_guard) = tracing_appender::non_blocking(appender);
     use tracing_subscriber::prelude::*;
@@ -204,6 +214,13 @@ async fn main() -> Result<()> {
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
+    if let Some((path, error)) = unusable_log {
+        tracing::warn!(
+            path = %path.display(),
+            error = format!("{error:#}"),
+            "log_path cannot be used; logging to the default file"
+        );
+    }
     if let Some(error) = display_recovery {
         tracing::warn!(
             error = format!("{error:#}"),

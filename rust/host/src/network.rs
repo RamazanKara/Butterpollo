@@ -1,5 +1,5 @@
 use crate::state::Shared;
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use butterpollo_core::config::{Config, Ports};
 use igd_next::{
     PortMappingProtocol as Protocol,
@@ -79,7 +79,24 @@ pub fn bind_address(config: &Config, override_address: Option<IpAddr>) -> Result
     }
     let configured = config.get("bind_address", "");
     if !configured.is_empty() {
-        return configured.parse().context("invalid bind_address");
+        // A value that is no address at all (an interface name) would keep
+        // the host, and the console to fix it, down: this PC only until it is
+        // corrected. A valid address that is not up yet, as at boot, is kept:
+        // the service retries until the network has it.
+        return Ok(
+            match configured.trim().trim_matches('"').parse::<IpAddr>() {
+                Ok(address) => address,
+                Err(_) => {
+                    let fallback = IpAddr::from([127, 0, 0, 1]);
+                    tracing::warn!(
+                        bind_address = configured,
+                        %fallback,
+                        "bind_address is not an IP address; listening on this PC only"
+                    );
+                    fallback
+                }
+            },
+        );
     }
     match config.get("address_family", "ipv4") {
         "both" => Ok(IpAddr::from([0u16; 8])),
@@ -431,6 +448,12 @@ mod tests {
         );
         assert_eq!(
             bind_address(&config, Some("127.0.0.1".parse().unwrap())).unwrap(),
+            "127.0.0.1".parse::<IpAddr>().unwrap()
+        );
+        // An interface name instead of an address: this PC only, not down.
+        let named = Config::parse("bind_address=Ethernet\n").unwrap();
+        assert_eq!(
+            bind_address(&named, None).unwrap(),
             "127.0.0.1".parse::<IpAddr>().unwrap()
         );
         assert_eq!(

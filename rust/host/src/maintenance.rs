@@ -334,12 +334,19 @@ pub fn bundle_manifest(h: &Shared) -> Value {
     let dump = newest_dump(h).map_or(0, |d| d.size);
     json!({"status":true,"parts":[{"index":1,"filename":"butterpollo-support.zip","estimated_size_bytes":dump+8*1024*1024}]})
 }
-/// The host log, honouring `log_path`.
+/// The host log, honouring `log_path`; the default file when the host could
+/// not use it and logs there instead.
 pub fn log_path(h: &Shared) -> PathBuf {
-    h.config
-        .read()
-        .unwrap()
-        .path("log_path", &h.directory, "logs/butterpollo.log")
+    let configured =
+        h.config
+            .read()
+            .unwrap()
+            .path("log_path", &h.directory, "logs/butterpollo.log");
+    if configured.is_file() {
+        configured
+    } else {
+        h.directory.join("logs/butterpollo.log")
+    }
 }
 pub fn bundle(h: &Shared) -> Result<PathBuf> {
     use zip::{ZipWriter, write::SimpleFileOptions};
