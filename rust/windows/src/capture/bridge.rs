@@ -254,7 +254,7 @@ impl Session {
             desktop_available(),
             "WGC requires the unlocked user desktop"
         );
-        let gpu = Device::new_adapter(
+        let gpu = Device::for_display(
             name,
             config.get("adapter_name", ""),
             config.get("adapter_pnp_id", ""),
@@ -576,7 +576,7 @@ fn worker(pipe: &Pipe) -> Result<()> {
         .boolean("wgc_helper_streaming_scope", false)
         .then(crate::timing::StreamingScope::enter);
     let timer = crate::timing::Timer::new()?;
-    let gpu = Device::new_adapter(
+    let gpu = Device::for_display(
         &name,
         config.get("adapter_name", ""),
         config.get("adapter_pnp_id", ""),

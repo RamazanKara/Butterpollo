@@ -91,6 +91,35 @@ pub fn displays() -> Result<Vec<Display>> {
         Ok(result)
     }
 }
+fn select_display<'a>(choices: &'a [Display], name: &str) -> Result<Option<&'a Display>> {
+    if name.is_empty() {
+        return Ok(choices
+            .iter()
+            .find(|d| d.primary)
+            .or_else(|| choices.first()));
+    }
+    // A selected VDD can disappear during a mode change. Capture must wait
+    // for it to return instead of reopening on the user's physical desktop.
+    choices
+        .iter()
+        .find(|d| d.display_name == name || d.device_id == name)
+        .map(Some)
+        .with_context(|| format!("selected capture display is unavailable: {name}"))
+}
+/// Whether capture can open this display now. An empty name is the primary
+/// display.
+pub fn display_present(name: &str) -> bool {
+    displays().is_ok_and(|choices| select_display(&choices, name).is_ok_and(|d| d.is_some()))
+}
+/// The primary display's name, which capture opens when the stream's display
+/// did not come back.
+pub fn primary_display() -> Option<String> {
+    let choices = displays().ok()?;
+    select_display(&choices, "")
+        .ok()
+        .flatten()
+        .map(|d| d.display_name.clone())
+}
 pub struct ComGuard;
 #[derive(serde::Serialize)]
 pub struct Gpu {
@@ -267,18 +296,35 @@ impl Device {
     pub fn new(name: &str) -> Result<Self> {
         Self::new_adapter(name, "", "")
     }
+    /// A device for work that needs a GPU, not a particular picture: encoder
+    /// probes and tools. A display that is gone is replaced by the primary.
     pub fn new_adapter(name: &str, adapter_name: &str, pnp_id: &str) -> Result<Self> {
+        let choices = displays()?;
+        let display = match select_display(&choices, name) {
+            Ok(display) => display,
+            Err(error) => {
+                tracing::debug!(%error, "using the primary display's GPU");
+                select_display(&choices, "")?
+            }
+        };
+        Self::with_display(display.cloned(), adapter_name, pnp_id)
+    }
+    /// Capture's device: the named display and never another one, so that a
+    /// stream cannot silently show a different desktop. An empty name is the
+    /// primary display.
+    pub fn for_display(name: &str, adapter_name: &str, pnp_id: &str) -> Result<Self> {
+        let choices = displays()?;
+        Self::with_display(
+            select_display(&choices, name)?.cloned(),
+            adapter_name,
+            pnp_id,
+        )
+    }
+    fn with_display(display: Option<Display>, adapter_name: &str, pnp_id: &str) -> Result<Self> {
         unsafe {
-            let choices = displays()?;
-            let Some(display) = choices
-                .iter()
-                .find(|d| d.display_name == name || d.device_id == name)
-                .or_else(|| choices.iter().find(|d| d.primary))
-                .or_else(|| choices.first())
-            else {
+            let Some(mut display) = display else {
                 return Self::without_display(adapter_name, pnp_id);
             };
-            let mut display = display.clone();
             let factory: IDXGIFactory1 = CreateDXGIFactory1()?;
             let adapter = factory.EnumAdapters1(display.adapter_index)?;
             let output = Some(adapter.EnumOutputs(display.output_index)?.cast()?);
@@ -1387,7 +1433,7 @@ impl Capture {
                 name, hdr, config, warnings,
             )?)));
         }
-        let gpu = Device::new_adapter(
+        let gpu = Device::for_display(
             name,
             config.get("adapter_name", ""),
             config.get("adapter_pnp_id", ""),
@@ -1470,6 +1516,52 @@ impl Capture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_missing_selected_capture_display_is_an_error_not_the_desktop() {
+        let display = |name: &str, primary| Display {
+            device_id: format!("id-{name}"),
+            display_name: name.into(),
+            friendly_name: name.into(),
+            width: 2560,
+            height: 1440,
+            x: 0,
+            y: 0,
+            primary,
+            adapter: String::new(),
+            adapter_index: 0,
+            output_index: 0,
+        };
+        let choices = [display("virtual", false), display("physical", true)];
+        assert_eq!(
+            select_display(&choices, "virtual")
+                .unwrap()
+                .unwrap()
+                .display_name,
+            "virtual"
+        );
+        assert_eq!(
+            select_display(&choices, "id-virtual")
+                .unwrap()
+                .unwrap()
+                .display_name,
+            "virtual"
+        );
+        assert!(select_display(&choices[1..], "virtual").is_err());
+        assert!(select_display(&[], "virtual").is_err());
+        assert_eq!(
+            select_display(&choices, "").unwrap().unwrap().display_name,
+            "physical"
+        );
+        assert_eq!(
+            select_display(&choices[..1], "")
+                .unwrap()
+                .unwrap()
+                .display_name,
+            "virtual"
+        );
+        assert!(select_display(&[], "").unwrap().is_none());
+    }
 
     #[test]
     fn capture_timestamps_preserve_past_and_future_stamps_without_changing_pacing() {

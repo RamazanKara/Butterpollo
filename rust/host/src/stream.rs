@@ -64,6 +64,37 @@ fn collect(
 }
 /// Backoff only after reopening fails; resource release is acknowledged.
 const RECOVERY_RETRY: Duration = Duration::from_millis(150);
+/// How long capture waits for the stream's display to come back before it
+/// shows another one. Switching a virtual display back on takes about a
+/// second; recreating it takes up to the driver's 10 s arrival deadline.
+const DISPLAY_RETURN_WAIT: Duration = Duration::from_secs(15);
+/// Which display a capture reopen uses.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ReopenOn {
+    /// The stream's display.
+    Stream,
+    /// Not yet: the stream's display is not on the desktop.
+    Wait,
+    /// The primary display, after the stream's did not return in time.
+    Primary,
+}
+/// Capture follows the stream's display. Windows can switch a virtual display
+/// off (a game resetting the layout on exit); the heartbeat switches it back
+/// on or recreates it and publishes it, possibly under a new name. Capture
+/// waits for that and never quietly shows another desktop: only after
+/// `DISPLAY_RETURN_WAIT` does it open the primary display, with a warning.
+fn reopen_on(present: bool, missing_since: &mut Option<Instant>, now: Instant) -> ReopenOn {
+    if present {
+        *missing_since = None;
+        return ReopenOn::Stream;
+    }
+    let since = *missing_since.get_or_insert(now);
+    if now.duration_since(since) >= DISPLAY_RETURN_WAIT {
+        ReopenOn::Primary
+    } else {
+        ReopenOn::Wait
+    }
+}
 fn rtx_parameters(config: &Config) -> [u32; 4] {
     let peak = config
         .integer("rtx_hdr_peak_brightness", 1000)
@@ -617,7 +648,9 @@ impl Media {
                     // arriving for another client does this). The old capture is
                     // dropped and consumers acknowledge releasing their frames
                     // and encoders before the new device is made.
-                    let reopen = |lost: Capture, target: &(String, u64)| -> Result<Capture> {
+                    // The capture, and whether it shows the primary display
+                    // in place of the stream's, which is gone.
+                    let reopen = |lost: Capture, target: &(String, u64)| -> Result<(Capture, bool)> {
                         let recovery_started = Instant::now();
                         // Desktop Duplication reports the pointer's shape only
                         // when it changes; the new capture starts from this one.
@@ -633,6 +666,7 @@ impl Media {
                             timer.until(Instant::now() + Duration::from_millis(2));
                         }
                         let release_ms = recovery_started.elapsed().as_millis();
+                        let mut missing_since = None;
                         loop {
                             if worker_stop.load(Ordering::Acquire) {
                                 anyhow::bail!("capture stopped while recovering");
@@ -641,9 +675,25 @@ impl Media {
                             // A UAC prompt or the lock screen switches the input
                             // desktop; duplication must be made on that desktop.
                             butterpollo_windows::input::follow_input_desktop();
-                            let opened = Capture::open_for_stream_reported(&next.0, &kind, hdr, &capture_config, capture_warnings.clone());
+                            let on = reopen_on(butterpollo_windows::capture::display_present(&next.0), &mut missing_since, Instant::now());
+                            let opened = match on {
+                                ReopenOn::Wait => {
+                                    thread::sleep(RECOVERY_RETRY);
+                                    continue;
+                                }
+                                ReopenOn::Stream => Capture::open_for_stream_reported(&next.0, &kind, hdr, &capture_config, capture_warnings.clone()),
+                                // By name: the WGC helper checks it opened the display asked for.
+                                ReopenOn::Primary => butterpollo_windows::capture::primary_display()
+                                    .context("no display is on the desktop")
+                                    .and_then(|primary| Capture::open_for_stream_reported(&primary, &kind, hdr, &capture_config, capture_warnings.clone())),
+                            };
                             match opened {
                                 Ok(mut recovered) => {
+                                    if on == ReopenOn::Primary {
+                                        capture_warnings.set("capture_display", format!("The stream's display {} disappeared and did not return within {} s; showing the primary display until it returns. A game or Windows changed the display layout; reconnect if the picture does not return.", next.0, DISPLAY_RETURN_WAIT.as_secs()));
+                                    } else {
+                                        capture_warnings.clear("capture_display");
+                                    }
                                     if next != *target {
                                         tracing::info!(output = %next.0, "capture moved to the recreated display");
                                     }
@@ -653,7 +703,7 @@ impl Media {
                                         tracing::warn!(%error, "the pointer appears once it moves or changes");
                                     }
                                     tracing::info!(release_ms, elapsed_ms=recovery_started.elapsed().as_millis(), backend=recovered.backend(), "capture reopened after resource release");
-                                    return Ok(recovered);
+                                    return Ok((recovered, on == ReopenOn::Primary));
                                 }
                                 Err(error) if Instant::now() >= deadline => return Err(error),
                                 Err(_) => thread::sleep(RECOVERY_RETRY),
@@ -664,6 +714,7 @@ impl Media {
                     let mut check_target = Instant::now();
                     let mut user_desktop = kind == "wgc"
                         && butterpollo_windows::capture::wgc_desktop_available();
+                    let mut on_primary = false;
                     let poll_interval = Duration::from_micros(
                         capture_config.integer("capture_poll_interval_us", 500).clamp(100, 1000) as u64,
                     );
@@ -675,9 +726,11 @@ impl Media {
                                 && butterpollo_windows::capture::wgc_desktop_available();
                             let return_to_wgc = available && !user_desktop && capture.backend() == "ddx";
                             user_desktop = available;
-                            if next != target || return_to_wgc {
+                            // Back from the primary display once the stream's returns.
+                            let returned = on_primary && butterpollo_windows::capture::display_present(&next.0);
+                            if next != target || return_to_wgc || returned {
                                 let lost = std::mem::replace(&mut capture, Capture::Closed);
-                                capture = match reopen(lost, &next) {
+                                (capture, on_primary) = match reopen(lost, &next) {
                                     Ok(capture) => capture,
                                     Err(_) if worker_stop.load(Ordering::Acquire) => return Ok(()),
                                     Err(error) => return Err(error),
@@ -721,7 +774,7 @@ impl Media {
                             Err(e) => {
                                 capture_warnings.set("capture_recovery", format!("Capture interrupted ({e:#}); reopening capture, with a frozen picture until frames resume. If this repeats, keep the display mode stable and check the WGC helper and graphics driver."));
                                 let lost = std::mem::replace(&mut capture, Capture::Closed);
-                                capture = match reopen(lost, &target) {
+                                (capture, on_primary) = match reopen(lost, &target) {
                                     Ok(capture) => capture,
                                     Err(_) if worker_stop.load(Ordering::Acquire) => return Ok(()),
                                     Err(error) => return Err(error),
@@ -2237,6 +2290,26 @@ fn feedback_packets(id: u16, kind: u16, data: &[u8]) -> Vec<(u16, Vec<u8>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn capture_waits_for_its_display_and_shows_the_primary_only_after_the_timeout() {
+        let start = Instant::now();
+        let mut missing = None;
+        assert_eq!(reopen_on(true, &mut missing, start), ReopenOn::Stream);
+        // Windows switched the virtual display off: capture waits for the
+        // heartbeat to bring it back instead of opening the physical desktop.
+        assert_eq!(reopen_on(false, &mut missing, start), ReopenOn::Wait);
+        let almost = start + DISPLAY_RETURN_WAIT - Duration::from_millis(1);
+        assert_eq!(reopen_on(false, &mut missing, almost), ReopenOn::Wait);
+        assert_eq!(
+            reopen_on(false, &mut missing, start + DISPLAY_RETURN_WAIT),
+            ReopenOn::Primary
+        );
+        // It came back under another name: the wait starts over next time.
+        let back = start + Duration::from_secs(20);
+        assert_eq!(reopen_on(true, &mut missing, back), ReopenOn::Stream);
+        assert_eq!(missing, None);
+        assert_eq!(reopen_on(false, &mut missing, back), ReopenOn::Wait);
+    }
     #[test]
     fn vigem_feedback_forwards_rumble_and_only_ds4_lightbar() {
         let report = [255, 255, 128, 128, 12, 34, 56, 0];
