@@ -112,6 +112,7 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
     let mut payload = Payload::open()?
         .context("this setup.exe carries no package; build it with build.ps1 -Package")?;
     let found = detect::scan();
+    found.check_version()?;
     line(format!("found: {found:#?}"));
     let install = system::win32_path(&detect::install_dir(&found, options.install_dir.clone()))?;
     let profile = profile();

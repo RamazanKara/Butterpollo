@@ -10,6 +10,7 @@ use std::{
 };
 
 pub fn run(folder: &Path, progress: &Progress) -> Result<()> {
+    detect::scan().check_version()?;
     let profile = install::profile();
     let result = profile.join("update-result.json");
     let install = std::fs::canonicalize(folder)?;

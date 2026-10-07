@@ -48,6 +48,12 @@ pub struct Found {
     pub service_install: Option<PathBuf>,
 }
 impl Found {
+    pub fn check_version(&self) -> anyhow::Result<()> {
+        if let Some(product) = &self.butterpollo {
+            check_version(&product.version, env!("CARGO_PKG_VERSION"))?;
+        }
+        Ok(())
+    }
     /// The Vibepollo-family installation whose settings to import.
     pub fn previous_root(&self) -> Option<PathBuf> {
         self.packages
@@ -65,6 +71,27 @@ impl Found {
                     .find(|root| root.join("sunshine.conf").is_file())
             })
     }
+}
+
+fn check_version(installed: &str, incoming: &str) -> anyhow::Result<()> {
+    let release = installed
+        .trim()
+        .trim_start_matches(['v', 'V'])
+        .split(['-', '+'])
+        .next()
+        .unwrap_or("");
+    if release.split('.').count() < 3 || release.split('.').any(|part| part.parse::<u64>().is_err())
+    {
+        anyhow::bail!(
+            "The installed Butterpollo version is unknown; restore its uninstall entry before upgrading"
+        );
+    }
+    if crate::version::newer(installed, incoming) {
+        anyhow::bail!(
+            "Butterpollo {installed} is newer than this installer ({incoming}). Downgrades are not supported; your settings have not been changed."
+        );
+    }
+    Ok(())
 }
 
 /// The program folder of an Uninstall entry: its InstallLocation, else the
@@ -253,6 +280,25 @@ pub fn summary(found: &Found, install: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn upgrades_and_reinstalls_are_allowed_but_downgrades_are_not() {
+        for (installed, incoming) in [
+            ("2.0.0-rc.9", "2.0.0-rc.10"),
+            ("2.0.0-rc.21", "2.0.0-rc.21"),
+            ("2.0.0-rc.21", "2.0.0"),
+        ] {
+            assert!(check_version(installed, incoming).is_ok());
+        }
+        for (installed, incoming) in [
+            ("2.0.0-rc.10", "2.0.0-rc.9"),
+            ("2.0.0", "2.0.0-rc.21"),
+            ("2.1.0", "2.0.0"),
+            ("", "2.0.0-rc.21"),
+            ("unknown", "2.0.0-rc.21"),
+        ] {
+            assert!(check_version(installed, incoming).is_err());
+        }
+    }
     #[test]
     fn locations_come_from_the_icon_the_uninstaller_or_the_service() {
         let path = |p: &str| Some(PathBuf::from(p));

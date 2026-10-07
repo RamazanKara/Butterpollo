@@ -16,6 +16,8 @@ mod uninstall;
 mod update;
 #[path = "../../core/src/update_files.rs"]
 mod update_files;
+#[path = "../../core/src/version.rs"]
+mod version;
 
 use std::path::PathBuf;
 
