@@ -1970,10 +1970,9 @@ impl Media {
                         // input began; absolute input follows it.
                         i.set_output(&s.output.read().unwrap());
                     }
-                    for event in std::mem::take(&mut p.inputs) {
-                        if let Some(i) = &mut p.injector
-                            && let Err(e) = i.apply(&event)
-                        {
+                    let inputs = std::mem::take(&mut p.inputs);
+                    if let Some(i) = &mut p.injector {
+                        for e in i.apply_all(&inputs) {
                             tracing::debug!(error=%e,"input injection failed");
                         }
                     }

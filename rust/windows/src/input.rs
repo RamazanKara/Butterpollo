@@ -490,6 +490,30 @@ pub struct Injector {
     /// left-button release held back meanwhile.
     absolute: bool,
     left_release: Option<std::time::Instant>,
+    pending: Pending,
+    /// SendInput, or a stand-in in tests.
+    inject: fn(&[INPUT]) -> usize,
+}
+/// Keyboard and mouse input of one pass of the control loop, sent in one
+/// SendInput call: a call cost 31-36 us whether it carried one input or
+/// eight.
+#[derive(Default)]
+struct Pending {
+    inputs: Vec<INPUT>,
+    /// Each event's end in `inputs`, and its press if it is one.
+    events: Vec<(usize, Option<Press>)>,
+    /// Why events of the pass failed.
+    errors: Vec<anyhow::Error>,
+}
+/// A key or button press, recorded as held once Windows takes it.
+struct Press {
+    keyboard: bool,
+    id: u32,
+    flags: u8,
+    /// Whether it was counted in HELD, to count it out if Windows refuses it.
+    counted: bool,
+    /// The modifiers pressed around a key that repeats.
+    repeat: Option<u8>,
 }
 /// How long a left release waits after absolute input, as in Sunshine.
 const LEFT_RELEASE_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
@@ -591,6 +615,8 @@ impl Injector {
             display_warned: None,
             absolute: false,
             left_release: None,
+            pending: Pending::default(),
+            inject,
         })
     }
     /// The stream's size, so absolute input skips the bars around a display of
@@ -674,18 +700,77 @@ impl Injector {
         }
         self.rect
     }
-    /// Inject input, following the input desktop when Windows refuses it:
-    /// a UAC prompt or the lock screen runs on the secure desktop.
-    fn send(inputs: &[INPUT]) -> Result<()> {
-        let sent =
-            || unsafe { SendInput(inputs, size_of::<INPUT>() as i32) } == inputs.len() as u32;
-        if !sent() && !(follow_input_desktop() && sent()) {
+    /// Inject input now.
+    fn send(&self, inputs: &[INPUT]) -> Result<()> {
+        if (self.inject)(inputs) < inputs.len() {
             bail!(
                 "Windows input injection failed: {}",
                 std::io::Error::last_os_error()
             );
         }
         Ok(())
+    }
+    /// Send the pass's keyboard and mouse input, and record the presses
+    /// Windows took. A refused press is not held.
+    fn flush(&mut self) {
+        if self.pending.inputs.is_empty() {
+            return;
+        }
+        let sent = (self.inject)(&self.pending.inputs);
+        let refused =
+            (sent < self.pending.inputs.len()).then(|| std::io::Error::last_os_error().to_string());
+        self.pending.inputs.clear();
+        let mut events = std::mem::take(&mut self.pending.events);
+        for (end, press) in events.drain(..) {
+            if end <= sent {
+                if let Some(press) = press {
+                    self.hold(press);
+                }
+                continue;
+            }
+            if let Some(press) = press
+                && press.counted
+            {
+                let mut held = HELD.lock().unwrap();
+                let identity = (press.keyboard, press.id);
+                match held.get(&identity).copied().unwrap_or(0) {
+                    0 | 1 => held.remove(&identity),
+                    count => held.insert(identity, count - 1),
+                };
+            }
+            self.pending.errors.push(anyhow::anyhow!(
+                "Windows input injection failed: {}",
+                refused.as_deref().unwrap_or_default()
+            ));
+        }
+        self.pending.events = events;
+    }
+    /// Record a press Windows took.
+    fn hold(&mut self, press: Press) {
+        if !press.keyboard {
+            self.buttons.insert(press.id as u8);
+            return;
+        }
+        self.keys.insert(press.id);
+        self.key_flags.insert(press.id, press.flags);
+        if let Some(modifiers) = press.repeat
+            && let Some(delay) = self.policy.repeat_delay
+        {
+            self.repeat = Some((
+                press.id,
+                press.flags,
+                modifiers,
+                std::time::Instant::now() + delay,
+            ));
+        }
+    }
+    /// Whether a key (or button) press of the pass is still unsent: what
+    /// recording it changes decides how a later key (or button) is sent.
+    fn press_pending(&self, keyboard: bool) -> bool {
+        self.pending
+            .events
+            .iter()
+            .any(|(_, press)| press.as_ref().is_some_and(|p| p.keyboard == keyboard))
     }
     fn key(key: u16, down: bool, unicode: bool) -> INPUT {
         INPUT {
@@ -996,7 +1081,7 @@ impl Injector {
         let mut first = None;
         if self.left_release.is_some_and(|due| now >= due) {
             self.left_release = None;
-            if let Err(error) = Self::held(false, 1, false, true, Self::button(1, false)) {
+            if let Err(error) = self.held(false, 1, false, true, Self::button(1, false)) {
                 first.get_or_insert(error);
             }
         }
@@ -1012,7 +1097,7 @@ impl Injector {
                 &HELD.lock().unwrap(),
                 self.policy.always_send_scancodes,
             );
-            if let Err(error) = Self::send(&inputs) {
+            if let Err(error) = self.send(&inputs) {
                 first.get_or_insert(error);
             }
         }
@@ -1061,19 +1146,57 @@ impl Injector {
         first.map_or(Ok(()), Err)
     }
     pub fn apply(&mut self, e: &Event) -> Result<()> {
+        let mut errors = self.apply_all(std::slice::from_ref(e));
+        errors.pop().map_or(Ok(()), Err)
+    }
+    /// Apply a pass of events in order, with one SendInput call where the
+    /// order allows; returns why events failed.
+    pub fn apply_all(&mut self, events: &[Event]) -> Vec<anyhow::Error> {
+        for e in events {
+            if let Err(error) = self.stage(e) {
+                self.pending.errors.push(error);
+            }
+        }
+        self.flush();
+        std::mem::take(&mut self.pending.errors)
+    }
+    /// Add an event's keyboard and mouse input to the pass, or apply it.
+    fn stage(&mut self, e: &Event) -> Result<()> {
         if !self.policy.allows(e) {
             return Ok(());
         }
         use Event::*;
         match e {
+            // How a key or button is sent depends on the keys or buttons held,
+            // including those pressed earlier in the pass.
+            Keyboard { .. } if self.press_pending(true) => self.flush(),
+            MouseButton { .. } if self.press_pending(false) => self.flush(),
+            // Touch and pen go through another call: keep them in order.
+            Touch { .. } | Pen { .. } => self.flush(),
+            _ => {}
+        }
+        let start = self.pending.inputs.len();
+        let press = self.stage_event(e)?;
+        let end = self.pending.inputs.len();
+        if end > start {
+            self.pending.events.push((end, press));
+        } else if let Some(press) = press {
+            // Nothing to send, such as a key another client holds.
+            self.hold(press);
+        }
+        Ok(())
+    }
+    fn stage_event(&mut self, e: &Event) -> Result<Option<Press>> {
+        use Event::*;
+        match e {
             Relative { x, y } => {
                 self.absolute = false;
-                Self::send(&[Self::mouse(
+                self.pending.inputs.push(Self::mouse(
                     i32::from(*x),
                     i32::from(*y),
                     0,
                     MOUSEEVENTF_MOVE,
-                )])?
+                ));
             }
             Absolute {
                 x,
@@ -1083,7 +1206,7 @@ impl Injector {
             } => unsafe {
                 self.absolute = true;
                 let Some(rect) = self.display() else {
-                    return Ok(());
+                    return Ok(None);
                 };
                 let left = GetSystemMetrics(SM_XVIRTUALSCREEN);
                 let top = GetSystemMetrics(SM_YVIRTUALSCREEN);
@@ -1117,12 +1240,12 @@ impl Injector {
                         rect.top + (i64::from(*y).clamp(0, height) * span_y / height) as i32,
                     ),
                 };
-                Self::send(&[Self::mouse(
+                self.pending.inputs.push(Self::mouse(
                     ((i64::from(px - left) * 65535) / i64::from((w - 1).max(1))) as i32,
                     ((i64::from(py - top) * 65535) / i64::from((h - 1).max(1))) as i32,
                     0,
                     MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
-                )])?;
+                ));
             },
             MouseButton { button, down } => {
                 // With absolute input (touch, pen, a tablet), Moonlight sends a
@@ -1133,33 +1256,44 @@ impl Injector {
                     if !*down && self.buttons.contains(button) {
                         self.buttons.remove(button);
                         self.left_release = Some(std::time::Instant::now() + LEFT_RELEASE_DELAY);
-                        return Ok(());
+                        return Ok(None);
                     }
                     if *down && self.left_release.take().is_some() {
                         // Still down in Windows: its release never went out.
                         self.buttons.insert(*button);
-                        return Ok(());
+                        return Ok(None);
                     }
                 }
                 if *button == 3 && *down && self.left_release.is_some() {
-                    return Self::send(&[Self::button(3, true), Self::button(3, false)]);
+                    self.pending
+                        .inputs
+                        .extend([Self::button(3, true), Self::button(3, false)]);
+                    return Ok(None);
                 }
                 let owned = self.buttons.contains(button);
-                let sent = Self::held(
-                    false,
-                    u32::from(*button),
+                let inputs = &mut self.pending.inputs;
+                Self::update_held(
+                    &mut HELD.lock().unwrap(),
+                    (false, u32::from(*button)),
                     *down,
                     owned,
                     Self::button(*button, *down),
-                );
-                // A release is recorded even when Windows refused it.
+                    |input| {
+                        inputs.extend_from_slice(input);
+                        Ok(())
+                    },
+                )?;
                 if *down {
-                    sent?;
-                    self.buttons.insert(*button);
-                } else {
-                    self.buttons.remove(button);
-                    sent?;
+                    return Ok(Some(Press {
+                        keyboard: false,
+                        id: u32::from(*button),
+                        flags: 0,
+                        counted: !owned,
+                        repeat: None,
+                    }));
                 }
+                // A release is recorded even when Windows refuses it.
+                self.buttons.remove(button);
             }
             Scroll { amount, horizontal } => {
                 let index = usize::from(*horizontal);
@@ -1172,9 +1306,9 @@ impl Injector {
                     amount
                 };
                 if amount == 0 {
-                    return Ok(());
+                    return Ok(None);
                 }
-                Self::send(&[Self::mouse(
+                self.pending.inputs.push(Self::mouse(
                     0,
                     0,
                     amount as u32,
@@ -1183,7 +1317,7 @@ impl Injector {
                     } else {
                         MOUSEEVENTF_WHEEL
                     },
-                )])?;
+                ));
             }
             Keyboard {
                 key,
@@ -1212,52 +1346,57 @@ impl Injector {
                 } else {
                     0
                 };
-                let sent = if modifiers == 0 {
-                    Self::held(true, key, *down, owned, self.key_scan(key, *down, flags))
+                let input = self.key_scan(key, *down, flags);
+                let always_send_scancodes = self.policy.always_send_scancodes;
+                let inputs = &mut self.pending.inputs;
+                if modifiers == 0 {
+                    Self::update_held(
+                        &mut HELD.lock().unwrap(),
+                        (true, key),
+                        *down,
+                        owned,
+                        input,
+                        |input| {
+                            inputs.extend_from_slice(input);
+                            Ok(())
+                        },
+                    )?;
                 } else {
                     // The client reported a modifier it never pressed as a
                     // key: press it around this key only, as Vibepollo does.
                     let mut held = HELD.lock().unwrap();
                     let count = held.get(&(true, key)).copied().unwrap_or(0);
-                    let sent = if count == 0 {
-                        Self::send(&Self::with_modifiers(
-                            self.key_scan(key, true, flags),
+                    if count == 0 {
+                        inputs.extend(Self::with_modifiers(
+                            input,
                             modifiers,
-                            self.policy.always_send_scancodes,
-                        ))
-                    } else {
-                        Ok(())
-                    };
-                    if sent.is_ok() {
-                        held.insert((true, key), count + 1);
+                            always_send_scancodes,
+                        ));
                     }
-                    sent
-                };
-                // A press Windows refused is not held; a release is recorded
-                // even when Windows refused it, or the key keeps repeating.
+                    held.insert((true, key), count + 1);
+                }
+                // A press Windows refuses is not held; a release is recorded
+                // even when Windows refuses it, or the key keeps repeating.
                 if *down {
-                    sent?;
-                    self.keys.insert(key);
-                    self.key_flags.insert(key, flags);
-                    if !owned
-                        && !is_modifier(key)
-                        && let Some(delay) = self.policy.repeat_delay
-                    {
-                        self.repeat =
-                            Some((key, flags, modifiers, std::time::Instant::now() + delay));
-                    }
-                } else {
-                    self.keys.remove(&key);
-                    self.key_flags.remove(&key);
-                    if self.repeat.is_some_and(|(repeating, ..)| repeating == key) {
-                        self.repeat = None;
-                    }
-                    sent?;
+                    return Ok(Some(Press {
+                        keyboard: true,
+                        id: key,
+                        flags,
+                        counted: !owned,
+                        repeat: (!owned && !is_modifier(key)).then_some(modifiers),
+                    }));
+                }
+                self.keys.remove(&key);
+                self.key_flags.remove(&key);
+                if self.repeat.is_some_and(|(repeating, ..)| repeating == key) {
+                    self.repeat = None;
                 }
             }
             Text(s) => {
                 for v in s.encode_utf16() {
-                    Self::send(&[Self::key(v, true, true), Self::key(v, false, true)])?;
+                    self.pending
+                        .inputs
+                        .extend([Self::key(v, true, true), Self::key(v, false, true)]);
                 }
             }
             Touch {
@@ -1287,7 +1426,7 @@ impl Injector {
             | Motion { .. }
             | Battery { .. } => self.gamepads.send(e.clone()),
         }
-        Ok(())
+        Ok(None)
     }
     /// Feedback and motion-sensor requests from the virtual gamepads for the
     /// client, collected since the last call.
@@ -1337,14 +1476,14 @@ impl Injector {
             always_send_scancodes,
         )
     }
-    fn held(keyboard: bool, id: u32, down: bool, owned: bool, input: INPUT) -> Result<()> {
+    fn held(&self, keyboard: bool, id: u32, down: bool, owned: bool, input: INPUT) -> Result<()> {
         Self::update_held(
             &mut HELD.lock().unwrap(),
             (keyboard, id),
             down,
             owned,
             input,
-            Self::send,
+            |inputs| self.send(inputs),
         )
     }
     fn update_held(
@@ -1382,6 +1521,17 @@ impl Injector {
     pub fn feedback_allowed(&self, kind: u16) -> bool {
         !matches!(kind, 0x010b | 0x5500 | 0x5503) || (self.policy.forward_rumble && self.haptics)
     }
+}
+/// Inject input, following the input desktop when Windows refuses it: a UAC
+/// prompt or the lock screen runs on the secure desktop. Returns how many
+/// inputs Windows took, which it takes in order.
+fn inject(inputs: &[INPUT]) -> usize {
+    let send = |inputs: &[INPUT]| unsafe { SendInput(inputs, size_of::<INPUT>() as i32) };
+    let mut sent = send(inputs) as usize;
+    if sent < inputs.len() && follow_input_desktop() {
+        sent += send(&inputs[sent..]) as usize;
+    }
+    sent
 }
 /// Move the calling thread to the desktop that receives input, which is the
 /// secure desktop while a UAC prompt or the lock screen shows. Only a host
@@ -1493,10 +1643,10 @@ fn unheld_modifiers(
 impl Drop for Injector {
     fn drop(&mut self) {
         if self.left_release.take().is_some() {
-            let _ = Self::held(false, 1, false, true, Self::button(1, false));
+            let _ = self.held(false, 1, false, true, Self::button(1, false));
         }
         for key in &self.keys {
-            let _ = Self::held(
+            let _ = self.held(
                 true,
                 *key,
                 false,
@@ -1505,7 +1655,7 @@ impl Drop for Injector {
             );
         }
         for button in &self.buttons {
-            let _ = Self::held(
+            let _ = self.held(
                 false,
                 u32::from(*button),
                 false,
@@ -1937,6 +2087,193 @@ mod tests {
         injector.set_output(r"\\.\DISPLAY98");
         assert!(injector.rect.is_none());
         assert_eq!(injector.output, r"\\.\DISPLAY98");
+    }
+
+    thread_local! {
+        static CALLS: std::cell::RefCell<Vec<Vec<INPUT>>> = const { std::cell::RefCell::new(Vec::new()) };
+        /// How many inputs of a call Windows takes.
+        static TAKES: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
+    }
+    /// SendInput's stand-in: nothing reaches the desktop.
+    fn record(inputs: &[INPUT]) -> usize {
+        CALLS.with_borrow_mut(|calls| calls.push(inputs.to_vec()));
+        TAKES.get().min(inputs.len())
+    }
+    fn recording() -> Injector {
+        let mut injector = Injector::new(r"\\.\DISPLAY99", "vhf").unwrap();
+        injector.inject = record;
+        injector
+    }
+    fn describe(input: &INPUT) -> String {
+        unsafe {
+            if input.r#type == INPUT_KEYBOARD {
+                let ki = input.Anonymous.ki;
+                format!("key {} {} {:#x}", ki.wVk.0, ki.wScan, ki.dwFlags.0)
+            } else {
+                let mi = input.Anonymous.mi;
+                format!(
+                    "mouse {} {} {} {:#x}",
+                    mi.dx, mi.dy, mi.mouseData, mi.dwFlags.0
+                )
+            }
+        }
+    }
+    /// The SendInput calls made since the last look.
+    fn calls() -> Vec<Vec<String>> {
+        CALLS
+            .with_borrow_mut(std::mem::take)
+            .iter()
+            .map(|call| call.iter().map(describe).collect())
+            .collect()
+    }
+    fn described(inputs: &[INPUT]) -> Vec<String> {
+        inputs.iter().map(describe).collect()
+    }
+    fn key(key: u16, down: bool) -> Event {
+        Event::Keyboard {
+            key,
+            modifiers: 0,
+            flags: 0,
+            down,
+        }
+    }
+    fn click(button: u8, down: bool) -> Event {
+        Event::MouseButton { button, down }
+    }
+    // HELD is shared by every injector: each test below uses its own keys
+    // and buttons.
+
+    #[test]
+    fn a_pass_of_moves_keys_buttons_and_text_is_one_call_in_order() {
+        let mut injector = recording();
+        let events = [
+            Event::Relative { x: 1, y: 2 },
+            key(0x42, true),
+            click(2, true),
+            Event::Scroll {
+                amount: 120,
+                horizontal: false,
+            },
+            Event::Text("hi".into()),
+        ];
+        assert!(injector.apply_all(&events).is_empty());
+        assert_eq!(
+            calls(),
+            [described(&[
+                Injector::mouse(1, 2, 0, MOUSEEVENTF_MOVE),
+                injector.key_scan(0x42, true, 0),
+                Injector::button(2, true),
+                Injector::mouse(0, 0, 120, MOUSEEVENTF_WHEEL),
+                Injector::key(u16::from(b'h'), true, true),
+                Injector::key(u16::from(b'h'), false, true),
+                Injector::key(u16::from(b'i'), true, true),
+                Injector::key(u16::from(b'i'), false, true),
+            ])]
+        );
+        assert!(injector.keys.contains(&0x42) && injector.buttons.contains(&2));
+        // Their releases in the next pass also share a call.
+        assert!(
+            injector
+                .apply_all(&[key(0x42, false), click(2, false)])
+                .is_empty()
+        );
+        assert_eq!(
+            calls(),
+            [described(&[
+                injector.key_scan(0x42, false, 0),
+                Injector::button(2, false),
+            ])]
+        );
+        assert!(injector.keys.is_empty() && injector.buttons.is_empty());
+        let held = HELD.lock().unwrap();
+        assert!(!held.contains_key(&(true, 0x42)) && !held.contains_key(&(false, 2)));
+    }
+
+    #[test]
+    fn a_press_and_its_release_in_one_pass_both_go_out_in_order() {
+        let mut injector = recording();
+        // A release goes out only for a key the client holds, and a press
+        // is held once Windows took it: the press is sent first.
+        let events = [
+            key(0x43, true),
+            key(0x43, false),
+            click(3, true),
+            click(3, false),
+        ];
+        assert!(injector.apply_all(&events).is_empty());
+        assert_eq!(
+            calls(),
+            [
+                described(&[injector.key_scan(0x43, true, 0)]),
+                described(&[injector.key_scan(0x43, false, 0), Injector::button(3, true)]),
+                described(&[Injector::button(3, false)]),
+            ]
+        );
+        assert!(injector.keys.is_empty() && injector.buttons.is_empty());
+        assert!(injector.repeat.is_none());
+    }
+
+    #[test]
+    fn presses_windows_refuses_are_not_held_and_refused_releases_are_forgotten() {
+        let mut injector = recording();
+        TAKES.set(1);
+        let errors = injector.apply_all(&[
+            Event::Relative { x: 0, y: 0 },
+            key(0x44, true),
+            click(4, true),
+        ]);
+        assert_eq!(errors.len(), 2);
+        assert!(injector.keys.is_empty() && injector.buttons.is_empty());
+        assert!(injector.repeat.is_none());
+        {
+            let held = HELD.lock().unwrap();
+            assert!(!held.contains_key(&(true, 0x44)) && !held.contains_key(&(false, 4)));
+        }
+        TAKES.set(usize::MAX);
+        assert!(injector.apply_all(&[key(0x45, true)]).is_empty());
+        assert!(injector.keys.contains(&0x45));
+        TAKES.set(0);
+        assert_eq!(injector.apply_all(&[key(0x45, false)]).len(), 1);
+        assert!(injector.keys.is_empty() && injector.repeat.is_none());
+        assert!(!HELD.lock().unwrap().contains_key(&(true, 0x45)));
+        assert_eq!(calls().len(), 3);
+    }
+
+    #[test]
+    fn touch_and_pen_keep_their_place_between_mouse_moves() {
+        let mut injector = recording();
+        // There is no display: touch and pen reach no one, but still split
+        // the pass so mouse input around them keeps its order.
+        let events = [
+            Event::Relative { x: 1, y: 0 },
+            Event::Touch {
+                event: 1,
+                id: 7,
+                x: 0.5,
+                y: 0.5,
+                pressure: 0.5,
+                major: 0.,
+                minor: 0.,
+                rotation: u16::MAX,
+            },
+            Event::Relative { x: 2, y: 0 },
+            Event::Pen {
+                event: 0,
+                tool: 1,
+                buttons: 0,
+                x: 0.5,
+                y: 0.5,
+                pressure: 0.,
+                rotation: u16::MAX,
+                tilt: u8::MAX,
+            },
+            Event::Relative { x: 3, y: 0 },
+        ];
+        assert!(injector.apply_all(&events).is_empty());
+        assert_eq!(
+            calls(),
+            [1, 2, 3].map(|x| described(&[Injector::mouse(x, 0, 0, MOUSEEVENTF_MOVE)]))
+        );
     }
 
     #[test]
