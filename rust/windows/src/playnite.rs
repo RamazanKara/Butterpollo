@@ -16,7 +16,7 @@ use std::{
 use windows::Win32::{
     Foundation::HANDLE,
     System::{
-        Pipes::{PeekNamedPipe, WaitNamedPipeW},
+        Pipes::{GetNamedPipeServerSessionId, PeekNamedPipe, WaitNamedPipeW},
         Registry::{HKEY_LOCAL_MACHINE, HKEY_USERS},
         RemoteDesktop::ProcessIdToSessionId,
         Threading::GetCurrentProcessId,
@@ -185,6 +185,16 @@ pub fn launch(
 fn handle(file: &File) -> HANDLE {
     HANDLE(file.as_raw_handle())
 }
+fn check_session(file: &File, current: u32) -> Result<()> {
+    let mut server_session = 0;
+    unsafe { GetNamedPipeServerSessionId(handle(file), &mut server_session)? };
+    if server_session != current {
+        bail!(
+            "Playnite plugin pipe belongs to Windows session {server_session}, but the host is in session {current}"
+        );
+    }
+    Ok(())
+}
 /// Bytes waiting in the pipe; an error once it is closed.
 fn available(file: &File) -> Result<u32> {
     let mut count = 0;
@@ -226,8 +236,14 @@ impl Pipe {
     /// Connect and introduce this side with `hello`. The plugin answers on
     /// its well-known pipe with the name of a private one.
     pub fn connect(hello: &serde_json::Value) -> Result<Self> {
-        let mut control =
-            open(PIPE, Duration::from_secs(2)).context("the Playnite plugin is not running")?;
+        Self::connect_to(PIPE, hello)
+    }
+    fn connect_to(control_name: &str, hello: &serde_json::Value) -> Result<Self> {
+        let current = session(unsafe { GetCurrentProcessId() })
+            .context("reading the host's Windows session")?;
+        let mut control = open(control_name, Duration::from_secs(2))
+            .context("the Playnite plugin is not running")?;
+        check_session(&control, current).context("checking the Playnite control pipe session")?;
         let deadline = Instant::now() + Duration::from_secs(2);
         while available(&control).context("reading the Playnite control pipe handshake")? < 80 {
             if Instant::now() > deadline {
@@ -257,6 +273,7 @@ impl Pipe {
             .context("acknowledging the Playnite pipe handshake")?;
         let file = open(&format!(r"\\.\pipe\{name}"), Duration::from_secs(5))
             .context("connecting to the Playnite private pipe")?;
+        check_session(&file, current).context("checking the Playnite private pipe session")?;
         drop(control);
         let file = Arc::new(Mutex::new(file));
         let (sender, lines) = mpsc::channel();
@@ -335,6 +352,138 @@ impl Drop for Pipe {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::windows::io::FromRawHandle;
+    use windows::{
+        Win32::{
+            Storage::FileSystem::PIPE_ACCESS_DUPLEX,
+            System::Pipes::{
+                ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, PIPE_NOWAIT,
+                PIPE_TYPE_BYTE,
+            },
+        },
+        core::PCWSTR,
+    };
+
+    fn server(name: &str) -> File {
+        let name: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+        let pipe = unsafe {
+            CreateNamedPipeW(
+                PCWSTR(name.as_ptr()),
+                PIPE_ACCESS_DUPLEX,
+                PIPE_TYPE_BYTE | PIPE_NOWAIT,
+                1,
+                4096,
+                4096,
+                0,
+                None,
+            )
+        };
+        assert!(!pipe.is_invalid());
+        let file = unsafe { File::from_raw_handle(pipe.0) };
+        unsafe {
+            let _ = ConnectNamedPipe(handle(&file), None);
+        }
+        file
+    }
+    fn accept(file: &File) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let mut pid = 0;
+            if unsafe { GetNamedPipeClientProcessId(handle(file), &mut pid) }.is_ok() {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "fake pipe client did not connect"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    fn read_line(file: &mut File) -> String {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut line = Vec::new();
+        loop {
+            if available(file).unwrap() > 0 {
+                let mut byte = [0];
+                file.read_exact(&mut byte).unwrap();
+                if byte[0] == b'\n' {
+                    return String::from_utf8(line).unwrap();
+                }
+                line.push(byte[0]);
+            } else {
+                assert!(Instant::now() < deadline, "fake pipe received no line");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+
+    #[test]
+    fn pipe_handshake_and_fragmented_unicode_status_match_the_packaged_plugin() {
+        let temp = tempfile::tempdir().unwrap();
+        let name = format!(
+            "BP-{}-{}",
+            std::process::id(),
+            temp.path().file_name().unwrap().to_string_lossy()
+        );
+        let control_name = format!(r"\\.\pipe\{name}-control");
+        let mut control = server(&control_name);
+        let mut data = server(&format!(r"\\.\pipe\{name}"));
+        let thread = std::thread::spawn(move || {
+            accept(&control);
+            let mut handshake = [0u8; 80];
+            for (i, unit) in name.encode_utf16().enumerate() {
+                handshake[i * 2..i * 2 + 2].copy_from_slice(&unit.to_le_bytes());
+            }
+            control.write_all(&handshake).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while available(&control).unwrap() == 0 {
+                assert!(Instant::now() < deadline, "fake pipe received no ACK");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let mut ack = [0];
+            control.read_exact(&mut ack).unwrap();
+            assert_eq!(ack, [2]);
+            accept(&data);
+            let hello: serde_json::Value = serde_json::from_str(&read_line(&mut data)).unwrap();
+            assert_eq!(hello["role"], "launcher");
+            let line = "\u{feff}{\"type\":\"status\",\"status\":{\"name\":\"gameStarted\",\"id\":\"game\",\"installDir\":\"C:/Çağrı/Oyun\"}}\r\n";
+            data.write_all(&line.as_bytes()[..2]).unwrap();
+            std::thread::sleep(Duration::from_millis(60));
+            data.write_all(&line.as_bytes()[2..]).unwrap();
+            assert_eq!(read_line(&mut data), "{\"done\":true}");
+        });
+        let pipe = Pipe::connect_to(
+            &control_name,
+            &serde_json::json!({"type":"hello","role":"launcher","pid":std::process::id()}),
+        )
+        .unwrap();
+        let message = pipe.lines.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(
+            matches!(butterpollo_core::playnite::parse(&message), butterpollo_core::playnite::Message::Status { install_dir, .. } if install_dir == "C:/Çağrı/Oyun")
+        );
+        pipe.send(&serde_json::json!({"done":true})).unwrap();
+        thread.join().unwrap();
+    }
+
+    #[test]
+    fn pipe_rejects_a_server_outside_the_expected_windows_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let name = format!(
+            r"\\.\pipe\BP-{}-{}",
+            std::process::id(),
+            temp.path().file_name().unwrap().to_string_lossy()
+        );
+        let _server = server(&name);
+        let client = open(&name, Duration::from_secs(1)).unwrap();
+        let current = session(std::process::id()).unwrap();
+        check_session(&client, current).unwrap();
+        let error = check_session(&client, current + 1).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Playnite plugin pipe belongs to Windows session")
+        );
+    }
 
     #[test]
     fn running_ignores_other_sessions_and_unreadable_processes() {
