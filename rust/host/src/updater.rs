@@ -366,14 +366,23 @@ async fn download(h: &Shared, id: &str, candidate: &Installer) -> Result<PathBuf
     let directory = h.directory.join("updates");
     std::fs::create_dir_all(&directory)?;
     butterpollo_windows::process::restrict_to_administrators(&directory)?;
-    // Keep failed transaction backups, but reclaim old/cancelled downloads.
-    // An in-flight cancelled download keeps its file open and cleans itself up.
+    // Reclaim old/cancelled downloads, and failed transaction backups but
+    // the newest two. An in-flight cancelled download keeps its file open
+    // and cleans itself up.
+    let mut transactions = Vec::new();
     for entry in std::fs::read_dir(&directory)?.flatten() {
-        if entry.file_type()?.is_dir()
-            && uuid::Uuid::parse_str(&entry.file_name().to_string_lossy()).is_ok()
-        {
-            let _ = std::fs::remove_dir_all(entry.path());
+        if !entry.file_type()?.is_dir() {
+            continue;
         }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if uuid::Uuid::parse_str(&name).is_ok() {
+            let _ = std::fs::remove_dir_all(entry.path());
+        } else {
+            transactions.push(name);
+        }
+    }
+    for name in stale_transactions(&transactions) {
+        let _ = std::fs::remove_dir_all(directory.join(name));
     }
     // UUID directories avoid partial downloads and overlapping cancellation races.
     let directory = directory.join(id);
@@ -384,6 +393,22 @@ async fn download(h: &Shared, id: &str, candidate: &Installer) -> Result<PathBuf
         let _ = std::fs::remove_dir_all(directory);
     }
     result
+}
+
+/// Setup's update folders (transaction-<process id>-<nanoseconds>, kept
+/// with their backup when an update fails) older than the newest two.
+/// Other names are left alone.
+fn stale_transactions(names: &[String]) -> Vec<&str> {
+    let mut dated: Vec<(u128, &str)> = names
+        .iter()
+        .filter_map(|name| {
+            let (process, time) = name.strip_prefix("transaction-")?.split_once('-')?;
+            process.parse::<u32>().ok()?;
+            Some((time.parse().ok()?, name.as_str()))
+        })
+        .collect();
+    dated.sort_unstable_by(|a, b| b.cmp(a));
+    dated.into_iter().skip(2).map(|(_, name)| name).collect()
 }
 
 async fn transfer(
@@ -608,6 +633,30 @@ mod tests {
             release["assets"][0][key] = value;
             assert!(installer(&release).is_err(), "{key}");
         }
+    }
+    #[test]
+    fn only_the_two_newest_update_transactions_are_kept() {
+        let names: Vec<String> = [
+            "transaction-9876-1700000000000000300",
+            "transaction-12-1700000000000000100",
+            "transaction-4-1700000000000000400",
+            "transaction-123456-1700000000000000200",
+            "transaction-x-1700000000000000000",
+            "transaction-5-",
+            "backup",
+        ]
+        .map(String::from)
+        .into();
+        let mut stale = stale_transactions(&names);
+        stale.sort_unstable();
+        assert_eq!(
+            stale,
+            [
+                "transaction-12-1700000000000000100",
+                "transaction-123456-1700000000000000200"
+            ]
+        );
+        assert!(stale_transactions(&names[..2]).is_empty());
     }
     #[test]
     fn truncated_or_changed_installer_is_rejected() {
