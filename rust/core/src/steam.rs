@@ -900,7 +900,29 @@ pub struct Tracker {
     pub tracked: BTreeMap<u32, u64>,
     checked: BTreeSet<(u32, u64)>,
     seen: bool,
+    /// Since when no tracked process is left, and how long that may last:
+    /// a game that restarts itself through Steam has none for a moment.
+    empty_since: Option<std::time::Instant>,
+    grace: std::time::Duration,
 }
+/// Children a game starts that are not the game: a browser it opens, a store
+/// client. Following them kept the app running after the game, and quitting
+/// the app closed them.
+const NOT_THE_GAME: &[&str] = &[
+    "chrome.exe",
+    "msedge.exe",
+    "firefox.exe",
+    "opera.exe",
+    "brave.exe",
+    "iexplore.exe",
+    "upc.exe",
+    "ubisoftconnect.exe",
+    "epicgameslauncher.exe",
+    "eadesktop.exe",
+    "battle.net.exe",
+    "galaxyclient.exe",
+    "werfault.exe",
+];
 const STEAM_PROCESSES: &[&str] = &[
     "steam.exe",
     "steamwebhelper.exe",
@@ -920,7 +942,14 @@ impl Tracker {
             tracked: BTreeMap::new(),
             checked: BTreeSet::new(),
             seen: false,
+            empty_since: None,
+            grace: std::time::Duration::from_secs(10),
         }
+    }
+    /// How long the game may have no process before it counts as exited.
+    pub fn with_exit_grace(mut self, grace: std::time::Duration) -> Self {
+        self.grace = grace;
+        self
     }
     /// Update from the current process list; `image` gives a process's full
     /// program path (asked once per new process).
@@ -942,7 +971,8 @@ impl Tracker {
                 {
                     continue;
                 }
-                let child = self.tracked.contains_key(&process.parent);
+                let child = self.tracked.contains_key(&process.parent)
+                    && !NOT_THE_GAME.contains(&process.name.to_ascii_lowercase().as_str());
                 let inside = !child && !self.checked.contains(&key) && {
                     self.checked.insert(key);
                     image(process.pid).is_some_and(|path| {
@@ -963,9 +993,15 @@ impl Tracker {
         }
         if !self.tracked.is_empty() {
             self.seen = true;
+            self.empty_since = None;
             Tracked::Running
         } else if self.seen {
-            Tracked::Exited
+            let since = *self.empty_since.get_or_insert_with(std::time::Instant::now);
+            if since.elapsed() >= self.grace {
+                Tracked::Exited
+            } else {
+                Tracked::Running
+            }
         } else if std::time::Instant::now() >= self.deadline {
             Tracked::Unknown
         } else {
@@ -1152,7 +1188,8 @@ mod tests {
             &before,
             "C:\\Games\\Portal",
             std::time::Duration::from_secs(15),
-        );
+        )
+        .with_exit_grace(std::time::Duration::ZERO);
         let images = |pid| match pid {
             3 => Some("c:\\games\\portal\\portal.exe".to_owned()),
             5 => Some("C:\\Games\\Portal2\\other.exe".to_owned()),
@@ -1169,5 +1206,42 @@ mod tests {
         assert_eq!(tracker.update(&launched, images), Tracked::Running);
         assert_eq!(tracker.tracked.keys().copied().collect::<Vec<_>>(), [3, 4]);
         assert_eq!(tracker.update(&before, images), Tracked::Exited);
+    }
+    #[test]
+    fn a_game_restarting_through_steam_and_a_browser_it_opens_do_not_end_or_extend_it() {
+        let process = |pid, parent, name: &str| Process {
+            pid,
+            parent,
+            started: u64::from(pid) * 10,
+            name: name.into(),
+        };
+        let before = [process(1, 0, "explorer.exe"), process(2, 1, "steam.exe")];
+        let images = |pid| match pid {
+            3 | 6 => Some("c:\\games\\portal\\portal.exe".to_owned()),
+            _ => None,
+        };
+        let mut tracker = Tracker::new(
+            &before,
+            "C:\\Games\\Portal",
+            std::time::Duration::from_secs(15),
+        );
+        let running = [
+            process(1, 0, "explorer.exe"),
+            process(2, 1, "steam.exe"),
+            process(3, 2, "portal.exe"),
+            process(4, 3, "chrome.exe"),
+        ];
+        assert_eq!(tracker.update(&running, images), Tracked::Running);
+        // The browser the game opened is not the game.
+        assert_eq!(tracker.tracked.keys().copied().collect::<Vec<_>>(), [3]);
+        // Restarting through Steam: no game process for a moment.
+        assert_eq!(tracker.update(&before, images), Tracked::Running);
+        let restarted = [
+            process(1, 0, "explorer.exe"),
+            process(2, 1, "steam.exe"),
+            process(6, 2, "portal.exe"),
+        ];
+        assert_eq!(tracker.update(&restarted, images), Tracked::Running);
+        assert_eq!(tracker.tracked.keys().copied().collect::<Vec<_>>(), [6]);
     }
 }
