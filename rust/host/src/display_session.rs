@@ -6,7 +6,7 @@ use butterpollo_core::{
     config::Config,
     framegen::{Policy, Rate},
     rtsp::Negotiated,
-    session::{Launch, Role},
+    session::{Launch, Role, Warnings},
 };
 use butterpollo_windows::{
     display::{Guard, Retained},
@@ -26,6 +26,115 @@ fn stream_mode(stream: &Negotiated) -> (u32, u32, u32, bool, bool) {
         stream.hdr,
         stream.vrr_low_latency,
     )
+}
+
+/// Resolution, refresh in millihertz and HDR a stream asked its display for.
+type RequestedMode = (Option<(u32, u32)>, Option<u32>, Option<bool>);
+/// Resolution, refresh in millihertz and HDR a display shows.
+type AppliedMode = (u32, u32, u32, bool);
+
+fn applied_mode(output: &str) -> Result<AppliedMode> {
+    let topology = butterpollo_windows::display::Topology::query()?;
+    let monitor = topology
+        .monitors()
+        .into_iter()
+        .find(|m| m.matches(output))
+        .context("selected display missing after preparation")?;
+    let mode = butterpollo_windows::display::mode(output)?;
+    let refresh = topology.refresh(&monitor.device_id)?;
+    Ok((
+        mode.dmPelsWidth,
+        mode.dmPelsHeight,
+        refresh.0,
+        monitor.hdr_enabled,
+    ))
+}
+
+/// What the display shows compared with the stream's request, on the card of
+/// the launch that uses the display now. A retained game display moves to
+/// the next launch, which sees the last finding at once.
+#[derive(Clone)]
+struct ModeReport(Arc<Mutex<ModeReportState>>);
+struct ModeReportState {
+    warnings: Arc<Warnings>,
+    requested: RequestedMode,
+    stream_rate: u32,
+    last: Option<std::result::Result<AppliedMode, String>>,
+}
+impl ModeReportState {
+    fn report(&self) {
+        match &self.last {
+            Some(Ok(actual)) => {
+                self.warnings.clear("display_verify");
+                butterpollo_core::display_policy::report_mode(
+                    &self.warnings,
+                    self.requested,
+                    *actual,
+                    self.stream_rate,
+                );
+            }
+            Some(Err(error)) => self.warnings.set("display_verify", format!("Could not verify the applied display mode ({error}); refresh and HDR may differ from the request. Check Windows display settings and reconnect.")),
+            None => {}
+        }
+    }
+}
+impl ModeReport {
+    fn new(warnings: Arc<Warnings>, requested: RequestedMode, stream_rate: u32) -> Self {
+        Self(Arc::new(Mutex::new(ModeReportState {
+            warnings,
+            requested,
+            stream_rate,
+            last: None,
+        })))
+    }
+    fn publish(&self, actual: Result<AppliedMode>) {
+        let mut state = self.0.lock().unwrap();
+        state.last = Some(actual.map_err(|error| format!("{error:#}")));
+        state.report();
+    }
+    fn attach(&self, warnings: Arc<Warnings>) {
+        let mut state = self.0.lock().unwrap();
+        state.warnings = warnings;
+        state.report();
+    }
+}
+
+/// A display recovery's steps after the heartbeat brought the display back.
+/// The layout and HDR profile are retried each second until they apply. The
+/// stream's mode is set once per recovery, after the layout: a mode Windows
+/// refuses is reported on the stream card, not retried against Windows.
+struct Recovery {
+    pending: bool,
+    due: std::time::Instant,
+    mode: bool,
+}
+impl Recovery {
+    fn new() -> Self {
+        Self {
+            pending: false,
+            due: std::time::Instant::now(),
+            mode: false,
+        }
+    }
+    fn start(&mut self, now: std::time::Instant) {
+        self.pending = true;
+        self.due = now;
+        self.mode = true;
+    }
+    /// Whether to run the steps now; a failed attempt waits a second.
+    fn due(&mut self, now: std::time::Instant) -> bool {
+        if self.pending && now >= self.due {
+            self.due = now + Duration::from_secs(1);
+            return true;
+        }
+        false
+    }
+    fn take_mode(&mut self) -> bool {
+        std::mem::take(&mut self.mode)
+    }
+    fn finish(&mut self) {
+        self.pending = false;
+    }
 }
 
 /// Only pending and connected streams own limiter changes. The retained game
@@ -58,6 +167,7 @@ pub struct Ready {
     target: CaptureTarget,
     mode: (u32, u32, u32, bool, bool),
     framegen: Policy,
+    mode_report: ModeReport,
     stop: Arc<AtomicBool>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
@@ -66,6 +176,7 @@ impl Ready {
         let target = CaptureTarget::new(prepared.capture_target());
         let mode = prepared.mode;
         let framegen = prepared.framegen.clone();
+        let mode_report = prepared.mode_report.clone();
         let state = Arc::new(Mutex::new(prepared));
         let stop = Arc::new(AtomicBool::new(false));
         let worker_state = state.clone();
@@ -93,6 +204,7 @@ impl Ready {
             target,
             mode,
             framegen,
+            mode_report,
             stop,
             worker: Some(worker),
         });
@@ -105,8 +217,10 @@ impl Ready {
         self: Arc<Self>,
         directory: &std::path::Path,
         config: &Config,
+        warnings: Arc<Warnings>,
     ) -> Result<StreamPreparation> {
         let limiter = limiter::Lease::acquire(directory, config, &self.framegen)?;
+        self.mode_report.attach(warnings);
         Ok(StreamPreparation {
             display: self,
             _limiter: limiter,
@@ -163,8 +277,8 @@ pub struct Prepared {
     _golden: Option<GoldenLease>,
     mode: (u32, u32, u32, bool, bool),
     revision: u64,
-    recovery_pending: bool,
-    recovery_due: std::time::Instant,
+    recovery: Recovery,
+    mode_report: ModeReport,
     recovery_scale: i64,
     recovery_dimensions: (u32, u32),
     recovery_profile: Option<String>,
@@ -183,11 +297,9 @@ impl Prepared {
         {
             self.output = display.output.clone();
             self.revision = self.revision.wrapping_add(1);
-            self.recovery_pending = true;
-            self.recovery_due = std::time::Instant::now();
+            self.recovery.start(std::time::Instant::now());
         }
-        if self.recovery_pending && std::time::Instant::now() >= self.recovery_due {
-            self.recovery_due = std::time::Instant::now() + Duration::from_secs(1);
+        if self.recovery.due(std::time::Instant::now()) {
             butterpollo_windows::display::virtual_scale(
                 &self.output,
                 self.recovery_scale,
@@ -209,11 +321,17 @@ impl Prepared {
                     .unwrap_or_default();
                 arrangement.reapply(&self.output, &retained)?;
             }
+            if self.recovery.take_mode() {
+                if let Some(display) = &self.display {
+                    display.apply_virtual_mode("after recovery layout");
+                }
+                self.mode_report.publish(applied_mode(&self.output));
+            }
             if let Some(profile) = &self.recovery_profile {
                 self._profile.take();
                 self._profile = Some(hdr_profile::Lease::acquire(&self.output, profile)?);
             }
-            self.recovery_pending = false;
+            self.recovery.finish();
         }
         Ok(())
     }
@@ -625,6 +743,10 @@ impl Prepared {
             }
             _ => None,
         };
+        if let Some(display) = &display {
+            // Applying the layout can recall the display's saved mode.
+            display.apply_virtual_mode("after layout");
+        }
         tracing::info!(
             client = %launch.client.name,
             client_virtual_display = ?client_virtual,
@@ -638,29 +760,14 @@ impl Prepared {
             limiter_enabled = framegen.enabled,
             "stream display selection"
         );
-        let actual = (|| -> Result<_> {
-            let topology = butterpollo_windows::display::Topology::query()?;
-            let monitor = topology
-                .monitors()
-                .into_iter()
-                .find(|m| m.matches(&output))
-                .context("selected display missing after preparation")?;
-            let mode = butterpollo_windows::display::mode(&output)?;
-            let refresh = topology.refresh(&monitor.device_id)?;
-            Ok((
-                mode.dmPelsWidth,
-                mode.dmPelsHeight,
-                refresh.0,
-                monitor.hdr_enabled,
-            ))
-        })();
-        match actual {
-            Ok(actual) => {
-                launch.warnings.clear("display_verify");
-                butterpollo_core::display_policy::report_mode(&launch.warnings, (request.resolution, request.refresh, request.hdr), actual, stream.fps_millihz())
-            }
-            Err(error) => launch.warnings.set("display_verify", format!("Could not verify the applied display mode ({error:#}); refresh and HDR may differ from the request. Check Windows display settings and reconnect.")),
-        }
+        // A virtual display is created for the stream at exactly this mode.
+        let requested = if virtual_mode {
+            (Some((width, height)), Some(rate.0), request.hdr)
+        } else {
+            (request.resolution, request.refresh, request.hdr)
+        };
+        let mode_report = ModeReport::new(launch.warnings.clone(), requested, stream.fps_millihz());
+        mode_report.publish(applied_mode(&output));
         let recovery_profile = if stream.hdr {
             launch
                 .client
@@ -689,8 +796,8 @@ impl Prepared {
                 _golden: golden,
                 mode: stream_mode(stream),
                 revision: 0,
-                recovery_pending: false,
-                recovery_due: std::time::Instant::now(),
+                recovery: Recovery::new(),
+                mode_report,
                 recovery_scale: config.integer("dd_virtual_display_scale", 0),
                 recovery_dimensions: (width, height),
                 recovery_profile,
@@ -824,6 +931,62 @@ mod tests {
         assert_ne!(stream_mode(&launch), stream_mode(&negotiated));
         launch.vrr_low_latency = true;
         assert_eq!(stream_mode(&launch), stream_mode(&negotiated));
+    }
+
+    fn codes(warnings: &Warnings) -> Vec<String> {
+        warnings.snapshot().into_iter().map(|w| w.code).collect()
+    }
+
+    #[test]
+    fn a_recovered_display_mode_is_reported_on_the_card_of_the_launch_using_it() {
+        let first = Arc::new(Warnings::default());
+        let report = ModeReport::new(
+            first.clone(),
+            (Some((3840, 2160)), Some(1_000_000), Some(true)),
+            116_000,
+        );
+        report.publish(Ok((3840, 2160, 1_000_000, true)));
+        assert!(codes(&first).is_empty());
+        // Windows switched the display back on at its saved 60 Hz mode and
+        // refused the stream's: the card says so, the stream continues.
+        report.publish(Ok((3840, 2160, 60_000, true)));
+        assert_eq!(codes(&first), ["display_refresh"]);
+        assert!(first.snapshot()[0].message.contains("60.000 Hz"));
+        // A resumed launch sees the current finding on its own card.
+        let second = Arc::new(Warnings::default());
+        report.attach(second.clone());
+        assert_eq!(codes(&second), ["display_refresh"]);
+        report.publish(Err(anyhow::anyhow!("display unavailable")));
+        assert_eq!(codes(&second), ["display_refresh", "display_verify"]);
+        report.publish(Ok((3840, 2160, 1_000_000, true)));
+        assert!(codes(&second).is_empty());
+        // Nothing found yet: attaching reports nothing.
+        let fresh = ModeReport::new(first.clone(), (None, None, None), 60_000);
+        let third = Arc::new(Warnings::default());
+        fresh.attach(third.clone());
+        assert!(codes(&third).is_empty());
+    }
+
+    #[test]
+    fn a_recovery_sets_the_mode_once_while_its_layout_is_retried() {
+        let now = std::time::Instant::now();
+        let mut recovery = Recovery::new();
+        assert!(!recovery.due(now));
+        assert!(!recovery.take_mode());
+        recovery.start(now);
+        assert!(recovery.due(now));
+        assert!(recovery.take_mode());
+        // The layout or HDR profile failed: retried a second later, but a
+        // refused mode is not requested from Windows again.
+        assert!(!recovery.due(now + Duration::from_millis(100)));
+        assert!(recovery.due(now + Duration::from_secs(1)));
+        assert!(!recovery.take_mode());
+        recovery.finish();
+        assert!(!recovery.due(now + Duration::from_secs(5)));
+        // The next recovery sets it again.
+        recovery.start(now + Duration::from_secs(6));
+        assert!(recovery.due(now + Duration::from_secs(6)));
+        assert!(recovery.take_mode());
     }
 
     #[test]

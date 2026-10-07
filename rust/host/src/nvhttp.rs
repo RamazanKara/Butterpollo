@@ -1075,7 +1075,7 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
                     if let Some(lease) = retained
                         && lease.matches(&stream)
                     {
-                        return lease.resume(&h.directory, &config);
+                        return lease.resume(&h.directory, &config, launch.warnings.clone());
                     }
                     h.app_display.lock().unwrap().remove(&launch.client.uuid);
                 }
