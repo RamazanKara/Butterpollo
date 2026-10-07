@@ -1,10 +1,16 @@
-# Butterpollo 2.0.0-rc.18 release candidate for Windows
+# Butterpollo 2.0.0-rc.19 release candidate for Windows
 
 [Documentation](../docs/README.md) · [Install and migrate](../docs/getting-started.md) · [Configuration](../docs/configuration.md) · [Compatibility](PARITY.md)
 
-**Release history:** [rc.18](#new-in-rc18) · [rc.17](#new-in-rc17) · [rc.16](#new-in-rc16) · [rc.15](#new-in-rc15) · [rc.14](#new-in-rc14) · [rc.13](#new-in-rc13) · [rc.12](#new-in-rc12) · [rc.11](#new-in-rc11) · [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
+**Release history:** [rc.19](#new-in-rc19) · [rc.18](#new-in-rc18) · [rc.17](#new-in-rc17) · [rc.16](#new-in-rc16) · [rc.15](#new-in-rc15) · [rc.14](#new-in-rc14) · [rc.13](#new-in-rc13) · [rc.12](#new-in-rc12) · [rc.11](#new-in-rc11) · [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
 
-Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.18 installer is named `butterpollo-setup-2.0.0-rc.18.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.19 installer is named `butterpollo-setup-2.0.0-rc.19.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+
+## New in rc.19
+
+- **Lower latency when the encoder cannot keep up.** At 4K with a high refresh rate, or on an RX 9070 XT with its single HEVC encoder, one encode can take longer than a frame. The host kept claiming new pictures anyway, and up to eight queued in the encoder, each older when it came out. It now waits while two are in the encoder, enough to keep both encoder instances of a Radeon busy. At 5120x1440 HEVC 240 fps on an RX 7900 XT, whose encoder manages 220 fps there, the time from the game's frame to the packet fell from 42.7 to 11.1 ms, at the same 220 fps. Streams the encoder keeps up with are unchanged.
+- **PyroWave converts colour on the Radeon compute queue.** Its conversion was the last one still running on the graphics queue, behind the game: beside a game using the whole GPU, a 1080p HDR 4:4:4 frame took 5.6-5.8 ms instead of 0.47 ms. It now runs on the same high-priority compute queue as the AMF path, at 0.54-0.57 ms beside that game, with identical output. At high bitrates PyroWave also starts sending up to 2 ms sooner, after a slow byte-by-byte check of every frame was made eight times faster.
+- **AMF no longer drops frames to stay on its bitrate.** Frame skipping was left to the driver; a skipped frame shows on a VRR client as a held picture. It is now off for H.264 and HEVC, as in Vibepollo.
 
 ## New in rc.18
 
@@ -237,8 +243,8 @@ Current automated validation: 263 ordinary tests passed, with 27 environment-dep
 
 ## Install
 
-- `butterpollo-setup-2.0.0-rc.18.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
-- For a portable copy, extract `butterpollo-rust-2.0.0-rc.18-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
+- `butterpollo-setup-2.0.0-rc.19.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
+- For a portable copy, extract `butterpollo-rust-2.0.0-rc.19-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
 - These are unsigned test builds. Keep a copy of your configuration and the previous installer for rollback.
 
 ## Lower latency
