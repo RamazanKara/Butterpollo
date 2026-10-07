@@ -13,6 +13,7 @@ Butterpollo's host, native helpers, service and setup are written in Rust, with 
 - **Touch, pen and absolute mouse land where you tap on a letterboxed stream.** When the PC's display has another shape than the client (a 16:9 PC on a 4:3 iPad), taps were off by up to a few hundred pixels and the bottom of the screen, taskbar included, could not be reached. Input now skips the black bars as the original host did.
 - **Password guessing over the network is limited.** Sign-ins sent with each request (Basic credentials) were not counted, so a device on the network could try passwords at full speed. They now share the login page's limit of 10 attempts a minute per address, this PC is never locked out, and a flood of addresses can no longer block sign-in.
 - Two crashes that ended every stream are fixed: a controller whose profile changed after it connected, and one malformed cover-image request.
+- **Settings that stopped the host are refused or worked around.** One bad value already in sunshine.conf no longer blocks every later save; a value the file would cut short (an unquoted `#`) or that would swallow the settings after it (an unclosed `[`) is refused with the key named; and a network interface name in place of an address, or a folder as the log file, no longer keeps the host and its console down.
 
 ## New in rc.15
 
