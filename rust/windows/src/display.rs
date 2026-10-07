@@ -1796,6 +1796,37 @@ fn renewed_lease(result: Result<()>) -> Result<bool> {
         Err(error) => Err(error),
     }
 }
+/// What a lease heartbeat does about the owned display.
+#[derive(Debug, PartialEq)]
+enum Heartbeat {
+    /// Leased and on the desktop.
+    Present,
+    /// Leased and connected, but Windows switched it off.
+    SwitchOn,
+    /// The driver no longer knows the lease.
+    Recreate,
+}
+/// Only the driver's missing-lease answer permits creating the display again.
+/// A failed renewal or topology query is retried at the next heartbeat: the
+/// driver refuses to create a display that still exists (ERROR_BUSY), and a
+/// lease that stays unrenewed expires and is then reported missing.
+fn heartbeat(
+    renewed: Result<bool>,
+    active: impl FnOnce() -> Result<bool>,
+    connected: impl FnOnce() -> Result<bool>,
+) -> Result<Heartbeat> {
+    if !renewed? {
+        return Ok(Heartbeat::Recreate);
+    }
+    if active()? {
+        return Ok(Heartbeat::Present);
+    }
+    anyhow::ensure!(
+        connected()?,
+        "owned virtual display is temporarily absent from Windows topology"
+    );
+    Ok(Heartbeat::SwitchOn)
+}
 impl VirtualDisplay {
     pub fn create(stable_id: &str, width: u32, height: u32, fps: u32) -> Result<Self> {
         Self::create_rate(
@@ -2007,25 +2038,33 @@ impl VirtualDisplay {
                     self.driver = driver;
                 }
             }
-            if renewed? {
-                let owned = self.hotplug_monitor()?;
-                let device_info = |header: &mut DISPLAYCONFIG_DEVICE_INFO_HEADER| unsafe {
-                    DisplayConfigGetDeviceInfo(header)
-                };
-                if Topology::query()?.shows(owned, device_info)? {
+            let device_info = |header: &mut DISPLAYCONFIG_DEVICE_INFO_HEADER| unsafe {
+                DisplayConfigGetDeviceInfo(header)
+            };
+            match heartbeat(
+                renewed,
+                || Topology::query()?.shows(self.hotplug_monitor()?, device_info),
+                || Topology::query_all()?.shows(self.hotplug_monitor()?, device_info),
+            )? {
+                Heartbeat::Present => return Ok(()),
+                Heartbeat::SwitchOn => {
+                    // A live lease can be switched off by a Windows layout
+                    // recall. Activate that same target; creating its ID again
+                    // returns BUSY.
+                    let owned = self.hotplug_monitor()?;
+                    activate_target(owned.adapter, owned.target)?
+                        .context("owned virtual display has no connected route yet")?;
+                    // Publish the change before the name lookup, which can lag
+                    // the switch. Once the display is on, later heartbeats find
+                    // it present, so a failed lookup must not leave the guard
+                    // unaware: it reapplies the stream's layout and HDR and
+                    // takes the display's new desktop name itself.
+                    self.generation = self.generation.wrapping_add(1);
+                    self.refresh_name()?;
+                    tracing::info!(output=%self.name, "owned virtual display reactivated");
                     return Ok(());
                 }
-                // A live lease can be switched off by a Windows layout recall.
-                // Activate that same target; creating its ID again returns BUSY.
-                anyhow::ensure!(
-                    Topology::query_all()?.shows(owned, device_info)?,
-                    "owned virtual display is temporarily absent from Windows topology"
-                );
-                activate_target(owned.adapter, owned.target)?;
-                self.refresh_name()?;
-                self.generation = self.generation.wrapping_add(1);
-                tracing::info!(output=%self.name, "owned virtual display reactivated");
-                return Ok(());
+                Heartbeat::Recreate => {}
             }
             // Only a confirmed missing lease permits creation. Retain the
             // stream's descriptor and identity, never a recalled desktop mode.
@@ -2545,6 +2584,9 @@ impl Guard {
                     .into_iter()
                     .find(|m| display.owns_monitor(m))
                     .context("recovered display unavailable")?;
+                // A display switched back on can have another desktop name,
+                // which the heartbeat's own lookup may not have caught.
+                display.name = chosen.display_name.clone();
                 let mut settings = SETTINGS.lock().unwrap();
                 if chosen.device_id != self.identity {
                     if let Some(old) = settings.get_mut(&self.identity) {
@@ -2873,6 +2915,61 @@ mod tests {
             ERROR_NOT_FOUND.0,
         ));
         assert!(!renewed_lease(Err(error.into())).unwrap());
+    }
+    #[test]
+    fn heartbeat_recreates_only_a_missing_lease_and_switches_on_a_display_windows_turned_off() {
+        let failure = |code: WIN32_ERROR| -> anyhow::Error {
+            windows::core::Error::from_hresult(windows::core::HRESULT::from_win32(code.0)).into()
+        };
+        let busy = || renewed_lease(Err(failure(ERROR_BUSY)));
+        let missing = || renewed_lease(Err(failure(ERROR_NOT_FOUND)));
+        // The log this guards against: the lease renewed, Windows had switched
+        // the display off, and a duplicate create returned ERROR_BUSY.
+        assert_eq!(
+            heartbeat(
+                Ok(true),
+                || Ok(true),
+                || panic!("present needs no full query")
+            )
+            .unwrap(),
+            Heartbeat::Present
+        );
+        assert_eq!(
+            heartbeat(Ok(true), || Ok(false), || Ok(true)).unwrap(),
+            Heartbeat::SwitchOn
+        );
+        // Not yet shown anywhere, or a query failed: retry, never create.
+        assert!(heartbeat(Ok(true), || Ok(false), || Ok(false)).is_err());
+        assert!(
+            heartbeat(
+                Ok(true),
+                || Err(failure(ERROR_BUSY)),
+                || panic!("no full query")
+            )
+            .is_err()
+        );
+        assert!(heartbeat(Ok(true), || Ok(false), || Err(failure(ERROR_BUSY))).is_err());
+        // A renewal failure other than a missing lease is retried as well,
+        // without touching the topology.
+        assert!(
+            heartbeat(
+                busy(),
+                || panic!("no topology query"),
+                || panic!("no topology query")
+            )
+            .is_err()
+        );
+        // A lease the driver no longer knows is a real loss: recreate at once,
+        // whatever Windows still lists.
+        assert_eq!(
+            heartbeat(
+                missing(),
+                || panic!("no topology query"),
+                || panic!("no topology query")
+            )
+            .unwrap(),
+            Heartbeat::Recreate
+        );
     }
     #[test]
     fn only_a_displays_sole_stream_changes_its_mode_or_hdr() {
