@@ -502,7 +502,8 @@ pub struct Injector {
     rect: Option<RECT>,
     policy: butterpollo_core::input_policy::Policy,
     key_flags: BTreeMap<u32, u8>,
-    /// Repeating key, its flags, the modifiers it adds and when it repeats.
+    /// Repeating key, its flags, the modifiers pressed around it at key-down
+    /// and when it repeats.
     repeat: Option<(u32, u8, u8, std::time::Instant)>,
     scroll: [i32; 2],
     haptics: bool,
@@ -1068,9 +1069,15 @@ impl Injector {
             && now >= due
         {
             self.repeat = Some((key, flags, modifiers, now + self.policy.repeat_period));
-            keep(Self::send(
-                &self.with_modifiers(self.key_scan(key, true, flags), modifiers),
-            ));
+            let inputs = Self::repeat_inputs(
+                key,
+                flags,
+                modifiers,
+                &self.keys,
+                &HELD.lock().unwrap(),
+                self.policy.always_send_scancodes,
+            );
+            keep(Self::send(&inputs));
         }
         // A game can change its display's resolution or position mid-stream,
         // and the stream's display can appear after input began.
@@ -1263,7 +1270,11 @@ impl Injector {
                     let mut held = HELD.lock().unwrap();
                     let count = held.get(&(true, key)).copied().unwrap_or(0);
                     let sent = if count == 0 {
-                        Self::send(&self.with_modifiers(self.key_scan(key, true, flags), modifiers))
+                        Self::send(&Self::with_modifiers(
+                            self.key_scan(key, true, flags),
+                            modifiers,
+                            self.policy.always_send_scancodes,
+                        ))
                     } else {
                         Ok(())
                     };
@@ -1350,25 +1361,10 @@ impl Injector {
     /// Modifiers in a key-down packet that neither this client nor another
     /// holds as keys (Moonlight reports Shift/Ctrl/Alt both ways).
     fn synthetic_modifiers(&self, key: u32, reported: u8) -> u8 {
-        if is_modifier(key) {
-            return 0;
-        }
-        let held = HELD.lock().unwrap();
-        let pressed = |keys: [u32; 3]| modifier_held(&self.keys, &held, keys);
-        let mut synthetic = 0;
-        for (mask, keys) in [
-            (MODIFIER_SHIFT, [0x10, 0xa0, 0xa1]),
-            (MODIFIER_CTRL, [0x11, 0xa2, 0xa3]),
-            (MODIFIER_ALT, [0x12, 0xa4, 0xa5]),
-        ] {
-            if reported & mask != 0 && !pressed(keys) {
-                synthetic |= mask;
-            }
-        }
-        synthetic
+        unheld_modifiers(key, reported, &self.keys, &HELD.lock().unwrap())
     }
     /// The key's input surrounded by temporary presses of `modifiers`.
-    fn with_modifiers(&self, key: INPUT, modifiers: u8) -> Vec<INPUT> {
+    fn with_modifiers(key: INPUT, modifiers: u8, always_send_scancodes: bool) -> Vec<INPUT> {
         let generic = [
             (MODIFIER_SHIFT, 0x10),
             (MODIFIER_CTRL, 0x11),
@@ -1377,16 +1373,33 @@ impl Injector {
         let mut inputs = Vec::with_capacity(7);
         for (mask, vk) in generic {
             if modifiers & mask != 0 {
-                inputs.push(self.key_scan(vk, true, 0));
+                inputs.push(Self::keyboard_input(vk, true, 0, always_send_scancodes));
             }
         }
         inputs.push(key);
         for (mask, vk) in generic.iter().rev() {
             if modifiers & mask != 0 {
-                inputs.push(self.key_scan(*vk, false, 0));
+                inputs.push(Self::keyboard_input(*vk, false, 0, always_send_scancodes));
             }
         }
         inputs
+    }
+    /// One repeat of a held key. The modifiers pressed around it at key-down
+    /// are pressed again only while still no client holds them: the repeat
+    /// must not release a Shift the user pressed since.
+    fn repeat_inputs(
+        key: u32,
+        flags: u8,
+        modifiers: u8,
+        keys: &BTreeSet<u32>,
+        held: &BTreeMap<(bool, u32), usize>,
+        always_send_scancodes: bool,
+    ) -> Vec<INPUT> {
+        Self::with_modifiers(
+            Self::keyboard_input(key, true, flags, always_send_scancodes),
+            unheld_modifiers(key, modifiers, keys, held),
+            always_send_scancodes,
+        )
     }
     fn held(keyboard: bool, id: u32, down: bool, owned: bool, input: INPUT) -> Result<()> {
         Self::update_held(
@@ -1517,6 +1530,29 @@ fn modifier_held(
         || held
             .keys()
             .any(|(keyboard, key)| *keyboard && alternatives.contains(&(key & 0xffff)))
+}
+/// The Shift, Ctrl and Alt of `modifiers` that no client holds as keys, to
+/// press around `key`; none around a modifier.
+fn unheld_modifiers(
+    key: u32,
+    modifiers: u8,
+    keys: &BTreeSet<u32>,
+    held: &BTreeMap<(bool, u32), usize>,
+) -> u8 {
+    if is_modifier(key) {
+        return 0;
+    }
+    let mut synthetic = 0;
+    for (mask, alternatives) in [
+        (MODIFIER_SHIFT, [0x10, 0xa0, 0xa1]),
+        (MODIFIER_CTRL, [0x11, 0xa2, 0xa3]),
+        (MODIFIER_ALT, [0x12, 0xa4, 0xa5]),
+    ] {
+        if modifiers & mask != 0 && !modifier_held(keys, held, alternatives) {
+            synthetic |= mask;
+        }
+    }
+    synthetic
 }
 impl Drop for Injector {
     fn drop(&mut self) {
@@ -1897,6 +1933,74 @@ mod tests {
             repeats += usize::from(refresh_due(&mut pen, now));
         }
         assert_eq!(repeats, 3);
+    }
+
+    #[test]
+    fn a_key_repeat_does_not_release_a_shift_pressed_after_the_key() {
+        let a = keyboard_identity(0x41, 0);
+        let mut keys = BTreeSet::from([a]);
+        let held = BTreeMap::from([((true, a), 1)]);
+        // `a` went down with Moonlight's Shift flag and no Shift key held:
+        // Shift is pressed around it.
+        let modifiers = unheld_modifiers(a, MODIFIER_SHIFT, &keys, &held);
+        assert_eq!(modifiers, MODIFIER_SHIFT);
+        let sent = |inputs: Vec<INPUT>| -> Vec<_> {
+            inputs
+                .iter()
+                .map(|input| unsafe { (input.Anonymous.ki.wScan, input.Anonymous.ki.dwFlags) })
+                .collect()
+        };
+        let (shift, key) = (
+            u16::from(crate::keylayout::SCANCODES[0x10]),
+            u16::from(crate::keylayout::SCANCODES[0x41]),
+        );
+        assert_eq!(
+            sent(Injector::repeat_inputs(
+                a, 0, modifiers, &keys, &held, false
+            )),
+            [
+                (shift, KEYEVENTF_SCANCODE),
+                (key, KEYEVENTF_SCANCODE),
+                (shift, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP),
+            ]
+        );
+        // The user then holds the real left Shift: a repeat that released it
+        // would let go of the user's Shift while it is still down.
+        keys.insert(0xa0);
+        let repeat = sent(Injector::repeat_inputs(
+            a, 0, modifiers, &keys, &held, false,
+        ));
+        assert_eq!(repeat, [(key, KEYEVENTF_SCANCODE)]);
+        assert!(
+            repeat
+                .iter()
+                .all(|(_, flags)| *flags & KEYEVENTF_KEYUP == KEYBD_EVENT_FLAGS(0))
+        );
+        // A Shift another client holds counts too.
+        let shared = BTreeMap::from([((true, a), 1), ((true, 0xa1), 1)]);
+        assert_eq!(
+            sent(Injector::repeat_inputs(
+                a,
+                0,
+                modifiers,
+                &BTreeSet::from([a]),
+                &shared,
+                false
+            )),
+            [(key, KEYEVENTF_SCANCODE)]
+        );
+        // A modifier that was really held at key-down is not added later.
+        assert_eq!(
+            sent(Injector::repeat_inputs(
+                a,
+                0,
+                0,
+                &BTreeSet::from([a]),
+                &held,
+                false
+            )),
+            [(key, KEYEVENTF_SCANCODE)]
+        );
     }
 
     #[test]
