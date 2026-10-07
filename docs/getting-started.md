@@ -65,6 +65,8 @@ If pairing succeeds but launching is denied, check the device's enabled state an
 
 Standard Moonlight supports H.264, HEVC and AV1. The exact Moonlight PC 6.2.0 application has recorded codec, reconnect and AMD AV1 crop checks; the [compatibility matrix](../rust/PARITY.md) gives their scope. PyroWave uses a separate codec path and needs substantially more bandwidth; its client can calibrate the connection before streaming.
 
+Moonlight's **YUV 4:4:4** option needs an encoder that produces 4:4:4. AMD Radeon GPUs encode H.264, HEVC and AV1 in 4:2:0 only, the RX 9000 series included, so with an AMD host Moonlight streams 4:2:0; Moonlight PC warns that the host doesn't support YUV 4:4:4. On AMD, PyroWave is the way to get full-resolution chroma, in SDR and in 10-bit HDR. Native NVENC streams 4:4:4 on NVIDIA GPUs that support it.
+
 For HDR, enable HDR in the client and confirm that the **streamed display** supports and enables HDR in Windows. In **Settings → HDR**, **Display HDR: Match the stream** and **HDR request: Follow the device** are the normal starting choices. A forced display HDR setting does not change an SDR stream into an HDR stream. Enable the game's own HDR mode when available.
 
 The Overview stream card shows the negotiated codec and an **HDR** badge. Check the picture on the actual client display as well. The published native HDR tests verify captured and decoded pixels; they do not calibrate a TV or establish every client's HDR rendering. See [HDR troubleshooting](troubleshooting.md#hdr-looks-washed-out-too-bright-or-different-between-clients).

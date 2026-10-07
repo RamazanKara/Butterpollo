@@ -38,7 +38,7 @@ These are defaults for **unset** keys, not a list of values you must copy into a
 
 The installed service runs WGC through a helper in the signed-in user's session. WGC can fall back to DDX when unavailable. Selecting a particular capture method is useful when investigating a problem; check **Logs** to see which path actually opened.
 
-H.264, HEVC and AV1 depend on the encoder and client. For `hevc_mode` and `av1_mode`, the choices are `0` Automatic, `1` Off, `2` SDR only and `3` SDR and HDR. Restart after changing advertised codec support.
+H.264, HEVC and AV1 depend on the encoder and client. For `hevc_mode` and `av1_mode`, the choices are `0` Automatic, `1` Off, `2` SDR only and `3` SDR and HDR. Restart after changing advertised codec support. There is no 4:4:4 switch: the host offers 4:4:4 for a codec only when the startup check encodes it on a hardware encoder. AMD's encoder makes 4:2:0 only, so an AMD host offers 4:4:4 through PyroWave alone.
 
 For **native HDR**, enable HDR in the client and use an HDR-capable display and encoder path. Leave **Display HDR** on Automatic so Butterpollo can set the source display appropriately. **10-bit SDR instead of HDR** (`prefer_sdr_10bit`, default `false`) deliberately keeps the stream in SDR; leave it off when you want HDR. RTX HDR is a separate SDR-to-HDR conversion feature, with its own hardware requirements.
 
