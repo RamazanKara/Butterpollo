@@ -180,6 +180,32 @@ pub fn letterbox(source: (u32, u32), target: (u32, u32)) -> (u32, u32, u32, u32)
     let (w, h) = (even(w, target.0), even(h, target.1));
     (((target.0 - w) / 2) & !1, ((target.1 - h) / 2) & !1, w, h)
 }
+/// Where the display's picture sits in the stream, or None when it fills the
+/// stream: a display of another shape is letterboxed (see `letterbox`).
+pub fn picture(display: (u32, u32), stream: (u32, u32)) -> Option<(u32, u32, u32, u32)> {
+    if stream.0 == 0 || stream.1 == 0 {
+        return None;
+    }
+    let picture = letterbox(display, stream);
+    (picture != (0, 0, stream.0, stream.1)).then_some(picture)
+}
+/// A point the client gives as fractions of the whole stream, black bars
+/// included, as fractions of the picture, that is of the display. A point on
+/// a bar moves to the picture's edge.
+pub fn stream_to_picture(
+    point: (f64, f64),
+    stream: (u32, u32),
+    picture: (u32, u32, u32, u32),
+) -> (f64, f64) {
+    let map = |value: f64, total: u32, offset: u32, size: u32| {
+        ((value.clamp(0., 1.) * f64::from(total) - f64::from(offset)) / f64::from(size.max(1)))
+            .clamp(0., 1.)
+    };
+    (
+        map(point.0, stream.0, picture.0, picture.2),
+        map(point.1, stream.1, picture.1, picture.3),
+    )
+}
 /// A device's own display mode, `WIDTHxHEIGHTxREFRESH` (refresh in Hz, up to
 /// three decimals, e.g. `1920x1080x59.94`).
 pub fn parse_display_mode(text: &str) -> Option<(u32, u32, crate::framegen::Rate)> {
@@ -353,6 +379,22 @@ mod tests {
         // Within a pixel of the stream's shape fills it.
         assert_eq!(letterbox((1921, 1080), (1920, 1080)), (0, 0, 1920, 1080));
         assert_eq!(letterbox((0, 0), (1920, 1080)), (0, 0, 1920, 1080));
+    }
+    #[test]
+    fn touch_on_a_letterboxed_stream_lands_on_the_picture_not_the_bars() {
+        // A 16:9 display on a 4:3 iPad stream: bars above and below.
+        let ipad = picture((2560, 1440), (2732, 2048)).unwrap();
+        assert_eq!(ipad, (0, 256, 2732, 1536));
+        let at = |x: f64, y: f64| stream_to_picture((x, y), (2732, 2048), ipad);
+        assert_eq!(at(0., 256. / 2048.), (0., 0.));
+        assert_eq!(at(1., 1792. / 2048.), (1., 1.));
+        assert_eq!(at(0.5, 0.5), (0.5, 0.5));
+        // On a bar: the picture's edge.
+        assert_eq!(at(0.25, 0.), (0.25, 0.));
+        assert_eq!(at(0.25, 1.), (0.25, 1.));
+        // A display of the stream's shape fills it: nothing to map.
+        assert_eq!(picture((3840, 2160), (1920, 1080)), None);
+        assert_eq!(picture((1920, 1080), (0, 0)), None);
     }
     #[test]
     fn device_display_modes_parse_like_vibepollo() {

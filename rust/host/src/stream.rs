@@ -1764,7 +1764,10 @@ impl Media {
                             c.get("gamepad", "auto"),
                             &c,
                         ) {
-                            Ok(i) => p.injector = Some(i),
+                            Ok(mut i) => {
+                                i.set_stream_size(s.config.width, s.config.height);
+                                p.injector = Some(i);
+                            }
                             Err(e) => tracing::warn!(error=%e,"input initialization failed"),
                         }
                     }

@@ -496,6 +496,9 @@ pub struct Injector {
     haptics: bool,
     /// The display absolute input maps onto, and when its rectangle was read.
     output: String,
+    /// The stream's size: clients place absolute input on the whole stream,
+    /// including the bars around a display of another shape.
+    stream: Option<(u32, u32)>,
     rect_read: std::time::Instant,
     /// When to try the virtual gamepad driver again after it failed to open.
     gamepad_retry: Option<std::time::Instant>,
@@ -540,6 +543,9 @@ fn current_rect(name: &str) -> Option<RECT> {
         bottom: position.y + mode.dmPelsHeight as i32,
     })
 }
+/// A width and height, and a rectangle (left, top, width, height) in it.
+type Size = (u32, u32);
+type Picture = (u32, u32, u32, u32);
 impl Injector {
     pub fn new(output: &str, profile: &str) -> Result<Self> {
         Self::new_options(
@@ -582,11 +588,40 @@ impl Injector {
             haptics: true,
             rect,
             output: output.to_owned(),
+            stream: None,
             rect_read: std::time::Instant::now(),
             gamepad_retry: None,
             absolute: false,
             left_release: None,
         })
+    }
+    /// The stream's size, so absolute input skips the bars around a display of
+    /// another shape, as the encoder adds them.
+    pub fn set_stream_size(&mut self, width: u32, height: u32) {
+        self.stream = (width > 0 && height > 0).then_some((width, height));
+    }
+    /// Where the display's picture sits in the stream, when it does not fill it.
+    fn picture(&self) -> Option<(Size, Picture)> {
+        let stream = self.stream?;
+        let display = (
+            u32::try_from(self.rect.right - self.rect.left).ok()?,
+            u32::try_from(self.rect.bottom - self.rect.top).ok()?,
+        );
+        butterpollo_core::display_policy::picture(display, stream).map(|picture| (stream, picture))
+    }
+    /// A point on the stream as fractions of the display.
+    fn on_display(&self, x: f32, y: f32) -> (f32, f32) {
+        match self.picture() {
+            Some((stream, picture)) => {
+                let (x, y) = butterpollo_core::display_policy::stream_to_picture(
+                    (f64::from(x), f64::from(y)),
+                    stream,
+                    picture,
+                );
+                (x as f32, y as f32)
+            }
+            None => (x, y),
+        }
     }
     /// Map absolute input onto `output` from now on: the stream's display can
     /// be created, recreated or renamed after input began.
@@ -704,6 +739,7 @@ impl Injector {
         )
     }
     fn location(&self, x: f32, y: f32) -> POINT {
+        let (x, y) = self.on_display(x, y);
         POINT {
             x: self.rect.left
                 + ((self.rect.right - self.rect.left - 1).max(0) as f32 * x.clamp(0., 1.)) as i32,
@@ -796,10 +832,19 @@ impl Injector {
                         } else {
                             f32::from(rotation).to_radians()
                         };
+                        // The contact's size is given on the stream too.
+                        let (scale_x, scale_y) = self.picture().map_or((1., 1.), |(stream, p)| {
+                            (
+                                stream.0 as f32 / p.2.max(1) as f32,
+                                stream.1 as f32 / p.3.max(1) as f32,
+                            )
+                        });
                         let width = ((angle.cos().abs() * major + angle.sin().abs() * minor)
+                            * scale_x
                             * (self.rect.right - self.rect.left) as f32)
                             .max(1.);
                         let height = ((angle.sin().abs() * major + angle.cos().abs() * minor)
+                            * scale_y
                             * (self.rect.bottom - self.rect.top) as f32)
                             .max(1.);
                         let center = p.pointerInfo.ptPixelLocation;
@@ -998,14 +1043,31 @@ impl Injector {
                 // The client's far edge is the display's last pixel, not the
                 // first pixel of its neighbour.
                 let (width, height) = (i64::from(*width).max(1), i64::from(*height).max(1));
-                let px = self.rect.left
-                    + (i64::from(*x).clamp(0, width)
-                        * i64::from((self.rect.right - self.rect.left - 1).max(0))
-                        / width) as i32;
-                let py = self.rect.top
-                    + (i64::from(*y).clamp(0, height)
-                        * i64::from((self.rect.bottom - self.rect.top - 1).max(0))
-                        / height) as i32;
+                let (span_x, span_y) = (
+                    i64::from((self.rect.right - self.rect.left - 1).max(0)),
+                    i64::from((self.rect.bottom - self.rect.top - 1).max(0)),
+                );
+                let (px, py) = match self.picture() {
+                    // The client's size is the stream's picture with its bars.
+                    Some((stream, picture)) => {
+                        let (fx, fy) = butterpollo_core::display_policy::stream_to_picture(
+                            (
+                                i64::from(*x).clamp(0, width) as f64 / width as f64,
+                                i64::from(*y).clamp(0, height) as f64 / height as f64,
+                            ),
+                            stream,
+                            picture,
+                        );
+                        (
+                            self.rect.left + (fx * span_x as f64) as i32,
+                            self.rect.top + (fy * span_y as f64) as i32,
+                        )
+                    }
+                    None => (
+                        self.rect.left + (i64::from(*x).clamp(0, width) * span_x / width) as i32,
+                        self.rect.top + (i64::from(*y).clamp(0, height) * span_y / height) as i32,
+                    ),
+                };
                 Self::send(&[Self::mouse(
                     ((i64::from(px - left) * 65535) / i64::from((w - 1).max(1))) as i32,
                     ((i64::from(py - top) * 65535) / i64::from((h - 1).max(1))) as i32,
