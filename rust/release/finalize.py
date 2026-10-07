@@ -1,7 +1,7 @@
 """Record the end-to-end, protocol, self-test, install and CI results in a
 packaged release and write its SHA256SUMS.
 
-usage: finalize.py --out DIR --work DIR --changes FILE [--ci FILE] [--scope TEXT] [--installed]
+usage: finalize.py --out DIR --work DIR --changes FILE [--ci FILE] [--scope TEXT] [--installed] [--skipped CASE ...]
 """
 import argparse, hashlib, json, pathlib
 
@@ -12,6 +12,8 @@ parser.add_argument('--changes', required=True, type=pathlib.Path)
 parser.add_argument('--ci', type=pathlib.Path, help='gh run list --json status,conclusion,url,headSha output')
 parser.add_argument('--scope', default='')
 parser.add_argument('--installed', action='store_true')
+# Stream cases left out on purpose (release.ps1 -SkipStreams); recorded, never silent.
+parser.add_argument('--skipped', action='append', default=[])
 args = parser.parse_args()
 out, work = args.out, args.work
 
@@ -29,8 +31,11 @@ for asset in validation['assets']:
 results = sorted(work.glob('e2e-*/result.json'))
 streams = [json.loads(p.read_text()) for p in results if not p.parent.name.endswith('-failed')]
 assert streams and all(s['passed'] for s in streams), 'an end-to-end stream failed'
-assert {('h264', False), ('hevc', False), ('av1', False), ('hevc', True), ('pyrowave', False), ('pyrowave-hdr-444', False)} <= {(s['codec'], s.get('vrr', False)) for s in streams}, 'the fixed-rate, VRR or PyroWave release matrix is incomplete'
-assert {'pyrowave', 'pyrowave-hdr-444'} <= {s['codec'] for s in streams if s.get('mode') == '1920x1080x60' and not s.get('vrr', False)}, '1080p60 SDR and HDR PyroWave results are required'
+skipped = set(args.skipped)
+required = {('h264', False), ('hevc', False), ('av1', False), ('hevc', True), ('pyrowave', False), ('pyrowave-hdr-444', False)}
+required -= {(case.removesuffix('-vrr'), case.endswith('-vrr')) for case in skipped}
+assert required <= {(s['codec'], s.get('vrr', False)) for s in streams}, 'the fixed-rate, VRR or PyroWave release matrix is incomplete'
+assert ({'pyrowave', 'pyrowave-hdr-444'} - skipped) <= {s['codec'] for s in streams if s.get('mode') == '1920x1080x60' and not s.get('vrr', False)}, '1080p60 SDR and HDR PyroWave results are required'
 assert all(s.get('audio_continuous') == 1 and s.get('motion_coverage', 0) >= .95 for s in streams), 'real audio and motion measurements are required'
 # A stream that failed once and passed when run again is recorded with both runs.
 for failed in (json.loads(p.read_text()) for p in results if p.parent.name.endswith('-failed')):
@@ -42,7 +47,7 @@ validation['end_to_end'] = dict(
     scope='Packaged host with an isolated profile; the independent moonlight-common-c client pairs over loopback '
           'with a PIN, launches over encrypted RTSP and decodes video and audio. WGC capture of the physical '
           'desktop; no virtual display, display-mode or HDR change.',
-    streams=streams, protocol_checks=protocol['checks'])
+    streams=streams, protocol_checks=protocol['checks'], skipped_streams=sorted(skipped))
 
 ci = json.loads(args.ci.read_text(encoding='utf-8-sig') or 'null') if args.ci else None
 if ci:

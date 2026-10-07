@@ -39,6 +39,9 @@ param(
     [string] $Settings = (Join-Path $Work 'settings.ps1'),
     [string] $Notes,
     [string] $Scope,
+    # Stream cases to leave out, e.g. 'pyrowave','pyrowave-hdr-444' when a
+    # shared machine cannot sustain them; recorded in VALIDATION.json.
+    [string[]] $SkipStreams = @(),
     [switch] $NoInstall,
     [switch] $NoPublish
 )
@@ -165,6 +168,7 @@ Step "package from $previous"
 $package = "$out\butterpollo-rust-release"
 
 foreach ($case in 'h264', 'hevc', 'av1', 'hevc-vrr', 'pyrowave', 'pyrowave-hdr-444') {
+    if ($SkipStreams -contains $case) { Write-Warning "stream $case skipped (-SkipStreams); recorded in VALIDATION.json"; continue }
     $codec = $case -replace '-vrr$'
     $stream = @('--package', $package, '--work', $run, '--client', $client, '--codec', $codec, '--seconds', '30')
     if ($case.EndsWith('-vrr')) { $stream += '--vrr' }
@@ -276,6 +280,7 @@ if (-not $Scope) {
 }
 $finalize = @('--out', $out, '--work', $run, '--changes', "$run\changes.txt", '--ci', "$run\ci.json", '--scope', $Scope)
 if (-not $NoInstall) { $finalize += '--installed' }
+foreach ($skip in $SkipStreams) { $finalize += @('--skipped', $skip) }
 & $python "$tools\finalize.py" @finalize
 
 if (-not $Notes) {
