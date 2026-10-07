@@ -4,6 +4,7 @@ use butterpollo_core::input_policy::{VHF_AUTO, VIGEM_DS4, VIGEM_X360, gamepad_pr
 use std::{
     collections::{BTreeMap, BTreeSet},
     mem::size_of,
+    time::{Duration, Instant},
 };
 use windows::{
     Win32::{
@@ -87,6 +88,12 @@ pub struct Gamepads {
     unsupported_touchpads: BTreeSet<u8>,
     /// The last feedback report forwarded for each controller.
     last_feedback: BTreeMap<u16, (u16, Vec<u8>)>,
+    feedback_failures: BTreeMap<u16, FeedbackFailure>,
+}
+#[derive(Default)]
+struct FeedbackFailure {
+    unreported: u64,
+    reported: Option<Instant>,
 }
 static SLOTS: std::sync::Mutex<[bool; 16]> = std::sync::Mutex::new([false; 16]);
 static HELD: std::sync::Mutex<BTreeMap<(bool, u32), usize>> =
@@ -140,6 +147,7 @@ impl Gamepads {
             pointers: BTreeMap::new(),
             unsupported_touchpads: BTreeSet::new(),
             last_feedback: BTreeMap::new(),
+            feedback_failures: BTreeMap::new(),
         })
     }
     fn ensure(&mut self, id: u16) -> Result<()> {
@@ -160,6 +168,7 @@ impl Gamepads {
             self.active.remove(&id);
             self.profiles.remove(&id);
             self.last_feedback.remove(&id);
+            self.feedback_failures.remove(&id);
             self.pointers.retain(|(pad, _), _| u16::from(*pad) != id);
             SLOTS.lock().unwrap()[global as usize] = false;
         }
@@ -222,6 +231,7 @@ impl Gamepads {
                         self.arrivals.remove(&i);
                         self.states.remove(&i);
                         self.last_feedback.remove(&i);
+                        self.feedback_failures.remove(&i);
                         self.pointers.retain(|(id, _), _| u16::from(*id) != i);
                         self.unsupported_touchpads.remove(&(i as u8));
                         SLOTS.lock().unwrap()[global as usize] = false;
@@ -300,20 +310,15 @@ impl Gamepads {
     /// New feedback (rumble, lights, trigger effects) for each controller.
     /// A controller with nothing pending or a failed poll does not hide the
     /// others' feedback, and a repeated report is not sent again.
-    pub fn feedback(&mut self) -> Result<Vec<(u16, u16, Vec<u8>)>> {
-        let mut output = vec![];
-        for (id, global) in self.active.clone() {
-            let Ok(Some(report)) = self.backend.feedback(u32::from(global)) else {
-                continue;
-            };
-            if self.last_feedback.get(&id) != Some(&report) {
-                self.last_feedback.insert(id, report.clone());
-                output.push((id, report.0, report.1));
-            }
-        }
-        self.last_feedback
-            .retain(|id, _| self.active.contains_key(id));
-        Ok(output)
+    pub fn feedback(&mut self) -> Vec<(u16, u16, Vec<u8>)> {
+        poll_feedback(
+            &self.active,
+            &mut self.last_feedback,
+            &mut self.feedback_failures,
+            self.backend.name(),
+            Instant::now(),
+            |slot| self.backend.feedback(slot),
+        )
     }
     fn submit(
         &mut self,
@@ -361,6 +366,44 @@ impl Gamepads {
     pub fn motion_supported(&self, id: u16) -> bool {
         matches!(self.profiles.get(&id).copied(), Some(5..=7 | VIGEM_DS4))
     }
+}
+fn poll_feedback(
+    active: &BTreeMap<u16, u16>,
+    last: &mut BTreeMap<u16, (u16, Vec<u8>)>,
+    failures: &mut BTreeMap<u16, FeedbackFailure>,
+    backend: &str,
+    now: Instant,
+    mut poll: impl FnMut(u32) -> Result<Option<(u16, Vec<u8>)>>,
+) -> Vec<(u16, u16, Vec<u8>)> {
+    let mut output = vec![];
+    for (&id, &global) in active {
+        let report = match poll(u32::from(global)) {
+            Ok(Some(report)) => report,
+            Ok(None) => continue,
+            Err(error) => {
+                let failure = failures.entry(id).or_default();
+                failure.unreported += 1;
+                if failure
+                    .reported
+                    .is_none_or(|at| now.duration_since(at) >= Duration::from_secs(5))
+                {
+                    tracing::warn!(controller = id, slot = global, backend, failures = failure.unreported, error = %format!("{error:#}"), "controller feedback poll failed");
+                    failure.unreported = 0;
+                    failure.reported = Some(now);
+                }
+                continue;
+            }
+        };
+        if last.get(&id) != Some(&report) {
+            last.insert(id, report.clone());
+            output.push((id, report.0, report.1));
+        }
+    }
+    last.retain(|id, _| active.contains_key(id));
+    // Keep the warning interval across successful polls too: an intermittent
+    // failure must not flood the log. Unplugging starts a fresh pad lifetime.
+    failures.retain(|id, _| active.contains_key(id));
+    output
 }
 fn profile_name(profile: u16) -> &'static str {
     match profile {
@@ -1939,6 +1982,109 @@ mod tests {
             run();
         }
         assert_eq!(handles(), before);
+    }
+
+    #[test]
+    fn feedback_failures_warn_per_pad_without_hiding_healthy_reports_or_flooding_logs() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("feedback.log");
+        let file = std::fs::File::create(&path).unwrap();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_target(false)
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(move || file.try_clone().unwrap())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let active = BTreeMap::from([(0, 2), (1, 5)]);
+            let mut last = BTreeMap::new();
+            let mut failures = BTreeMap::new();
+            let now = Instant::now();
+            for millis in [0, 1, 4999, 5000] {
+                let output = poll_feedback(
+                    &active,
+                    &mut last,
+                    &mut failures,
+                    "fake",
+                    now + Duration::from_millis(millis),
+                    |slot| {
+                        if slot == 2 || millis >= 4999 {
+                            bail!("injected poll failure");
+                        }
+                        Ok(Some((1, vec![7, 8])))
+                    },
+                );
+                assert_eq!(
+                    output,
+                    if millis == 0 {
+                        vec![(1, 1, vec![7, 8])]
+                    } else {
+                        vec![]
+                    }
+                );
+            }
+            assert_eq!(
+                poll_feedback(
+                    &active,
+                    &mut last,
+                    &mut failures,
+                    "fake",
+                    now + Duration::from_millis(5001),
+                    |_| Ok(Some((1, vec![7, 8])))
+                ),
+                vec![(0, 1, vec![7, 8])]
+            );
+            assert!(
+                poll_feedback(
+                    &active,
+                    &mut last,
+                    &mut failures,
+                    "fake",
+                    now + Duration::from_millis(5002),
+                    |_| bail!("intermittent poll failure")
+                )
+                .is_empty()
+            );
+            let log = std::fs::read_to_string(&path).unwrap();
+            let lines: Vec<_> = log.lines().collect();
+            assert_eq!(lines.len(), 3, "{log}");
+            for line in &lines {
+                assert!(line.contains("WARN"));
+                assert!(line.contains("controller feedback poll failed"));
+                assert!(line.contains("backend=\"fake\""));
+                assert!(line.contains("injected poll failure"));
+            }
+            assert!(lines[0].contains("controller=0 slot=2"));
+            assert!(lines[0].contains("failures=1"));
+            assert!(lines[1].contains("controller=1 slot=5"));
+            assert!(lines[1].contains("failures=1"));
+            assert!(lines[2].contains("controller=0 slot=2"));
+            assert!(lines[2].contains("failures=3"));
+
+            poll_feedback(
+                &BTreeMap::new(),
+                &mut last,
+                &mut failures,
+                "fake",
+                now + Duration::from_millis(5003),
+                |_| unreachable!(),
+            );
+            assert!(last.is_empty());
+            assert!(failures.is_empty());
+            poll_feedback(
+                &active,
+                &mut last,
+                &mut failures,
+                "fake",
+                now + Duration::from_millis(5004),
+                |_| bail!("replugged pad failure"),
+            );
+            let log = std::fs::read_to_string(&path).unwrap();
+            let lines: Vec<_> = log.lines().collect();
+            assert_eq!(lines.len(), 5, "{log}");
+            assert!(lines[3..].iter().all(|line| line.contains("failures=1")));
+        });
     }
 
     fn submit_touch(

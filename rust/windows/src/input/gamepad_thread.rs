@@ -38,7 +38,7 @@ pub enum PadReport {
 pub(super) trait Pads {
     fn apply(&mut self, event: &Event) -> Result<()>;
     fn refresh(&mut self) -> Result<()>;
-    fn feedback(&mut self) -> Result<Vec<(u16, u16, Vec<u8>)>>;
+    fn feedback(&mut self) -> Vec<(u16, u16, Vec<u8>)>;
     fn motion_supported(&self, id: u16) -> bool;
     /// Whether any pad is plugged in, and so feedback needs polling.
     fn plugged(&self) -> bool;
@@ -50,7 +50,7 @@ impl Pads for Gamepads {
     fn refresh(&mut self) -> Result<()> {
         Gamepads::refresh(self)
     }
-    fn feedback(&mut self) -> Result<Vec<(u16, u16, Vec<u8>)>> {
+    fn feedback(&mut self) -> Vec<(u16, u16, Vec<u8>)> {
         Gamepads::feedback(self)
     }
     fn motion_supported(&self, id: u16) -> bool {
@@ -256,7 +256,7 @@ fn run<P: Pads>(
             if let Err(error) = pads.refresh() {
                 tracing::debug!(%error, "controller refresh failed");
             }
-            for (id, kind, data) in pads.feedback().unwrap_or_default() {
+            for (id, kind, data) in pads.feedback() {
                 let _ = reports.send(PadReport::Feedback { id, kind, data });
             }
             polling = pads.plugged();
@@ -335,9 +335,9 @@ mod tests {
         fn refresh(&mut self) -> Result<()> {
             Ok(())
         }
-        fn feedback(&mut self) -> Result<Vec<(u16, u16, Vec<u8>)>> {
+        fn feedback(&mut self) -> Vec<(u16, u16, Vec<u8>)> {
             self.gate.pass();
-            Ok(std::mem::take(&mut self.feedback))
+            std::mem::take(&mut self.feedback)
         }
         fn motion_supported(&self, _: u16) -> bool {
             true

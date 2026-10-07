@@ -382,7 +382,7 @@ fn neutral_targets_enumerate_once_and_unplug_on_peer_drop() -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
         require_idle_host()?;
-        let _ = pads.feedback()?;
+        let _ = pads.feedback();
         std::thread::sleep(Duration::from_millis(100));
     }
     let after_x360 = xinput_mask(&get);
@@ -429,7 +429,7 @@ fn neutral_targets_enumerate_once_and_unplug_on_peer_drop() -> Result<()> {
     while Instant::now() < deadline {
         require_idle_host()?;
         pads.refresh()?;
-        let _ = pads.feedback()?;
+        let _ = pads.feedback();
         std::thread::sleep(Duration::from_millis(100));
     }
     let owned_slots = pads.active.values().copied().collect::<Vec<_>>();
