@@ -3613,6 +3613,138 @@ probe examples also built. The ordinary receiver rejects `pyrowave` before
 connecting instead of silently requesting H.264. No web files changed, and
 the installer/publisher was not run.
 
+## October 7: Release audio continuity under CPU load
+
+On the AMD Radeon RX 7900 XT (driver `32.0.31041.1004`) and Ryzen 7
+5800X3D (8 cores, 16 logical processors), CPU load reproduced the release
+audio failure at the test-tone renderer: it ran out of queued samples.
+Giving that fixture the existing media-worker
+scheduling guard removed the observed underruns; the audio acceptance
+thresholds are unchanged.
+
+These runs used the installed rc.20 `butterpollo.exe`, SHA-256
+`07b0487e1d9d7312da58fe3430c6d53d0e25e949632284896a94332cc99bc074`.
+`e2e.py` always launches a separate host, so this tested that executable
+with the release script's isolated profile and ports, not the running
+service's configuration. The service was not stopped, restarted, paired,
+reinstalled or reconfigured. Before every run its last stream event was
+`CLIENT DISCONNECTED` at 15:51:34 UTC; the script also checked its idle
+server state. The original receiver and probes came from
+`C:\src\butterpollo-release\review-fixes\qa\fixtures`.
+
+Each stream requested H.264 or HEVC at 2560×720/60, 20,000 kbps and 30
+seconds, as the standard release cases do on this 5120×1440 SDR desktop.
+The receiver's repeated sleeps lengthened some CPU-loaded runs beyond 30
+seconds; cadence uses its measured steady interval. No-added-load runs
+were not an idle-machine baseline: other worktrees were compiling. Their
+sampled whole-run CPU means ranged from 41.1% to 82.5% (the first pair did
+not have utilization sampling).
+
+CPU load used 16 busy processes at default priority. The first two CPU cases
+started the workers before host initialization, with a 100-second worker
+limit; the H.264 case also overlapped this worktree's first probe build.
+The subsequent old/new/new/old comparisons started the workers after the
+host capability probe and kept them running through teardown. Those
+matched CPU samples were 99.9–100%. Each codec had two old and two fixed
+renderer runs, with the order reversed for the second pair.
+
+GPU-only cases alternated with no-added-load cases and ran
+`gpu_load 45 1000 0 200`. The load probe completed at 162.2–167.9 FPS across
+the four runs, with frame-time p95 of 6.883–8.431 ms. The combined cases
+started the same shader workload alongside the CPU workers after host
+initialization and stopped only these owned processes afterwards. CPU
+contention also starved the GPU load process: one combined-case sample
+showed only 10% 3D-engine utilization for that process. These combined
+cases do not establish behavior with both CPU and GPU continuously
+saturated.
+
+Counts below are **pass / fail**. Audio and the complete e2e gate are
+separate; every completed stream decoded every delivered picture with
+zero decode errors. "Original" uses the supplied fixtures; "fixed" changes
+only `audio_probe.exe`, keeping the same receiver, motion probe and host.
+
+| Fixture | Added load | H.264 audio | HEVC audio | H.264 complete e2e | HEVC complete e2e |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Original | None | 3 / 0 | 3 / 0 | 3 / 0 | 3 / 0 |
+| Fixed | None | 1 / 0 | 1 / 0 | 1 / 0 | 1 / 0 |
+| Original | CPU | 0 / 3 | 0 / 3 | 0 / 3 | 0 / 3 |
+| Fixed | CPU | 2 / 0 | 2 / 0 | 1 / 1 | 2 / 0 |
+| Original | GPU | 1 / 0 | 1 / 0 | 0 / 1 | 0 / 1 |
+| Fixed | GPU | 1 / 0 | 1 / 0 | 0 / 1 | 0 / 1 |
+| Original | CPU + GPU probe | 1 / 0 | 0 / 1 | 1 / 0 | 0 / 1 |
+| Fixed | CPU + GPU probe | 1 / 0 | 1 / 0 | 0 / 1 | 0 / 1 |
+
+In the four matched CPU comparisons, original minimum tone RMS was
+0.000001–0.000007; fixed minimum RMS was 0.008942 in every run. All ten
+fixed-renderer runs had continuous audio and zero source underruns. Five
+still failed video cadence or fresh-picture requirements under load;
+those failures remain failures. The GPU-only steady picture rates ranged
+from 62.777 to 66.831 FPS and fresh-picture rates from 42.074 to 50.048 FPS,
+outside the existing release limits despite successful decoding.
+
+A separate instrumented H.264 CPU run recorded the renderer's padding
+and every received audio packet. Excluding the initial empty buffer,
+the 4,800-frame / 100 ms render buffer ran dry 18 times. Nine groups of
+quiet decoded blocks occurred 3.72–34.67 seconds into decoded audio;
+each group's start was within 18.3 ms of an empty-buffer refill. The
+29 affected packets were ordinary encoded packets, not concealment:
+all 8,011 decoded packets contained 240 frames (5 ms), and receiver
+statistics recorded zero failed FEC recovery, recovered packets,
+out-of-sequence packets or PLC calls. There were no host
+`audio lost on the host before sending` or UDP-send warnings. This
+places the reproduced interruption at the tone source, before host
+capture, rather than in the send path, loopback transport or decoder.
+Both instrumented no-added-load runs passed. A diagnostic HEVC CPU
+attempt timed out at host initialization before streaming and is not
+counted as an audio result in the table.
+
+The low-energy blocks were real interruptions, not borderline threshold
+or startup failures: the receiver already skips two seconds of decoded
+audio, and its 2.5 ms windows still require at least half the strongest
+window's RMS. A private negative-test renderer deliberately slept for
+200 ms eight seconds after starting. The unchanged gate rejected it,
+with minimum RMS 0.000004 and one source underrun, while all 1,780 video
+pictures decoded. No startup exclusion or dropout tolerance was widened.
+
+The probe now uses `Priority::new()` as the host's media workers do and
+logs `AUDIO_RENDER_UNDERRUN` when its queue empties after initial filling.
+`e2e.py` includes the source log in evaluation. Results record the source
+underrun count (unknown for old probes), and an interrupted tone with
+source underruns retains its failure and adds that evidence. The release
+script prints the failure reasons before its existing single retry,
+preserves the first attempt, and still stops on a second failure. A
+passing retry does not establish the cause of the first failure.
+
+Loopback is explicitly recognized by
+`peer.ip().to_canonical().is_loopback()` and keeps the 800 Mbps pacing
+ceiling; these tests do not exercise the unknown-route 2× default. The
+host audio, send-path and pacing sources are unchanged between rc.20
+source `f06e72c7` and this worktree's starting `7908fb4a`. No host changes
+were made here. These measurements do not implicate QoS, control ACK
+holding or the optional AMF limits in the reproduced failure. They also
+do not prove the cause of every earlier failure: the historical runs
+lacked source-underrun telemetry, and no physical Wi-Fi path was tested.
+
+Raw results, CPU samples, commands and temporary diagnostic sources are
+in this worktree's `target/audio-e2e`. `baseline-*`, `compare-*` and
+`fixed-*` contain the table's runs; `trace-*` and `negative-dropout`
+contain the diagnostic and deliberate-failure cases. `batch.py` and
+`compare.py` record the installed log event before each case and clean
+up only their own load processes. `measurements.json` collects the
+receiver results. The new probe is built by the existing release script;
+manual runs can copy the receiver and motion probe into a private
+fixture directory and replace only its audio probe with the executable
+built by `cargo build --release -p butterpollo-windows --example
+audio_probe --target-dir target\qa` after loading `rust-env.ps1`.
+
+Validation passed: `cargo fmt --all`; Windows clippy with all targets and
+warnings denied; 169 core tests; 63 host tests with two existing ignores;
+and 14 release-gate unit tests. The release audio/GPU probes built. A
+PowerShell syntax check and a stubbed execution of the actual retry loop
+verified that the first failure is retained and a second failure stops
+the release. The deliberate source-pause e2e failed as expected. The
+installer and publisher were not run.
+
 ## Limits
 
 This machine validates AMD AMF. Native NVENC now calls the installed NVIDIA driver directly, supports reviewed API versions 11.0–13.0, reference frame invalidation, D3D11 4:2:0/8-bit 4:4:4 and GPU-only CUDA interop for ten-bit 4:4:4. Seven mock-driver tests exercise compatibility, asynchronous ownership, timeout teardown, metadata lifetime, loss recovery and bitrate changes; NVIDIA execution/performance still needs NVIDIA hardware. QSV has native D3D11 imports, and TrueHDR has a shared-device GPU path; these need Intel/NVIDIA hardware respectively. PyroWave uses shared D3D11/Vulkan planar GPU inputs and reads back only the encoded bitstream. Unsupported native formats and software encoding use CPU compatibility paths. The wired LAN checks above do not establish Wi-Fi performance, multiple concurrent 4K sessions, dynamic game content, native 4K capture or end-to-end input/display latency. The GPU texture pools and native encoder queues are bounded to eight retained frames; capacity runs may intentionally keep those queues occupied. [PARITY.md](PARITY.md) separates implemented features from native validation.

@@ -1,6 +1,11 @@
 //! Render a quiet test tone to an explicit endpoint and verify real WASAPI samples.
 use anyhow::{Context, Result, bail};
-use butterpollo_windows::{audio::Loopback, audio_route, capture::ComGuard, timing::Timer};
+use butterpollo_windows::{
+    audio::Loopback,
+    audio_route,
+    capture::{ComGuard, Priority},
+    timing::Timer,
+};
 use std::{
     ffi::c_void,
     time::{Duration, Instant},
@@ -74,13 +79,23 @@ fn main() -> Result<()> {
     let mut peak = 0f32;
     let mut energy = 0f64;
     let mut samples = 0usize;
+    // CPU contention must not starve the source of a host continuity test.
+    let _priority = Priority::new();
+    eprintln!("AUDIO_RENDER buffer_frames={buffer_frames} sample_rate={sample_rate}");
     unsafe {
         render.0.Start()?;
     }
-    let end = Instant::now() + Duration::from_secs(seconds);
+    let start = Instant::now();
+    let end = start + Duration::from_secs(seconds);
     while Instant::now() < end {
         unsafe {
             let available = buffer_frames - render.0.GetCurrentPadding()?;
+            if position > 0 && available == buffer_frames {
+                eprintln!(
+                    "AUDIO_RENDER_UNDERRUN elapsed_seconds={:.3}",
+                    start.elapsed().as_secs_f64()
+                );
+            }
             if available > 0 {
                 let data = renderer.GetBuffer(available)?;
                 let output = std::slice::from_raw_parts_mut(

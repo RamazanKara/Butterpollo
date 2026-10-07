@@ -176,9 +176,14 @@ foreach ($case in 'h264', 'hevc', 'av1', 'hevc-vrr', 'pyrowave', 'pyrowave-hdr-4
     try {
         & $python "$tools\e2e.py" @stream
     } catch {
-        # Other load on the workstation can push one run under the frame-rate
-        # floor; a regression fails twice. The first run's logs are kept.
-        Write-Warning "stream $case failed; running it once more"
+        # Shared-machine load can starve the tone or motion fixture too. Keep
+        # the evidence: a passing retry does not explain the first failure.
+        $resultPath = Join-Path $run "e2e-$case\result.json"
+        if (Test-Path -LiteralPath $resultPath) {
+            $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+            Write-Warning ("stream $case failed: " + ($result.failures -join '; '))
+        }
+        Write-Warning "stream $case failed; preserving its logs and retrying once. Check shared CPU/GPU load and tone.log; a second failure stops the release."
         $failed = Join-Path $run "e2e-$case-failed"
         if (([IO.Path]::GetFullPath($failed) | Split-Path -Parent) -ne [IO.Path]::GetFullPath($run)) { throw 'Test output left the release directory' }
         Remove-Item -LiteralPath $failed -Recurse -Force -ErrorAction SilentlyContinue

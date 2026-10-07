@@ -126,7 +126,8 @@ finally:
         f.close()
 
 client = (case / 'client.log').read_text(errors='replace')
-result = evaluate(client, rc, args.codec, args.mode, args.vrr)
+result = evaluate(client, rc, args.codec, args.mode, args.vrr,
+                  tone_log=(case / 'tone.log').read_text(errors='replace'))
 (case / 'result.json').write_text(json.dumps(result, indent=2))
 print(json.dumps(result))
 sys.exit(0 if result['passed'] else 1)

@@ -2,7 +2,7 @@
 import re
 
 
-def evaluate(client, rc, codec, mode, vrr=False):
+def evaluate(client, rc, codec, mode, vrr=False, tone_log=''):
     def find(pattern, cast=float):
         match = re.search(pattern, client, re.MULTILINE)
         return cast(match.group(1)) if match else None
@@ -68,5 +68,10 @@ def evaluate(client, rc, codec, mode, vrr=False):
                     or not 0 <= result['picture_age_mean_ms'] <= result['picture_age_max_ms'] <= 3000
                     or not 0 <= result['picture_age_p95_ms'] <= result['picture_age_p99_ms'] <= result['picture_age_max_ms']):
                 failures.append('PyroWave picture age was missing or invalid')
-    result.update(passed=not failures, failures=failures)
+    # Older fixtures cannot distinguish a starving tone source from host loss.
+    underruns = (len(re.findall(r'^AUDIO_RENDER_UNDERRUN\b', tone_log, re.MULTILINE))
+                 if re.search(r'^AUDIO_RENDER\b', tone_log, re.MULTILINE) else None)
+    if result['audio_continuous'] == 0 and underruns:
+        failures.append(f'test tone source also ran dry {underruns} time(s); CPU contention can interrupt the fixture')
+    result.update(audio_source_underruns=underruns, passed=not failures, failures=failures)
     return result

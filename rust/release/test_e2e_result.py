@@ -90,6 +90,25 @@ class ReleaseMeasurements(unittest.TestCase):
         self.assertFalse(evaluate(GOOD, 1, 'hevc', '1280x720x60')['passed'])
         self.assertFalse(evaluate(GOOD.replace('failures=0', 'failures=1'), 0, 'hevc', '1280x720x60')['passed'])
 
+    def test_source_underruns_explain_but_never_excuse_audio_gaps(self):
+        tone = 'AUDIO_RENDER buffer_frames=4800 sample_rate=48000\n'
+        interrupted = GOOD.replace('continuous=1', 'continuous=0')
+        for log, count in (('', None), (tone, 0),
+                           (tone + 'AUDIO_RENDER_UNDERRUN elapsed_seconds=8.500\n', 1)):
+            with self.subTest(underruns=count):
+                result = evaluate(interrupted, 0, 'hevc', '1280x720x60', tone_log=log)
+                self.assertFalse(result['passed'])
+                self.assertEqual(result['audio_source_underruns'], count)
+                self.assertIn('the captured audio tone was silent or interrupted', result['failures'])
+                self.assertEqual(any('source also ran dry' in s for s in result['failures']), count == 1)
+
+    def test_source_startup_does_not_override_measured_continuity(self):
+        tone = ('AUDIO_RENDER buffer_frames=4800 sample_rate=48000\n'
+                'AUDIO_RENDER_UNDERRUN elapsed_seconds=0.100\n')
+        result = evaluate(GOOD, 0, 'hevc', '1280x720x60', tone_log=tone)
+        self.assertTrue(result['passed'])
+        self.assertEqual(result['audio_source_underruns'], 1)
+
     def test_pyrowave_sdr_and_hdr_records_pass_with_picture_age(self):
         for codec, hdr in (('pyrowave', 0), ('pyrowave-hdr-444', 1800)):
             with self.subTest(codec=codec):
