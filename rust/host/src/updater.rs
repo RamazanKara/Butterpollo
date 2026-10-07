@@ -396,7 +396,8 @@ async fn download(h: &Shared, id: &str, candidate: &Installer) -> Result<PathBuf
 
 fn check_recovery(profile: &std::path::Path) -> Result<Value> {
     let record =
-        butterpollo_core::state::load_json(&profile.join("update-result.json"), Value::Null)?;
+        butterpollo_core::state::load_json(&profile.join("update-result.json"), Value::Null)
+            .context("The last update's record is unreadable. Run the Butterpollo installer to repair this installation")?;
     if record["phase"] == "recovery_failed"
         || (record["phase"] == "installing" && record["backup"].is_string())
     {
@@ -627,10 +628,13 @@ mod tests {
                 record
             );
         }
-        for phase in ["installed", "rolled_back", "failed"] {
+        for phase in ["installed", "rolled_back", "failed", "superseded"] {
             butterpollo_core::state::write_json(&path, &json!({"phase":phase}))?;
             assert!(check_recovery(&f.directory).is_ok());
         }
+        std::fs::write(&path, b"{")?;
+        let error = check_recovery(&f.directory).unwrap_err().to_string();
+        assert!(error.contains("Run the Butterpollo installer"), "{error}");
         Ok(())
     }
     #[tokio::test]

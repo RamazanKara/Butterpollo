@@ -38,6 +38,7 @@ pub const HOST_PROCESSES: [&str; 9] = [
     "playnite-launcher.exe",
     "playnite_launcher.exe",
 ];
+const SERVICE_DESCRIPTION: &str = "Streams games and the desktop to Moonlight and Artemis clients.";
 pub fn profile() -> PathBuf {
     system::program_data().join("Butterpollo").join("config")
 }
@@ -120,6 +121,14 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
     let mut restart_needed = false;
 
     if updates_in_place(found.service_install.as_deref(), &install)? {
+        // As a reinstall did before, the service starts automatically again;
+        // a disabled service would otherwise fail the update's start check.
+        system::install_service(
+            SERVICE,
+            "Butterpollo",
+            SERVICE_DESCRIPTION,
+            &install.join("butterpollo-service.exe"),
+        )?;
         crate::update::run(&install, options.start, progress)?;
         // A reinstall also repairs the firewall rule, as it did before.
         if let Err(error) = system::firewall_allow("Butterpollo", &install.join("butterpollo.exe"))
@@ -305,7 +314,7 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
     system::install_service(
         SERVICE,
         "Butterpollo",
-        "Streams games and the desktop to Moonlight and Artemis clients.",
+        SERVICE_DESCRIPTION,
         &install.join("butterpollo-service.exe"),
     )?;
     system::firewall_allow("Butterpollo", &install.join("butterpollo.exe"))?;
