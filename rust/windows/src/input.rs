@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use butterpollo_core::input::Input as Event;
 use butterpollo_core::input_policy::{VHF_AUTO, VIGEM_DS4, VIGEM_X360, gamepad_profile};
 use std::{
@@ -122,10 +122,20 @@ impl Gamepads {
         Self::open_options(
             profile,
             butterpollo_core::input_policy::Policy::resolve(&Default::default())?,
+            &Default::default(),
         )
     }
-    fn open_options(profile: u16, policy: butterpollo_core::input_policy::Policy) -> Result<Self> {
+    fn open_options(
+        profile: u16,
+        policy: butterpollo_core::input_policy::Policy,
+        warnings: &butterpollo_core::session::Warnings,
+    ) -> Result<Self> {
         let (backend, available) = gamepad_backend::Backend::open(profile)?;
+        if profile == 0 && backend.name() == "VHF" {
+            warnings.set("input_gamepad_backend", "ViGEmBus unavailable; using VHF gamepads. Controller compatibility and features may differ; install ViGEmBus or explicitly choose the VHF profile you want.");
+        } else {
+            warnings.clear("input_gamepad_backend");
+        }
         Ok(Self {
             backend,
             active: BTreeMap::new(),
@@ -594,6 +604,14 @@ impl Injector {
         profile: &str,
         config: &butterpollo_core::config::Config,
     ) -> Result<Self> {
+        Self::new_options_reported(output, profile, config, Default::default())
+    }
+    pub fn new_options_reported(
+        output: &str,
+        profile: &str,
+        config: &butterpollo_core::config::Config,
+        warnings: std::sync::Arc<butterpollo_core::session::Warnings>,
+    ) -> Result<Self> {
         let profile = gamepad_profile(profile);
         let policy = butterpollo_core::input_policy::Policy::resolve(config)?;
         // Keyboard, relative mouse and controllers must work before the
@@ -607,7 +625,7 @@ impl Injector {
             pen: Default::default(),
             touch_refreshed: std::time::Instant::now(),
             pen_refreshed: std::time::Instant::now(),
-            gamepads: GamepadThread::new(profile, policy.clone())?,
+            gamepads: GamepadThread::new(profile, policy.clone(), warnings)?,
             policy,
             key_flags: BTreeMap::new(),
             repeat: None,
@@ -993,11 +1011,10 @@ impl Injector {
         };
         unsafe {
             if self.touch_device.is_none() {
-                self.touch_device = Some(CreateSyntheticPointerDevice(
-                    PT_TOUCH,
-                    32,
-                    POINTER_FEEDBACK_NONE,
-                )?);
+                self.touch_device = Some(
+                    CreateSyntheticPointerDevice(PT_TOUCH, 32, POINTER_FEEDBACK_NONE)
+                        .context("native touch input unavailable")?,
+                );
             }
             if event == 7 {
                 return self.cancel_touches();
@@ -1119,9 +1136,10 @@ impl Injector {
         };
         let device = match self.pen_device {
             Some(device) => device,
-            None => *self
-                .pen_device
-                .insert(unsafe { CreateSyntheticPointerDevice(PT_PEN, 1, POINTER_FEEDBACK_NONE)? }),
+            None => *self.pen_device.insert(unsafe {
+                CreateSyntheticPointerDevice(PT_PEN, 1, POINTER_FEEDBACK_NONE)
+                    .context("native pen input unavailable")?
+            }),
         };
         let result = unsafe {
             inject_pointer(

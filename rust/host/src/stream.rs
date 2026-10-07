@@ -2062,7 +2062,7 @@ impl Media {
                             }
                         };
                         let output = s.output.read().unwrap().clone();
-                        match Injector::new_options(
+                        match Injector::new_options_reported(
                             if output.is_empty() {
                                 c.get("output_name", "")
                             } else {
@@ -2070,12 +2070,14 @@ impl Media {
                             },
                             c.get("gamepad", "auto"),
                             &c,
+                            s.launch.warnings.clone(),
                         ) {
                             Ok(mut i) => {
+                                s.launch.warnings.clear("input_initialization");
                                 i.set_stream_size(s.config.width, s.config.height);
                                 p.injector = Some(i);
                             }
-                            Err(e) => tracing::warn!(error=%e,"input initialization failed"),
+                            Err(e) => s.launch.warnings.set("input_initialization", format!("Input initialization failed ({e:#}); controls are unavailable. Check Input settings and the selected display, then reconnect.")),
                         }
                     }
                     if let Some(i) = &mut p.injector {
@@ -2086,20 +2088,20 @@ impl Media {
                     let inputs = std::mem::take(&mut p.inputs);
                     if let Some(i) = &mut p.injector {
                         for e in i.apply_all(&inputs) {
-                            tracing::debug!(error=%e,"input injection failed");
+                            s.launch.warnings.set("input_injection", format!("Input injection failed ({e:#}); keyboard, mouse, touch or pen actions may be missing. Unlock the desktop and check Windows input permissions or disable native touch/pen if unsupported."));
                         }
                     }
                     if !poll_feedback
                         && let Some(i) = &mut p.injector
                         && let Err(e) = i.due()
                     {
-                        tracing::debug!(error=%e,"input release or repeat failed");
+                        s.launch.warnings.set("input_repeat", format!("Input release or repeat failed ({e:#}); held controls may not update. Unlock the desktop or reconnect."));
                     }
                     if poll_feedback
                         && let Some(i) = &mut p.injector
                         && let Err(e) = i.refresh()
                     {
-                        tracing::debug!(error=%e,"pointer refresh failed");
+                        s.launch.warnings.set("input_pointer", format!("Touch/pen pointer refresh failed ({e:#}); pointer updates may be missing. Unlock the desktop or disable native touch/pen if Windows does not support it."));
                     }
                     // The gamepad thread polls feedback every 8 ms; pass on
                     // what it found, and the sensors an arrived pad has.

@@ -140,8 +140,15 @@ async fn connection(
                 let flags = h.codecs.load(std::sync::atomic::Ordering::Acquire);
                 let config = crate::stream::effective_config(&h, &launch)?;
                 let encryption_mode = crate::network::encryption_mode(&config, peer.ip());
+                let input_capabilities = butterpollo_windows::input::capabilities(&config);
+                if config.boolean("mouse", true)
+                    && config.boolean("native_pen_touch", true)
+                    && input_capabilities & 1 == 0
+                {
+                    launch.warnings.set("input_touch_pen", "Native touch and pen unavailable: Windows does not expose synthetic pointer input. The client may emulate a mouse instead; update Windows or disable native touch/pen in Input settings.");
+                }
                 body = rtsp::describe(
-                    butterpollo_windows::input::capabilities(&config),
+                    input_capabilities,
                     if encryption_mode == 2 { 7 } else { 1 },
                     flags & 0x100 != 0,
                     flags & 0x10000 != 0,

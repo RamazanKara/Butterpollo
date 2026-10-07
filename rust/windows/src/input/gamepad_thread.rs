@@ -62,6 +62,7 @@ impl Pads for Gamepads {
 }
 
 struct Shared {
+    warnings: Arc<butterpollo_core::session::Warnings>,
     queue: Mutex<Queue>,
     wake: Condvar,
     stop: AtomicBool,
@@ -87,13 +88,26 @@ impl GamepadThread {
     pub fn new(
         profile: u16,
         policy: butterpollo_core::input_policy::Policy,
+        warnings: Arc<butterpollo_core::session::Warnings>,
     ) -> std::io::Result<Self> {
-        Self::spawn(move || Gamepads::open_options(profile, policy.clone()))
+        let report = warnings.clone();
+        Self::spawn_reported(
+            move || Gamepads::open_options(profile, policy.clone(), &report),
+            warnings,
+        )
     }
+    #[cfg(test)]
     pub(super) fn spawn<P: Pads + 'static>(
         open: impl FnMut() -> Result<P> + Send + 'static,
     ) -> std::io::Result<Self> {
+        Self::spawn_reported(open, Default::default())
+    }
+    fn spawn_reported<P: Pads + 'static>(
+        open: impl FnMut() -> Result<P> + Send + 'static,
+        warnings: Arc<butterpollo_core::session::Warnings>,
+    ) -> std::io::Result<Self> {
         let shared = Arc::new(Shared {
+            warnings,
             queue: Mutex::default(),
             wake: Condvar::new(),
             stop: AtomicBool::new(false),
@@ -113,10 +127,7 @@ impl GamepadThread {
     pub fn send(&self, event: Event) {
         let mut queue = self.shared.queue.lock().unwrap();
         if !enqueue(&mut queue.events, event) && !std::mem::replace(&mut queue.full, true) {
-            tracing::warn!(
-                queued = QUEUE_LIMIT,
-                "virtual gamepad driver is not keeping up; controller input dropped"
-            );
+            self.shared.warnings.set("input_gamepad_queue", "Virtual gamepad driver is not keeping up; controller input was dropped. Check the virtual gamepad driver or choose another supported profile.");
         }
         drop(queue);
         self.shared.wake.notify_one();
@@ -212,14 +223,12 @@ fn run<P: Pads>(
                     continue;
                 }
                 match open() {
-                    Ok(opened) => pads = Some(opened),
+                    Ok(opened) => {
+                        shared.warnings.clear("input_gamepad");
+                        pads = Some(opened);
+                    }
                     Err(error) => {
-                        if retry.is_none() {
-                            tracing::warn!(
-                                error = format!("{error:#}"),
-                                "virtual gamepad driver unavailable; controller input is ignored"
-                            );
-                        }
+                        shared.warnings.set("input_gamepad", format!("Virtual gamepad driver unavailable ({error:#}); controller input is ignored while keyboard and mouse remain available. Install or repair ViGEmBus/VHF, or choose an installed gamepad profile."));
                         retry = Some(now + RETRY);
                         continue;
                     }
@@ -227,7 +236,7 @@ fn run<P: Pads>(
             }
             let Some(pads) = &mut pads else { continue };
             match pads.apply(&event) {
-                Err(error) => tracing::debug!(%error, "input injection failed"),
+                Err(error) => shared.warnings.set("input_gamepad_injection", format!("Controller input failed ({error:#}); some controls may not work. Check the selected gamepad profile and virtual driver.")),
                 Ok(()) => {
                     if let Event::Arrival {
                         id, capabilities, ..
@@ -346,22 +355,48 @@ mod tests {
     fn fake() -> (GamepadThread, Arc<Gate>, Arc<Mutex<Vec<String>>>) {
         let gate = Arc::new(Gate::default());
         let log = Arc::new(Mutex::new(Vec::new()));
-        let pads = GamepadThread::spawn({
-            let (gate, log) = (gate.clone(), log.clone());
-            move || {
-                Ok(Fake {
-                    gate: gate.clone(),
-                    log: log.clone(),
-                    plugged: false,
-                    feedback: vec![(0, 1, vec![1, 2, 3, 4, 0, 0, 0, 0])],
-                })
-            }
-        })
+        let pads = GamepadThread::spawn_reported(
+            {
+                let (gate, log) = (gate.clone(), log.clone());
+                move || {
+                    Ok(Fake {
+                        gate: gate.clone(),
+                        log: log.clone(),
+                        plugged: false,
+                        feedback: vec![(0, 1, vec![1, 2, 3, 4, 0, 0, 0, 0])],
+                    })
+                }
+            },
+            Default::default(),
+        )
         .unwrap();
         (pads, gate, log)
     }
     fn logged(events: &[Event]) -> Vec<String> {
         events.iter().map(|event| format!("{event:?}")).collect()
+    }
+
+    #[test]
+    fn missing_driver_is_visible_without_blocking_other_input() {
+        let warnings = Arc::new(butterpollo_core::session::Warnings::default());
+        let pads = GamepadThread::spawn_reported::<Fake>(
+            || anyhow::bail!("test driver missing"),
+            warnings.clone(),
+        )
+        .unwrap();
+        pads.send(state(0, 1, 0, 0));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while warnings.snapshot().is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let entries = warnings.snapshot();
+        assert_eq!(entries[0].code, "input_gamepad");
+        assert!(entries[0].message.contains("test driver missing"));
+        assert!(
+            entries[0]
+                .message
+                .contains("keyboard and mouse remain available")
+        );
     }
 
     #[test]
