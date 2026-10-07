@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 use butterpollo_core::config::Config;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     ffi::c_void,
     path::{Path, PathBuf},
     sync::Mutex,
@@ -209,6 +210,15 @@ struct Active {
     sink: String,
     virtual_sink: bool,
     users: usize,
+    /// The channels each stream asked for; the sink gets the most.
+    channels: BTreeMap<u64, usize>,
+}
+/// The speaker layout for streams sharing the sink: the most channels any of
+/// them asked for. Capture mixes down for the others; following the last
+/// stream instead made two clients reformat the sink in turn, and each
+/// reformat interrupted the other's audio.
+fn shared_channels(requests: &BTreeMap<u64, usize>) -> Option<usize> {
+    requests.values().copied().max()
 }
 static ACTIVE: Mutex<Option<Active>> = Mutex::new(None);
 pub struct Route {
@@ -217,7 +227,10 @@ pub struct Route {
     keep_default: bool,
     capture_only: bool,
     virtual_sink: bool,
+    /// This stream's place among the users of the shared sink.
+    id: u64,
 }
+static NEXT_ROUTE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 fn path(directory: &Path) -> PathBuf {
     directory.join("audio-recovery.json")
 }
@@ -499,6 +512,7 @@ impl Route {
                 keep_default: config.boolean("keep_sink_default", true),
                 capture_only,
                 virtual_sink: shared.virtual_sink,
+                id: NEXT_ROUTE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             });
         }
         let mut available = endpoints()?;
@@ -624,11 +638,13 @@ impl Route {
             }
             return Err(error);
         }
+        let id = NEXT_ROUTE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         *active = Some(Active {
             directory: directory.into(),
             sink: selected.id.clone(),
             virtual_sink: managed_virtual,
             users: 1,
+            channels: BTreeMap::from([(id, channels)]),
         });
         Ok(Self {
             sink: selected.id.clone(),
@@ -636,6 +652,7 @@ impl Route {
             keep_default: config.boolean("keep_sink_default", true),
             capture_only,
             virtual_sink: managed_virtual,
+            id,
         })
     }
     /// Re-pin managed virtual speakers when keep_sink_default is enabled. Save
@@ -670,10 +687,17 @@ impl Route {
         Ok(current[0].clone().unwrap_or_else(|| self.sink.clone()))
     }
     pub fn set_channels(&self, channels: usize) -> Result<()> {
-        let _active = ACTIVE.lock().unwrap();
+        let mut active = ACTIVE.lock().unwrap();
         if !self.virtual_sink || self.capture_only {
             return Ok(());
         }
+        let channels = match active.as_mut() {
+            Some(shared) => {
+                shared.channels.insert(self.id, channels);
+                shared_channels(&shared.channels).unwrap_or(channels)
+            }
+            None => channels,
+        };
         let policy = Policy::new()?;
         let current = policy.format(&self.sink)?;
         let format = unsafe { std::ptr::read_unaligned(current.as_ptr().cast::<WAVEFORMATEX>()) };
@@ -701,6 +725,8 @@ impl Drop for Route {
             return;
         };
         shared.users -= 1;
+        // The sink keeps its layout for the streams still on it.
+        shared.channels.remove(&self.id);
         if shared.users != 0 {
             return;
         }
@@ -716,6 +742,15 @@ impl Drop for Route {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn streams_sharing_the_sink_get_the_most_channels_any_asked_for() {
+        assert_eq!(shared_channels(&BTreeMap::new()), None);
+        // A stereo phone and a 5.1 living-room PC on the same app: 5.1 for
+        // both, whoever reopened capture last.
+        let both = BTreeMap::from([(1, 2), (2, 6)]);
+        assert_eq!(shared_channels(&both), Some(6));
+        assert_eq!(shared_channels(&BTreeMap::from([(1, 2)])), Some(2));
+    }
     #[test]
     fn a_pending_restore_keeps_the_users_original_speakers() {
         let some = |id: &str| Some(id.to_owned());
