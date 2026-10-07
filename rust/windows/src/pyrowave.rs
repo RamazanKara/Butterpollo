@@ -24,6 +24,9 @@ use windows::{
     },
     core::{Interface, PCWSTR},
 };
+#[cfg(test)]
+#[path = "pyrowave_decode_test.rs"]
+mod decode_test;
 macro_rules! api {
     ($($name:ident:$ty:ty),* $(,)?) => {
         struct Api { $($name:$ty,)* _dll:libloading::Library }

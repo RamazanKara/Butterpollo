@@ -2056,6 +2056,166 @@ card. That is about 55 Mbps at 720p60, 125 Mbps at 1080p60 and 500 Mbps at
 4K60 (`pyrowave::minimum_kbps`). The setting's description and the
 configuration guide give the same numbers. The host does not raise the
 bitrate itself: the client's choice may reflect its network.
+## October 7: PyroWave decoded end to end
+
+The ignored `pyrowave::decode_test::pyrowave_decoded_end_to_end` test sends
+known pictures through `Encoder::new_gpu_options` and `encode_gpu`, codec
+3, then decodes with the pinned PyroWave 0.6 SDK, bitstream `186f0393`.
+The decoder has its own Vulkan device on the same AMD adapter. It writes
+three imported D3D11 textures through `pyrowave_decoder_decode_gpu_buffer`;
+a shared fence completes before D3D11 staging readback. SDR8 uses R8 UNORM,
+and both ten-bit formats use R16 UNORM, retaining the decoder's precision.
+
+The sender's `VideoPacketizer::encode_pyrowave` produces the datagrams,
+including its normal 20% critical FEC for records, with optional detail FEC
+disabled. A separate receive parser orders the data shards, removes the
+transport header and final padding, then
+feeds either the length-prefixed codec packets or the individual records
+to `pyrowave_decoder_push_packet`. Record padding is skipped. The test
+requires complete-frame readiness and rejects early readiness. This covers
+complete, unencrypted delivery; it does not exercise network loss recovery,
+socket pacing or client display.
+
+Two deterministic charts contain colour bars, smooth gradients, one- and
+two-pixel text strokes, and independent RGB noise between 25% and 75%.
+An independent double-precision CPU reference converts the actual uploaded
+pixels to full-range BT.709 SDR or BT.2020 PQ HDR, including the centred
+2x2 chroma average for 4:2:0. SDR10 starts from FP16 scRGB, rather than
+eight-bit pixels in a ten-bit container. HDR tests both FP16 scRGB with
+1000-nit white and packed ten-bit PQ input. PSNR uses peaks of 255 or 1023;
+maximum errors are in those code values, including fractional codes from
+R16 readback. HDR PSNR is in PQ code space, not linear light.
+
+Each case alternates graphics/compute, compute/graphics, graphics/compute.
+It asserts that compute actually ran, and that every decoded sample is
+identical across both conversions, both framings and all three batches.
+The test resets only the encoder's previous timestamp before each sample,
+using its normal first-frame budget of 1/60 second: CPU reference and
+readback time cannot inflate the plain-packet budget. These are picture
+quality measurements, not sustained throughput measurements.
+
+The 400, 125 and 30 Mbps cases run at both sizes, along with a 1000 Mbps
+control. At 1000 Mbps the test requires at least 40 dB on every plane and
+35 dB on every chart panel; at 400 Mbps it requires 24 dB on every plane.
+The control is needed because 400 Mbps still loses fine text and noise at
+1080p, especially in 4:4:4. These are regression limits for this chart,
+not recommended quality targets or assertions that the codec is lossless.
+
+On an AMD machine, use the usual Rust SDK environment, then run from the
+workspace root. On this machine the environment script is
+`C:\Users\ramaz\.codex\artifacts\butterpollo-rust-20260930\performance-probe\rust-env.ps1`.
+`BUTTERPOLLO_PYROWAVE_ROOT\share\pyrowave-shared\build-info.txt` must name
+commit `186f0393b77f7755953b5ecde994bb1cec2e4155`.
+
+```powershell
+. 'C:\Users\ramaz\.codex\artifacts\butterpollo-rust-20260930\performance-probe\rust-env.ps1'
+cargo test -p butterpollo-windows --lib --no-run --target-dir target\qa
+if ($LASTEXITCODE) { throw 'Test build failed' }
+Copy-Item "$env:BUTTERPOLLO_PYROWAVE_ROOT\bin\libpyrowave-shared-0.dll" target\qa\debug\deps\
+cargo test -p butterpollo-windows --lib pyrowave::decode_test::pyrowave_decoded_end_to_end --target-dir target\qa -- --ignored --exact --nocapture --test-threads=1 2>&1 | Tee-Object target\qa\pyrowave-decode.log
+if ($LASTEXITCODE) { throw 'PyroWave decode test failed' }
+```
+
+`PYROWAVE_RESULT` lines contain JSON with per-plane PSNR and maximum error,
+frame bytes and datagram counts. `panels` lists bars, gradient, text and
+noise for each of Y/Cb/Cr; a null PSNR with zero maximum error means an
+exact match (infinite PSNR). Before each batch, `PYROWAVE_BATCH` records the
+installed host log's last connect/disconnect event, or notes that its log
+is absent. Check those lines when comparing a machine shared with streams
+or other GPU work. The test only reads that log and does not start a host
+or change its settings. NVIDIA execution is unverified here; NVIDIA users
+should use Vibepollo.
+
+On October 7, 2026, the AMD Radeon RX 7900 XT with driver 32.0.31041.1004
+passed all 1,152 decodes in 620.90 seconds in the debug test build. All 288
+batch checks found the last stream event was a disconnect at 12:57:29 UTC.
+Other GPU work was not controlled. The maximum compute/graphics difference
+was zero storage units, including all 16 bits of the ten-bit output planes.
+Both framings and all three repeats also matched exactly: repeat spread
+was 0.00 dB PSNR and zero maximum-error difference for every picture.
+
+Each row below gives the lower PSNR and larger maximum error of the two
+pictures, separately for each plane. Repeated measurements do not change
+those values. The maximum error uses 8-bit codes for SDR8 and 10-bit codes
+for SDR10/HDR10; it is not a count of R16 storage units. The rates are the
+requested budgets at 60 fps, not measured network throughput.
+
+| Size | Format | Chroma | Mbps | PSNR Y/Cb/Cr (dB) | Max error Y/Cb/Cr (codes) |
+|---|---|---|---:|---|---|
+| 1920x1080 | SDR8 | 4:2:0 | 1000 | 80.62/81.16/80.35 | 1.0/1.0/1.0 |
+| 1920x1080 | SDR8 | 4:2:0 | 400 | 33.34/43.05/42.06 | 64.0/36.0/27.0 |
+| 1920x1080 | SDR8 | 4:2:0 | 125 | 22.34/28.37/29.01 | 132.0/93.0/124.0 |
+| 1920x1080 | SDR8 | 4:2:0 | 30 | 18.64/23.33/26.13 | 186.0/114.0/129.0 |
+| 1920x1080 | SDR8 | 4:4:4 | 1000 | 44.78/41.20/40.87 | 23.0/24.0/27.0 |
+| 1920x1080 | SDR8 | 4:4:4 | 400 | 28.83/25.90/27.26 | 96.0/97.0/92.0 |
+| 1920x1080 | SDR8 | 4:4:4 | 125 | 21.89/23.28/24.87 | 141.0/103.0/116.0 |
+| 1920x1080 | SDR8 | 4:4:4 | 30 | 18.63/21.22/23.40 | 186.0/127.0/135.0 |
+| 1920x1080 | SDR10 | 4:2:0 | 1000 | 67.65/68.04/67.97 | 3.1/3.0/3.0 |
+| 1920x1080 | SDR10 | 4:2:0 | 400 | 33.32/43.35/42.19 | 258.8/145.5/97.4 |
+| 1920x1080 | SDR10 | 4:2:0 | 125 | 22.32/28.42/29.00 | 528.8/374.7/492.3 |
+| 1920x1080 | SDR10 | 4:2:0 | 30 | 18.63/23.36/26.14 | 745.0/456.2/517.5 |
+| 1920x1080 | SDR10 | 4:4:4 | 1000 | 45.22/41.33/40.84 | 108.6/93.6/108.1 |
+| 1920x1080 | SDR10 | 4:4:4 | 400 | 28.88/25.41/27.31 | 382.8/387.1/364.5 |
+| 1920x1080 | SDR10 | 4:4:4 | 125 | 21.89/23.32/24.91 | 572.2/412.0/480.2 |
+| 1920x1080 | SDR10 | 4:4:4 | 30 | 18.61/21.24/23.42 | 745.0/512.3/541.3 |
+| 1920x1080 | HDR10 | 4:2:0 | 1000 | 68.12/67.87/66.92 | 3.1/2.7/2.9 |
+| 1920x1080 | HDR10 | 4:2:0 | 400 | 39.49/49.67/49.24 | 155.1/79.7/34.4 |
+| 1920x1080 | HDR10 | 4:2:0 | 125 | 28.93/35.42/39.77 | 294.4/144.5/83.2 |
+| 1920x1080 | HDR10 | 4:2:0 | 30 | 23.49/31.17/37.98 | 466.2/176.4/101.9 |
+| 1920x1080 | HDR10 | 4:4:4 | 1000 | 53.65/47.58/51.44 | 43.0/38.5/29.2 |
+| 1920x1080 | HDR10 | 4:4:4 | 400 | 35.29/34.12/38.01 | 176.5/133.7/85.5 |
+| 1920x1080 | HDR10 | 4:4:4 | 125 | 27.69/31.15/36.34 | 305.7/152.7/85.1 |
+| 1920x1080 | HDR10 | 4:4:4 | 30 | 23.48/29.10/35.32 | 476.7/202.0/103.4 |
+| 1280x720 | SDR8 | 4:2:0 | 1000 | 77.53/84.60/80.58 | 1.0/1.0/1.0 |
+| 1280x720 | SDR8 | 4:2:0 | 400 | 65.69/79.82/76.16 | 2.0/2.0/1.0 |
+| 1280x720 | SDR8 | 4:2:0 | 125 | 27.27/33.94/33.93 | 105.0/50.0/62.0 |
+| 1280x720 | SDR8 | 4:2:0 | 30 | 19.92/24.09/26.26 | 186.0/103.0/116.0 |
+| 1280x720 | SDR8 | 4:4:4 | 1000 | 77.53/62.48/62.88 | 1.0/2.0/2.0 |
+| 1280x720 | SDR8 | 4:4:4 | 400 | 42.55/37.25/36.81 | 24.0/42.0/46.0 |
+| 1280x720 | SDR8 | 4:4:4 | 125 | 26.04/23.86/25.89 | 109.0/97.0/105.0 |
+| 1280x720 | SDR8 | 4:4:4 | 30 | 19.24/22.09/23.81 | 186.0/134.0/122.0 |
+| 1280x720 | SDR10 | 4:2:0 | 1000 | 67.49/68.05/67.76 | 4.0/2.6/2.9 |
+| 1280x720 | SDR10 | 4:2:0 | 400 | 65.96/68.01/67.74 | 6.5/7.2/4.8 |
+| 1280x720 | SDR10 | 4:2:0 | 125 | 27.24/33.93/34.05 | 422.7/199.3/251.2 |
+| 1280x720 | SDR10 | 4:2:0 | 30 | 19.91/24.20/26.28 | 745.0/410.3/470.4 |
+| 1280x720 | SDR10 | 4:4:4 | 1000 | 67.49/62.36/62.34 | 4.0/5.5/5.2 |
+| 1280x720 | SDR10 | 4:4:4 | 400 | 42.62/37.27/36.83 | 109.1/129.2/184.8 |
+| 1280x720 | SDR10 | 4:4:4 | 125 | 26.04/23.89/25.92 | 434.2/387.2/408.1 |
+| 1280x720 | SDR10 | 4:4:4 | 30 | 19.19/22.13/23.84 | 745.0/498.0/491.5 |
+| 1280x720 | HDR10 | 4:2:0 | 1000 | 67.99/67.83/66.85 | 2.6/2.7/3.4 |
+| 1280x720 | HDR10 | 4:2:0 | 400 | 67.99/67.83/66.85 | 2.6/2.7/3.4 |
+| 1280x720 | HDR10 | 4:2:0 | 125 | 34.40/41.98/42.13 | 163.5/81.9/76.0 |
+| 1280x720 | HDR10 | 4:2:0 | 30 | 25.07/31.56/38.60 | 458.5/191.8/87.4 |
+| 1280x720 | HDR10 | 4:4:4 | 1000 | 67.99/61.99/61.41 | 2.6/5.6/6.8 |
+| 1280x720 | HDR10 | 4:4:4 | 400 | 50.15/44.48/45.80 | 89.0/64.9/55.6 |
+| 1280x720 | HDR10 | 4:4:4 | 125 | 33.18/31.73/37.17 | 288.2/144.2/86.9 |
+| 1280x720 | HDR10 | 4:4:4 | 30 | 25.05/29.58/35.52 | 459.5/195.7/91.6 |
+
+At 1080p60, `minimum_kbps` is 124,416 kbps (one bit per pixel per frame).
+The 400, 125 and 30 Mbps budgets are 3.215, 1.005 and 0.241 bits per pixel
+per frame. At 720p60 the warning is 55,296 kbps, and the same budgets are
+7.234, 2.261 and 0.543 bits per pixel per frame. These are nominal encoder
+budgets; framing, FEC and network headers add bytes on the wire.
+
+There is substantial detail loss below the warning, but these pictures do
+not show a sharp quality cliff at one bit per pixel. In the 1080p SDR8
+4:2:0 chart, the worst text-panel luma PSNR is 30.08 dB at 400 Mbps,
+18.03 dB at 125 Mbps and 13.75 dB at 30 Mbps. The corresponding whole-plane
+luma scores are 33.34, 22.34 and 18.64 dB. Quality is already poor at the
+warning's boundary; the larger drop is between 400 and 125 Mbps.
+
+The current threshold remains a conservative warning about very low
+bitrate, not a promise of good quality above it. If it is intended to
+protect fine SDR text, about 3.2 bits per pixel per frame is a candidate
+for 4:2:0: 400 Mbps is the lowest tested 1080p rate to keep both text and
+whole-plane luma above 30 dB. That would be about 178 Mbps at 720p60 by
+pixel-count scaling, an estimate rather than a measured cutoff. It does
+not cover 4:4:4: at 400 Mbps the 1080p SDR8 plane scores are only
+28.83/25.90/27.26 dB. Only the 1000 Mbps control clears 40 dB on all planes
+throughout this matrix. More rates near a proposed boundary and real
+desktop/game captures are needed before choosing a replacement that
+applies across content and chroma formats. `minimum_kbps` is unchanged.
+
 ## October 7: 4:4:4 from AMF
 
 Whether the native AMF encoder could offer HDR 4:4:4 HEVC or AV1 was
