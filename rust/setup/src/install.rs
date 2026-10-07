@@ -8,6 +8,7 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use std::{
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -43,29 +44,68 @@ pub fn profile() -> PathBuf {
 pub fn start_menu_link() -> PathBuf {
     system::program_data().join("Microsoft\\Windows\\Start Menu\\Programs\\Butterpollo.lnk")
 }
+/// The text of a profile's sunshine.conf, empty if it cannot be read. The
+/// host also reads one saved with a byte order mark or as UTF-16.
+fn conf_text(profile: &Path) -> String {
+    let bytes = std::fs::read(profile.join("sunshine.conf")).unwrap_or_default();
+    let utf16 = |bytes: &[u8], unit: fn([u8; 2]) -> u16| {
+        let units: Vec<u16> = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&pair| unit(pair))
+            .collect();
+        String::from_utf16_lossy(&units)
+    };
+    if let Some(rest) = bytes.strip_prefix(b"\xff\xfe") {
+        return utf16(rest, u16::from_le_bytes);
+    }
+    if let Some(rest) = bytes.strip_prefix(b"\xfe\xff") {
+        return utf16(rest, u16::from_be_bytes);
+    }
+    let text = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes);
+    String::from_utf8_lossy(text).into_owned()
+}
 /// The configured base port of a profile (47989 unless set).
 pub fn web_port(profile: &Path) -> u16 {
-    let base = std::fs::read_to_string(profile.join("sunshine.conf"))
-        .ok()
-        .and_then(|text| {
-            text.lines().find_map(|line| {
-                let (key, value) = line.split_once('=')?;
-                (key.trim() == "port")
-                    .then(|| {
-                        value
-                            .split('#')
-                            .next()?
-                            .trim()
-                            .trim_matches('"')
-                            .parse::<u16>()
-                            .ok()
-                    })
-                    .flatten()
-            })
+    let base = conf_text(profile)
+        .lines()
+        .find_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            (key.trim() == "port")
+                .then(|| {
+                    value
+                        .split('#')
+                        .next()?
+                        .trim()
+                        .trim_matches('"')
+                        .parse::<u16>()
+                        .ok()
+                })
+                .flatten()
         })
         .filter(|port| (1029..=65514).contains(port))
         .unwrap_or(47989);
     base + 1
+}
+/// Where the host answers serverinfo: its bind_address, or this PC when
+/// that is blank, all interfaces or not an address (the host then listens
+/// on all of them or only on this PC). The first value that is not empty
+/// counts, as the host reads it.
+fn probe_address(conf: &str) -> IpAddr {
+    conf.lines()
+        .find_map(|line| {
+            let (key, value) = line.split('#').next()?.split_once('=')?;
+            let value = value.trim().trim_matches('"').trim();
+            (key.trim() == "bind_address" && !value.is_empty()).then_some(value)
+        })
+        .and_then(|value| value.parse::<IpAddr>().ok())
+        .filter(|address| !address.is_unspecified())
+        .unwrap_or(IpAddr::from([127, 0, 0, 1]))
+}
+/// The host's serverinfo address for a profile.
+pub(crate) fn probe(profile: &Path) -> SocketAddr {
+    SocketAddr::new(probe_address(&conf_text(profile)), web_port(profile) - 1)
 }
 
 pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
@@ -283,7 +323,7 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
     if options.start {
         progress.set("Starting Butterpollo…");
         system::start_service(SERVICE)?;
-        wait_ready(web_port - 1, Some(env!("CARGO_PKG_VERSION")))?;
+        wait_ready(probe(&profile), Some(env!("CARGO_PKG_VERSION")))?;
     }
     restart.services.clear();
     let _ = std::fs::remove_dir_all(&staging);
@@ -506,19 +546,21 @@ pub(crate) fn register(install: &Path, entries: &[payload::Entry]) -> Result<()>
         ],
     )
 }
-/// Wait until the host answers serverinfo as a Rust host.
-pub(crate) fn wait_ready(port: u16, version: Option<&str>) -> Result<()> {
+/// Wait until the host answers serverinfo at `address` as a Rust host.
+pub(crate) fn wait_ready(address: SocketAddr, version: Option<&str>) -> Result<()> {
     use std::io::{Read, Write};
+    let host = match address {
+        SocketAddr::V4(address) => address.ip().to_string(),
+        SocketAddr::V6(address) => format!("[{}]", address.ip()),
+    };
+    let request = format!("GET /serverinfo HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
     let deadline = Instant::now() + Duration::from_secs(90);
     while Instant::now() < deadline {
-        if let Ok(mut socket) = std::net::TcpStream::connect_timeout(
-            &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
-            Duration::from_millis(500),
-        ) {
+        if let Ok(mut socket) =
+            std::net::TcpStream::connect_timeout(&address, Duration::from_millis(500))
+        {
             let _ = socket.set_read_timeout(Some(Duration::from_secs(20)));
-            let _ = socket.write_all(
-                b"GET /serverinfo HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-            );
+            let _ = socket.write_all(request.as_bytes());
             let mut response = String::new();
             let _ = socket.read_to_string(&mut response);
             if version.map_or_else(
@@ -539,6 +581,70 @@ pub(crate) fn wait_ready(port: u16, version: Option<&str>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_health_check_asks_the_configured_bind_address() {
+        let local = IpAddr::from([127, 0, 0, 1]);
+        for (conf, expected) in [
+            ("", local),
+            ("port = 48000\n", local),
+            ("bind_address =\n", local),
+            ("bind_address = 0.0.0.0\n", local),
+            ("bind_address = ::\n", local),
+            ("bind_address = Ethernet\n", local),
+            ("# bind_address = 192.168.1.50\n", local),
+            (
+                "bind_address = 192.168.1.50\n",
+                IpAddr::from([192, 168, 1, 50]),
+            ),
+            (
+                "bind_address = \"192.168.1.50\" # LAN only\r\n",
+                IpAddr::from([192, 168, 1, 50]),
+            ),
+            (
+                "bind_address =\nbind_address = 10.0.0.2\nbind_address = 10.0.0.3\n",
+                IpAddr::from([10, 0, 0, 2]),
+            ),
+            ("bind_address = fd00::5\n", "fd00::5".parse().unwrap()),
+        ] {
+            assert_eq!(probe_address(conf), expected, "{conf:?}");
+        }
+        let profile = tempfile::tempdir().unwrap();
+        let mut utf16 = vec![0xff, 0xfe];
+        utf16.extend(
+            "port = 48000\r\nbind_address = 192.168.1.50\r\n"
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes),
+        );
+        std::fs::write(profile.path().join("sunshine.conf"), utf16).unwrap();
+        assert_eq!(
+            probe(profile.path()),
+            SocketAddr::from(([192, 168, 1, 50], 48000))
+        );
+        std::fs::write(
+            profile.path().join("sunshine.conf"),
+            b"\xef\xbb\xbfport = 48000\n",
+        )
+        .unwrap();
+        assert_eq!(
+            probe(profile.path()),
+            SocketAddr::from(([127, 0, 0, 1], 48000))
+        );
+        // The probe reaches a host listening only on that address.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let host = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = [0; 512];
+            let length = socket.read(&mut request).unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\n\r\n<RustHostVersion>9.9</RustHostVersion>")
+                .unwrap();
+            String::from_utf8_lossy(&request[..length]).into_owned()
+        });
+        wait_ready(address, Some("9.9")).unwrap();
+        assert!(host.join().unwrap().contains("Host: 127.0.0.1\r\n"));
+    }
     #[test]
     fn the_import_error_and_its_causes_are_shown() {
         let output = "2026-10-07T10:00:00Z  WARN butterpollo_core::migration: profile file not imported file=C:\\old\\dump.bin reason=\"it is larger than 64 MiB\"\n\

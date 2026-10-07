@@ -90,10 +90,7 @@ pub fn run(folder: &Path, progress: &Progress) -> Result<()> {
             payload::write_stub(&install.join("uninstall.exe"))?;
             progress.set("Checking that Butterpollo starts…");
             system::start_service(detect::SERVICE)?;
-            install::wait_ready(
-                install::web_port(&profile) - 1,
-                Some(env!("CARGO_PKG_VERSION")),
-            )?;
+            install::wait_ready(install::probe(&profile), Some(env!("CARGO_PKG_VERSION")))?;
             install::register(&install, &entries)?;
             Ok(())
         },
@@ -103,7 +100,7 @@ pub fn run(folder: &Path, progress: &Progress) -> Result<()> {
         },
         || {
             system::start_service(detect::SERVICE)?;
-            install::wait_ready(install::web_port(&profile) - 1, None)
+            install::wait_ready(install::probe(&profile), None)
         },
     );
     match update {
