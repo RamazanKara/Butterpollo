@@ -233,6 +233,68 @@ fn extended_paths(
     }
     Ok(chosen.into_iter().flatten().collect())
 }
+/// An inactive route from QDC_ALL_PATHS made fit to switch on: Windows
+/// chooses its modes, refresh and position. Such routes carry a zero
+/// rotation and scaling and a stale refresh, which SetDisplayConfig refuses
+/// with ERROR_INVALID_PARAMETER.
+fn switch_on_route(path: &mut DISPLAYCONFIG_PATH_INFO) {
+    path.flags = DISPLAYCONFIG_PATH_ACTIVE;
+    path.sourceInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+    path.targetInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+    // A zero refresh lets Windows pick the display's best rate; it requires
+    // unspecified scan-line ordering.
+    path.targetInfo.refreshRate = DISPLAYCONFIG_RATIONAL::default();
+    path.targetInfo.scanLineOrdering = DISPLAYCONFIG_SCANLINE_ORDERING_UNSPECIFIED;
+    if path.targetInfo.rotation.0 == 0 {
+        path.targetInfo.rotation = DISPLAYCONFIG_ROTATION_IDENTITY;
+    }
+    if path.targetInfo.scaling.0 == 0 {
+        path.targetInfo.scaling = DISPLAYCONFIG_SCALING_PREFERRED;
+    }
+}
+/// Routes for an error report: source > target, flags, source/target mode
+/// index, rotation, scaling, refresh and scan-line ordering.
+fn describe_paths(paths: &[DISPLAYCONFIG_PATH_INFO]) -> String {
+    paths
+        .iter()
+        .map(|p| unsafe {
+            format!(
+                "{}:{}>{}:{} f{} m{}/{} r{} s{} {}/{} o{}",
+                p.sourceInfo.adapterId.LowPart,
+                p.sourceInfo.id,
+                p.targetInfo.adapterId.LowPart,
+                p.targetInfo.id,
+                p.flags,
+                p.sourceInfo.Anonymous.modeInfoIdx as i32,
+                p.targetInfo.Anonymous.modeInfoIdx as i32,
+                p.targetInfo.rotation.0,
+                p.targetInfo.scaling.0,
+                p.targetInfo.refreshRate.Numerator,
+                p.targetInfo.refreshRate.Denominator,
+                p.targetInfo.scanLineOrdering.0,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+/// For each chosen route, whether it moves a display that is on to another
+/// desktop source: the route is inactive but its target has an active one.
+fn moving_targets(
+    chosen: &[DISPLAYCONFIG_PATH_INFO],
+    all: &[DISPLAYCONFIG_PATH_INFO],
+) -> Vec<bool> {
+    chosen
+        .iter()
+        .map(|path| {
+            path.flags & DISPLAYCONFIG_PATH_ACTIVE == 0
+                && all.iter().any(|other| {
+                    other.flags & DISPLAYCONFIG_PATH_ACTIVE != 0
+                        && other.targetInfo.adapterId == path.targetInfo.adapterId
+                        && other.targetInfo.id == path.targetInfo.id
+                })
+        })
+        .collect()
+}
 /// Chosen routes with the mode indices of those already active, so their
 /// displays keep timing and position; newly switched-on routes get none.
 fn keep_active_modes(paths: &[DISPLAYCONFIG_PATH_INFO]) -> Vec<DISPLAYCONFIG_PATH_INFO> {
@@ -241,8 +303,7 @@ fn keep_active_modes(paths: &[DISPLAYCONFIG_PATH_INFO]) -> Vec<DISPLAYCONFIG_PAT
         .map(|path| {
             let mut path = *path;
             if path.flags & DISPLAYCONFIG_PATH_ACTIVE == 0 {
-                path.sourceInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
-                path.targetInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+                switch_on_route(&mut path);
             }
             path.flags = DISPLAYCONFIG_PATH_ACTIVE;
             path
@@ -282,19 +343,7 @@ fn activation_paths(
         .iter()
         .find(|p| !occupied.contains(&source(p)))
         .context("no free desktop source for the virtual display")?;
-    route.flags = DISPLAYCONFIG_PATH_ACTIVE;
-    route.sourceInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
-    route.targetInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
-    // A zero refresh lets Windows pick the display's best rate; it requires
-    // unspecified scan-line ordering.
-    route.targetInfo.refreshRate = DISPLAYCONFIG_RATIONAL::default();
-    route.targetInfo.scanLineOrdering = DISPLAYCONFIG_SCANLINE_ORDERING_UNSPECIFIED;
-    if route.targetInfo.rotation.0 == 0 {
-        route.targetInfo.rotation = DISPLAYCONFIG_ROTATION_IDENTITY;
-    }
-    if route.targetInfo.scaling.0 == 0 {
-        route.targetInfo.scaling = DISPLAYCONFIG_SCALING_PREFERRED;
-    }
+    switch_on_route(&mut route);
     let mut paths: Vec<_> = active.iter().filter(|p| !ours(p)).copied().collect();
     paths.push(route);
     Ok(Some(paths))
@@ -676,6 +725,9 @@ impl Topology {
         Ok(())
     }
     pub fn set_active(ids: &[String]) -> Result<()> {
+        Self::set_active_once(ids, true)
+    }
+    fn set_active_once(ids: &[String], may_move: bool) -> Result<()> {
         if ids.is_empty() {
             bail!("display topology cannot be empty");
         }
@@ -707,7 +759,7 @@ impl Topology {
                 candidates_by_target.push(candidates);
             }
         }
-        let mut paths = extended_paths(&candidates_by_target)?;
+        let paths = extended_paths(&candidates_by_target)?;
         if paths.is_empty() {
             bail!("no saved display targets are currently connected");
         }
@@ -716,19 +768,40 @@ impl Topology {
         // position, such as a retained remote monitor that a restore must
         // leave alone; Windows chooses for the displays it switches on.
         // Windows can refuse that mix, so fall back to choosing every mode.
-        let kept = keep_active_modes(&paths);
-        if kept.iter().any(|p| unsafe { p.sourceInfo.Anonymous.modeInfoIdx }
+        let moving = moving_targets(&paths, &topology.paths);
+        let mut paths = keep_active_modes(&paths);
+        let kept = if paths.iter().any(|p| unsafe { p.sourceInfo.Anonymous.modeInfoIdx }
             != DISPLAYCONFIG_PATH_MODE_IDX_INVALID)
-            && unsafe { SetDisplayConfig(Some(&kept), Some(&topology.modes), flags) } == 0
         {
+            unsafe { SetDisplayConfig(Some(&paths), Some(&topology.modes), flags) }
+        } else {
+            -1
+        };
+        if kept == 0 {
             return Ok(());
         }
+        // Windows refuses a display that changes desktop source while it is
+        // on, such as one leaving a duplicate group (ERROR_INVALID_PARAMETER).
+        // Switch it off with the others unchanged, then on at its new source.
+        if may_move && moving.contains(&true) && moving.contains(&false) {
+            let staying: Vec<_> = paths
+                .iter()
+                .zip(&moving)
+                .filter(|(_, moving)| !**moving)
+                .map(|(path, _)| *path)
+                .collect();
+            check(unsafe { SetDisplayConfig(Some(&staying), Some(&topology.modes), flags) })
+                .context("cannot switch off the displays that change desktop source")?;
+            return Self::set_active_once(ids, false);
+        }
+        let supplied = describe_paths(&paths);
         for path in &mut paths {
-            path.flags = DISPLAYCONFIG_PATH_ACTIVE;
             path.sourceInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
             path.targetInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
         }
-        unsafe { check(SetDisplayConfig(Some(&paths), None, flags)) }
+        unsafe { check(SetDisplayConfig(Some(&paths), None, flags)) }.with_context(|| {
+            format!("Windows refused the display layout (with modes: {kept}; routes: {supplied})")
+        })
     }
     pub fn monitors(&self) -> Vec<Monitor> {
         let primary = crate::capture::displays()
@@ -2500,6 +2573,26 @@ mod tests {
         assert!(extended_paths(&[vec![path(0, 10)], vec![path(0, 20)]]).is_err());
     }
     #[test]
+    fn a_display_leaving_a_duplicate_group_is_moved_but_its_partner_and_new_displays_are_not() {
+        let path = |source, target, active: bool| {
+            let mut path = DISPLAYCONFIG_PATH_INFO::default();
+            path.sourceInfo.id = source;
+            path.targetInfo.id = target;
+            path.flags = if active { DISPLAYCONFIG_PATH_ACTIVE } else { 0 };
+            path
+        };
+        // Targets 10 and 11 duplicate source 1; target 12 is off.
+        let all = [
+            path(1, 10, true),
+            path(1, 11, true),
+            path(0, 10, false),
+            path(0, 11, false),
+            path(2, 12, false),
+        ];
+        let chosen = [path(0, 10, false), path(1, 11, true), path(2, 12, false)];
+        assert_eq!(moving_targets(&chosen, &all), [true, false, false]);
+    }
+    #[test]
     fn displays_that_stay_on_keep_their_modes_when_the_layout_changes() {
         let path = |source, target, mode: u32, active: bool| {
             let mut path = DISPLAYCONFIG_PATH_INFO::default();
@@ -2508,8 +2601,14 @@ mod tests {
             path.sourceInfo.Anonymous.modeInfoIdx = mode;
             path.targetInfo.Anonymous.modeInfoIdx = mode + 1;
             path.flags = if active { DISPLAYCONFIG_PATH_ACTIVE } else { 0 };
+            path.targetInfo.refreshRate = DISPLAYCONFIG_RATIONAL {
+                Numerator: 120,
+                Denominator: 1,
+            };
+            path.targetInfo.scanLineOrdering = DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE;
             path
         };
+        // An inactive route from QDC_ALL_PATHS has no rotation or scaling.
         let kept = keep_active_modes(&[path(0, 10, 4, true), path(1, 11, 6, false)]);
         assert!(kept.iter().all(|p| p.flags == DISPLAYCONFIG_PATH_ACTIVE));
         assert_eq!(unsafe { kept[0].sourceInfo.Anonymous.modeInfoIdx }, 4);
@@ -2522,6 +2621,16 @@ mod tests {
             unsafe { kept[1].targetInfo.Anonymous.modeInfoIdx },
             DISPLAYCONFIG_PATH_MODE_IDX_INVALID
         );
+        // The display that stays on keeps its timing; Windows chooses the
+        // switched-on one's, which needs valid rotation and scaling.
+        assert_eq!(kept[0].targetInfo.refreshRate.Numerator, 120);
+        assert_eq!(kept[1].targetInfo.refreshRate.Denominator, 0);
+        assert_eq!(
+            kept[1].targetInfo.scanLineOrdering,
+            DISPLAYCONFIG_SCANLINE_ORDERING_UNSPECIFIED
+        );
+        assert_eq!(kept[1].targetInfo.rotation, DISPLAYCONFIG_ROTATION_IDENTITY);
+        assert_eq!(kept[1].targetInfo.scaling, DISPLAYCONFIG_SCALING_PREFERRED);
     }
     #[test]
     fn switching_on_a_virtual_display_keeps_duplicated_tvs_and_their_modes() {
