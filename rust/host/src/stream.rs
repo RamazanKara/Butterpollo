@@ -1087,9 +1087,9 @@ impl Media {
                                         send_interval_p95_ms=timing["send_interval_p95_ms"].as_f64().unwrap_or(0.),
                                         send_interval_p99_ms=timing["send_interval_p99_ms"].as_f64().unwrap_or(0.),
                                         send_interval_max_ms=timing["send_interval_max_ms"].as_f64().unwrap_or(0.),
-                                        // Keyframes the client asked for since the start, as after
-                                        // packet loss, and the bitrate the encoder runs at now.
+                                        // Keep reference feedback distinct from IDR recovery.
                                         idr_requests=s.stats.idr_requests.load(Ordering::Relaxed),
+                                        reference_invalidations=s.stats.reference_invalidations.load(Ordering::Relaxed),
                                         bitrate_kbps=s.bitrate.load(Ordering::Relaxed),
                                         "stream timings"
                                     );
@@ -1855,7 +1855,8 @@ impl Media {
                                     )),
                                 );
                             }
-                            0x0301 | 0x0302 => s.request_idr(),
+                            0x0301 => s.request_invalidation(0, 0),
+                            0x0302 => s.request_idr(),
                             0x0109 => {
                                 if encrypted {
                                     s.stop();

@@ -400,6 +400,94 @@ $env:PATH = 'C:\msys64\ucrt64\bin;' + $env:PATH
 python rust/tests/interop.py C:\tests\pyrowave pyrowave-hdr-444 1920 1080 120 20 200000 4
 ```
 
+## October 7: PyroWave recovery feedback
+
+The rc.19 report describes about 3.3 `idr_requests` per second at several
+PyroWave bitrates. That counter alone cannot identify the incoming message:
+it included explicit IDR requests, reference invalidations that fell back to
+IDR, and host requests such as encoder startup. The exact reporting client
+build and its control trace were not available for this investigation.
+
+The pinned [Nonary control implementation](https://github.com/Nonary/moonlight-common-c/blob/d6a11bc685b41037b352a96f29d08276fe5359ba/src/ControlStream.c)
+uses `0x0301` for reference invalidation and `0x0302` for an explicit IDR
+request. Its older `0x0201` loss report runs every 50 ms; modern Sunshine
+connections instead send `0x0200` pings every 100 ms and queued `0x5502` FEC
+status reports. Butterpollo ignores those statistics messages for recovery.
+This client's decoder-capability check enables RFI only for H.264, HEVC and
+AV1; PyroWave transport loss requests an IDR instead. Neither this client
+transport nor the host has a 300 ms recovery timer.
+The [Qt PyroWave decoder](https://github.com/Nonary/moonlight-qt/blob/43225b52c934174736123f894580c0decbe4bec2/app/streaming/video/ffmpeg.cpp)
+also returns `DR_OK` after rejecting a PyroWave picture: the next independent
+picture replaces it. The reported rate is therefore not established as
+expected behavior or as network loss; its precise trigger remains open.
+
+There was a host-side feedback bug. PyroWave reference invalidation reached
+an unsupported encoder method, requested an IDR and increased `idr_requests`.
+Both pending invalidation and the IDR latch could bypass the capture cadence,
+including encoding a repeated picture early. The PyroWave encoder itself
+ignores the IDR argument, so it never produces a larger recovery keyframe.
+Critical FEC uses the record layout and configured percentage; detail FEC uses
+frame cadence, record stability and the available wire budget. Neither reads
+these control messages. Extra early pictures could indirectly change cadence
+and bandwidth, but feedback does not directly increase parity.
+
+PyroWave feedback now leaves the cadence latches alone. Reference invalidations
+have their own `reference_invalidations` counter in session statistics and
+the periodic timing log, and cannot become PyroWave IDR requests. Explicit
+`0x0302` requests remain visible in `idr_requests`, including for PyroWave;
+the existing host startup/fallback accounting is retained. This follows
+[Vibepollo 2.0's handlers](https://github.com/Nonary/vibepollo/blob/8a8c4b03a/src/stream.cpp),
+which separately count IDR/RFI messages and ignore both for PyroWave encoding.
+Unit tests cover valid and malformed PyroWave invalidations, explicit requests,
+and unchanged H.264/HEVC/AV1 range merging and IDR fallback.
+
+The framing comparison found the same eight-byte short header, IDR frame type
+2, exact final payload length, critical-prefix packet count, `0x80` record-start
+flag, RTP/24-bit stream sequence progression and up-to-four-block FEC layout.
+The first FEC block protects the critical records at 20% by default, with at
+least two parity packets, when it fits the 255-shard Reed-Solomon limit;
+otherwise the planner uses unprotected blocks. The critical-packet count is not a required ratio of
+the whole frame; low-bitrate pictures can devote a larger share to coarse
+records. No framing or FEC changes were justified by the comparison.
+
+Before changing the host, the independent pinned receiver streamed record-framed
+PyroWave over loopback at 2560×720/60, with 10/200/800 Mbps requested and
+9,308/198,988/798,988 kbps negotiated. It decoded all 682/683/715 received
+pictures, with zero partial frames and zero decode failures. Each run kept
+`idr_requests=1` from startup through teardown; the 3.3-per-second symptom did
+not reproduce. These are transport/vendor-decoder checks, not validation of
+the reporting client's renderer. The release e2e wrapper correctly reports
+missing motion/audio-continuity measurements for this PyroWave receiver; its
+interoperability check passes, but it is not a full release-e2e pass.
+
+### Radeon LTR recommendation (evaluation only)
+
+Keep `amd_ltr_frames=0` as the default for now. AMF supports explicit LTR
+selection for [HEVC](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/blob/master/amf/doc/AMF_Video_Encode_HEVC_API.md#228-ltr-properties)
+and [AV1](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/blob/master/amf/doc/AMF_Video_Encode_AV1_API.md#227-ltr-properties).
+Butterpollo can already recover a valid reference-invalidation range from an
+older retained anchor, reducing the need for an IDR. The existing strict
+FFmpeg omission fixtures above decoded all 56 retained pictures and exercised
+two LTR recoveries each for HEVC and AV1. That is correctness evidence, not a
+measured Wi-Fi or RDNA4 improvement.
+
+LTR cannot replace explicit decoder-reset IDRs, a lost initial anchor, invalid
+ranges or recovery after all usable anchors are gone. It also needs a client
+decoder that supports reference invalidation and enough negotiated references
+for the anchors plus the rolling reference. The current policy respects that
+budget, disables LTR with intra refresh, checks driver capabilities/readback,
+and falls back on rejected surface properties. Anchor selection relies on the
+reported loss range; it is not proof that every hardware client retained it.
+
+For a supported Radeon/client pair, opt-in LTR is worth testing with controlled
+loss, delayed feedback and decoder resets while measuring recovery bytes,
+latency and sustained decoding. Test RDNA4 separately: the documented
+[RX 9000 H.264/HEVC freeze report](https://github.com/AlkaidLab/foundation-sunshine/issues/666)
+concerns forced low-latency/input-queue settings, not proof of an LTR defect,
+but it makes extrapolating RX 7900 XT results to all Radeon drivers unsafe.
+Do not enable LTR globally to mask congestion. No encoder policy or AMF code
+was changed by this investigation.
+
 ## CPU fallback conversion
 
 This comparison used exactly the same synthetic 1968×2184 FP16 scRGB image, with patterned RGB data, resized to each output dimension. Each version ran for at least three seconds. The new CPU implementation uses lookup tables, precomputed resize columns and at most eight Rayon workers, with a serial fallback if worker creation fails.
