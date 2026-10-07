@@ -31,6 +31,8 @@ static atomic_int hdr_control_mismatches,hdr_invalid_metadata;
 static int decoder_threads=1;
 static int requested_width,requested_height;
 static double audio_energy,audio_peak;
+static double audio_tone_min_energy=INFINITY,audio_tone_max_energy;
+static unsigned audio_tone_blocks;
 static unsigned long long audio_samples;
 static double host_latency[100000], decode_time_ms[100000];
 static double arrivals[100000], picture_age[100000];
@@ -193,6 +195,17 @@ static void audio_frame(char*data,int size){
     float samples[5760*8];int count=opus_multistream_decode_float(opus_decoder,(unsigned char*)data,size,samples,5760,0);
     if(count>0){
         atomic_fetch_add(&audio_packets,1);
+        if(getenv("BUTTERPOLLO_TEST_AUDIO_TONE")&&audio_samples>=48000u*2*audio_channels){
+            /* A continuous tone must stay present after decoder startup. Small
+             * windows catch inserted silence even across Opus packet boundaries. */
+            for(int start=0;start+120<=count;start+=120){
+                double energy=0;
+                for(int i=start*audio_channels;i<(start+120)*audio_channels;i++)energy+=(double)samples[i]*samples[i];
+                energy/=120*audio_channels;
+                audio_tone_min_energy=fmin(audio_tone_min_energy,energy);
+                audio_tone_max_energy=fmax(audio_tone_max_energy,energy);audio_tone_blocks++;
+            }
+        }
         for(int i=0;i<count*audio_channels;i++){double v=samples[i];audio_energy+=v*v;if(fabs(v)>audio_peak)audio_peak=fabs(v);audio_samples++;}
     }else atomic_fetch_add(&failures,1);
 }
@@ -293,6 +306,11 @@ int main(int argc,char**argv){
     printf("PICTURE_CONTENT frames_with_luma_contrast=%d\n",atomic_load(&detailed_frames));
     if(timing_csv)fclose(timing_csv);
     printf("AUDIO_SIGNAL samples=%llu peak=%.6f rms=%.6f\n",audio_samples,audio_peak,audio_samples?sqrt(audio_energy/audio_samples):0.0);
+    if(getenv("BUTTERPOLLO_TEST_AUDIO_TONE")){
+        int continuous=audio_tone_blocks&&audio_tone_min_energy>=audio_tone_max_energy*.25;
+        printf("AUDIO_TONE blocks=%u min_rms=%.6f max_rms=%.6f continuous=%d\n",audio_tone_blocks,sqrt(audio_tone_min_energy),sqrt(audio_tone_max_energy),continuous);
+        if(!continuous)atomic_fetch_add(&failures,1);
+    }
     int motion_valid=!getenv("BUTTERPOLLO_TEST_REQUIRE_MOTION");
     const char *minimum_fps_text=getenv("BUTTERPOLLO_TEST_MIN_FPS");
     double minimum_fps=minimum_fps_text?atof(minimum_fps_text):0;

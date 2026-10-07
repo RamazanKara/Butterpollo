@@ -1452,8 +1452,11 @@ impl Media {
             if !packets.is_empty() {
                 heard = now;
                 next = now + interval;
-            } else if now >= next && now.saturating_duration_since(heard) >= interval * 2 {
-                // An idle or missing endpoint still sends steady silence.
+            } else if now >= next
+                && now.saturating_duration_since(heard) >= Duration::from_millis(50)
+            {
+                // WASAPI delivers roughly 10 ms chunks; allow for scheduling jitter
+                // before treating a quiet capture queue as an idle endpoint.
                 packets.push(silence.clone());
                 next += interval;
                 if next < now {
