@@ -1,10 +1,23 @@
-# Butterpollo 2.0.0-rc.20 release candidate for Windows
+# Butterpollo 2.0.0-rc.21 release candidate for Windows
 
 [Documentation](../docs/README.md) · [Install and migrate](../docs/getting-started.md) · [Configuration](../docs/configuration.md) · [Compatibility](PARITY.md)
 
-**Release history:** [rc.20](#new-in-rc20) · [rc.19](#new-in-rc19) · [rc.18](#new-in-rc18) · [rc.17](#new-in-rc17) · [rc.16](#new-in-rc16) · [rc.15](#new-in-rc15) · [rc.14](#new-in-rc14) · [rc.13](#new-in-rc13) · [rc.12](#new-in-rc12) · [rc.11](#new-in-rc11) · [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
+**Release history:** [rc.21](#new-in-rc21) · [rc.20](#new-in-rc20) · [rc.19](#new-in-rc19) · [rc.18](#new-in-rc18) · [rc.17](#new-in-rc17) · [rc.16](#new-in-rc16) · [rc.15](#new-in-rc15) · [rc.14](#new-in-rc14) · [rc.13](#new-in-rc13) · [rc.12](#new-in-rc12) · [rc.11](#new-in-rc11) · [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
 
-Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.20 installer is named `butterpollo-setup-2.0.0-rc.20.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.21 installer is named `butterpollo-setup-2.0.0-rc.21.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+
+## New in rc.21
+
+- **Security: the Playnite connection can no longer act as the host.** When the host connected to Playnite's connector pipe, a program posing as Playnite could take on the host's identity, which is SYSTEM when it runs as a service. The host now allows the pipe server only to identify it, not to impersonate it. This issue predates rc.20.
+- **PyroWave bitrate guidance from measured picture quality.** 6,048 decoded comparisons across desktop, game, dark and HDR scenes set two levels. At 60 fps the picture breaks down below about 139 Mbps (720p), 187 Mbps (1080p) and 747 Mbps (4K). It is clean from about 277, 399 and 1593 Mbps. The console's stream card shows red below the first level and amber below the second, the log warns, and the guides give the same numbers. At 4K, a clean PyroWave picture needs more than a gigabit link can carry; use HEVC or AV1 there.
+- **Crash reports can no longer hang the host.** The host used to write its own crash dump, which Windows documents as able to deadlock; under load a test hung 1 run in 30. A separate reporter process now writes it. If that process can't start, the host still starts and logs a warning.
+- **Optional AMF limits for recovery frames.** On Wi-Fi a lost frame triggers a full keyframe, several times a normal frame. A new opt-in frame-size cap cut the largest recovery frames at 4K60 and 40 Mbps from 266 to 90 KB (HEVC) and from 154 to 82 KB (AV1), at a small encode-time cost. The defaults are unchanged. AV1 bitrate changes during a stream now use the right AMF property.
+- **Fixes from a review of rc.20:**
+  - A DualShock 4 battery level above 100% from a client no longer corrupts the controller report.
+  - After a quick change of the stream's display, absolute mouse input can no longer land on the previous display.
+  - One client disconnecting no longer releases another client's network acknowledgements before its input is applied.
+  - A ViGEm controller keeps its rumble if unplugging it fails.
+- **Release checks cover PyroWave.** Every release now has to decode PyroWave end to end at 1080p60, SDR and HDR 4:4:4, with picture, motion, cadence and audio checks. The test tone no longer starves under CPU load, so audio checks measure the host rather than the test machine.
 
 ## New in rc.20
 
@@ -258,8 +271,8 @@ Current automated validation: 263 ordinary tests passed, with 27 environment-dep
 
 ## Install
 
-- `butterpollo-setup-2.0.0-rc.20.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
-- For a portable copy, extract `butterpollo-rust-2.0.0-rc.20-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
+- `butterpollo-setup-2.0.0-rc.21.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
+- For a portable copy, extract `butterpollo-rust-2.0.0-rc.21-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
 - These are unsigned test builds. Keep a copy of your configuration and the previous installer for rollback.
 
 ## Lower latency
