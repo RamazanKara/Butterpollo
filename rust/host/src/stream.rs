@@ -1118,6 +1118,10 @@ impl Media {
                                     .get_or_insert_with(butterpollo_windows::foreground::Tracker::default)
                                     .poll_process(&[], &image.gpu.display)
                                     && let Some(app) = h.current_app.lock().unwrap().as_mut()
+                                    // Only the stream of the client that launched the app:
+                                    // another client's display shows its own programs.
+                                    // An app started from the console has no owner.
+                                    && (app.owner.is_empty() || app.owner == s.launch.client.uuid)
                                 {
                                     app.observe_foreground(pid, &program);
                                 }

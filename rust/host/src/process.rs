@@ -202,6 +202,9 @@ pub struct RunningApp {
     /// as a store client, started after the launch (pid → creation time).
     /// Quitting closes them like the app's own processes.
     foreign: BTreeMap<u32, u64>,
+    /// Fullscreen programs on that display the desktop started (pid,
+    /// creation time): never closed, and not looked at again.
+    desktop: std::collections::BTreeSet<(u32, u64)>,
 }
 /// The folder of the program an app starts, as Vibepollo uses when the app
 /// has no working directory: games often load files relative to it.
@@ -272,6 +275,7 @@ impl RunningApp {
                     .is_some_and(|commands| !commands.is_empty()),
             launched_at: butterpollo_windows::process::now(),
             foreign: BTreeMap::new(),
+            desktop: Default::default(),
             exit_timeout: Duration::from_secs(
                 app.extra
                     .get("exit-timeout")
@@ -529,7 +533,18 @@ impl RunningApp {
             return;
         }
         let created = butterpollo_windows::process::creation_time(pid);
-        if !foreign_game(program, created, self.launched_at) {
+        if self.desktop.contains(&(pid, created))
+            || !foreign_game(program, created, self.launched_at)
+        {
+            return;
+        }
+        // A program the user opened on the streamed display (its parent is
+        // explorer.exe) is theirs, not the app's. Remembered, so the process
+        // list is not read again every second on the stream's thread.
+        if butterpollo_windows::process::processes()
+            .is_ok_and(|processes| started_from_desktop(pid, &processes))
+        {
+            self.desktop.insert((pid, created));
             return;
         }
         tracing::info!(app = %self.name, program, pid, "game started by another program; quitting the app closes it");
@@ -554,6 +569,19 @@ impl RunningApp {
 /// client started for an app launched at `launched_at`. The store clients
 /// themselves never are: quitting a Big Picture app that started Steam must
 /// not close Steam.
+/// Whether explorer.exe, the desktop, started `pid`: a program the user
+/// opened themselves. A parent created after the child is an unrelated
+/// process that reused the parent's id.
+fn started_from_desktop(pid: u32, processes: &[butterpollo_core::steam::Process]) -> bool {
+    let Some(child) = processes.iter().find(|p| p.pid == pid) else {
+        return false;
+    };
+    processes.iter().any(|p| {
+        p.pid == child.parent
+            && p.started <= child.started
+            && p.name.eq_ignore_ascii_case("explorer.exe")
+    })
+}
 fn foreign_game(program: &str, created: u64, launched_at: u64) -> bool {
     const CLIENTS: [&str; 14] = [
         "steam.exe",
@@ -952,6 +980,29 @@ mod tests {
             "C:\\tools;$;;$literal$"
         );
         assert!(expand("$(Path", &env).is_err());
+    }
+    #[test]
+    fn a_program_the_desktop_started_is_the_users_not_the_apps() {
+        use butterpollo_core::steam::Process;
+        let process = |pid, parent, started, name: &str| Process {
+            pid,
+            parent,
+            started,
+            name: name.into(),
+        };
+        let processes = [
+            process(10, 1, 100, "explorer.exe"),
+            process(20, 10, 500, "player.exe"),
+            process(30, 40, 500, "game.exe"),
+            process(40, 1, 200, "EpicGamesLauncher.exe"),
+            // Parent id 10 reused after the child started: not its parent.
+            process(50, 60, 300, "old.exe"),
+            process(60, 1, 900, "explorer.exe"),
+        ];
+        assert!(started_from_desktop(20, &processes));
+        assert!(!started_from_desktop(30, &processes));
+        assert!(!started_from_desktop(50, &processes));
+        assert!(!started_from_desktop(99, &processes));
     }
     #[test]
     fn device_commands_in_the_formats_apollo_writes_are_accepted() {
