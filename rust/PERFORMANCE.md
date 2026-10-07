@@ -490,9 +490,15 @@ was changed by this investigation.
 
 ## October 7: Wi-Fi and unknown-route pacing
 
-H.264, HEVC and AV1 now default to twice the negotiated encoder bitrate on a
-wireless or unknown host route, bounded to 1–800 Mbps. Physical Ethernet keeps
-800 Mbps, capped at 80% of its reported link speed. Loopback keeps 800 Mbps.
+H.264, HEVC and AV1 default to twice the negotiated encoder bitrate only on
+confirmed Wi-Fi (interface type 71) or mobile broadband (237, 243, 244) host
+routes, bounded to 1–800 Mbps. Ethernet, loopback, VPN, Tailscale and unknown
+routes retain the rc.19 default of 800 Mbps. A known physical Ethernet link
+caps that at 80% of its reported speed. Virtual Ethernet adapters, including
+Hyper-V vSwitches, use the physical adapter's type and speed when Windows'
+interface stack exposes an unambiguous binding. Missing or ambiguous bindings
+keep the wired default. This corrects the initial policy that treated every
+route without a hardware Ethernet speed as wireless.
 The first frame resolves the route before selecting its rate; subsequent
 lookups retain the two-second refresh. A wired host cannot infer the capacity
 of a wireless client behind an access point, so that case still needs a
@@ -503,6 +509,12 @@ physical-link cap. PyroWave's automatic sender is unchanged: 95% of a known
 Ethernet link, or per-frame wire demand and its bitrate floor otherwise.
 Its independent-frame bandwidth must not inherit an 800 Mbps ceiling or a
 conventional-codec multiplier. The rc.19 two-frame encoder gate is unchanged.
+
+**Wire-time estimate, not a measurement:** a 1,000,000-byte keyframe takes
+80 ms at 2×50 Mbps versus 10 ms at 800 Mbps, before packet overhead and send
+cost. Classification tests cover wireless, mobile, virtual, unknown and
+loopback routes plus resolved, missing and ambiguous physical bindings.
+No live stream or physical-route performance test was run for this correction.
 
 ### Measured loopback cost
 
@@ -4025,7 +4037,7 @@ passing retry does not establish the cause of the first failure.
 
 Loopback is explicitly recognized by
 `peer.ip().to_canonical().is_loopback()` and keeps the 800 Mbps pacing
-ceiling; these tests do not exercise the unknown-route 2× default. The
+ceiling; these tests did not exercise the then-current unknown-route 2× default. The
 host audio, send-path and pacing sources are unchanged between rc.20
 source `f06e72c7` and this worktree's starting `7908fb4a`. No host changes
 were made here. These measurements do not implicate QoS, control ACK

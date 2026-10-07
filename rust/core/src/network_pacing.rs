@@ -1,18 +1,18 @@
 //! Bound packet bursts without accumulating a catch-up burst after a late send.
 use std::time::{Duration, Instant};
 
-/// Unknown/Wi-Fi routes leave send and FEC headroom at twice the encoded bitrate.
-/// Ethernet and loopback retain the 800 Mbps ceiling; Ethernet has 20% headroom.
+/// Confirmed wireless routes leave headroom at twice the encoded bitrate.
+/// Other routes retain the 800 Mbps ceiling; known Ethernet has 20% headroom.
 /// Explicit limits retain the stream-bitrate floor, subject to the physical link.
-pub fn rate_bps(configured_kbps: i64, stream_kbps: u32, link_bps: u64, loopback: bool) -> u64 {
+pub fn rate_bps(configured_kbps: i64, stream_kbps: u32, link_bps: u64, wireless: bool) -> u64 {
     let requested = if configured_kbps > 0 {
         (configured_kbps as u64)
             .saturating_mul(1000)
             .max(u64::from(stream_kbps) * 1100)
-    } else if link_bps > 0 || loopback {
-        800_000_000
-    } else {
+    } else if wireless {
         (u64::from(stream_kbps) * 2000).clamp(1_000_000, 800_000_000)
+    } else {
+        800_000_000
     };
     if link_bps > 0 {
         requested.min(link_bps.saturating_mul(4) / 5).max(1)
@@ -143,27 +143,28 @@ mod tests {
 
     #[test]
     fn slow_routes_bound_default_and_explicit_rates_without_changing_fast_routes() {
-        assert_eq!(rate_bps(0, 50_000, 0, false), 100_000_000);
-        assert_eq!(rate_bps(0, 50_000, 0, true), 800_000_000);
+        assert_eq!(rate_bps(0, 50_000, 0, true), 100_000_000);
+        assert_eq!(rate_bps(0, 50_000, 0, false), 800_000_000);
         assert_eq!(rate_bps(0, 50_000, 2_500_000_000, false), 800_000_000);
         assert_eq!(rate_bps(0, 50_000, 100_000_000, false), 80_000_000);
-        for loopback in [false, true] {
-            assert_eq!(rate_bps(30_000, 50_000, 0, loopback), 55_000_000);
-            assert_eq!(rate_bps(800_000, 50_000, 0, loopback), 800_000_000);
+        for wireless in [false, true] {
+            assert_eq!(rate_bps(30_000, 50_000, 0, wireless), 55_000_000);
+            assert_eq!(rate_bps(800_000, 50_000, 0, wireless), 800_000_000);
             assert_eq!(
-                rate_bps(100_000, 100_000, 100_000_000, loopback),
+                rate_bps(100_000, 100_000, 100_000_000, wireless),
                 80_000_000
             );
         }
-        assert_eq!(rate_bps(0, 1, 0, false), 1_000_000);
-        assert_eq!(rate_bps(0, u32::MAX, 0, false), 800_000_000);
+        assert_eq!(rate_bps(0, 1, 0, true), 1_000_000);
+        assert_eq!(rate_bps(0, u32::MAX, 0, true), 800_000_000);
         assert!(rate_bps(i64::MAX, u32::MAX, u64::MAX, false) > 0);
     }
 
     #[test]
     fn wireless_defaults_follow_bitrate_without_capping_pyrowave_demand() {
         for kbps in [9_300, 19_000, 60_000, 149_000] {
-            assert_eq!(rate_bps(0, kbps, 0, false), u64::from(kbps) * 2000);
+            assert_eq!(rate_bps(0, kbps, 0, true), u64::from(kbps) * 2000);
+            assert_eq!(rate_bps(0, kbps, 0, false), 800_000_000);
         }
         for kbps in [200_000, 800_000, 2_000_000] {
             let demand = u64::from(kbps) * 1400;

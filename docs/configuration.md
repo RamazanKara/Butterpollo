@@ -17,7 +17,7 @@ Start with the defaults below. Settings imported from an older installation keep
 | AMD usage — `amd_usage` | `ultralowlatency` | AMD's lowest-latency preset. The driver also turns on its internal low-latency mode, and the lowest latency for AV1. |
 | AMD quality — `amd_quality` | `speed` | Favours low encoding latency. |
 | Frame pacing — `frame_pacing` | `arrival` | Encodes arriving frames, limited to the requested stream rate. |
-| Video packet pacing — `pacing_max_bitrate_kbps` | `0` | Automatic: twice the encoder bitrate on Wi-Fi or unknown routes; up to 800 Mbps on Ethernet and loopback. PyroWave keeps its separate bandwidth policy. |
+| Video packet pacing — `pacing_max_bitrate_kbps` | `0` | Automatic: twice the encoder bitrate on confirmed Wi-Fi or mobile routes; up to 800 Mbps on other routes. PyroWave keeps its separate bandwidth policy. |
 | HEVC / AV1 support — `hevc_mode`, `av1_mode` | `0` | Automatic capability detection; only working profiles are offered. |
 | PyroWave — `pyrowave` | `true` | Offers PyroWave to clients that support it. |
 | Virtual display — `virtual_display_mode` | Windows 11: `per_client`; Windows 10: `disabled` | A display for each device on Windows 11; a physical monitor on Windows 10. Requires the virtual display driver when enabled. |
@@ -57,7 +57,7 @@ Set the bitrate in Moonlight and leave network headroom for packet overhead and 
 
 **VRR is client-negotiated.** A VRR request can use a 1000 Hz virtual display when automatic virtual refresh is enabled. That is the host's virtual display rate, not a claim that your TV or monitor refreshes at 1000 Hz. Client and display support still matter.
 
-**Packet pacing limits video bursts.** With `pacing_max_bitrate_kbps = 0`, H.264, HEVC and AV1 use twice the negotiated encoder bitrate when the host's route is wireless or unknown, bounded to 1–800 Mbps. Physical Ethernet retains an 800 Mbps ceiling, capped at 80% of its reported link speed. Loopback retains 800 Mbps. The host cannot detect a wireless client behind a wired access point from its own Ethernet route.
+**Packet pacing limits video bursts.** With `pacing_max_bitrate_kbps = 0`, H.264, HEVC and AV1 use twice the negotiated encoder bitrate when Windows identifies the host's route as Wi-Fi or mobile broadband, bounded to 1–800 Mbps. Ethernet, loopback, VPN, Tailscale and unknown routes retain the rc.19 default of 800 Mbps. A known physical Ethernet link caps that at 80% of its reported speed. For virtual Ethernet adapters such as Hyper-V vSwitches, the host tries to resolve the physical adapter through Windows' interface stack. Missing or ambiguous bindings keep the wired default. The host cannot detect a wireless client behind a wired access point from its own Ethernet route.
 
 Set `pacing_max_bitrate_kbps` to a positive value in **kbps** to override the automatic policy, including for PyroWave. For example, `120000` paces at 120 Mbps. The existing floor of 110% of the stream bitrate still applies, and a known Ethernet link can lower the limit to 80% of link speed. This changes packet spacing, not the encoded bitrate; reconnect after saving. PyroWave's automatic policy retains 95% of a known Ethernet link, or its per-frame wire demand and bitrate floor on other routes, so its high-bandwidth intra frames are not restricted by the conventional-codec default. [Measurements and pacing math](../rust/PERFORMANCE.md#october-7-wi-fi-and-unknown-route-pacing).
 

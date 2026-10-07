@@ -294,32 +294,102 @@ pub fn send_datagram(socket: &UdpSocket, packet: &[u8], peer: SocketAddr) -> Res
         Err(error) => Err(std::io::Error::from_raw_os_error(error.0).into()),
     }
 }
-/// Physical Ethernet speed on the route to this client; zero means unknown.
-pub fn routed_link_bps(peer: SocketAddr) -> u64 {
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Link {
+    /// Physical Ethernet speed; zero means unknown.
+    pub bps: u64,
+    pub wireless: bool,
+}
+fn interface_link(row: &windows::Win32::NetworkManagement::IpHelper::MIB_IF_ROW2) -> Link {
+    use windows::Win32::NetworkManagement::{IpHelper::*, Ndis::IfOperStatusUp};
+    if row.OperStatus != IfOperStatusUp {
+        return Link::default();
+    }
+    Link {
+        bps: if row.Type == IF_TYPE_ETHERNET_CSMACD
+            && row.InterfaceAndOperStatusFlags._bitfield & 1 != 0
+        {
+            row.TransmitLinkSpeed
+        } else {
+            0
+        },
+        wireless: matches!(
+            row.Type,
+            IF_TYPE_IEEE80211 | IF_TYPE_IEEE80216_WMAN | IF_TYPE_WWANPP | IF_TYPE_WWANPP2
+        ),
+    }
+}
+fn underlying_link(
+    mut index: u32,
+    stack: &[windows::Win32::NetworkManagement::IpHelper::MIB_IFSTACK_ROW],
+    mut entry: impl FnMut(u32) -> Option<windows::Win32::NetworkManagement::IpHelper::MIB_IF_ROW2>,
+) -> Link {
+    let mut seen = std::collections::BTreeSet::new();
+    while seen.insert(index) {
+        let mut lower = stack.iter().filter(|row| {
+            row.HigherLayerInterfaceIndex == index && row.LowerLayerInterfaceIndex != 0
+        });
+        let Some(row) = lower.next() else { break };
+        // A team or ambiguous binding cannot establish the route's medium.
+        if lower.next().is_some() {
+            break;
+        }
+        index = row.LowerLayerInterfaceIndex;
+        let Some(row) = entry(index) else { break };
+        if row.OperStatus != windows::Win32::NetworkManagement::Ndis::IfOperStatusUp {
+            break;
+        }
+        if row.InterfaceAndOperStatusFlags._bitfield & 1 != 0 {
+            return interface_link(&row);
+        }
+    }
+    Link::default()
+}
+/// Classify the route, using a virtual Ethernet adapter's physical binding
+/// when Windows exposes an unambiguous interface stack.
+pub fn routed_link(peer: SocketAddr) -> Link {
     use windows::Win32::NetworkManagement::{IpHelper::*, Ndis::IfOperStatusUp};
     let peer = SocketAddr::new(peer.ip().to_canonical(), peer.port());
     if peer.ip().is_loopback() {
-        return 0;
+        return Link::default();
     }
     let address = socket2::SockAddr::from(peer);
     let mut index = 0;
     unsafe {
         if GetBestInterfaceEx(address.as_ptr().cast(), &mut index) != 0 {
-            return 0;
+            return Link::default();
         }
         let mut row = MIB_IF_ROW2 {
             InterfaceIndex: index,
             ..Default::default()
         };
-        if GetIfEntry2(&mut row).0 != 0
-            || row.Type != 6
-            || row.OperStatus != IfOperStatusUp
-            || row.InterfaceAndOperStatusFlags._bitfield & 1 == 0
-        {
-            return 0;
+        if GetIfEntry2(&mut row).0 != 0 || row.OperStatus != IfOperStatusUp {
+            return Link::default();
         }
-        row.TransmitLinkSpeed
+        if row.Type != IF_TYPE_ETHERNET_CSMACD || row.InterfaceAndOperStatusFlags._bitfield & 1 != 0
+        {
+            return interface_link(&row);
+        }
+        let mut table = std::ptr::null_mut();
+        if GetIfStackTable(&mut table).0 != 0 {
+            return Link::default();
+        }
+        let stack =
+            std::slice::from_raw_parts((*table).Table.as_ptr(), (*table).NumEntries as usize);
+        let link = underlying_link(index, stack, |index| {
+            let mut row = MIB_IF_ROW2 {
+                InterfaceIndex: index,
+                ..Default::default()
+            };
+            (GetIfEntry2(&mut row).0 == 0).then_some(row)
+        });
+        FreeMibTable(table.cast());
+        link
     }
+}
+/// Physical Ethernet speed on the route to this client; zero means unknown.
+pub fn routed_link_bps(peer: SocketAddr) -> u64 {
+    routed_link(peer).bps
 }
 /// qWAVE, loaded at run time as Vibepollo does: Windows Server has
 /// qwave.dll only with its Quality Windows Audio Video Experience feature.
@@ -607,6 +677,139 @@ impl Batch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows::Win32::NetworkManagement::{IpHelper::*, Ndis::*};
+
+    fn interface(kind: u32, hardware: bool) -> MIB_IF_ROW2 {
+        let mut row = MIB_IF_ROW2 {
+            Type: kind,
+            OperStatus: IfOperStatusUp,
+            TransmitLinkSpeed: 1_000_000_000,
+            ..Default::default()
+        };
+        row.InterfaceAndOperStatusFlags._bitfield = u8::from(hardware);
+        row
+    }
+
+    #[test]
+    fn only_confirmed_wireless_interfaces_get_bitrate_pacing() {
+        for kind in [
+            IF_TYPE_IEEE80211,
+            IF_TYPE_IEEE80216_WMAN,
+            IF_TYPE_WWANPP,
+            IF_TYPE_WWANPP2,
+        ] {
+            for hardware in [false, true] {
+                let link = interface_link(&interface(kind, hardware));
+                assert!(link.wireless);
+                assert_eq!(link.bps, 0);
+                assert_eq!(
+                    butterpollo_core::network_pacing::rate_bps(0, 50_000, link.bps, link.wireless),
+                    100_000_000
+                );
+            }
+        }
+        // vEthernet/TAP, VPN/PPP, Tailscale/tunnel, loopback and unknown.
+        for kind in [
+            IF_TYPE_ETHERNET_CSMACD,
+            IF_TYPE_PPP,
+            IF_TYPE_TUNNEL,
+            IF_TYPE_SOFTWARE_LOOPBACK,
+            IF_TYPE_OTHER,
+            0,
+        ] {
+            let link = interface_link(&interface(kind, false));
+            assert_eq!(link, Link::default());
+            assert_eq!(
+                butterpollo_core::network_pacing::rate_bps(0, 50_000, link.bps, link.wireless),
+                800_000_000
+            );
+        }
+        let mut wired = interface(IF_TYPE_ETHERNET_CSMACD, true);
+        wired.TransmitLinkSpeed = 100_000_000;
+        assert_eq!(
+            interface_link(&wired),
+            Link {
+                bps: 100_000_000,
+                wireless: false
+            }
+        );
+        wired.OperStatus = IfOperStatusDown;
+        assert_eq!(interface_link(&wired), Link::default());
+        let mut wifi = interface(IF_TYPE_IEEE80211, true);
+        wifi.OperStatus = IfOperStatusDown;
+        assert_eq!(interface_link(&wifi), Link::default());
+    }
+
+    #[test]
+    fn virtual_switch_uses_only_an_unambiguous_physical_binding() {
+        let stack = [
+            MIB_IFSTACK_ROW {
+                HigherLayerInterfaceIndex: 7,
+                LowerLayerInterfaceIndex: 8,
+            },
+            MIB_IFSTACK_ROW {
+                HigherLayerInterfaceIndex: 8,
+                LowerLayerInterfaceIndex: 9,
+            },
+        ];
+        for kind in [IF_TYPE_ETHERNET_CSMACD, IF_TYPE_IEEE80211] {
+            let physical = interface(kind, true);
+            assert_eq!(
+                underlying_link(7, &stack, |index| Some(if index == 9 {
+                    physical
+                } else {
+                    interface(IF_TYPE_ETHERNET_CSMACD, false)
+                })),
+                interface_link(&physical)
+            );
+        }
+        assert_eq!(
+            underlying_link(7, &[], |_| panic!("no binding")),
+            Link::default()
+        );
+        assert_eq!(underlying_link(7, &stack, |_| None), Link::default());
+        let ambiguous = [
+            stack[0],
+            MIB_IFSTACK_ROW {
+                HigherLayerInterfaceIndex: 7,
+                LowerLayerInterfaceIndex: 9,
+            },
+        ];
+        assert_eq!(
+            underlying_link(7, &ambiguous, |_| panic!("ambiguous binding")),
+            Link::default()
+        );
+        let cycle = [
+            stack[0],
+            MIB_IFSTACK_ROW {
+                HigherLayerInterfaceIndex: 8,
+                LowerLayerInterfaceIndex: 7,
+            },
+        ];
+        assert_eq!(
+            underlying_link(7, &cycle, |_| Some(interface(
+                IF_TYPE_ETHERNET_CSMACD,
+                false
+            ))),
+            Link::default()
+        );
+        let mut down = interface(IF_TYPE_IEEE80211, true);
+        down.OperStatus = IfOperStatusDown;
+        assert_eq!(underlying_link(7, &stack, |_| Some(down)), Link::default());
+    }
+
+    #[test]
+    fn loopback_including_mapped_ipv4_keeps_the_fast_default() {
+        for peer in ["127.0.0.1:9", "[::1]:9", "[::ffff:127.0.0.1]:9"] {
+            let link = routed_link(peer.parse().unwrap());
+            assert_eq!(link, Link::default());
+            assert_eq!(
+                butterpollo_core::network_pacing::rate_bps(0, 50_000, link.bps, link.wireless),
+                800_000_000
+            );
+        }
+    }
+
     #[test]
     #[ignore = "requires a configured native network adapter and route"]
     fn native_local_mac_matches_mapped_ipv6_and_preserves_loopback() -> Result<()> {
