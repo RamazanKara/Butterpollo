@@ -6,11 +6,45 @@ use std::{
     path::Path,
     time::Duration,
 };
-#[derive(Clone, serde::Deserialize)]
+#[derive(Clone)]
 struct ClientCommand {
     cmd: String,
-    #[serde(default)]
     elevated: bool,
+}
+/// A device's command list as Apollo and the C++ host store it too: an empty
+/// list may be "", and `elevated` may be "true"/"false" or a number. An entry
+/// without a command line is an error: no command may run if its undo list
+/// cannot be read.
+fn client_commands(value: Option<&serde_json::Value>, key: &str) -> Result<Vec<ClientCommand>> {
+    use serde_json::Value;
+    let entries = match value {
+        None | Some(Value::Null) => return Ok(vec![]),
+        Some(Value::String(text)) if text.trim().is_empty() => return Ok(vec![]),
+        Some(Value::Array(entries)) => entries,
+        Some(_) => bail!("the device's {key} commands are not a list"),
+    };
+    entries
+        .iter()
+        .map(|entry| {
+            let Some(cmd) = entry.get("cmd").and_then(Value::as_str) else {
+                bail!("a device {key} command has no command line");
+            };
+            Ok(ClientCommand {
+                cmd: cmd.to_owned(),
+                elevated: match entry.get("elevated") {
+                    Some(Value::Bool(flag)) => *flag,
+                    Some(Value::Number(number)) => number.as_i64().is_some_and(|n| n != 0),
+                    Some(Value::String(text)) => {
+                        matches!(
+                            text.trim().to_ascii_lowercase().as_str(),
+                            "true" | "1" | "yes"
+                        )
+                    }
+                    _ => false,
+                },
+            })
+        })
+        .collect()
 }
 /// Administrator-configured hooks run once for each connected transport, with
 /// its environment saved for disconnect even if the application exits first.
@@ -74,19 +108,28 @@ impl ClientCommands {
                 environment.insert(format!("APOLLO_{suffix}"), value);
             }
         }
-        Self::with_environment(&s.launch.client.extra, environment)
+        // A device whose commands cannot be read streams without them, as in
+        // the C++ host, instead of failing every stream.
+        Ok(
+            Self::with_environment(&s.launch.client.extra, environment).unwrap_or_else(|error| {
+                tracing::warn!(
+                    client = %s.launch.client.name,
+                    error = format!("{error:#}"),
+                    "device commands cannot be used; streaming without them"
+                );
+                Self {
+                    undo: vec![],
+                    environment: BTreeMap::new(),
+                }
+            }),
+        )
     }
     fn with_environment(
         extra: &BTreeMap<String, serde_json::Value>,
         environment: BTreeMap<String, String>,
     ) -> Result<Self> {
         let parse = |key: &str| -> Result<Vec<ClientCommand>> {
-            let commands: Vec<ClientCommand> = serde_json::from_value(
-                extra
-                    .get(key)
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!([])),
-            )?;
+            let commands = client_commands(extra.get(key), key)?;
             if commands.len() > 64
                 || commands
                     .iter()
@@ -909,6 +952,38 @@ mod tests {
             "C:\\tools;$;;$literal$"
         );
         assert!(expand("$(Path", &env).is_err());
+    }
+    #[test]
+    fn device_commands_in_the_formats_apollo_writes_are_accepted() {
+        let parse = |value: serde_json::Value| {
+            client_commands(Some(&value), "do").map(|commands| {
+                commands
+                    .into_iter()
+                    .map(|c| (c.cmd, c.elevated))
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert!(parse(serde_json::json!("")).unwrap().is_empty());
+        assert!(client_commands(None, "do").unwrap().is_empty());
+        assert_eq!(
+            parse(serde_json::json!([
+                {"cmd": "a", "elevated": "false"},
+                {"cmd": "b", "elevated": "true"},
+                {"cmd": "c", "elevated": 1},
+                {"cmd": "d"},
+                {"cmd": "e", "elevated": true}
+            ]))
+            .unwrap(),
+            [
+                ("a".to_owned(), false),
+                ("b".to_owned(), true),
+                ("c".to_owned(), true),
+                ("d".to_owned(), false),
+                ("e".to_owned(), true)
+            ]
+        );
+        assert!(parse(serde_json::json!([{"elevated": true}])).is_err());
+        assert!(parse(serde_json::json!({"cmd": "x"})).is_err());
     }
     #[test]
     fn client_hooks_use_the_saved_environment_on_disconnect() {
