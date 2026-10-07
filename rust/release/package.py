@@ -1,11 +1,12 @@
 """Assemble a release from the previous verified release package.
 
-Only the rebuilt host binaries, the documentation, the lock file and the
-workspace versions change; runtimes, drivers, the web console, TrueHDR and
-the performance probes are kept byte for byte from the baseline, and every
-file is checked against the baseline's manifest first.
+Only the rebuilt host binaries, the web console (when --web names its
+build), the documentation, the lock file and the workspace versions change;
+runtimes, drivers, TrueHDR and the performance probes are kept byte for byte
+from the baseline, and every file is checked against the baseline's manifest
+first.
 
-usage: package.py --repo DIR --build DIR --baseline-zip ZIP --baseline-sums FILE --qa DIR --out DIR
+usage: package.py --repo DIR --build DIR --baseline-zip ZIP --baseline-sums FILE --qa DIR --out DIR [--web DIST]
 """
 import argparse
 import datetime
@@ -22,6 +23,7 @@ import zipfile
 parser = argparse.ArgumentParser()
 for name in ('repo', 'build', 'baseline-zip', 'baseline-sums', 'qa', 'out'):
     parser.add_argument('--' + name, required=True, type=pathlib.Path)
+parser.add_argument('--web', type=pathlib.Path, help='the web console built from this commit (its dist folder)')
 args = parser.parse_args()
 repo, build, out, qa = args.repo, args.build, args.out, args.qa
 package = out / 'butterpollo-rust-release'
@@ -90,6 +92,13 @@ sources = {
 }
 for dst, src in sources.items():
     shutil.copy2(repo / src, package / dst)
+# The web console from this commit. Its file names carry content hashes, so
+# they change with it; everything else keeps the baseline's layout.
+WEB = 'assets/web/'
+if args.web:
+    assert (args.web / 'index.html').is_file(), f'{args.web} is not a web console build'
+    shutil.rmtree(package / WEB)
+    shutil.copytree(args.web, package / WEB)
 deps_path = package / 'licenses/rust-dependencies.json'
 deps = json.loads(deps_path.read_text(encoding='utf-8-sig'))
 workspace = {'butterpollo', 'butterpollo-core', 'butterpollo-windows', 'butterpollo-setup',
@@ -102,7 +111,9 @@ deps_path.write_text(json.dumps(deps, indent=2), encoding='utf-8')
 entries = [dict(path=p.relative_to(package).as_posix(), sha256=sha_file(p))
            for p in sorted(package.rglob('*'))
            if p.is_file() and p.relative_to(package).as_posix() != 'manifest.json']
-assert {e['path'] for e in entries} == {e['path'] for e in base_manifest}, 'package layout changed'
+def layout(paths):
+    return {p for p in paths if not (args.web and p.startswith(WEB))}
+assert layout(e['path'] for e in entries) == layout(e['path'] for e in base_manifest), 'package layout changed'
 (package / 'manifest.json').write_text(json.dumps(entries, indent=2), encoding='utf-8')
 base = {e['path']: e['sha256'] for e in base_manifest}
 changed = sorted(e['path'] for e in entries if base.get(e['path']) != e['sha256'])

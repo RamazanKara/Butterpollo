@@ -138,9 +138,29 @@ cargo build --release --locked --manifest-path $manifest --target-dir "$target\s
 Copy-Item "$target\ship\release\examples\audio_probe.exe", "$target\ship\release\examples\motion_probe.exe" "$qa\fixtures"
 $client = "$qa\fixtures\moonlight-client.exe"
 
+Step 'web console'
+# Built from this commit, in a copy as rust/build.ps1 does, so node_modules
+# from another checkout cannot leak in. Packaging used to keep the previous
+# release's build, so changes to the web console never shipped.
+$web = "$target\web-build"
+& {
+    # Exit codes 1-7 are robocopy's successes.
+    $PSNativeCommandUseErrorActionPreference = $false
+    robocopy "$Checkout\rust\web" $web /MIR /XD node_modules dist /NFL /NDL /NJH /NJS /NP | Out-Null
+}
+if ($LASTEXITCODE -ge 8) { throw "copying the web console failed ($LASTEXITCODE)" }
+Push-Location $web
+try {
+    npm ci --no-audit --no-fund *> "$qa\web.log"
+    npm run check *>> "$qa\web.log"
+    npm run build *>> "$qa\web.log"
+} finally {
+    Pop-Location
+}
+
 Step "package from $previous"
 & $python "$tools\package.py" --repo $Checkout --build "$target\ship\release" --baseline-zip $baselineZip `
-    --baseline-sums "$baseline\SHA256SUMS" --qa $qa --out $out | Out-Null
+    --baseline-sums "$baseline\SHA256SUMS" --qa $qa --out $out --web "$web\dist" | Out-Null
 $package = "$out\butterpollo-rust-release"
 
 foreach ($case in 'h264', 'hevc', 'av1', 'hevc-vrr') {
