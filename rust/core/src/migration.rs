@@ -104,6 +104,31 @@ pub fn import(source: &Path, destination: &Path) -> Result<()> {
         let (mut files, mut total) = (0, 0);
         copy_tree(&source, &stage, &mut files, &mut total)?;
         let mut rewritten = config.clone();
+        // The certificate and key only work as a pair. When one is missing
+        // the C++ host makes a new pair; clearing the default place lets this
+        // host do the same instead of refusing to start.
+        let identity = [
+            config.path("cert", &source, "credentials/cacert.pem"),
+            config.path("pkey", &source, "credentials/cakey.pem"),
+        ];
+        let identity_complete = identity.iter().all(|path| path.is_file());
+        if !identity_complete {
+            if identity.iter().any(|path| path.is_file())
+                || config.values.contains_key("cert")
+                || config.values.contains_key("pkey")
+            {
+                tracing::warn!(
+                    certificate = %identity[0].display(),
+                    key = %identity[1].display(),
+                    "the certificate or its key is missing; the host makes a new pair"
+                );
+            }
+            for target in ["credentials/cacert.pem", "credentials/cakey.pem"] {
+                if stage.join(target).is_file() {
+                    std::fs::remove_file(stage.join(target))?;
+                }
+            }
+        }
         for (key, target) in [
             ("file_state", "sunshine_state.json"),
             ("file_apps", "apps.json"),
@@ -116,17 +141,27 @@ pub fn import(source: &Path, destination: &Path) -> Result<()> {
                 continue;
             }
             let original = config.path(key, &source, target);
-            if original.is_file() {
+            let usable = if matches!(key, "cert" | "pkey") {
+                identity_complete
+            } else {
+                original.is_file()
+            };
+            if usable {
                 let path = stage.join(target);
                 copy_file(&original, &path, &mut files, &mut total)?;
                 rewritten.values.insert(key.into(), target.into());
-            } else if matches!(
-                key,
-                "file_state" | "file_apps" | "credentials_file" | "cert" | "pkey"
-            ) {
-                bail!("configured profile file is missing: {}", original.display());
-            } else {
+            } else if key == "vibeshine_file_state" {
                 rewritten.values.insert(key.into(), target.into());
+            } else {
+                // As in the C++ host, the default file is used (or made).
+                if !matches!(key, "cert" | "pkey") {
+                    tracing::warn!(
+                        key,
+                        file = %original.display(),
+                        "a configured profile file is missing; the default is used"
+                    );
+                }
+                rewritten.values.remove(key);
             }
         }
         // Own existing PNG covers too, so uninstalling the original host does
@@ -235,7 +270,46 @@ mod tests {
         assert!(import(&old, &old.join("inside")).is_err());
     }
     #[test]
-    fn covers_survive_original_profile_removal_and_failed_identity_import_rolls_back() {
+    fn configured_files_that_are_missing_fall_back_to_the_defaults() {
+        let temp = tempfile::tempdir().unwrap();
+        let old = temp.path().join("old");
+        std::fs::create_dir_all(old.join("credentials")).unwrap();
+        std::fs::write(old.join("apps.json"), br#"{"apps":[{"name":"Kept"}]}"#).unwrap();
+        // The certificate is in its default place, its configured key is not.
+        std::fs::write(old.join("credentials/cacert.pem"), "certificate").unwrap();
+        let gone = temp.path().join("gone");
+        std::fs::write(
+            old.join("sunshine.conf"),
+            format!(
+                "file_state={0}\\state.json\nfile_apps={0}\\apps.json\ncredentials_file={0}\\credentials.json\ncert=credentials\\cacert.pem\npkey={0}\\cakey.pem\nvibeshine_file_state={0}\\vibeshine.json\n",
+                gone.display()
+            ),
+        )
+        .unwrap();
+        let next = temp.path().join("next");
+        import(&old, &next).unwrap();
+        let config = Config::load(&next.join("sunshine.conf")).unwrap();
+        for key in [
+            "file_state",
+            "file_apps",
+            "credentials_file",
+            "cert",
+            "pkey",
+        ] {
+            assert!(!config.values.contains_key(key), "{key}");
+        }
+        assert_eq!(
+            config.get("vibeshine_file_state", ""),
+            "vibeshine_state.json"
+        );
+        let apps = state::load_json(&next.join("apps.json"), serde_json::json!({})).unwrap();
+        assert_eq!(apps["apps"][0]["name"], "Kept");
+        // Without its key the certificate is useless; the host makes a new pair.
+        assert!(!next.join("credentials/cacert.pem").exists());
+        assert!(old.join("credentials/cacert.pem").is_file());
+    }
+    #[test]
+    fn covers_survive_original_profile_removal_and_a_failed_import_rolls_back() {
         let temp = tempfile::tempdir().unwrap();
         let old = temp.path().join("old");
         std::fs::create_dir(&old).unwrap();
@@ -257,9 +331,14 @@ mod tests {
         assert_eq!(imported["apps"][0]["cmd"], "original command");
         assert_eq!(imported["apps"][0]["unknown"], apps["apps"][0]["unknown"]);
         std::fs::create_dir(&old).unwrap();
+        // The credentials cannot be left out, and they cannot be copied.
+        std::fs::File::create(old.join("credentials.json"))
+            .unwrap()
+            .set_len(65 * 1024 * 1024)
+            .unwrap();
         std::fs::write(
             old.join("sunshine.conf"),
-            "cert=missing.pem\npkey=missing-key.pem\n",
+            "credentials_file=credentials.json\n",
         )
         .unwrap();
         let failed = temp.path().join("failed");

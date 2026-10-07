@@ -97,6 +97,12 @@ async fn main() -> Result<()> {
         return butterpollo_windows::capture::run_wgc_worker(pipe, args.wgc_parent.unwrap());
     }
     if let Some(source) = &args.import_config {
+        // Setup keeps this output in its log: what was left out, and why.
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_ansi(false)
+            .with_max_level(tracing::Level::WARN)
+            .init();
         return butterpollo_core::migration::import(source, args.config_dir.as_ref().unwrap());
     }
     if let Some(pipe) = &args.rtss_worker {
