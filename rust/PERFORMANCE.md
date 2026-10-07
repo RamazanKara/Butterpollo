@@ -1832,7 +1832,7 @@ The repeat adds an observation with zero intervals above 25 ms without replacing
 that uneven run or establishing universally even cadence. All source, scope
 and physical-panel limitations above remain unchanged.
 
-The [published rc.10 validation record](https://github.com/RamazanKara/Butterpollo/releases/download/2.0.0-rc.10/VALIDATION.json)
+The rc.10 validation record (VALIDATION.json of the rc.10 release, since removed)
 contains all four cases in current_validation.native_hdr.fixtures. Repeat raw
 results are system-context/hdr-88d67d5ef35c450da7e4badb41d069d5/
 coordinator-result.json (AV1) and

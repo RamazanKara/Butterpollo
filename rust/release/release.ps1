@@ -81,6 +81,12 @@ if (-not $Notes) {
         throw "Fill in the '## New in $label' section of rust/RELEASE_NOTES.md."
     }
 }
+# The demo film the release text shows travels with every release, so
+# deleting older releases leaves the page intact.
+$film = 'butterpollo-launch-film.gif', 'butterpollo-launch-film.mp4' | ForEach-Object { Join-Path $Work "assets\$_" }
+if (-not $NoPublish) {
+    foreach ($file in $film) { if (-not (Test-Path $file)) { throw "$file is missing; the release text shows it" } }
+}
 $tools = "$Checkout\rust\release"
 $run = Join-Path $Work $version
 $out = "$run\release"
@@ -245,6 +251,7 @@ $flags = @('--verify-tag', '--title', "Butterpollo $version", '--notes-file', $N
 if ($version -match '-') { $flags += '--prerelease' }
 $assets = "butterpollo-setup-$version.exe", "butterpollo-rust-$version-windows-x64.zip", 'SHA256SUMS',
     'BUILD_PROVENANCE.json', 'VALIDATION.json', 'SOURCE-MANIFEST.json' | ForEach-Object { "$out\$_" }
+$assets += $film
 gh release create $version -R $repo @flags @assets | Out-Null
 
 Step 'verify the published assets'
