@@ -43,6 +43,20 @@ This isolates the benefit of moving frame preparation onto compute. The whole-ho
 
 [Same-build runs and synthetic component probes →](../rust/PERFORMANCE.md#1080p-at-60-fps)
 
+## rc.17 against rc.2
+
+The same fixture three days later, with rc.2 and rc.17 alternating in one batch: RX 7900 XT, 1080p60 HEVC HDR, 20 Mbps, compute on, 120 Hz virtual display; arithmetic means of three runs per row on October 7, 2026.
+
+| Render-to-decode delay | rc.2, DDX | rc.17, DDX | rc.17, WGC (default) |
+| --- | ---: | ---: | ---: |
+| Idle, average | 14.7 ms | 14.7 ms | 14.9 ms |
+| Beside the load, average | 35.7 ms | 35.4 ms | **33.4 ms** |
+| Beside the load, mean per-run 95th percentile | 45.3 ms | 44.8 ms | **43.9 ms** |
+| Beside the load, fresh pictures per second | 58.0 | 59.0 | 58.3 |
+
+On the same capture path the two releases deliver the picture at the same time. rc.17's default WGC capture delivers it about 2 ms sooner beside the load, and the host latency Moonlight reports falls from 5.7 to 1.9 ms. rc.2 measured 35.7 ms here against 42.3 ms on October 4: compare only rows from one batch.
+
+[Runs and settings →](../rust/PERFORMANCE.md#october-7-rc17-against-rc2-on-the-october-4-fixture)
 ## WGC capture and pacing
 
 Since rc.9, Automatic capture prefers WGC and supported Radeon streams use compute by default. Guarded source-phase pacing waits for a predicted fresh update when the capture history supports it.

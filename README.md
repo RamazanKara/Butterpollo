@@ -63,6 +63,8 @@ Carried over from Vibepollo, Apollo and Sunshine and rebuilt in Rust: per-device
 
 **Next to Vibepollo 2.0** in a matched setup, Butterpollo rc.2 averaged 42.4 ms against 96.4 ms beside the same load and delivered 51.4 fresh pictures a second against 23.9. Most of that gap is not the compute path: with compute off, Butterpollo still delivered about 57 fresh pictures a second in an earlier batch. Vibepollo handed its native AMF encoder about 24 frames a second, and the encoder logged that its output had not caught up. That encoder came from Butterpollo's author; where the frames are lost is still being traced, and the fix goes to Vibepollo. [Matched comparison →](docs/performance.md#next-to-vibepollo-20)
 
+**rc.17 against rc.2**, alternating on the same fixture on October 7: the same delay on the same capture path, and about 2 ms less beside the load with rc.17's default WGC capture (33.4 against 35.7 ms). [rc.17 against rc.2 →](docs/performance.md#rc17-against-rc2)
+
 [Benchmarks, current WGC results and HDR validation →](docs/performance.md)
 
 ## Full colour with PyroWave

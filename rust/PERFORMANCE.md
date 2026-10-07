@@ -1897,6 +1897,42 @@ Neither it nor these local tests reproduces the remote RX 9070 XT over Wi-Fi
 report, establishes NVIDIA execution, or supplies physical-panel calibration
 and client-scanout validation.
 
+## October 7: rc.17 against rc.2 on the October 4 fixture
+
+The [1080p at 60 fps](#1080p-at-60-fps) fixture again (`run-motion.py`
+from `day-work-20261002`, copied with only its tool paths changed): RX 7900
+XT, HEVC 10-bit HDR at 1920×1080 and 60 fps, 20 Mbps requested, native AMF
+at ultra-low latency with `speed`, compute conversion, a 120 Hz virtual
+display, and the same game-like load (`gpu_load 45 1000 0 200`) on the load
+rows. The rc.2 binary is the one measured on October 4 (`5747318fae0a4581`),
+rc.17 the installed release (`a8f491c3257431fe`). Each run started as SYSTEM
+in the signed-in session, as the service starts the host: the virtual
+display driver now refuses an administrator. Rows alternated in one batch,
+three runs each. The DDX rows capture with Desktop Duplication as on
+October 4; the WGC row is rc.17's default capture.
+
+| Picture age, mean / p95 (ms) | rc.2, DDX | rc.17, DDX | rc.17, WGC |
+|---|---|---|---|
+| Idle | 14.69 / 15.77, 14.91 / 17.16, 14.62 / 15.47 | 14.78 / 16.00, 14.66 / 16.04, 14.69 / 15.93 | 14.93 / 16.22, 14.80 / 15.98, 14.84 / 15.91 |
+| Load | 35.64 / 44.80, 35.19 / 44.59, 36.10 / 46.53 | 35.72 / 46.31, 35.01 / 43.63, 35.34 / 44.38 | 33.15 / 43.06, 33.34 / 43.70, 33.77 / 44.82 |
+| Load, new pictures per second | 57.6, 58.8, 57.6 | 58.2, 59.7, 59.2 | 58.3, 58.1, 58.4 |
+| Load, host latency | 5.79, 5.49, 5.68 ms | 5.20, 5.70, 5.53 ms | 1.87, 1.85, 1.86 ms |
+
+On the same capture path rc.17 delivers the picture when rc.2 did, idle
+(14.7 ms both) and beside the load (35.4 against 35.7 ms, within the
+spread of the runs). With its default WGC capture it delivers it 2.2 ms
+sooner beside the load than rc.2 (33.4 against 35.7 ms; 43.9 against
+45.3 ms at the 95th percentile), and the host latency Moonlight reports
+falls from 5.7 to 1.9 ms. Idle, all three are equal; every idle run
+delivered 60 new pictures a second without a repeat.
+
+rc.2 measured 35.7 ms beside the load here against 42.3 ms on October 4,
+more than the difference between the versions: absolute values move
+between batches, so only compare rows measured together. Beside the load
+the probe rendered at 60-66 Hz instead of 120, as on October 4, so the
+fixture's source-rate check fails on load rows as it did then; their
+picture-age statistics are complete. One rc.2 idle run's probe exited
+with an error after the stream had ended. Artifacts: `bench-rc17\cmp-*`.
 ## Limits
 
 This machine validates AMD AMF. Native NVENC now calls the installed NVIDIA driver directly, supports reviewed API versions 11.0–13.0, reference frame invalidation, D3D11 4:2:0/8-bit 4:4:4 and GPU-only CUDA interop for ten-bit 4:4:4. Seven mock-driver tests exercise compatibility, asynchronous ownership, timeout teardown, metadata lifetime, loss recovery and bitrate changes; NVIDIA execution/performance still needs NVIDIA hardware. QSV has native D3D11 imports, and TrueHDR has a shared-device GPU path; these need Intel/NVIDIA hardware respectively. PyroWave uses shared D3D11/Vulkan planar GPU inputs and reads back only the encoded bitstream. Unsupported native formats and software encoding use CPU compatibility paths. The wired LAN checks above do not establish Wi-Fi performance, multiple concurrent 4K sessions, dynamic game content, native 4K capture or end-to-end input/display latency. The GPU texture pools and native encoder queues are bounded to eight retained frames; capacity runs may intentionally keep those queues occupied. [PARITY.md](PARITY.md) separates implemented features from native validation.
