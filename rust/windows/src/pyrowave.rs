@@ -310,6 +310,9 @@ impl Encoder {
                 .checked_add(1)
                 .context("PyroWave fence exhausted")?;
             i.context.Signal(&i.fence, i.counter)?;
+            // Submit the conversion and the signal now, not whenever D3D11
+            // next flushes: the encode below waits for that signal.
+            i.context.Flush();
             let acquire = p::pyrowave_gpu_sync_operation {
                 images: images.as_ptr(),
                 num_images: 3,

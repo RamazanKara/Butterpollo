@@ -394,6 +394,27 @@ pub fn plan(
     }
     Ok(out)
 }
+/// A record's contents without the sequence bits of its fourth byte, which
+/// change every frame. Eight bytes a step: a byte at a time took 0.9 ms of a
+/// 0.83 MB frame (800 Mbps at 120 fps) before its first packet could leave.
+fn record_hash(bytes: &[u8]) -> u64 {
+    let mix = |h: u64, word: u64| {
+        (h ^ word)
+            .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+            .rotate_left(29)
+    };
+    let (words, rest) = bytes.as_chunks::<8>();
+    let mut h = 0xcbf2_9ce4_8422_2325u64 ^ bytes.len() as u64;
+    for (i, word) in words.iter().enumerate() {
+        let word = u64::from_le_bytes(*word);
+        h = mix(h, if i == 0 { word & !(0x70 << 24) } else { word });
+    }
+    let start = words.len() * 8;
+    for (i, &b) in rest.iter().enumerate() {
+        h = mix(h, u64::from(if start + i == 3 { b & 0x8f } else { b }));
+    }
+    h
+}
 /// No idle credit: detail protection is bounded by this frame's allowance.
 pub struct DetailFec {
     nominal: f64,
@@ -427,12 +448,7 @@ impl DetailFec {
         let mut next = BTreeMap::new();
         let (mut total, mut unchanged) = (0, 0);
         for r in records(frame)? {
-            let hash = frame[r.offset..r.offset + r.size].iter().enumerate().fold(
-                0xcbf29ce484222325u64,
-                |h, (i, &b)| {
-                    (h ^ u64::from(if i == 3 { b & 0x8f } else { b })).wrapping_mul(0x100000001b3)
-                },
-            );
+            let hash = record_hash(&frame[r.offset..r.offset + r.size]);
             if self.blocks.get(&r.index) == Some(&(hash, r.size)) {
                 unchanged += r.size;
             }
@@ -472,6 +488,24 @@ mod tests {
             out.resize(out.len() + size - 8, 42);
         }
         out
+    }
+    #[test]
+    fn record_hash_ignores_only_the_sequence_bits() {
+        let record: Vec<u8> = (0..37u8).collect();
+        let base = record_hash(&record);
+        let mut sequence = record.clone();
+        sequence[3] ^= 0x70;
+        assert_eq!(record_hash(&sequence), base);
+        for at in [0, 3, 7, 8, 20, 36] {
+            let mut changed = record.clone();
+            changed[at] ^= if at == 3 { 0x01 } else { 0x80 };
+            assert_ne!(record_hash(&changed), base, "byte {at}");
+        }
+        assert_ne!(record_hash(&record[..36]), base);
+        let short = [1u8, 2, 3, 4, 5];
+        let mut short_sequence = short;
+        short_sequence[3] ^= 0x70;
+        assert_eq!(record_hash(&short_sequence), record_hash(&short));
     }
     #[test]
     fn compatibility_matches_clients_and_checks_slices() {
