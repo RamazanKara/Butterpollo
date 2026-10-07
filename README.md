@@ -4,11 +4,11 @@
 
 Stream your gaming PC to a laptop, TV or phone. Butterpollo is a Windows game-streaming host with Radeon compute, native AMD encoding and **full 10-bit HDR 4:4:4 through PyroWave**. The host, native helpers, Windows service and installer are written in Rust.
 
-**[Download rc.19](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.19)** · **[Get started](docs/getting-started.md)** · [Documentation](docs/README.md) · [Release notes](rust/RELEASE_NOTES.md)
+**[Download rc.20](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.20)** · **[Get started](docs/getting-started.md)** · [Documentation](docs/README.md) · [Release notes](rust/RELEASE_NOTES.md)
 
-[![Butterpollo launch film: one frame through the Radeon path, Radeon compute measured, what rc.19 fixed, and what it brings to players](docs/media/demo.gif)](docs/media/demo.mp4)
+[![Meet Butterpollo: a Windows Moonlight host built around Radeon, its frame pipeline, measured performance, a matched host comparison, PyroWave HDR and getting started](docs/media/demo.gif)](docs/media/demo.mp4)
 
-<sub>Follow one frame from your game to the picture in Moonlight. 60 seconds · 1080p · 60 fps · original soundtrack. [Watch the film](docs/media/demo.mp4).</sub>
+<sub>Follow one frame from your game to Moonlight, see the dated Radeon measurements, then get started. 60 seconds · 1080p · 60 fps · original soundtrack. [Watch the film](docs/media/demo.mp4).</sub>
 
 ## The mission
 
@@ -22,7 +22,7 @@ There are far better Sunshine forks, like [Vibepollo](https://github.com/Nonary/
 
 ## Install. Pair Moonlight. Play.
 
-1. Run **`butterpollo-setup-2.0.0-rc.19.exe`** from the [release](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.19).
+1. Run **`butterpollo-setup-2.0.0-rc.20.exe`** from the [release](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.20).
 2. Open the Butterpollo console at **`https://localhost:47990`** and create your local account.
 3. Add your PC in Moonlight, enter its pairing PIN in **Devices**, then launch **Desktop**.
 

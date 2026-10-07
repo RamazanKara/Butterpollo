@@ -20,7 +20,7 @@ import numpy as np
 
 RATE = 48_000
 SEED = 20261019
-TRANSITIONS = [0, 6, 17, 26, 33, 38, 47, 54, 60]
+TRANSITIONS = [0, 6, 16, 25, 37, 44, 49, 55, 60]
 
 
 def smooth(value: np.ndarray) -> np.ndarray:
@@ -141,11 +141,11 @@ def render(duration: float) -> tuple[np.ndarray, dict]:
     rhythm = np.zeros_like(pads)
     bass = np.zeros_like(pads)
     air = np.zeros_like(pads)
-    # One chord per scene: A minor 9, F major 9, C add 9, E minor 9 for the
-    # new measurements, G suspended, A minor 9, D minor 9, then C major 9.
+    # The measured scenes stay restrained; PyroWave opens out, the credits
+    # settle, and setup leads into the final C major chord.
     chords = [([45, 52, 55, 59, 64], 33), ([41, 48, 52, 55, 60], 29),
-              ([48, 55, 60, 62, 64], 36), ([52, 55, 59, 62, 66], 28),
-              ([43, 50, 55, 57, 62], 31), ([45, 52, 55, 59, 64], 33),
+              ([48, 55, 60, 62, 64], 36), ([45, 52, 55, 59, 64], 33),
+              ([41, 48, 52, 55, 60], 29), ([43, 50, 55, 57, 62], 31),
               ([50, 53, 57, 60, 64], 38), ([48, 55, 59, 62, 67], 36)]
     changes = TRANSITIONS
     for index, (notes, _) in enumerate(chords):
@@ -171,15 +171,15 @@ def render(duration: float) -> tuple[np.ndarray, dict]:
             continue
         # Arpeggio: sparse in the opening and the comparison, on every
         # eighth where the film moves fastest.
-        every = {0: 4, 4: 2, 7: 4}.get(part, 1)
+        every = {0: 4, 3: 2, 5: 2, 7: 4}.get(part, 1)
         if step % every == 0 and film_time < 57:
             order = [0, 2, 4, 3, 1, 3, 2, 4]
-            note = notes[order[step % 8]] + (12 if part in (2, 3, 5) and step % 8 == 6 else 0)
+            note = notes[order[step % 8]] + (12 if part in (2, 4, 6) and step % 8 == 6 else 0)
             level = (.05 if part in (0, 7) else .068) * (1 + rng.uniform(-.06, .06))
             add(pulses, tone(note, .7, rng) * level, at + (.007 if step % 2 else 0),
                 .3 * math.sin(step * .53))
-        if 6 <= film_time < 54:
-            if step % 2 == 0 and (part != 4 or step % 4 == 0):
+        if changes[1] <= film_time < changes[-2]:
+            if step % 2 == 0 and (part != 5 or step % 4 == 0):
                 t = np.arange(round(.32 * RATE), dtype=np.float32) / RATE
                 phase = 2 * math.pi * (49 * t + 2.6 * (1 - np.exp(-t / .025)))
                 kick = np.sin(phase) * smooth(t / .006) * np.exp(-t / .09) * smooth((.32 - t) / .06)
@@ -188,12 +188,12 @@ def render(duration: float) -> tuple[np.ndarray, dict]:
                 length = min(round(.1 * RATE), count - first)
                 duck = .78 + .22 * smooth(np.arange(length) / max(1, length - 1))
                 bass[first:first + length] *= duck[:, None]
-            if step % 4 == 0 and part != 4:
+            if step % 4 == 0 and part != 5:
                 add(bass, tone(root, beat * 1.9, rng, "bass") * .07, at)
-            if film_time >= 17 and step % 2 == 1 and part != 4:
+            if film_time >= changes[2] and step % 2 == 1 and part != 5:
                 add(air, noise(.06, rng, .018, 2) * .03 * (1 + rng.uniform(-.1, .1)), at,
                     .35 if step % 4 == 1 else -.35)
-            if part in (2, 3, 5, 6) and step % 4 == 2:
+            if part in (2, 4, 6) and step % 4 == 2:
                 add(air, noise(.22, rng, .06, 1) * .05, at, .08)
     # A soft swish under each scene change, timed with the diagonal wipe.
     for change in changes[1:-1]:
@@ -203,7 +203,7 @@ def render(duration: float) -> tuple[np.ndarray, dict]:
             change * scale - .35, 0)
     # A last bell on the ending chord.
     for i, note in enumerate([60, 64, 67, 71]):
-        add(pulses, tone(note + 12, 3.2, rng) * .05, 54.15 * scale + i * .09, (i - 1.5) * .25)
+        add(pulses, tone(note + 12, 3.2, rng) * .05, (changes[-2] + .15) * scale + i * .09, (i - 1.5) * .25)
 
     send = pads * .22 + pulses * .5
     ambience = np.zeros_like(send)
