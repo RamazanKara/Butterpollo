@@ -1,10 +1,25 @@
-# Butterpollo 2.0.0-rc.19 release candidate for Windows
+# Butterpollo 2.0.0-rc.20 release candidate for Windows
 
 [Documentation](../docs/README.md) · [Install and migrate](../docs/getting-started.md) · [Configuration](../docs/configuration.md) · [Compatibility](PARITY.md)
 
-**Release history:** [rc.19](#new-in-rc19) · [rc.18](#new-in-rc18) · [rc.17](#new-in-rc17) · [rc.16](#new-in-rc16) · [rc.15](#new-in-rc15) · [rc.14](#new-in-rc14) · [rc.13](#new-in-rc13) · [rc.12](#new-in-rc12) · [rc.11](#new-in-rc11) · [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
+**Release history:** [rc.20](#new-in-rc20) · [rc.19](#new-in-rc19) · [rc.18](#new-in-rc18) · [rc.17](#new-in-rc17) · [rc.16](#new-in-rc16) · [rc.15](#new-in-rc15) · [rc.14](#new-in-rc14) · [rc.13](#new-in-rc13) · [rc.12](#new-in-rc12) · [rc.11](#new-in-rc11) · [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
 
-Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.19 installer is named `butterpollo-setup-2.0.0-rc.19.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.20 installer is named `butterpollo-setup-2.0.0-rc.20.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+
+## New in rc.20
+
+- **Controller input no longer waits behind a busy gamepad driver.** Every controller update was a blocking call into the virtual gamepad driver, on the thread that also handles keyboard, mouse and touch. When a game loaded every CPU core, that call could stall for up to 287 ms and everything else waited behind it. Gamepads now run on their own thread, and a mouse move behind a stalled controller waits at most about 2 ms. The input thread also keeps its multimedia priority boost: behind time-critical load, input waited a median of 3.5 ms and now waits 17 µs.
+- **Snappier keyboard and mouse.** Moonlight's acknowledgement goes out after its input is applied, saving about 25 µs per event. A burst of keyboard and mouse events reaches Windows in one call: 8 events take 38 µs instead of 180 µs. Setting up input when a session starts no longer blocks it for 3-4 ms.
+- **One controller in Steam again: ViGEmBus is back.** Steam on the host often listed Butterpollo's virtual Xbox controller twice. Its bundled controller library races its XInput and GameInput backends, and when it happened, Start+Select could open Game Bar and the Steam keyboard. When ViGEmBus is installed, Automatic now uses it, as Vibepollo does: an Xbox 360 pad, or a DualShock 4 for PlayStation-type controllers. Steam lists it once. Without ViGEmBus, the virtual gamepad driver is used as before. The new `x360` and `ds4` choices pick ViGEm explicitly.
+- **PyroWave sends sooner and is verified end to end.** The first protected block of a frame is ready in 0.06 ms instead of 0.49 ms at 1080p120, and in 0.21 ms instead of 1.75 ms at 4K60, with identical bytes on the wire. 1,152 frames decoded with PyroWave's own decoder match between the compute and graphics conversion paths. Loss feedback from the client no longer forces extra frames.
+- **PyroWave warns when its bitrate is too low.** At HEVC-like bitrates PyroWave shows only blurred grey blocks. Below one bit per pixel per frame (about 55 Mbps at 720p60, 125 Mbps at 1080p60, 500 Mbps at 4K60), the log and the console's stream card say so, and the setting's description gives the numbers.
+- **Steadier streams on Wi-Fi.** Video on wireless and unknown network routes is now paced at twice the stream bitrate instead of bursting at up to 800 Mbps, so bursts don't overrun the access point; audio shares that path. Ethernet is unchanged, and `pacing_max_bitrate_kbps` still overrides it. The log now also reports audio the host loses before sending it.
+- **Playnite launches more reliably.** Playnite is found and started in the right Windows session, a missing or partial plugin is repaired, failed library syncs retry promptly, and streams survive Steam and Epic launcher handoffs and Fullscreen mode. Failures now say exactly where the launch stopped. See "Playnite does not launch" in the troubleshooting guide.
+- **RX 9000 safety.** SmartAccess Video combined with a forced low-latency mode, a combination that has caused GPU resets, is now prevented. A lost GPU is no longer treated as finished work, which could have reused frames unsafely. The troubleshooting guide has an RX 9000 driver section and a test checklist.
+- **AMF settings tell the truth.** The script-free console saved the low-latency switch under a key nothing read; it now saves `amd_lowlatency_mode` and offers the AV1 latency mode. With the default ultra-low latency usage the driver already applies both, so they stay on Driver default. A new `amd_split_frame` setting asks the driver to split frames across two encoders where it ships that off, as the original host did. On an RX 7900 XT the driver never splits, so nothing changes there.
+- **Honest capture timing.** The stream log now reports WGC's own delivery delay (about 1 ms on a virtual display), which the old numbers hid.
+- **Clearer limits.** AMD encoders produce 4:2:0 only, RX 9000 included; 4:4:4 on AMD means PyroWave. The docs and the error message now say so.
+- **A new introduction film.** It explains what Butterpollo is, follows one frame through the Radeon path, and shows the measured comparison with Vibepollo 2.0 beside a game.
 
 ## New in rc.19
 
@@ -243,8 +258,8 @@ Current automated validation: 263 ordinary tests passed, with 27 environment-dep
 
 ## Install
 
-- `butterpollo-setup-2.0.0-rc.19.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
-- For a portable copy, extract `butterpollo-rust-2.0.0-rc.19-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
+- `butterpollo-setup-2.0.0-rc.20.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
+- For a portable copy, extract `butterpollo-rust-2.0.0-rc.20-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
 - These are unsigned test builds. Keep a copy of your configuration and the previous installer for rollback.
 
 ## Lower latency
