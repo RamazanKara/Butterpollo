@@ -6,6 +6,10 @@ from collections import Counter
 def active_clients(log):
     active = Counter()
     for line in log.splitlines():
+        # The log outlives the host: a stream it never closed ended with it.
+        if 'Butterpollo Rust host started' in line:
+            active.clear()
+            continue
         event = re.search(r'CLIENT (CONNECTED|DISCONNECTED)\b.*?\bclient=(.*)', line)
         if event:
             action, client = event.groups()

@@ -31,6 +31,12 @@ class ReleaseMeasurements(unittest.TestCase):
                'INFO CLIENT DISCONNECTED client=phone\n')
         self.assertEqual(active_clients(log), ['phone'])
 
+    def test_a_host_restart_ends_streams_it_never_logged_as_closed(self):
+        log = ('INFO butterpollo::stream: CLIENT CONNECTED client=phone\n'
+               'INFO butterpollo: Butterpollo Rust host started version="2.0.0"\n')
+        self.assertEqual(active_clients(log), [])
+        self.assertEqual(active_clients(log + 'INFO butterpollo::stream: CLIENT CONNECTED client=tv\n'), ['tv'])
+
     def test_finalizer_requires_1080p60_for_both_pyrowave_modes(self):
         with tempfile.TemporaryDirectory() as folder:
             root = pathlib.Path(folder)
