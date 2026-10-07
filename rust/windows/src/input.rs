@@ -983,70 +983,30 @@ impl Injector {
         let Some(rect) = self.display() else {
             return Ok(());
         };
-        unsafe {
-            if self.pen_device.is_none() {
-                self.pen_device = Some(CreateSyntheticPointerDevice(
-                    PT_PEN,
-                    1,
-                    POINTER_FEEDBACK_NONE,
-                )?);
-            }
-            let location = self.location(rect, x, y);
-            self.pen.pointerInfo.pointerType = PT_PEN;
-            self.pen.pointerInfo.pointerId = 1;
-            pointer_event(
-                &mut self.pen.pointerInfo,
-                if event == 7 { 4 } else { event },
-                location,
-            );
-            self.pen.penFlags = if buttons != 0 {
-                PEN_FLAG_BARREL
-            } else {
-                PEN_FLAG_NONE
-            };
-            if tool == 2 {
-                self.pen.penFlags |= PEN_FLAG_ERASER | PEN_FLAG_INVERTED;
-            }
-            if event != 5 {
-                self.pen.penMask = PEN_MASK_PRESSURE;
-                self.pen.pressure = if self.pen.pointerInfo.pointerFlags & POINTER_FLAG_INCONTACT
-                    != POINTER_FLAG_NONE
-                {
-                    (pressure.clamp(0., 1.) * 1024.) as u32
-                } else {
-                    0
-                };
-                if rotation != u16::MAX {
-                    self.pen.penMask |= PEN_MASK_ROTATION;
-                    self.pen.rotation = u32::from(rotation % 360);
-                }
-                if tilt != u8::MAX && rotation != u16::MAX {
-                    let angle = f32::from(rotation).to_radians();
-                    let tilt = f32::from(tilt.min(90)).to_radians();
-                    self.pen.penMask |= PEN_MASK_TILT_X | PEN_MASK_TILT_Y;
-                    self.pen.tiltX =
-                        ((-angle).sin() * tilt.sin()).atan2(tilt.cos()).to_degrees() as i32;
-                    self.pen.tiltY =
-                        ((-angle).cos() * tilt.sin()).atan2(tilt.cos()).to_degrees() as i32;
-                }
-            }
+        let location = self.location(rect, x, y);
+        let Some(frame) = pen_frame(
+            self.pen, event, tool, buttons, location, pressure, rotation, tilt,
+        ) else {
+            return Ok(());
+        };
+        let device = match self.pen_device {
+            Some(device) => device,
+            None => *self
+                .pen_device
+                .insert(unsafe { CreateSyntheticPointerDevice(PT_PEN, 1, POINTER_FEEDBACK_NONE)? }),
+        };
+        let result = unsafe {
             inject_pointer(
-                self.pen_device.unwrap(),
+                device,
                 &[POINTER_TYPE_INFO {
                     r#type: PT_PEN,
-                    Anonymous: POINTER_TYPE_INFO_0 { penInfo: self.pen },
+                    Anonymous: POINTER_TYPE_INFO_0 { penInfo: frame },
                 }],
-            )?;
-            self.pen.pointerInfo.pointerFlags &=
-                !(POINTER_FLAG_DOWN | POINTER_FLAG_UP | POINTER_FLAG_CANCELED);
-            if matches!(event, 2 | 4 | 6 | 7) {
-                self.pen.pointerInfo.pointerFlags = POINTER_FLAG_NONE;
-            } else {
-                self.pen.pointerInfo.pointerFlags |= POINTER_FLAG_UPDATE;
-            }
-            self.pen_refreshed = std::time::Instant::now();
-        }
-        Ok(())
+            )
+        };
+        self.pen = pen_after(frame, event, result.is_err());
+        self.pen_refreshed = std::time::Instant::now();
+        result
     }
     pub fn refresh(&mut self) -> Result<()> {
         // Every step runs even when an earlier one fails; the first error is
@@ -1616,6 +1576,79 @@ fn pointer_event(p: &mut POINTER_INFO, event: u8, location: POINT) {
         p.ptPixelLocation = location;
     }
 }
+/// The pen's next frame from its last state, or None when there is nothing
+/// to inject: Windows can pass a button only with an active pen.
+#[allow(clippy::too_many_arguments)]
+fn pen_frame(
+    mut pen: POINTER_PEN_INFO,
+    event: u8,
+    tool: u8,
+    buttons: u8,
+    location: POINT,
+    pressure: f32,
+    rotation: u16,
+    tilt: u8,
+) -> Option<POINTER_PEN_INFO> {
+    if event == 5 && pen.pointerInfo.pointerFlags == POINTER_FLAG_NONE {
+        return None;
+    }
+    pen.pointerInfo.pointerType = PT_PEN;
+    pen.pointerInfo.pointerId = 1;
+    pointer_event(
+        &mut pen.pointerInfo,
+        if event == 7 { 4 } else { event },
+        location,
+    );
+    pen.penFlags = if buttons != 0 {
+        PEN_FLAG_BARREL
+    } else {
+        PEN_FLAG_NONE
+    };
+    if tool == 2 {
+        pen.penFlags |= PEN_FLAG_ERASER | PEN_FLAG_INVERTED;
+    }
+    if event != 5 {
+        // Windows has no hover distance, and a pressure of 0 is passed as
+        // none, as in the C++ host.
+        if pen.pointerInfo.pointerFlags & POINTER_FLAG_INCONTACT != POINTER_FLAG_NONE
+            && pressure > 0.
+        {
+            pen.penMask = PEN_MASK_PRESSURE;
+            pen.pressure = (pressure.clamp(0., 1.) * 1024.) as u32;
+        } else {
+            pen.penMask = PEN_MASK_NONE;
+            pen.pressure = 0;
+        }
+        if rotation != u16::MAX {
+            pen.penMask |= PEN_MASK_ROTATION;
+            pen.rotation = u32::from(rotation % 360);
+        }
+        if tilt != u8::MAX && rotation != u16::MAX {
+            let angle = f32::from(rotation).to_radians();
+            let tilt = f32::from(tilt.min(90)).to_radians();
+            pen.penMask |= PEN_MASK_TILT_X | PEN_MASK_TILT_Y;
+            pen.tiltX = ((-angle).sin() * tilt.sin()).atan2(tilt.cos()).to_degrees() as i32;
+            pen.tiltY = ((-angle).cos() * tilt.sin()).atan2(tilt.cos()).to_degrees() as i32;
+        }
+    }
+    Some(pen)
+}
+/// The pen after a frame: edge flags last one frame. A pen that ended, or
+/// that Windows refused to put down and so never saw, is inactive whether or
+/// not the frame went through; otherwise the refresh would inject the stale
+/// frame again every 250 ms.
+fn pen_after(mut pen: POINTER_PEN_INFO, event: u8, failed: bool) -> POINTER_PEN_INFO {
+    let flags = pen.pointerInfo.pointerFlags;
+    pen.pointerInfo.pointerFlags = if matches!(event, 2 | 4 | 6 | 7)
+        || (failed && flags & POINTER_FLAG_DOWN != POINTER_FLAG_NONE)
+    {
+        POINTER_FLAG_NONE
+    } else {
+        (flags & !(POINTER_FLAG_DOWN | POINTER_FLAG_UP | POINTER_FLAG_CANCELED))
+            | POINTER_FLAG_UPDATE
+    };
+    pen
+}
 
 #[cfg(test)]
 #[path = "input/native_touch_tests.rs"]
@@ -2000,6 +2033,75 @@ mod tests {
                 false
             )),
             [(key, KEYEVENTF_SCANCODE)]
+        );
+    }
+
+    fn pen_event(pen: POINTER_PEN_INFO, event: u8, pressure: f32) -> Option<POINTER_PEN_INFO> {
+        let location = POINT { x: 10, y: 20 };
+        pen_frame(pen, event, 1, 0, location, pressure, u16::MAX, u8::MAX)
+    }
+
+    #[test]
+    fn pen_pressure_and_button_frames_match_the_cpp_host() {
+        let idle = POINTER_PEN_INFO::default();
+        let in_contact = POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT;
+        // A button change with no active pen injects nothing.
+        assert!(pen_frame(idle, 5, 1, 1, POINT::default(), 0., u16::MAX, u8::MAX).is_none());
+        // A pressure of 0 in contact is passed as none.
+        let down = pen_event(idle, 1, 0.).unwrap();
+        assert_eq!(
+            down.pointerInfo.pointerFlags,
+            POINTER_FLAG_DOWN | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT
+        );
+        assert_eq!((down.penMask, down.pressure), (PEN_MASK_NONE, 0));
+        let held = pen_after(down, 1, false);
+        assert_eq!(held.pointerInfo.pointerFlags, in_contact);
+        let moved = pen_event(held, 3, 0.).unwrap();
+        assert_eq!((moved.penMask, moved.pressure), (PEN_MASK_NONE, 0));
+        let pressed = pen_event(held, 3, 0.5).unwrap();
+        assert_eq!(
+            (pressed.penMask, pressed.pressure),
+            (PEN_MASK_PRESSURE, 512)
+        );
+        // A hover's distance is never passed as pressure.
+        let hover = pen_event(idle, 0, 0.5).unwrap();
+        assert_eq!((hover.penMask, hover.pressure), (PEN_MASK_NONE, 0));
+        // With an active pen, a button change is passed on.
+        let hovering = pen_after(hover, 0, false);
+        let barrel = pen_frame(hovering, 5, 1, 1, POINT::default(), 0., u16::MAX, u8::MAX).unwrap();
+        assert_eq!(barrel.penFlags, PEN_FLAG_BARREL);
+        assert_eq!(
+            barrel.pointerInfo.pointerFlags,
+            POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE
+        );
+        assert_eq!(barrel.pointerInfo.ptPixelLocation, POINT { x: 10, y: 20 });
+    }
+
+    #[test]
+    fn a_pen_frame_windows_refuses_is_not_repeated_as_a_stale_frame() {
+        let in_contact = POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT;
+        let down = pen_event(POINTER_PEN_INFO::default(), 1, 0.5).unwrap();
+        // Windows never saw the pen go down: there is nothing to repeat.
+        assert_eq!(
+            pen_after(down, 1, true).pointerInfo.pointerFlags,
+            POINTER_FLAG_NONE
+        );
+        let held = pen_after(down, 1, false);
+        // An ended pen is inactive whether or not its last frame went through.
+        for event in [2, 4, 6, 7] {
+            for failed in [false, true] {
+                let frame = pen_event(held, event, 0.).unwrap();
+                assert_eq!(
+                    pen_after(frame, event, failed).pointerInfo.pointerFlags,
+                    POINTER_FLAG_NONE
+                );
+            }
+        }
+        // A refused move keeps the pen's state, without edge flags.
+        let moved = pen_event(held, 3, 0.5).unwrap();
+        assert_eq!(
+            pen_after(moved, 3, true).pointerInfo.pointerFlags,
+            in_contact
         );
     }
 
