@@ -278,7 +278,7 @@ use butterpollo_windows::{
     audio::{Loopback, Opus},
     capture::{Capture, ComGuard, GpuImage, Priority},
     encoder::Encoder,
-    input::Injector,
+    input::{Injector, PadReport},
 };
 use rusty_enet::{Event, Host, HostSettings, Packet, PacketKind, PeerID};
 use std::{
@@ -1971,35 +1971,10 @@ impl Media {
                         i.set_output(&s.output.read().unwrap());
                     }
                     for event in std::mem::take(&mut p.inputs) {
-                        if let Some(i) = &mut p.injector {
-                            match i.apply(&event) {
-                                Err(e) => tracing::debug!(error=%e,"input injection failed"),
-                                Ok(()) => {
-                                    if let input::Input::Arrival {
-                                        id, capabilities, ..
-                                    } = event
-                                        && i.gamepads
-                                            .as_ref()
-                                            .is_some_and(|g| g.motion_supported(u16::from(id)))
-                                    {
-                                        for (cap, kind) in [(0x10, 1), (0x20, 2)] {
-                                            if capabilities & cap != 0 {
-                                                let mut payload =
-                                                    u16::from(id).to_le_bytes().to_vec();
-                                                payload.extend_from_slice(&200u16.to_le_bytes());
-                                                payload.push(kind);
-                                                if let Ok(message) = p.encrypt(&s, 0x5501, &payload)
-                                                {
-                                                    let _ = host.peer_mut(*peer_id).send(
-                                                        1,
-                                                        &Packet::new(message, PacketKind::Reliable),
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                        if let Some(i) = &mut p.injector
+                            && let Err(e) = i.apply(&event)
+                        {
+                            tracing::debug!(error=%e,"input injection failed");
                         }
                     }
                     if !poll_feedback
@@ -2008,31 +1983,34 @@ impl Media {
                     {
                         tracing::debug!(error=%e,"input release or repeat failed");
                     }
-                    if poll_feedback {
-                        let mut messages = Vec::new();
-                        if let Some(i) = &mut p.injector
-                            && let Err(e) = i.refresh()
-                        {
-                            tracing::debug!(error=%e,"pointer refresh failed");
-                        }
-                        if let Some(i) = &mut p.injector
-                            && let Some(g) = &mut i.gamepads
-                        {
-                            let feedback = g.feedback().unwrap_or_default();
-                            for (id, kind, data) in feedback {
-                                messages.extend(
+                    if poll_feedback
+                        && let Some(i) = &mut p.injector
+                        && let Err(e) = i.refresh()
+                    {
+                        tracing::debug!(error=%e,"pointer refresh failed");
+                    }
+                    // The gamepad thread polls feedback every 8 ms; pass on
+                    // what it found, and the sensors an arrived pad has.
+                    let mut messages = Vec::new();
+                    if let Some(i) = &p.injector {
+                        for report in i.gamepad_reports() {
+                            match report {
+                                PadReport::Feedback { id, kind, data } => messages.extend(
                                     feedback_packets(id, kind, &data)
                                         .into_iter()
                                         .filter(|(kind, _)| i.feedback_allowed(*kind)),
-                                );
+                                ),
+                                PadReport::Motion { id, capabilities } => {
+                                    messages.extend(motion_requests(id, capabilities))
+                                }
                             }
                         }
-                        for (kind, payload) in messages {
-                            if let Ok(message) = p.encrypt(&s, kind, &payload) {
-                                let _ = host
-                                    .peer_mut(*peer_id)
-                                    .send(1, &Packet::new(message, PacketKind::Reliable));
-                            }
+                    }
+                    for (kind, payload) in messages {
+                        if let Ok(message) = p.encrypt(&s, kind, &payload) {
+                            let _ = host
+                                .peer_mut(*peer_id)
+                                .send(1, &Packet::new(message, PacketKind::Reliable));
                         }
                     }
                 } else if !pending || p.seen.elapsed() > ping_timeout {
@@ -2082,6 +2060,20 @@ impl ControlPeer {
             s.config.encryption & 1 != 0,
         )
     }
+}
+/// Ask the client for an arrived pad's accelerometer (kind 1) and gyroscope
+/// (kind 2) at 200 Hz, when it has them.
+fn motion_requests(id: u8, capabilities: u16) -> Vec<(u16, Vec<u8>)> {
+    [(0x10, 1), (0x20, 2)]
+        .into_iter()
+        .filter(|(sensor, _)| capabilities & sensor != 0)
+        .map(|(_, kind)| {
+            let mut payload = u16::from(id).to_le_bytes().to_vec();
+            payload.extend_from_slice(&200u16.to_le_bytes());
+            payload.push(kind);
+            (0x5501, payload)
+        })
+        .collect()
 }
 fn feedback_packets(id: u16, kind: u16, data: &[u8]) -> Vec<(u16, Vec<u8>)> {
     let mut result = vec![];
@@ -2243,5 +2235,17 @@ mod tests {
         expected.extend(1..=20);
         assert_eq!(trigger, &expected);
         assert!(packets.iter().any(|(kind, _)| *kind == 0x010b));
+    }
+    #[test]
+    fn an_arrived_pad_is_asked_for_the_sensors_it_has() {
+        assert_eq!(
+            motion_requests(3, 0x30),
+            [
+                (0x5501, vec![3, 0, 200, 0, 1]),
+                (0x5501, vec![3, 0, 200, 0, 2])
+            ]
+        );
+        assert_eq!(motion_requests(1, 0x20), [(0x5501, vec![1, 0, 200, 0, 2])]);
+        assert!(motion_requests(1, 0x0f).is_empty());
     }
 }

@@ -20,7 +20,10 @@ use windows::{
 };
 
 mod gamepad_backend;
+#[path = "input/gamepad_thread.rs"]
+mod gamepad_thread;
 mod vigem;
+pub use gamepad_thread::{GamepadThread, PadReport};
 
 pub fn open_interface(guid: GUID) -> Result<HANDLE> {
     unsafe {
@@ -462,11 +465,10 @@ pub struct Injector {
     touch_device: Option<HSYNTHETICPOINTERDEVICE>,
     pen_device: Option<HSYNTHETICPOINTERDEVICE>,
     pen: POINTER_PEN_INFO,
-    profile: u16,
     /// When touch contacts and the pen were last injected.
     touch_refreshed: std::time::Instant,
     pen_refreshed: std::time::Instant,
-    pub gamepads: Option<Gamepads>,
+    gamepads: GamepadThread,
     /// The display's desktop rectangle, None until the display exists.
     rect: Option<RECT>,
     policy: butterpollo_core::input_policy::Policy,
@@ -484,8 +486,6 @@ pub struct Injector {
     rect_read: std::time::Instant,
     /// When absolute input was last reported ignored for a missing display.
     display_warned: Option<std::time::Instant>,
-    /// When to try the virtual gamepad driver again after it failed to open.
-    gamepad_retry: Option<std::time::Instant>,
     /// Whether the client last moved the mouse by absolute position, and a
     /// left-button release held back meanwhile.
     absolute: bool,
@@ -567,6 +567,8 @@ impl Injector {
         let rect = display_rect(output)
             .inspect_err(|error| tracing::debug!(%error, output, "input display unavailable"))
             .ok();
+        let profile = gamepad_profile(profile);
+        let policy = butterpollo_core::input_policy::Policy::resolve(config)?;
         Ok(Self {
             keys: BTreeSet::new(),
             buttons: BTreeSet::new(),
@@ -574,11 +576,10 @@ impl Injector {
             touch_device: None,
             pen_device: None,
             pen: Default::default(),
-            profile: gamepad_profile(profile),
             touch_refreshed: std::time::Instant::now(),
             pen_refreshed: std::time::Instant::now(),
-            gamepads: None,
-            policy: butterpollo_core::input_policy::Policy::resolve(config)?,
+            gamepads: GamepadThread::new(profile, policy.clone())?,
+            policy,
             key_flags: BTreeMap::new(),
             repeat: None,
             scroll: [0; 2],
@@ -588,7 +589,6 @@ impl Injector {
             stream: None,
             rect_read: std::time::Instant::now(),
             display_warned: None,
-            gamepad_retry: None,
             absolute: false,
             left_release: None,
         })
@@ -1027,9 +1027,6 @@ impl Injector {
                 first.get_or_insert(error);
             }
         };
-        if let Some(gamepads) = &mut self.gamepads {
-            keep(gamepads.refresh());
-        }
         keep(self.due());
         let now = std::time::Instant::now();
         // A game can change its display's resolution or position mid-stream,
@@ -1284,32 +1281,18 @@ impl Injector {
                 tilt,
             } => self.pen(*event, *tool, *buttons, *x, *y, *pressure, *rotation, *tilt)?,
             Haptics(enabled) => self.haptics = *enabled,
-            _ => {
-                if self.gamepads.is_none() {
-                    // Opening the driver enumerates devices: when it is missing,
-                    // do not repeat that for every controller packet.
-                    let now = std::time::Instant::now();
-                    if self.gamepad_retry.is_some_and(|at| now < at) {
-                        return Ok(());
-                    }
-                    match Gamepads::open_options(self.profile, self.policy.clone()) {
-                        Ok(gamepads) => self.gamepads = Some(gamepads),
-                        Err(error) => {
-                            if self.gamepad_retry.is_none() {
-                                tracing::warn!(
-                                    error = format!("{error:#}"),
-                                    "virtual gamepad driver unavailable; controller input is ignored"
-                                );
-                            }
-                            self.gamepad_retry = Some(now + std::time::Duration::from_secs(10));
-                            return Ok(());
-                        }
-                    }
-                }
-                self.gamepads.as_mut().unwrap().apply(e)?;
-            }
+            Controller { .. }
+            | Arrival { .. }
+            | ControllerTouch { .. }
+            | Motion { .. }
+            | Battery { .. } => self.gamepads.send(e.clone()),
         }
         Ok(())
+    }
+    /// Feedback and motion-sensor requests from the virtual gamepads for the
+    /// client, collected since the last call.
+    pub fn gamepad_reports(&self) -> impl Iterator<Item = PadReport> + '_ {
+        self.gamepads.reports()
     }
     /// Modifiers in a key-down packet that neither this client nor another
     /// holds as keys (Moonlight reports Shift/Ctrl/Alt both ways).
