@@ -18,6 +18,9 @@ pub struct Pairing {
     pub name: String,
     pub certificate: String,
     pub created: Instant,
+    /// The address that asked for the certificate; the later steps must come
+    /// from it, so another device cannot end or advance this pairing.
+    pub peer: Option<std::net::IpAddr>,
     phase: Phase,
     key: [u8; 16],
     server_secret: [u8; 16],
@@ -58,6 +61,7 @@ impl Pairing {
             name,
             certificate,
             created: Instant::now(),
+            peer: None,
             phase: Phase::Cert,
             key: crypto::pin_key(salt[..16].try_into().unwrap(), pin),
             server_secret: crypto::random(),

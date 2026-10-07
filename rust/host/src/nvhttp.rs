@@ -360,8 +360,12 @@ async fn pyrowave_bandwidth(
     )
         .into_response()
 }
-async fn pair(State(h): State<Shared>, Query(args): Query<Args>) -> Response {
-    match do_pair(h, &args).await {
+async fn pair(
+    State(h): State<Shared>,
+    Extension(connection): Extension<Connection>,
+    Query(args): Query<Args>,
+) -> Response {
+    match do_pair(h, &args, connection.peer.ip().to_canonical()).await {
         Ok(fields) => xml(
             200,
             &fields
@@ -373,7 +377,13 @@ async fn pair(State(h): State<Shared>, Query(args): Query<Args>) -> Response {
         Err(e) => xml(400, &[("paired", "0".into())], Some(e.to_string())),
     }
 }
-async fn do_pair(h: Shared, args: &Args) -> Result<Vec<(String, String)>> {
+/// Whether a pairing request has to wait for another device's: Moonlight's
+/// apps share one unique ID, so only the certificate tells devices apart. The
+/// same device asking again replaces its own request, as after a wrong PIN.
+fn another_device_pairing(existing: Option<(&str, bool)>, certificate: &str) -> bool {
+    existing.is_some_and(|(theirs, active)| active && theirs != certificate)
+}
+async fn do_pair(h: Shared, args: &Args, peer: std::net::IpAddr) -> Result<Vec<(String, String)>> {
     let id = args.get("uniqueid").context("missing uniqueid")?.clone();
     if id.is_empty()
         || id.len() > 256
@@ -403,6 +413,30 @@ async fn do_pair(h: Shared, args: &Args) -> Result<Vec<(String, String)>> {
             .get("devicename")
             .cloned()
             .unwrap_or("Moonlight Client".into());
+        // Another device's request still waiting for its PIN, or in the
+        // seconds of its handshake, is not replaced: the PIN typed for it
+        // would reach this device instead.
+        let waiting = h.pins.lock().unwrap().get(&id).map(|p| {
+            (
+                p.certificate.clone(),
+                p.created.elapsed() < Duration::from_secs(300) && !p.sender.is_closed(),
+            )
+        });
+        let handshaking = h.pairings.lock().unwrap().sessions.get(&id).map(|p| {
+            (
+                p.certificate.clone(),
+                p.created.elapsed() < Duration::from_secs(30),
+            )
+        });
+        if another_device_pairing(
+            waiting.as_ref().map(|(c, a)| (c.as_str(), *a)),
+            &certificate,
+        ) || another_device_pairing(
+            handshaking.as_ref().map(|(c, a)| (c.as_str(), *a)),
+            &certificate,
+        ) {
+            bail!("another device is pairing with this PC; finish or cancel that first");
+        }
         // A new certificate request replaces this device's unfinished
         // pairing, as in the previous host. Moonlight abandons a pairing after
         // a wrong PIN without telling the host, and its apps share one unique
@@ -441,7 +475,8 @@ async fn do_pair(h: Shared, args: &Args) -> Result<Vec<(String, String)>> {
                     name,
                 )
             };
-            let pair = Pairing::new(id, name, certificate, &salt, &pin)?;
+            let mut pair = Pairing::new(id, name, certificate, &salt, &pin)?;
+            pair.peer = Some(peer);
             h.pairings.lock().unwrap().insert(pair)?;
             return Ok(vec![
                 ("paired".into(), "1".into()),
@@ -465,6 +500,7 @@ async fn do_pair(h: Shared, args: &Args) -> Result<Vec<(String, String)>> {
                 id.clone(),
                 PendingPin {
                     name: name.clone(),
+                    certificate: certificate.clone(),
                     created,
                     sender,
                 },
@@ -486,7 +522,8 @@ async fn do_pair(h: Shared, args: &Args) -> Result<Vec<(String, String)>> {
         let (pin, name) = response
             .context("PIN entry timed out")?
             .context("pairing cancelled")?;
-        let pair = Pairing::new(id, name, certificate, &salt, &pin)?;
+        let mut pair = Pairing::new(id, name, certificate, &salt, &pin)?;
+        pair.peer = Some(peer);
         h.pairings.lock().unwrap().insert(pair)?;
         return Ok(vec![
             ("paired".into(), "1".into()),
@@ -499,64 +536,85 @@ async fn do_pair(h: Shared, args: &Args) -> Result<Vec<(String, String)>> {
     if args.get("phrase").is_some_and(|s| s == "pairchallenge") {
         return Ok(vec![("paired".into(), "1".into())]);
     }
+    // A malformed step is refused before the pairing is touched: from any
+    // other device it must not end someone else's pairing.
+    enum Step {
+        Challenge(Vec<u8>),
+        Response(Vec<u8>),
+        Secret(Vec<u8>),
+    }
+    let step = if let Some(v) = args.get("clientchallenge") {
+        if v.len() != 32 {
+            bail!("invalid challenge length");
+        }
+        Step::Challenge(hex::decode(v)?)
+    } else if let Some(v) = args.get("serverchallengeresp") {
+        if v.len() != 64 {
+            bail!("invalid challenge response length");
+        }
+        Step::Response(hex::decode(v)?)
+    } else if let Some(v) = args.get("clientpairingsecret") {
+        if v.len() != 544 {
+            bail!("invalid pairing secret length");
+        }
+        Step::Secret(hex::decode(v)?)
+    } else {
+        bail!("unknown pairing phase")
+    };
     let mut pairings = h.pairings.lock().unwrap();
     pairings.expire();
     let p = pairings
         .sessions
         .get_mut(&id)
         .context("no pending pairing")?;
+    if p.peer.is_some_and(|started| started != peer) {
+        bail!("this pairing was started from another address");
+    }
     let result = (|| -> Result<Vec<(String, String)>> {
-        if let Some(v) = args.get("clientchallenge") {
-            if v.len() != 32 {
-                bail!("invalid challenge length");
+        match &step {
+            Step::Challenge(challenge) => {
+                let response = p.client_challenge(&h.identity, challenge)?;
+                Ok(vec![
+                    ("paired".into(), "1".into()),
+                    ("challengeresponse".into(), hex::encode(response)),
+                ])
             }
-            let response = p.client_challenge(&h.identity, &hex::decode(v)?)?;
-            Ok(vec![
-                ("paired".into(), "1".into()),
-                ("challengeresponse".into(), hex::encode(response)),
-            ])
-        } else if let Some(v) = args.get("serverchallengeresp") {
-            if v.len() != 64 {
-                bail!("invalid challenge response length");
+            Step::Response(response) => {
+                let response = p.server_response(&h.identity, response)?;
+                Ok(vec![
+                    ("paired".into(), "1".into()),
+                    ("pairingsecret".into(), hex::encode(response)),
+                ])
             }
-            let response = p.server_response(&h.identity, &hex::decode(v)?)?;
-            Ok(vec![
-                ("paired".into(), "1".into()),
-                ("pairingsecret".into(), hex::encode(response)),
-            ])
-        } else if let Some(v) = args.get("clientpairingsecret") {
-            if v.len() != 544 {
-                bail!("invalid pairing secret length");
+            Step::Secret(secret) => {
+                p.finish(secret)?;
+                let mut state = h.paired.write().unwrap();
+                let perm = if state.clients.is_empty() {
+                    0x071f1f00
+                } else {
+                    0x03000000
+                };
+                state.add(
+                    &h.paired_path,
+                    Client {
+                        name: p.name.clone(),
+                        cert: p.certificate.clone(),
+                        uuid: uuid::Uuid::new_v4().to_string(),
+                        perm,
+                        enabled: true,
+                        extra: BTreeMap::new(),
+                    },
+                )?;
+                tracing::info!(client=%p.name,"Client paired and saved");
+                butterpollo_windows::tray::notify(
+                    "Device paired",
+                    &format!("{} can now stream from this PC.", p.name),
+                );
+                Ok(vec![("paired".into(), "1".into())])
             }
-            p.finish(&hex::decode(v)?)?;
-            let mut state = h.paired.write().unwrap();
-            let perm = if state.clients.is_empty() {
-                0x071f1f00
-            } else {
-                0x03000000
-            };
-            state.add(
-                &h.paired_path,
-                Client {
-                    name: p.name.clone(),
-                    cert: p.certificate.clone(),
-                    uuid: uuid::Uuid::new_v4().to_string(),
-                    perm,
-                    enabled: true,
-                    extra: BTreeMap::new(),
-                },
-            )?;
-            tracing::info!(client=%p.name,"Client paired and saved");
-            butterpollo_windows::tray::notify(
-                "Device paired",
-                &format!("{} can now stream from this PC.", p.name),
-            );
-            Ok(vec![("paired".into(), "1".into())])
-        } else {
-            bail!("unknown pairing phase")
         }
     })();
-    if result.is_err() || args.contains_key("clientpairingsecret") {
+    if result.is_err() || matches!(step, Step::Secret(_)) {
         pairings.sessions.remove(&id);
     }
     result
@@ -1365,6 +1423,17 @@ async fn abr(State(h): State<Shared>, Extension(c): Extension<Connection>) -> Re
 #[cfg(test)]
 mod tests {
     use super::stream_key_id;
+    #[test]
+    fn another_device_cannot_take_over_a_pairing_in_progress() {
+        use super::another_device_pairing as blocked;
+        // Nothing pending, or this device asking again (after a wrong PIN).
+        assert!(!blocked(None, "mine"));
+        assert!(!blocked(Some(("mine", true)), "mine"));
+        // Another device whose request is still waiting or handshaking.
+        assert!(blocked(Some(("theirs", true)), "mine"));
+        // Another device that gave up: its stale request is replaced.
+        assert!(!blocked(Some(("theirs", false)), "mine"));
+    }
 
     #[test]
     fn android_signed_stream_keys_preserve_the_wire_iv() {

@@ -24,6 +24,9 @@ pub struct OneTimePin {
 }
 pub struct PendingPin {
     pub name: String,
+    /// The requesting device's certificate: Moonlight's apps share one
+    /// unique ID, so this tells another device apart.
+    pub certificate: String,
     pub created: Instant,
     pub sender: tokio::sync::oneshot::Sender<(String, String)>,
 }
