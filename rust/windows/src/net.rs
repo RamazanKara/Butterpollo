@@ -481,7 +481,7 @@ impl Batch {
             tracing::warn!(
                 code = error.0,
                 dropped = self.unreported,
-                "UDP send failed; packets dropped"
+                "UDP send failed; packets dropped and the client may stutter. Lower bitrate and check the network adapter"
             );
             self.unreported = 0;
             self.reported = Some(std::time::Instant::now());
@@ -509,9 +509,9 @@ impl Batch {
                     if [WSAEINVAL, WSAENOPROTOOPT, WSAEOPNOTSUPP, WSAEMSGSIZE].contains(&error) =>
                 {
                     self.offload = false;
-                    tracing::debug!(
+                    tracing::warn!(
                         code = error.0,
-                        "UDP segmentation unavailable; using individual datagrams"
+                        "UDP segmentation unavailable; using individual datagrams with more CPU overhead. Update the network driver or lower bitrate if sending stalls"
                     );
                 }
                 Err(error) if transient(error) => {

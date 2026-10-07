@@ -119,6 +119,10 @@ impl Sender {
                             .integer("pyrowave_critical_fec_percentage", 20)
                             .clamp(0, 255)
                             as usize;
+                        let requested_fec = config.integer("pyrowave_critical_fec_percentage", 20);
+                        if requested_fec != requested_fec.clamp(0, 255) {
+                            current.launch.warnings.set("pyrowave_fec_config", format!("PyroWave critical FEC {requested_fec}% is outside 0-255; using {critical_percentage}%. Correct the critical FEC setting."));
+                        }
                         let bitrate = current.bitrate.load(Ordering::Relaxed);
                         let kbps = if current.config.configured_bitrate_kbps > 0 {
                             (u64::from(current.config.configured_bitrate_kbps) * u64::from(bitrate)
@@ -135,7 +139,7 @@ impl Sender {
                             };
                         // Every PyroWave frame stands alone: drop one Moonlight
                         // cannot carry, not the session.
-                        let (packet_count, blocks) = match packetizer.pyrowave_blocks(
+                        let (packet_count, fec_limited, blocks) = match packetizer.pyrowave_blocks(
                             &frame.bytes,
                             timestamp,
                             processing.as_micros().min(u128::from(u64::MAX)) as u64,
@@ -149,10 +153,13 @@ impl Sender {
                         ) {
                             Ok(packets) => packets,
                             Err(error) => {
-                                tracing::warn!(error = %format!("{error:#}"), bytes = frame.bytes.len(), "PyroWave frame dropped");
+                                current.launch.warnings.set("pyrowave_frame", format!("PyroWave frame dropped ({error:#}); the client may hold the previous picture. Lower bitrate or resolution to stay within Moonlight's packet limit, or use HEVC/AV1."));
                                 continue;
                             }
                         };
+                        if fec_limited {
+                            current.launch.warnings.set("pyrowave_fec_frame", "PyroWave critical FEC was omitted: the coarse picture, parity or packet alignment cannot fit the supported wire blocks. Recovery protection is reduced; restore the default packet size, lower resolution/FEC, or use HEVC/AV1 on a lossy link.");
+                        }
                         let overhead = butterpollo_core::network_pacing::overhead(peer.is_ipv6());
                         let packet_bytes = current.config.packet_size
                             + 16
@@ -168,6 +175,10 @@ impl Sender {
                             link,
                             demand,
                         );
+                        if Instant::now() >= link_due {
+                            butterpollo_core::network_pacing::report_rate(&current.launch.warnings, bps, demand, config.integer("pacing_max_bitrate_kbps", 0));
+                        }
+                        let dropped = batch.dropped;
                         let mut sent = 0;
                         for packets in blocks {
                             let packets = packets?;
@@ -202,6 +213,9 @@ impl Sender {
                                     .fetch_add(bytes as u64, Ordering::Relaxed);
                                 remaining = &remaining[count..];
                             }
+                        }
+                        if batch.dropped != dropped {
+                            current.launch.warnings.set("network_send", "PyroWave video packets were dropped by the host after transient socket send failures. Lower bitrate and check the network adapter; the log includes the socket error code.");
                         }
                         current.stats.latency_us.store(latency, Ordering::Relaxed);
                         current.stats.frames.fetch_add(1, Ordering::Relaxed);

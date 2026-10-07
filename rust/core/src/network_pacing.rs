@@ -38,6 +38,24 @@ pub fn pyrowave_rate_bps(
     }
 }
 
+pub fn report_rate(
+    warnings: &crate::session::Warnings,
+    bps: u64,
+    needed_bps: u64,
+    configured_kbps: i64,
+) {
+    if configured_kbps > 0 && bps > (configured_kbps as u64).saturating_mul(1000) {
+        warnings.set("network_pacing_floor", format!("Requested pacing cap {configured_kbps} Kbps was raised to {:.1} Mbps by the encoder-bitrate floor. Bursts can exceed the requested cap; lower the encoder bitrate or choose a pacing cap with room for audio and FEC.", bps as f64 / 1_000_000.));
+    } else {
+        warnings.clear("network_pacing_floor");
+    }
+    if bps < needed_bps {
+        warnings.set("network_pacing", format!("Network pacing is limited to {:.1} Mbps by the configured cap or routed link, below the stream's wire budget. Sending may delay or replace frames; lower client bitrate/FEC or raise the pacing cap only if the network has headroom.", bps as f64 / 1_000_000.));
+    } else {
+        warnings.clear("network_pacing");
+    }
+}
+
 /// Ethernet framing, inter-packet gap, IP and UDP, beyond the UDP payload.
 pub fn overhead(ipv6: bool) -> usize {
     if ipv6 { 86 } else { 66 }
@@ -72,6 +90,38 @@ impl Pacer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_a_pacing_shortfall_warns_and_a_faster_link_clears_it() {
+        let warnings = crate::session::Warnings::default();
+        report_rate(
+            &warnings,
+            rate_bps(0, 100_000, 100_000_000, false),
+            120_000_000,
+            0,
+        );
+        assert!(warnings.snapshot()[0].message.contains("80.0 Mbps"));
+        report_rate(
+            &warnings,
+            rate_bps(0, 100_000, 1_000_000_000, false),
+            120_000_000,
+            0,
+        );
+        assert!(warnings.snapshot().is_empty());
+        report_rate(
+            &warnings,
+            rate_bps(50_000, 100_000, 0, false),
+            100_000_000,
+            50_000,
+        );
+        assert_eq!(warnings.snapshot()[0].code, "network_pacing_floor");
+        report_rate(
+            &warnings,
+            rate_bps(200_000, 100_000, 0, false),
+            100_000_000,
+            200_000,
+        );
+        assert!(warnings.snapshot().is_empty());
+    }
 
     #[test]
     fn pyrowave_demand_cannot_override_an_explicit_cap_or_link_limit() {

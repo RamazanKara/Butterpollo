@@ -200,10 +200,25 @@ async fn connection(
                 }
                 let config = crate::stream::effective_config(&h, &launch)?;
                 let required_encryption = crate::network::encryption_mode(&config, peer.ip()) == 2;
+                let requested_bitrate = if negotiated.configured_bitrate_kbps > 0 {
+                    negotiated.configured_bitrate_kbps
+                } else {
+                    negotiated.bitrate_kbps
+                };
                 butterpollo_core::stream_policy::apply(
                     &mut negotiated,
                     launch.requested_rate,
                     &config,
+                );
+                butterpollo_core::stream_policy::report_bitrate(
+                    &launch.warnings,
+                    requested_bitrate,
+                    negotiated.bitrate_kbps,
+                    &format!(
+                        "negotiated wire budget reserves audio/packet overhead and FEC ({}% for conventional codecs), with max_bitrate={} Kbps (0 means no configured cap)",
+                        config.integer("fec_percentage", 20),
+                        config.integer("max_bitrate", 0)
+                    ),
                 );
                 butterpollo_core::stream_policy::apply_color(&mut negotiated, &config);
                 negotiated.validate()?;

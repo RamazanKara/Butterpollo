@@ -2,6 +2,8 @@ use anyhow::{Context, Result, bail};
 
 use crate::crypto;
 
+type PacketBlock = Vec<Vec<u8>>;
+
 const REPLAY_WINDOW: u32 = 4096;
 /// Authenticate a message before recording its sequence. Moonlight numbers
 /// control messages with one counter across ENet channels, which are only
@@ -126,7 +128,20 @@ pub struct PyrowaveFec {
     pub wire_budget: usize,
     pub ipv6: bool,
 }
+fn conventional_fec(total_shards: usize, percentage: usize) -> (usize, usize) {
+    let blocks = total_shards.div_ceil(255 * 100 / (100 + percentage));
+    if blocks > 4 {
+        (4, 0)
+    } else {
+        (blocks, percentage)
+    }
+}
 impl VideoPacketizer {
+    pub fn fec_limited(&self, payload_bytes: usize) -> bool {
+        let shards = (payload_bytes + 8).div_ceil(self.packet_size - 16);
+        conventional_fec(shards, self.fec_percent).1 < self.fec_percent
+    }
+
     pub fn encode(
         &mut self,
         payload: &[u8],
@@ -171,7 +186,7 @@ impl VideoPacketizer {
         timestamp: u32,
         latency_us: u64,
         fec: PyrowaveFec,
-    ) -> Result<(usize, impl Iterator<Item = Result<Vec<Vec<u8>>>> + 'a)> {
+    ) -> Result<(usize, bool, impl Iterator<Item = Result<PacketBlock>> + 'a)> {
         self.frame_blocks(payload, true, false, timestamp, latency_us, Some(fec))
     }
     fn encode_frame(
@@ -183,7 +198,7 @@ impl VideoPacketizer {
         latency_us: u64,
         pyrowave: Option<PyrowaveFec>,
     ) -> Result<Vec<Vec<u8>>> {
-        let (count, blocks) = self.frame_blocks(
+        let (count, _, blocks) = self.frame_blocks(
             payload,
             idr,
             after_invalidation,
@@ -205,7 +220,7 @@ impl VideoPacketizer {
         timestamp: u32,
         latency_us: u64,
         pyrowave: Option<PyrowaveFec>,
-    ) -> Result<(usize, impl Iterator<Item = Result<Vec<Vec<u8>>>> + 'a)> {
+    ) -> Result<(usize, bool, impl Iterator<Item = Result<PacketBlock>> + 'a)> {
         if !(256..=1400).contains(&self.packet_size) || self.fec_percent > 100 {
             bail!("invalid packetizer parameters");
         }
@@ -245,13 +260,7 @@ impl VideoPacketizer {
         header[4..6]
             .copy_from_slice(&((if last == 0 { slice } else { last }) as u16).to_le_bytes());
         header[6..8].copy_from_slice(&(critical as u16).to_le_bytes());
-        let max_data = 255 * 100 / (100 + self.fec_percent);
-        let mut blocks = total_shards.div_ceil(max_data);
-        let mut percentage = self.fec_percent;
-        if blocks > 4 {
-            percentage = 0;
-            blocks = 4;
-        }
+        let (mut blocks, percentage) = conventional_fec(total_shards, self.fec_percent);
         let aligned = total_shards.div_ceil(blocks);
         let plan = if let Some(pyro) = pyrowave.as_ref() {
             let baseline = crate::pyrowave::plan(
@@ -289,6 +298,10 @@ impl VideoPacketizer {
                 })
                 .collect()
         };
+        let fec_limited = pyrowave
+            .as_ref()
+            .is_some_and(|p| p.records && p.critical_percentage > 0)
+            && plan.iter().all(|block| block.percentage == 0);
         blocks = plan.len();
         let sealer = self.key.as_ref().map(crypto::PacketSealer::new);
         let envelope = if sealer.is_some() { 32 } else { 0 };
@@ -383,7 +396,7 @@ impl VideoPacketizer {
             }
             Ok(shards)
         });
-        Ok((packet_count, blocks))
+        Ok((packet_count, fec_limited, blocks))
     }
 }
 pub fn control_header(b: &[u8]) -> Result<(u16, &[u8])> {
@@ -783,6 +796,12 @@ fn cauchy_encode_offset<const OFFSET: usize>(
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn large_conventional_frames_report_the_wire_fec_cutoff() {
+        assert_eq!(super::conventional_fec(848, 20), (4, 20));
+        assert_eq!(super::conventional_fec(849, 20), (4, 0));
+        assert_eq!(super::conventional_fec(849, 0), (4, 0));
+    }
     use super::*;
 
     #[test]
@@ -804,7 +823,7 @@ mod tests {
             wire_budget: 0,
             ipv6: false,
         };
-        let (total, mut blocks) = p.pyrowave_blocks(&payload, 9000, 543, fec()).unwrap();
+        let (total, _, mut blocks) = p.pyrowave_blocks(&payload, 9000, 543, fec()).unwrap();
         let first = blocks.next().unwrap().unwrap();
         assert!(first.len() < total);
         drop(blocks);
@@ -941,7 +960,7 @@ mod tests {
                 };
                 let mut all = Vec::new();
                 for _ in 0..2 {
-                    let (total, blocks) = p
+                    let (total, fec_limited, blocks) = p
                         .pyrowave_blocks(
                             &framed,
                             9000,
@@ -956,6 +975,8 @@ mod tests {
                         )
                         .unwrap();
                     assert_eq!(total, packet_count);
+                    // The unaligned 1390-byte fixture cannot carry critical FEC.
+                    assert_eq!(fec_limited, records && size == 1390);
                     let mut emitted = 0;
                     for (block_index, block) in blocks.enumerate() {
                         let block = block.unwrap();

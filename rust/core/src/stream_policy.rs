@@ -47,7 +47,11 @@ impl Pacing {
             .as_str()
         {
             "grid" | "fixed" => Self::Grid,
-            _ => Self::Arrival,
+            "arrival" | "" => Self::Arrival,
+            other => {
+                crate::config::fallback("frame_pacing", other, "arrival");
+                Self::Arrival
+            }
         }
     }
 }
@@ -423,6 +427,19 @@ pub fn apply(stream: &mut Negotiated, launch_millihz: u32, config: &Config) {
         stream.packet_size = packet_size as usize;
     }
 }
+pub fn report_bitrate(
+    warnings: &crate::session::Warnings,
+    requested: u32,
+    applied: u32,
+    reason: &str,
+) {
+    if applied < requested {
+        warnings.set("network_bitrate", format!("Encoder bitrate reduced from {requested} to {applied} Kbps: {reason}. Picture detail may be lower; check Maximum bitrate and the client bitrate, leaving room for audio and FEC."));
+    } else {
+        warnings.clear("network_bitrate");
+    }
+}
+
 /// The bitrate a client may set during a stream: `max_bitrate` caps it, and
 /// 500 Mbps keeps it inside the encoders' rate fields, as in Vibepollo.
 pub fn runtime_bitrate_kbps(config: &Config, requested: u32) -> u32 {
@@ -437,6 +454,28 @@ pub fn runtime_bitrate_kbps(config: &Config, requested: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bitrate_clamps_are_reported_with_requested_and_applied_values() {
+        let warnings = crate::session::Warnings::default();
+        let config = Config::parse("max_bitrate=25000\n").unwrap();
+        report_bitrate(
+            &warnings,
+            900_000,
+            runtime_bitrate_kbps(&config, 900_000),
+            "max_bitrate and the 500 Mbps runtime cap",
+        );
+        assert!(warnings.snapshot()[0].message.contains("900000 to 25000"));
+        report_bitrate(
+            &warnings,
+            900_000,
+            runtime_bitrate_kbps(&Config::default(), 900_000),
+            "500 Mbps runtime cap",
+        );
+        assert!(warnings.snapshot()[0].message.contains("500000"));
+        report_bitrate(&warnings, 20_000, 20_000, "unchanged");
+        assert!(warnings.snapshot().is_empty());
+    }
+
     #[test]
     fn runtime_bitrate_honours_the_host_ceiling() {
         assert_eq!(runtime_bitrate_kbps(&Config::default(), 80_000), 80_000);

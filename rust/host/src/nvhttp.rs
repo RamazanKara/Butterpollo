@@ -1419,6 +1419,12 @@ async fn bitrate(
     let mut count = 0;
     for s in sessions.active.values() {
         if s.launch.client.uuid == client.uuid {
+            butterpollo_core::stream_policy::report_bitrate(
+                &s.launch.warnings,
+                requested,
+                applied,
+                "max_bitrate and the 500 Mbps runtime cap",
+            );
             s.bitrate
                 .store(applied, std::sync::atomic::Ordering::Release);
             count += 1;

@@ -909,6 +909,10 @@ impl Media {
                             audio_s.launch.warnings.set("audio_stopped", format!("Audio stopped ({e:#}); video is still running without sound. Check the playback device and network, then reconnect."));
                         }
                     })?;
+                    let requested_fec = c.integer("fec_percentage", 20);
+                    if requested_fec != requested_fec.clamp(0, 100) {
+                        s.launch.warnings.set("network_fec_config", format!("FEC percentage {requested_fec} is outside 0-100; using {}%. Correct fec_percentage in Network settings.", requested_fec.clamp(0, 100)));
+                    }
                     let mut packetizer = VideoPacketizer {
                         sequence: 0,
                         iv_counter: 0,
@@ -988,6 +992,7 @@ impl Media {
                     let mut network_pacer = butterpollo_core::network_pacing::Pacer::new(Instant::now());
                     let mut link = None;
                     let mut link_due = Instant::now();
+                    let mut reported_pacing = None;
                     let batch_kb = match c.integer("video_max_batch_size_kb", 64) {
                         16 => 16,
                         32 => 32,
@@ -1026,11 +1031,14 @@ impl Media {
                             let packets = match packetizer.encode_recovery(&frame.bytes,frame.idr,frame.after_invalidation,timestamp,processing) {
                                 Ok(packets) => packets,
                                 Err(error) => {
-                                    tracing::warn!(error = %format!("{error:#}"), bytes = frame.bytes.len(), "encoded frame dropped");
+                                    s.launch.warnings.set("network_frame", format!("Encoded video frame dropped ({error:#}); requesting a recovery frame. Lower bitrate or resolution to stay within Moonlight's packet limit."));
                                     s.request_idr();
                                     continue;
                                 }
                             };
+                            if packetizer.fec_limited(frame.bytes.len()) {
+                                s.launch.warnings.set("network_fec", "FEC was omitted for large video frames because they exceed the four-block wire limit. Packet loss is harder to recover; lower bitrate or resolution to keep FEC protection.");
+                            }
                             next_wire_frame.set(u64::from(packetizer.frame));
                             let frame_bytes = packets.iter().map(|p|p.len() as u64).sum();
                             let bps = butterpollo_core::network_pacing::rate_bps(
@@ -1039,6 +1047,15 @@ impl Media {
                                 *link.get_or_insert_with(|| butterpollo_windows::net::routed_link_bps(peer)),
                                 peer.ip().to_canonical().is_loopback(),
                             );
+                            if Instant::now() >= link_due {
+                                let needed = u64::from(s.bitrate.load(Ordering::Relaxed)) * (100 + packetizer.fec_percent as u64) * 10;
+                                butterpollo_core::network_pacing::report_rate(&s.launch.warnings, bps, needed, c.integer("pacing_max_bitrate_kbps", 0));
+                                if reported_pacing != Some(bps) {
+                                    tracing::info!(pacing_bps=bps, link_bps=link, configured_kbps=c.integer("pacing_max_bitrate_kbps", 0), "network pacing selected; defaults use twice encoder bitrate for wireless/unknown routes, or the wired/loopback ceiling");
+                                    reported_pacing = Some(bps);
+                                }
+                            }
+                            let dropped = batch.dropped;
                             let mut remaining = packets.as_slice();
                             while !remaining.is_empty() {
                                 if s.stopping() || h.stop.load(Ordering::Acquire) {
@@ -1058,6 +1075,9 @@ impl Media {
                                 network_pacer.sent(Instant::now(), bytes, if bytes > 0 { count } else { 0 }, peer.is_ipv6(), bps);
                                 s.stats.packets.fetch_add(count as u64, Ordering::Relaxed);
                                 s.stats.bytes.fetch_add(bytes as u64, Ordering::Relaxed);
+                            }
+                            if batch.dropped != dropped {
+                                s.launch.warnings.set("network_send", "Video packets were dropped by the host after transient socket send failures. You may see stutter or recovery frames; lower bitrate and check the network adapter. The log includes the socket error code.");
                             }
                             s.stats.frames.fetch_add(1, Ordering::Relaxed);
                             let sent = Instant::now();
