@@ -106,7 +106,8 @@ pub fn import(source: &Path, destination: &Path) -> Result<()> {
         bail!("select the folder containing sunshine.conf");
     }
     // Validate familiar documents before committing an import; unknown fields stay.
-    state::PairedState::load(&config.path("file_state", &source, "sunshine_state.json"))?;
+    let paired =
+        state::PairedState::load(&config.path("file_state", &source, "sunshine_state.json"))?;
     state::load_json(
         &config.path("file_apps", &source, "apps.json"),
         serde_json::json!({}),
@@ -142,6 +143,11 @@ pub fn import(source: &Path, destination: &Path) -> Result<()> {
             config.path("pkey", &source, "credentials/cakey.pem"),
         ];
         let identity_complete = identity.iter().all(|path| path.is_file());
+        if !identity_complete && !paired.clients.is_empty() {
+            bail!(
+                "The paired profile's certificate or private key is missing. Restore both identity files before importing so existing clients can still connect."
+            );
+        }
         if !identity_complete {
             if identity.iter().any(|path| path.is_file())
                 || config.values.contains_key("cert")
@@ -284,15 +290,12 @@ fn check(directory: &Path) -> Result<()> {
     crypto::Identity::read(&files.certificate, &files.key)?;
     state::Credentials::load(&files.credentials)?;
     let mut aliases = state::load_json(&files.aliases, json!({"root":{}}))?;
-    // The host sets aside an app library it cannot read and starts without
-    // it, and gives an app without a UUID one, before it checks the app IDs
-    // kept with the aliases.
-    let mut apps: Vec<state::App> = state::load_json(&files.apps, json!({}))
-        .ok()
-        .and_then(|library| {
-            serde_json::from_value(library.get("apps").cloned().unwrap_or(json!([]))).ok()
-        })
-        .unwrap_or_default();
+    // Setup may remove the original host after import, so an unreadable
+    // library must fail here rather than start the new host with no apps.
+    let library = state::load_json(&files.apps, json!({}))?;
+    let mut apps: Vec<state::App> =
+        serde_json::from_value(library.get("apps").cloned().unwrap_or(json!([])))
+            .context("invalid app library")?;
     for app in &mut apps {
         if app
             .extra
@@ -315,6 +318,96 @@ pub fn default_directory() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn realistic_profiles_keep_pairings_credentials_settings_and_unknown_fields() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let identity = crypto::Identity::generate()?;
+        let credentials = state::Credentials::new("admin".into(), "existing-password")?;
+        for family in [
+            "Vibepollo 2.0",
+            "Apollo",
+            "Sunshine",
+            "Butterpollo 2.0.0-rc.20",
+        ] {
+            let old = temp.path().join(family).join("Çağrı Müller/config");
+            std::fs::create_dir_all(old.join("credentials"))?;
+            let settings = "sunshine_name = Çağrı Müller\nencoder = amdvce_experimental\namdvce_experimental = true\namd_quality = quality\nvirtual_display_mode = per_client\nvirtual_display_layout = extended\nport = 48000\nfuture_setting = {\"version\":99,\"keep\":true}\n";
+            let mut utf16 = vec![0xff, 0xfe];
+            utf16.extend(settings.encode_utf16().flat_map(u16::to_le_bytes));
+            std::fs::write(old.join("sunshine.conf"), &utf16)?;
+            let paired = if family == "Sunshine" {
+                json!({"root":{"uniqueid":"same-host","devices":[{"certs":[identity.certificate]}]},"future":99})
+            } else {
+                json!({"root":{"uniqueid":"same-host","named_devices":[{
+                    "name":"Living room","cert":identity.certificate,"uuid":"same-client",
+                    "perm":"119480064","enabled":"true","display_mode":"2560x1440x120",
+                    "virtual_display_guid":"same-display","config_overrides":{"amd_quality":"speed"},
+                    "future_device":{"keep":true}}]},"future":99})
+            };
+            let aliases = json!({"root":{"shared_virtual_display_guid":"f425b740-e441-4b87-8e78-07b91579bf70",
+                "session_tokens":[{"hash":"saved-session","future_token":true}],"future_state":[1,2,3]}});
+            let apps = json!({"env":{"CUSTOM":"kept"},"future_library":99,"apps":[{
+                "name":"Game","uuid":"same-app","cmd":"game.exe","image-path":old.join("cover.png"),
+                "prep-cmd":[{"do":"before.cmd","undo":"after.cmd","elevated":"false"}],
+                "future_app":{"keep":true}}]});
+            state::write_json(&old.join("sunshine_state.json"), &paired)?;
+            state::write_json(&old.join("vibeshine_state.json"), &aliases)?;
+            state::write_json(&old.join("sunshine_credentials.json"), &credentials)?;
+            state::write_json(&old.join("apps.json"), &apps)?;
+            std::fs::write(old.join("credentials/cacert.pem"), &identity.certificate)?;
+            std::fs::write(old.join("credentials/cakey.pem"), &identity.private_pem)?;
+            std::fs::write(old.join("cover.png"), b"\x89PNG\r\n\x1a\ncover")?;
+            std::fs::write(old.join("display-state.json"), b"saved display state")?;
+            let next = temp.path().join(format!("imported {family}"));
+            import(&old, &next)?;
+            let config = Config::load(&next.join("sunshine.conf"))?;
+            assert_eq!(config.values, Config::parse(settings)?.values);
+            assert_eq!(
+                crate::encoder_policy::canonical_name(config.get("encoder", "")),
+                "amf"
+            );
+            for file in [
+                "sunshine_state.json",
+                "vibeshine_state.json",
+                "sunshine_credentials.json",
+                "credentials/cacert.pem",
+                "credentials/cakey.pem",
+                "display-state.json",
+            ] {
+                assert_eq!(
+                    std::fs::read(next.join(file))?,
+                    std::fs::read(old.join(file))?,
+                    "{family}: {file}"
+                );
+            }
+            let clients = state::PairedState::load(&next.join("sunshine_state.json"))?;
+            assert_eq!(clients.unique_id, "same-host");
+            assert_eq!(clients.clients.len(), 1);
+            assert_eq!(clients.clients[0].cert, identity.certificate);
+            assert!(
+                state::Credentials::load(&next.join("sunshine_credentials.json"))?
+                    .unwrap()
+                    .verifies("admin", "existing-password")
+            );
+            let mut imported = state::load_json(&next.join("apps.json"), Value::Null)?;
+            let cover = PathBuf::from(imported["apps"][0]["image-path"].as_str().unwrap());
+            assert_eq!(std::fs::read(&cover)?, b"\x89PNG\r\n\x1a\ncover");
+            imported["apps"][0]["image-path"] = apps["apps"][0]["image-path"].clone();
+            assert_eq!(imported, apps);
+            assert_eq!(std::fs::read(old.join("sunshine.conf"))?, utf16);
+            assert!(import(&old, &next).is_err());
+            std::fs::remove_file(old.join("credentials/cakey.pem"))?;
+            let incomplete = temp.path().join(format!("incomplete {family}"));
+            assert!(
+                import(&old, &incomplete)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("private key")
+            );
+            assert!(!incomplete.exists());
+        }
+        Ok(())
+    }
     #[test]
     fn importing_keeps_source_intact_unknown_fields_and_external_files_owned() {
         let temp = tempfile::tempdir().unwrap();
@@ -415,7 +508,12 @@ mod tests {
     #[test]
     fn a_profile_the_host_would_refuse_fails_the_import() {
         let temp = tempfile::tempdir().unwrap();
-        let cases: [&[(&str, &str)]; 4] = [
+        let cases: [&[(&str, &str)]; 6] = [
+            &[("apps.json", r#"{"apps":{"future_format":true}}"#)],
+            &[(
+                "apps.json",
+                r#"{"apps":[{"name":"Game","prep-cmd":"future_format"}]}"#,
+            )],
             &[("vibeshine_state.json", r#"{"root":[]}"#)],
             &[(
                 "vibeshine_state.json",

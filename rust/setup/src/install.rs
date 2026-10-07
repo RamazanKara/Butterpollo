@@ -116,6 +116,7 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
     line(format!("found: {found:#?}"));
     let install = system::win32_path(&detect::install_dir(&found, options.install_dir.clone()))?;
     let profile = profile();
+    let previous = migration_source(&found, &profile, &install)?;
     let mut notes = Vec::new();
     let mut restart_needed = false;
 
@@ -138,7 +139,6 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
     // otherwise make the service put that backup over this installation.
     crate::update::recover(&profile)?;
 
-    let previous = found.previous_root();
     if let Some(root) = &previous {
         line(format!("previous installation: {}", root.display()));
         // Vibepollo journals NVIDIA profile changes; only its own program can
@@ -164,13 +164,7 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
         }
     }
 
-    progress.set("Installing files…");
-    copy_package(&staging, &install, &entries)?;
-    payload::write_stub(&install.join("uninstall.exe"))?;
-
-    if let Some(root) = &previous
-        && profile_is_empty(&profile)
-    {
+    if let Some(root) = &previous {
         progress.set("Importing settings, paired devices and apps…");
         let source = if root.join("config\\sunshine.conf").is_file() {
             root.join("config")
@@ -178,7 +172,7 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
             root.clone()
         };
         let (code, output) = system::run(
-            &install.join("butterpollo.exe").display().to_string(),
+            &staging.join("butterpollo.exe").display().to_string(),
             &[
                 "--config-dir",
                 &profile.display().to_string(),
@@ -202,6 +196,10 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
             source.display()
         ));
     }
+
+    progress.set("Installing files…");
+    copy_package(&staging, &install, &entries)?;
+    payload::write_stub(&install.join("uninstall.exe"))?;
 
     // The previous host is removed from here on, so a failure now starts
     // the service Butterpollo runs as instead.
@@ -339,8 +337,67 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
     })
 }
 
-fn profile_is_empty(profile: &Path) -> bool {
-    std::fs::read_dir(profile).map_or(true, |mut entries| entries.next().is_none())
+fn migration_source(
+    found: &detect::Found,
+    profile: &Path,
+    install: &Path,
+) -> Result<Option<PathBuf>> {
+    let mut source = None;
+    for product in found
+        .packages
+        .iter()
+        .chain(&found.legacy)
+        .chain(&found.vibepollo_entries)
+    {
+        let root = product.location.as_ref().with_context(|| {
+            format!(
+                "The settings for {} could not be located; back them up before removing that host",
+                product.name
+            )
+        })?;
+        if !root.join("config/sunshine.conf").is_file() && !root.join("sunshine.conf").is_file() {
+            bail!(
+                "The settings for {} were not found in {}; that host has not been removed",
+                product.name,
+                root.display()
+            );
+        }
+        let root = root.canonicalize()?;
+        if source.as_ref().is_some_and(|previous| previous != &root) {
+            bail!(
+                "More than one previous host has settings. Back up and import the profile you want before removing the other hosts."
+            );
+        }
+        let root_path = system::win32_path(&root)?.to_string_lossy().to_lowercase();
+        let install_path = system::win32_path(
+            &install
+                .canonicalize()
+                .unwrap_or_else(|_| install.to_owned()),
+        )?
+        .to_string_lossy()
+        .to_lowercase();
+        if install_path == root_path || install_path.starts_with(&format!("{root_path}\\")) {
+            bail!(
+                "Choose an installation folder outside {}; removing the previous host could delete Butterpollo's files",
+                root.display()
+            );
+        }
+        source = Some(root);
+    }
+    if source.is_some() {
+        let empty = match std::fs::read_dir(profile) {
+            Ok(mut entries) => entries.next().transpose()?.is_none(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+            Err(error) => return Err(error).context("checking the existing Butterpollo profile"),
+        };
+        if !empty {
+            bail!(
+                "Butterpollo already has a profile at {}. The previous host has not been removed; back up both profiles before choosing which to keep.",
+                profile.display()
+            );
+        }
+    }
+    Ok(source)
 }
 /// Stop `services` and return those that were running before.
 fn stop_running(
@@ -570,6 +627,62 @@ pub(crate) fn wait_ready(address: SocketAddr, version: Option<&str>) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_previous_host_is_removed_only_after_its_profile_can_be_imported() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let old = temp.path().join("Vibepollo");
+        let profile = temp.path().join("Butterpollo/config");
+        let install = temp.path().join("programs/Butterpollo");
+        std::fs::create_dir_all(old.join("config"))?;
+        std::fs::write(
+            old.join("config/sunshine.conf"),
+            "encoder=amdvce_experimental",
+        )?;
+        let product = detect::Product {
+            key: "Vibepollo".into(),
+            name: "Vibepollo".into(),
+            version: "2.0.0".into(),
+            location: Some(old.clone()),
+            uninstall: None,
+            quiet_uninstall: None,
+            msi: false,
+            root: HKEY_LOCAL_MACHINE,
+        };
+        let mut found = detect::Found {
+            legacy: vec![product.clone()],
+            ..Default::default()
+        };
+        assert_eq!(
+            migration_source(&found, &profile, &install)?,
+            Some(old.canonicalize()?)
+        );
+        assert!(migration_source(&found, &profile, &old).is_err());
+        assert!(migration_source(&found, &profile, &old.join("nested")).is_err());
+        std::fs::create_dir_all(&profile)?;
+        std::fs::write(profile.join("sunshine_state.json"), "existing pairings")?;
+        assert!(migration_source(&found, &profile, &install).is_err());
+        assert_eq!(
+            std::fs::read(profile.join("sunshine_state.json"))?,
+            b"existing pairings"
+        );
+        std::fs::remove_file(profile.join("sunshine_state.json"))?;
+        let other = temp.path().join("Sunshine");
+        std::fs::create_dir(&other)?;
+        std::fs::write(other.join("sunshine.conf"), "encoder=software")?;
+        found.legacy.push(detect::Product {
+            location: Some(other),
+            ..product
+        });
+        assert!(migration_source(&found, &profile, &install).is_err());
+        found.legacy.pop();
+        std::fs::remove_file(old.join("config/sunshine.conf"))?;
+        assert!(migration_source(&found, &profile, &install).is_err());
+        assert_eq!(
+            migration_source(&detect::Found::default(), &profile, &install)?,
+            None
+        );
+        Ok(())
+    }
     #[test]
     fn the_health_check_asks_the_configured_bind_address() {
         let local = IpAddr::from([127, 0, 0, 1]);
