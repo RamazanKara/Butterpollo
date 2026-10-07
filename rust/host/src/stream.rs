@@ -691,7 +691,12 @@ impl Media {
                         if let Some(signal) = capture.frame_signal() {
                             signal.reset()?;
                         }
-                        match capture.next_gpu() {
+                        let captured = (|| {
+                            #[cfg(debug_assertions)]
+                            crate::soak_fault::check("DXGI_ERROR_ACCESS_LOST")?;
+                            capture.next_gpu()
+                        })();
+                        match captured {
                             Ok(Some(image)) => {
                                 capture_warnings.clear("capture_recovery");
                                 let captured = image.captured;
@@ -1088,7 +1093,7 @@ impl Media {
                             }
                             s.stats.frames.fetch_add(1, Ordering::Relaxed);
                             let sent = Instant::now();
-                            s.stats.performance.lock().unwrap().record_timing(sent,butterpollo_core::performance::Timing{encode:latency,host:processing,age,sent:micros(sent.saturating_duration_since(claimed))},frame_bytes);
+                            s.stats.performance.lock().unwrap().record_timing(sent,butterpollo_core::performance::Timing{period,encode:latency,host:processing,age,sent:micros(sent.saturating_duration_since(claimed))},frame_bytes);
                             // The interface lookup takes a moment: refresh the
                             // link speed after the frame is out, for the next one.
                             if Instant::now() >= link_due {
@@ -1473,6 +1478,8 @@ impl Media {
                             if last_image.as_ref().is_some_and(|previous| Arc::ptr_eq(previous,&image)) { presented_image.captured = Instant::now(); }
                             let transformed = if converted { truehdr.as_mut().map(|filter| filter.apply_gpu(&presented_image)).transpose() } else { Ok(None) };
                             let encoded = (|| -> Result<Vec<butterpollo_windows::encoder::Encoded>> {
+                                #[cfg(debug_assertions)]
+                                crate::soak_fault::check("encoder failure")?;
                                 Ok(if let Ok(Some(transformed)) = transformed.as_ref() {
                                     active.encode_gpu(transformed, idr, bitrate)?
                                 } else if let Err(error) = transformed {

@@ -16,6 +16,8 @@ struct Frame {
 /// Microseconds spent on one frame.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Timing {
+    /// Negotiated frame interval, used to count gaps above twice that interval.
+    pub period: Duration,
     /// Claim through completed codec output, including asynchronous work.
     pub encode: u64,
     /// Claim through the pre-packetization sample: host latency sent to Moonlight,
@@ -40,12 +42,14 @@ pub struct Performance {
     processing: u64,
     processing_maximum: u64,
     age: u64,
+    send_stutters: u64,
 }
 impl Performance {
     pub fn record(&mut self, now: Instant, latency: u64, bytes: u64) {
         self.record_timing(
             now,
             Timing {
+                period: Duration::ZERO,
                 encode: latency,
                 host: latency,
                 age: 0,
@@ -56,6 +60,7 @@ impl Performance {
     }
     pub fn record_timing(&mut self, now: Instant, timing: Timing, bytes: u64) {
         let Timing {
+            period,
             encode: latency,
             host: processing,
             age,
@@ -92,6 +97,9 @@ impl Performance {
                 .as_micros()
                 .min(u128::from(u64::MAX)) as u64
         });
+        if !period.is_zero() && interval.is_some_and(|us| u128::from(us) > period.as_micros() * 2) {
+            self.send_stutters += 1;
+        }
         self.frames.push_back(Frame {
             at: now,
             latency,
@@ -166,6 +174,7 @@ impl Performance {
             "send_interval_p95_ms":percentile(&intervals,95),
             "send_interval_p99_ms":percentile(&intervals,99),
             "send_interval_max_ms":percentile(&intervals,100),
+            "send_stutters":self.send_stutters,
             "sample_frames":frames.len(),"history":self.history
         })
     }
@@ -175,6 +184,7 @@ mod tests {
     use super::*;
     fn timing(encode: u64, host: u64, age: u64) -> Timing {
         Timing {
+            period: Duration::from_millis(10),
             encode,
             host,
             age,
@@ -188,6 +198,7 @@ mod tests {
         p.record_timing(
             now,
             Timing {
+                period: Duration::from_millis(10),
                 encode: 2000,
                 host: 2500,
                 age: 4000,
@@ -251,11 +262,39 @@ mod tests {
         );
         let snapshot = p.snapshot(start + Duration::from_millis(32));
         assert_eq!(snapshot["send_interval_max_ms"], 24.);
+        assert_eq!(snapshot["send_stutters"], 1);
         assert_eq!(snapshot["frame_age_mean_ms"], 1.3);
         assert_eq!(snapshot["host_processing_max_ms"], 4.);
         assert_eq!(
             p.snapshot(start + Duration::from_secs(3))["send_interval_max_ms"],
             0.
+        );
+        assert_eq!(
+            p.snapshot(start + Duration::from_secs(3))["send_stutters"],
+            1
+        );
+    }
+    #[test]
+    fn stutters_count_only_gaps_above_two_periods_and_survive_window_eviction() {
+        let start = Instant::now();
+        let mut p = Performance::default();
+        for ms in [0, 10, 30, 51] {
+            p.record_timing(start + Duration::from_millis(ms), timing(1, 1, 0), 1);
+        }
+        assert_eq!(
+            p.snapshot(start + Duration::from_millis(51))["send_stutters"],
+            1
+        );
+        for i in 1..=3000 {
+            p.record_timing(
+                start + Duration::from_millis(51 + i * 10),
+                timing(1, 1, 0),
+                1,
+            );
+        }
+        assert_eq!(
+            p.snapshot(start + Duration::from_millis(30051))["send_stutters"],
+            1
         );
     }
     #[test]

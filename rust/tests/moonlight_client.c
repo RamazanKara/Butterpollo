@@ -44,12 +44,14 @@ static double audio_energy,audio_peak;
 static double audio_tone_min_energy=INFINITY,audio_tone_max_energy;
 static unsigned audio_tone_blocks;
 static unsigned long long audio_samples;
-static double host_latency[100000], decode_time_ms[100000];
-static double arrivals[100000], picture_age[100000];
-static double assembly_times[100000];
-static uint32_t picture_frames[100000];
+#define MAX_MEASUREMENTS (3600 * 240)
+static double host_latency[MAX_MEASUREMENTS], decode_time_ms[MAX_MEASUREMENTS];
+static double arrivals[MAX_MEASUREMENTS], picture_age[MAX_MEASUREMENTS];
+static double assembly_times[MAX_MEASUREMENTS];
+static uint32_t picture_frames[MAX_MEASUREMENTS];
 static unsigned measured_frames;
 static FILE *timing_csv;
+static FILE *audio_csv;
 static double warmup_seconds=2.0;
 static int barcode_bottom;
 /* The host may scale the source; the barcode is drawn at source pixels. */
@@ -271,11 +273,11 @@ static int video_frame(PDECODE_UNIT unit){
     if(received!=AVERROR(EAGAIN)&&received!=AVERROR_EOF)atomic_fetch_add(&failures,1);
     av_packet_free(&packet);av_frame_free(&frame);av_frame_free(&decoded);
     double decode_ms=clock_ms()-decode_started;
-    if(measured_frames<100000){
+    if(measured_frames<MAX_MEASUREMENTS){
         host_latency[measured_frames]=unit->frameHostProcessingLatency/10.0;decode_time_ms[measured_frames]=decode_ms;
         arrivals[measured_frames]=decode_started;assembly_times[measured_frames]=unit->enqueueTimeUs/1000.0;picture_age[measured_frames]=age_ms;picture_frames[measured_frames]=picture_sequence;measured_frames++;
     }
-    if(timing_csv)fprintf(timing_csv,"%d,%.6f,%.3f,%.6f,%u,%llu,%.6f,%llu,%llu,%llu\n",unit->frameNumber,decode_started,unit->frameHostProcessingLatency/10.0,decode_ms,picture_sequence,(unsigned long long)picture_ticks,age_ms,(unsigned long long)unit->receiveTimeUs,(unsigned long long)unit->enqueueTimeUs,(unsigned long long)unit->presentationTimeUs);
+    if(timing_csv)fprintf(timing_csv,"%d,%.6f,%.3f,%.6f,%u,%llu,%.6f,%llu,%llu,%llu,%d\n",unit->frameNumber,decode_started,unit->frameHostProcessingLatency/10.0,decode_ms,picture_sequence,(unsigned long long)picture_ticks,age_ms,(unsigned long long)unit->receiveTimeUs,(unsigned long long)unit->enqueueTimeUs,(unsigned long long)unit->presentationTimeUs,unit->frameType);
     atomic_fetch_add(&frames,1);if(atomic_load(&frames)<4)printf("FRAME %d bytes=%d type=%d\n",unit->frameNumber,unit->fullLength,unit->frameType);return DR_OK;
 }
 static int audio_init(int config,const POPUS_MULTISTREAM_CONFIGURATION opus,void*context,int flags){
@@ -284,6 +286,7 @@ static int audio_init(int config,const POPUS_MULTISTREAM_CONFIGURATION opus,void
 }
 static void audio_frame(char*data,int size){
     float samples[5760*8];int count=opus_multistream_decode_float(opus_decoder,(unsigned char*)data,size,samples,5760,0);
+    double minimum=INFINITY,maximum=0;
     if(count>0){
         atomic_fetch_add(&audio_packets,1);
         if(getenv("BUTTERPOLLO_TEST_AUDIO_TONE")&&audio_samples>=48000u*2*audio_channels){
@@ -293,12 +296,14 @@ static void audio_frame(char*data,int size){
                 double energy=0;
                 for(int i=start*audio_channels;i<(start+120)*audio_channels;i++)energy+=(double)samples[i]*samples[i];
                 energy/=120*audio_channels;
+                minimum=fmin(minimum,energy);maximum=fmax(maximum,energy);
                 audio_tone_min_energy=fmin(audio_tone_min_energy,energy);
                 audio_tone_max_energy=fmax(audio_tone_max_energy,energy);audio_tone_blocks++;
             }
         }
         for(int i=0;i<count*audio_channels;i++){double v=samples[i];audio_energy+=v*v;if(fabs(v)>audio_peak)audio_peak=fabs(v);audio_samples++;}
     }else atomic_fetch_add(&failures,1);
+    if(audio_csv)fprintf(audio_csv,"%.6f,%d,%.9f,%.9f\n",clock_ms(),count,isfinite(minimum)?sqrt(minimum):-1,sqrt(maximum));
 }
 static void stage_start(int stage){printf("STAGE %s\n",LiGetStageName(stage));}
 static void stage_failed(int stage,int error){printf("FAILED %s error=%d\n",LiGetStageName(stage),error);}
@@ -380,11 +385,15 @@ int main(int argc,char**argv){
     if(warmup_seconds<0||warmup_seconds>60)return 2;
     if(getenv("BUTTERPOLLO_TEST_TIMING_CSV")){
         timing_csv=fopen(getenv("BUTTERPOLLO_TEST_TIMING_CSV"),"w");if(!timing_csv){perror("timing CSV");return 2;}
-        fprintf(timing_csv,"wire_frame,arrival_ms,host_ms,decode_ms,render_frame,render_qpc,picture_age_ms,first_packet_us,assembled_us,presentation_us\n");
+        fprintf(timing_csv,"wire_frame,arrival_ms,host_ms,decode_ms,render_frame,render_qpc,picture_age_ms,first_packet_us,assembled_us,presentation_us,frame_type\n");
+    }
+    if(getenv("BUTTERPOLLO_TEST_AUDIO_CSV")){
+        audio_csv=fopen(getenv("BUTTERPOLLO_TEST_AUDIO_CSV"),"w");if(!audio_csv){perror("audio CSV");return 2;}
+        fprintf(audio_csv,"arrival_ms,samples,min_rms,max_rms\n");
     }
     if(argc>3)config.width=atoi(argv[3]);if(argc>4)config.height=atoi(argv[4]);if(argc>5)config.fps=atoi(argv[5]);if(argc>7)config.bitrate=atoi(argv[7]);
     if(argc>8)decoder_threads=atoi(argv[8]);requested_width=config.width;requested_height=config.height;
-    if(config.width<2||config.width>8192||config.height<2||config.height>8192||config.fps<1||config.fps>240||duration<0||duration>300||decoder_threads<1||decoder_threads>16)return 2;
+    if(config.width<2||config.width>8192||config.height<2||config.height>8192||config.fps<1||config.fps>240||duration<0||duration>3500||decoder_threads<1||decoder_threads>16)return 2;
     printf("DECODER threads=%d\n",decoder_threads);
     for(int i=0;i<16;i++)config.remoteInputAesKey[i]=(char)i;config.remoteInputAesIv[3]=123;
     /* Concurrent clients need distinct stream keys: rikey byte i is i+seed and rikeyid is 123+seed. */
@@ -407,7 +416,7 @@ int main(int argc,char**argv){
     }
 #endif
     double started=clock_ms();
-    for(int i=0;i<(duration?duration*10:100)&&!atomic_load(&ended)&&(duration||atomic_load(&frames)<30);i++)wait_ms(100);
+    while(clock_ms()-started<(duration?duration*1000.0:10000)&&!atomic_load(&ended)&&(duration||atomic_load(&frames)<30))wait_ms(100);
     double seconds=(clock_ms()-started)/1000.0;
     int premature=atomic_load(&ended)||(duration&&seconds<duration*0.98);
     LiStopConnection();
@@ -423,6 +432,7 @@ int main(int argc,char**argv){
     printf("RESULT frames=%d decoded_frames=%d audio_packets=%d failures=%d\n",atomic_load(&frames),atomic_load(&decoded_frames),atomic_load(&audio_packets),atomic_load(&failures));
     printf("PICTURE_CONTENT frames_with_luma_contrast=%d\n",atomic_load(&detailed_frames));
     if(timing_csv)fclose(timing_csv);
+    if(audio_csv)fclose(audio_csv);
     printf("AUDIO_SIGNAL samples=%llu peak=%.6f rms=%.6f\n",audio_samples,audio_peak,audio_samples?sqrt(audio_energy/audio_samples):0.0);
     if(getenv("BUTTERPOLLO_TEST_AUDIO_TONE")){
         int continuous=audio_tone_blocks&&audio_tone_min_energy>=audio_tone_max_energy*.25;
@@ -435,7 +445,7 @@ int main(int argc,char**argv){
     int rate_valid=!minimum_fps_text;
     if(duration&&measured_frames){
         double host_sum=0,decode_sum=0;for(unsigned i=0;i<measured_frames;i++){host_sum+=host_latency[i];decode_sum+=decode_time_ms[i];}
-        static double steady_host[100000],intervals[100000],ages[100000];
+        static double steady_host[MAX_MEASUREMENTS],intervals[MAX_MEASUREMENTS],ages[MAX_MEASUREMENTS];
         unsigned steady_count=0,interval_count=0,visual_count=0,age_count=0,repeats=0,skips=0,unique=0,late=0;
         uint32_t last_picture=0;double first_steady=0,last_steady=0;
         for(unsigned i=0;i<measured_frames;i++)if(arrivals[i]>=arrivals[0]+warmup_seconds*1000){

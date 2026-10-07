@@ -136,8 +136,8 @@ float4 picture(float4 p : SV_Position) : SV_Target {
             .map(|s| s.parse())
             .transpose()?;
         let strip_height: Option<u32> = args.next().map(|s| s.parse()).transpose()?;
-        if !(1..=300).contains(&seconds) || args.next().is_some() {
-            bail!("duration must be 1..300 seconds");
+        if !(1..=3600).contains(&seconds) || args.next().is_some() {
+            bail!("duration must be 1..3600 seconds");
         }
         if animation_hz.is_some_and(|hz| !(1..=1000).contains(&hz)) {
             bail!("animation rate must be 1..1000 Hz");
@@ -285,6 +285,7 @@ float4 picture(float4 p : SV_Position) : SV_Target {
             QueryPerformanceFrequency(&mut frequency)?;
             println!("MOTION stage=render-ready");
             let start = Instant::now();
+            let mut progress_at = start + Duration::from_secs(5);
             let mut next_frame = start;
             let mut frames = Vec::new();
             let presentation_stats = std::env::var_os("BUTTERPOLLO_TEST_PRESENT_STATS").is_some();
@@ -334,6 +335,13 @@ float4 picture(float4 p : SV_Position) : SV_Target {
                     );
                 }
                 frames.push(sample);
+                if Instant::now() >= progress_at {
+                    println!(
+                        "MOTION_PROGRESS frames={frame} seconds={:.3}",
+                        start.elapsed().as_secs_f64()
+                    );
+                    progress_at = Instant::now() + Duration::from_secs(5);
+                }
             }
             let data = serde_json::json!({
                 "scope":"render timestamp to independent decode; excludes remote display scanout",

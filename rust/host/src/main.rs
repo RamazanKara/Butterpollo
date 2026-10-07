@@ -10,6 +10,8 @@ mod pyrowave_send;
 mod remote_display;
 mod rtsp_server;
 mod runtime;
+#[cfg(debug_assertions)]
+mod soak_fault;
 mod state;
 mod steam;
 mod stream;

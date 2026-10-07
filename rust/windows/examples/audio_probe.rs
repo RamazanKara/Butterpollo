@@ -34,7 +34,7 @@ fn main() -> Result<()> {
     let seconds: u64 = duration.parse()?;
     let selected = args.next();
     let render_only = args.next().as_deref() == Some("--render-only");
-    if !(1..=300).contains(&seconds) || args.next().is_some() {
+    if !(1..=3600).contains(&seconds) || args.next().is_some() {
         bail!("usage: audio_probe SECONDS [ENDPOINT_ID [--render-only]]");
     }
     let endpoint = audio_route::endpoints()?

@@ -125,7 +125,11 @@ except subprocess.TimeoutExpired as error:
     raise
 finally:
     client.get(https+'/cancel',timeout=10)
-    session.post(web+'/api/clients/unpair',json={'uuid':paired['uuid']},timeout=10).raise_for_status()
+    if os.environ.get('BUTTERPOLLO_TEST_KEEP_PAIRED') == '1':
+        import json
+        (artifact/'pairing.json').write_text(json.dumps({'uuid':paired['uuid'], 'appid':app.findtext('ID')}))
+    else:
+        session.post(web+'/api/clients/unpair',json={'uuid':paired['uuid']},timeout=10).raise_for_status()
 if hooks_path:
     deadline=time.monotonic()+5
     while time.monotonic()<deadline:

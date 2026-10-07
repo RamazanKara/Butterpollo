@@ -228,6 +228,7 @@ impl Sender {
                         current.stats.performance.lock().unwrap().record_timing(
                             sent_at,
                             butterpollo_core::performance::Timing {
+                                period: Duration::from_secs_f64(1000. / f64::from(current.config.fps_millihz())),
                                 encode: latency,
                                 host: micros(processing),
                                 age: micros(age),
