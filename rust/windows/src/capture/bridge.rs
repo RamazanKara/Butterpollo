@@ -580,9 +580,23 @@ fn worker(pipe: &Pipe) -> Result<()> {
         config.boolean("wgc_high_rate_capture", false),
     )?;
     capture.drain_to_newest = config.boolean("wgc_drain_to_newest", false);
+    // WGC delivers a frame when the desktop is composed, and a static desktop
+    // may not be for seconds: the host then gave up on WGC for the whole
+    // session (Desktop Duplication paces worse). A repaint of every window
+    // composes one; nothing visible changes.
+    let mut repaint = Instant::now() + Duration::from_millis(250);
     let mut first = loop {
         if let Some(frame) = next_native(&mut capture)? {
             break Some(frame);
+        }
+        if Instant::now() >= repaint {
+            repaint = Instant::now() + Duration::from_millis(500);
+            unsafe {
+                use windows::Win32::Graphics::Gdi::{
+                    RDW_ALLCHILDREN, RDW_INVALIDATE, RedrawWindow,
+                };
+                let _ = RedrawWindow(None, None, None, RDW_INVALIDATE | RDW_ALLCHILDREN);
+            }
         }
         if let Some(command) = pipe.receive::<Request>()? {
             ensure!(
