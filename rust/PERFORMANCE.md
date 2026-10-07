@@ -488,6 +488,102 @@ but it makes extrapolating RX 7900 XT results to all Radeon drivers unsafe.
 Do not enable LTR globally to mask congestion. No encoder policy or AMF code
 was changed by this investigation.
 
+## October 7: Wi-Fi and unknown-route pacing
+
+H.264, HEVC and AV1 now default to twice the negotiated encoder bitrate on a
+wireless or unknown host route, bounded to 1–800 Mbps. Physical Ethernet keeps
+800 Mbps, capped at 80% of its reported link speed. Loopback keeps 800 Mbps.
+The first frame resolves the route before selecting its rate; subsequent
+lookups retain the two-second refresh. A wired host cannot infer the capacity
+of a wireless client behind an access point, so that case still needs a
+bitrate reduction or an explicit `pacing_max_bitrate_kbps` override.
+
+Positive overrides retain their existing 110% stream-bitrate floor and 80%
+physical-link cap. PyroWave's automatic sender is unchanged: 95% of a known
+Ethernet link, or per-frame wire demand and its bitrate floor otherwise.
+Its independent-frame bandwidth must not inherit an 800 Mbps ceiling or a
+conventional-codec multiplier. The rc.19 two-frame encoder gate is unchanged.
+
+### Measured loopback cost
+
+These runs used the release `rust/release/e2e.py` fixture, WGC and an RX 7900 XT
+with driver `32.0.31041.1004`. The installed service log was checked before
+each run and showed no active stream. The portable host used its own package,
+configuration and ports. Other agents could still use the GPU, so settings
+and builds were alternated, with two runs per case; ranges below are the two
+observations, not confidence intervals. Baseline was commit `4ea3b058`.
+Raw logs, receiver results and sampled statistics are in this worktree's
+`target/network/measure`; `target/network/measurements.json` contains the
+summary. No physical Wi-Fi path was measured.
+
+The first six runs compared pacing settings on the baseline executable at
+2560×720/60, with 60,000 kbps requested and 46,988 kbps at the encoder.
+Overrides of 93,976 and 70,482 kbps modelled 2× and 1.5× on loopback.
+The moving-strip scene actually sent only 9.8–11.2 Mbps of UDP video, including
+FEC; these timings are not a sustained 60 Mbps traffic test. Send cost below
+is the mean of sampled `present_to_send_mean_ms - frame_age_mean_ms -
+host_processing_mean_ms` after three seconds, including packetization and
+send waits. It is not encode time or client latency.
+
+| Baseline pacing | Send cost per frame | Receiver steady FPS | Release e2e results |
+| --- | ---: | ---: | --- |
+| 800 Mbps | 0.16–0.17 ms | 60.57–60.70 | Both passed |
+| 2× encoder bitrate | 0.65–0.81 ms | 60.58–60.77 | One passed; one audio-continuity failure |
+| 1.5× encoder bitrate | 1.84–1.90 ms | 60.57–60.60 | One passed; one audio-continuity failure |
+
+All six decoded every delivered picture without a decode failure. The two
+audio failures are retained here; their cause was not established. The lower
+send cost and larger FEC/scheduling margin favour 2× over 1.5×.
+
+A separate alternating baseline batch at 5120×1440/240, 150,000 kbps requested
+and 118,988 kbps encoded, exposed the cost of applying 2× unnecessarily to a
+fast route. Host throughput fell from 215.61–216.01 FPS at 800 Mbps to
+206.43–207.63 FPS at 237,976 kbps, about 4%. This is why loopback retains its
+old default. The software receiver could not sustain the requested rate, so
+these runs failed the receiver cadence/motion gates; they are host throughput
+measurements, not successful 240 FPS playback.
+
+The final baseline/candidate/baseline/candidate batches gave:
+
+| Workload | Baseline host FPS | Candidate host FPS | Baseline / candidate send cost |
+| --- | ---: | ---: | --- |
+| HEVC 2560×720/60, 800 Mbps versus 2× override | 60.54–60.60 | 60.59–60.61 | 0.12–0.14 / 0.52–0.61 ms |
+| HEVC 5120×1440/240, automatic loopback | 216.82–218.14 | 217.73–218.05 | 0.32–0.43 / 0.32–0.33 ms |
+| PyroWave 2560×720/120, 800 Mbps requested, automatic | 87.97–88.02 | 88.10–91.50 | 11.26–11.36 / 10.87–11.26 ms |
+
+All four normal HEVC runs passed the complete release fixture, decoded all
+927–938 pictures, and retained continuous audio. Receiver steady FPS was
+60.58–60.61; arrival-interval p99 was 18.47–22.95 ms. Candidate mean
+presentation-to-send time was 3.43–3.60 ms versus baseline 3.10–3.73 ms.
+The saturated HEVC runs again failed receiver cadence/motion gates: the
+software receiver achieved only 36.05–55.97 FPS and requested recovery frames.
+All had continuous audio and zero decode failures among delivered pictures.
+There was no host throughput regression in these loopback observations.
+
+The PyroWave receiver decoded all 4,369 pictures across the four runs, with
+zero partial frames, zero decode failures and `idr_requests=1` throughout;
+candidate `reference_invalidations` stayed zero. Actual UDP video was
+581–611 Mbps on the candidate versus 586–592 Mbps on baseline. These runs
+passed the independent receiver's interoperability check, but the release
+wrapper reports its missing motion/audio metrics, as described above. They
+show no high-bitrate slowdown in this workload; they do not validate 120 FPS
+playback or explain the reporting client's periodic feedback.
+
+### Estimated burst size
+
+For a hypothetical 60 Mbps encoded stream at 60 FPS, each average picture is
+125,000 bytes. With a 1,392-byte packet setting, encryption, IPv4 and 20% FEC,
+that is 91 data packets plus 19 parity packets: 165,660 modelled wire bytes.
+Serialization takes about 11.04 ms at 120 Mbps (2×), 14.73 ms at 90 Mbps
+(1.5×), or 1.66 ms at 800 Mbps, within a 16.67 ms frame period. This explains
+why 1.5× leaves little allowance for larger pictures or scheduling delays.
+
+With the default 64 KiB batch limit, the sender's two-millisecond budget
+reduces an initial encrypted UDP burst from 45 packets / 64,800 bytes at
+800 Mbps to 20 packets / 28,800 bytes at 120 Mbps. These are calculations
+using the existing packet and Ethernet-overhead model, not measured Wi-Fi
+airtime or evidence that a particular access point will avoid audio loss.
+
 ## CPU fallback conversion
 
 This comparison used exactly the same synthetic 1968×2184 FP16 scRGB image, with patterned RGB data, resized to each output dimension. Each version ran for at least three seconds. The new CPU implementation uses lookup tables, precomputed resize columns and at most eight Rayon workers, with a serial fallback if worker creation fails.

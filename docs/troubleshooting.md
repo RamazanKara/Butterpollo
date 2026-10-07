@@ -5,6 +5,7 @@
 Start with the current stream's settings, the console and the logs. Record the time of a failure before changing anything, and change one setting at a time. Capture and performance probes add work to the GPU; use an idle session for those comparisons.
 
 **Find a symptom:** [Pairing](#moonlight-cannot-find-or-pair-with-the-pc) · [Console or port](#the-console-will-not-open-or-a-port-is-occupied) · [Black screen](#black-picture-no-display-or-wgc-fails) · [Blurred PyroWave](#pyrowave-shows-blurred-grey-blocks) · [HDR colour](#hdr-looks-washed-out-too-bright-or-different-between-clients) · [Stutter](#low-latency-is-reported-but-motion-still-stutters) · [Playnite](#playnite-does-not-launch) · [RTSS](#rtss-does-not-start-or-the-game-ignores-the-cap) · [Display restoration](#monitors-stay-on-or-the-display-layout-does-not-return) · [Updates](#an-update-stays-queued) · [Logs and support](#logs-and-a-useful-report)
+**Find a symptom:** [Pairing](#moonlight-cannot-find-or-pair-with-the-pc) · [Console or port](#the-console-will-not-open-or-a-port-is-occupied) · [Black screen](#black-picture-no-display-or-wgc-fails) · [Audio](#audio-cuts-out-or-lags) · [Blurred PyroWave](#pyrowave-shows-blurred-grey-blocks) · [HDR colour](#hdr-looks-washed-out-too-bright-or-different-between-clients) · [Stutter](#low-latency-is-reported-but-motion-still-stutters) · [RTSS](#rtss-does-not-start-or-the-game-ignores-the-cap) · [Display restoration](#monitors-stay-on-or-the-display-layout-does-not-return) · [Updates](#an-update-stays-queued) · [Logs and support](#logs-and-a-useful-report)
 
 ## Moonlight cannot find or pair with the PC
 
@@ -45,6 +46,16 @@ Separate the host's HDR source, the negotiated stream and the client's display o
 - Report whether black levels, mid-grey menus, bright highlights or colour saturation are wrong. Include the client app/version, device and display model, codec, stream resolution/rate and the host log time.
 
 The Xbox HDR colour-appearance report remains under investigation. A TV detecting HDR10 does not by itself prove correct colour rendering. rc.10's native HEVC/AV1 tests verify FP16 capture, ten-bit BT.2020/PQ decoding and reference pixels; they do not calibrate the TV or validate every client's output. See the [native HDR evidence](../rust/PERFORMANCE.md#final-native-virtual-hdr-pixels-excluding-physical-panel-calibration).
+
+## Audio cuts out or lags
+
+Audio and video share the network path. On Wi-Fi, a video burst can fill the adapter or access point's queue even when the average bitrate looks reasonable. Lost HEVC or AV1 frames can then require a larger recovery frame.
+
+1. Lower the client's bitrate and compare the same scene. On AMD, HEVC or AV1 is a better starting point for Wi-Fi than PyroWave. Compare a wired connection when possible.
+2. Leave `pacing_max_bitrate_kbps` at `0` for automatic pacing. Conventional codecs use about twice the encoder bitrate when the host's route is wireless or unknown. Ethernet keeps the faster default, so a host connected by cable cannot automatically account for Wi-Fi between the access point and client.
+3. For that wired-host/wireless-client case, try a positive pacing override around twice the stream bitrate: for example, `pacing_max_bitrate_kbps = 120000` for a 60 Mbps stream. Save and reconnect. The setting is in kbps, has a floor of 110% of the stream bitrate, and does not reduce the stream's encoded bitrate. If loss continues, lower the client's bitrate too; pacing cannot create wireless capacity.
+
+Compare Moonlight's loss statistics and the host log before and after. `reference_invalidations` counts reference-loss feedback separately from `idr_requests`; neither is a count of lost packets. PyroWave has no inter-frame references, so its recovery feedback does not force another encode or increase FEC. A steadily rising request counter alone does not establish Wi-Fi loss. [Pacing details](configuration.md#capture-and-video) and [transport evidence](../rust/PERFORMANCE.md#october-7-pyrowave-recovery-feedback) describe the limits of the local tests.
 
 ## PyroWave shows blurred grey blocks
 

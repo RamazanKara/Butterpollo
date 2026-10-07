@@ -930,7 +930,7 @@ impl Media {
                     let mut video_qos = Tagged::default();
                     let mut batch = butterpollo_windows::net::Batch::default();
                     let mut network_pacer = butterpollo_core::network_pacing::Pacer::new(Instant::now());
-                    let mut link = 0;
+                    let mut link = None;
                     let mut link_due = Instant::now();
                     let batch_kb = match c.integer("video_max_batch_size_kb", 64) {
                         16 => 16,
@@ -979,7 +979,8 @@ impl Media {
                             let bps = butterpollo_core::network_pacing::rate_bps(
                                 c.integer("pacing_max_bitrate_kbps", 0),
                                 s.bitrate.load(Ordering::Relaxed),
-                                link,
+                                *link.get_or_insert_with(|| butterpollo_windows::net::routed_link_bps(peer)),
+                                peer.ip().to_canonical().is_loopback(),
                             );
                             let mut remaining = packets.as_slice();
                             while !remaining.is_empty() {
@@ -1007,7 +1008,7 @@ impl Media {
                             // The interface lookup takes a moment: refresh the
                             // link speed after the frame is out, for the next one.
                             if Instant::now() >= link_due {
-                                link = butterpollo_windows::net::routed_link_bps(peer);
+                                link = Some(butterpollo_windows::net::routed_link_bps(peer));
                                 link_due = Instant::now() + Duration::from_secs(2);
                             }
                         }
