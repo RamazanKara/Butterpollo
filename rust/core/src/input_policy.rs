@@ -107,14 +107,12 @@ impl Policy {
             6
         } else if kind == 3 {
             7
-        } else if kind == 1 {
-            // An Xbox controller stays an Xbox pad, as in Vibepollo, even
-            // with motion sensors: a PlayStation pad is also claimed by Steam
-            // Input, and games could see the controller twice.
-            4
         } else if (self.motion_as_ds4 && capabilities & 0x30 != 0)
             || (self.touchpad_as_ds4 && capabilities & 8 != 0)
         {
+            // As in Vibepollo, a controller of any other type with motion
+            // sensors or a touchpad becomes a DualSense, an Xbox-type one too
+            // (a Steam Deck), so its gyro and touchpad keep working.
             6
         } else {
             0
@@ -184,7 +182,15 @@ mod tests {
         assert_eq!(policy.controller_profile(0, 0, 8, all), Some(6));
         assert_eq!(policy.controller_profile(5, 3, 0, all), Some(5));
         assert_eq!(policy.controller_profile(0, 2, 0, 1 << 3), Some(4));
-        assert_eq!(policy.controller_profile(0, 1, 0x30 | 8, all), Some(4));
+        // An Xbox-type controller with motion or a touchpad (a Steam Deck), as
+        // in Vibepollo; without either it stays an Xbox pad.
+        assert_eq!(policy.controller_profile(0, 1, 0x30 | 8, all), Some(6));
+        assert_eq!(policy.controller_profile(0, 1, 0x30, all), Some(6));
+        let plain = Policy::resolve(
+            &Config::parse("motion_as_ds4=false\ntouchpad_as_ds4=false\n").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(plain.controller_profile(0, 1, 0x30 | 8, all), Some(4));
     }
     #[test]
     fn key_repeat_delay_follows_vibepollo() {
