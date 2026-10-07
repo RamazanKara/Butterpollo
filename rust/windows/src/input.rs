@@ -494,7 +494,9 @@ pub struct Injector {
     pen_device: Option<HSYNTHETICPOINTERDEVICE>,
     pen: POINTER_PEN_INFO,
     profile: u16,
-    refreshed: std::time::Instant,
+    /// When touch contacts and the pen were last injected.
+    touch_refreshed: std::time::Instant,
+    pen_refreshed: std::time::Instant,
     pub gamepads: Option<Gamepads>,
     /// The display's desktop rectangle, None until the display exists.
     rect: Option<RECT>,
@@ -526,6 +528,20 @@ const LEFT_RELEASE_DELAY: std::time::Duration = std::time::Duration::from_millis
 const RECT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 /// How often absolute input ignored for a missing display is reported.
 const MISSING_DISPLAY_WARNING: std::time::Duration = std::time::Duration::from_secs(10);
+/// How often held touch contacts and an active pen are injected again:
+/// Windows cancels pointer input that is not repeated.
+const POINTER_REFRESH: std::time::Duration = std::time::Duration::from_millis(250);
+/// Whether a pointer last injected at `last` is due again at `now`; if so,
+/// its period restarts. Touch and pen keep their own periods: a pen that
+/// keeps hovering must not hold back the repeat of a held touch, which
+/// Windows would then cancel, nor the other way round.
+fn refresh_due(last: &mut std::time::Instant, now: std::time::Instant) -> bool {
+    let due = now.saturating_duration_since(*last) >= POINTER_REFRESH;
+    if due {
+        *last = now;
+    }
+    due
+}
 /// The desktop rectangle of `output`: a GDI name, a device ID, or empty for
 /// the first display.
 fn display_rect(output: &str) -> Result<RECT> {
@@ -600,7 +616,8 @@ impl Injector {
                     0
                 }
             },
-            refreshed: std::time::Instant::now(),
+            touch_refreshed: std::time::Instant::now(),
+            pen_refreshed: std::time::Instant::now(),
             gamepads: None,
             policy: butterpollo_core::input_policy::Policy::resolve(config)?,
             key_flags: BTreeMap::new(),
@@ -944,7 +961,7 @@ impl Injector {
                     !(POINTER_FLAG_DOWN | POINTER_FLAG_UP | POINTER_FLAG_CANCELED);
                 p.pointerInfo.pointerFlags |= POINTER_FLAG_UPDATE;
             }
-            self.refreshed = std::time::Instant::now();
+            self.touch_refreshed = std::time::Instant::now();
             result?;
         }
         Ok(())
@@ -1026,7 +1043,7 @@ impl Injector {
             } else {
                 self.pen.pointerInfo.pointerFlags |= POINTER_FLAG_UPDATE;
             }
-            self.refreshed = std::time::Instant::now();
+            self.pen_refreshed = std::time::Instant::now();
         }
         Ok(())
     }
@@ -1067,22 +1084,22 @@ impl Injector {
                 }
             }
         }
-        if self.refreshed.elapsed() >= std::time::Duration::from_millis(250) {
-            self.refreshed = now;
+        if refresh_due(&mut self.touch_refreshed, now) {
             keep(self.inject_touches());
-            if self.pen.pointerInfo.pointerFlags != POINTER_FLAG_NONE
-                && let Some(device) = self.pen_device
-            {
-                keep(unsafe {
-                    inject_pointer(
-                        device,
-                        &[POINTER_TYPE_INFO {
-                            r#type: PT_PEN,
-                            Anonymous: POINTER_TYPE_INFO_0 { penInfo: self.pen },
-                        }],
-                    )
-                });
-            }
+        }
+        if refresh_due(&mut self.pen_refreshed, now)
+            && self.pen.pointerInfo.pointerFlags != POINTER_FLAG_NONE
+            && let Some(device) = self.pen_device
+        {
+            keep(unsafe {
+                inject_pointer(
+                    device,
+                    &[POINTER_TYPE_INFO {
+                        r#type: PT_PEN,
+                        Anonymous: POINTER_TYPE_INFO_0 { penInfo: self.pen },
+                    }],
+                )
+            });
         }
         first.map_or(Ok(()), Err)
     }
@@ -1851,6 +1868,35 @@ mod tests {
         injector.set_output(r"\\.\DISPLAY98");
         assert!(injector.rect.is_none());
         assert_eq!(injector.output, r"\\.\DISPLAY98");
+    }
+
+    #[test]
+    fn a_held_touch_is_repeated_while_pen_events_keep_coming() {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        // A touch is held still while the pen hovers, sending an event every
+        // 8 ms (each injection restarts the pen's period), for one second.
+        let mut touch = start;
+        let mut repeats = vec![];
+        for ms in (8..=1000).step_by(8) {
+            let now = start + Duration::from_millis(ms);
+            let mut pen = now;
+            assert!(!refresh_due(&mut pen, now));
+            if refresh_due(&mut touch, now) {
+                repeats.push(ms);
+            }
+        }
+        assert_eq!(repeats, [256, 512, 768]);
+        // And a hovering pen is repeated while touch events keep coming.
+        let mut pen = start;
+        let mut repeats = 0;
+        for ms in (8..=1000).step_by(8) {
+            let now = start + Duration::from_millis(ms);
+            let mut touch = now;
+            assert!(!refresh_due(&mut touch, now));
+            repeats += usize::from(refresh_due(&mut pen, now));
+        }
+        assert_eq!(repeats, 3);
     }
 
     #[test]
