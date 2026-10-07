@@ -84,14 +84,18 @@ fn rtx_enabled(config: &Config) -> bool {
 fn truehdr_filter(
     image: &GpuImage,
     config: &Config,
+    warnings: &butterpollo_core::session::Warnings,
 ) -> Option<butterpollo_windows::truehdr::Filter> {
     if image.pixel != butterpollo_windows::capture::Pixel::Bgra8 {
         return None;
     }
     match butterpollo_windows::truehdr::Filter::new_gpu(image, rtx_parameters(config)) {
-        Ok(filter) => Some(filter),
+        Ok(filter) => {
+            warnings.clear("display_truehdr");
+            Some(filter)
+        }
         Err(error) => {
-            tracing::warn!(%error, "TrueHDR unavailable; using neutral SDR-to-PQ conversion");
+            warnings.set("display_truehdr", format!("TrueHDR unavailable ({error:#}); using neutral SDR-to-PQ conversion without HDR enhancement. Check TrueHDR support or disable TrueHDR for this app."));
             None
         }
     }
@@ -821,6 +825,7 @@ impl Media {
                             )?
                         }
                     };
+                    stream_preparation.report_limiter(&s.launch.warnings);
                     let prepared = stream_preparation.display.clone();
                     if s.launch.role == Role::Stream {
                         h.app_display
@@ -889,7 +894,7 @@ impl Media {
                         encoder.set_hdr_metadata(metadata);
                     }
                     let mut truehdr = if use_truehdr {
-                        truehdr_filter(&first, &c)
+                        truehdr_filter(&first, &c, &s.launch.warnings)
                     } else {
                         None
                     };
@@ -1355,7 +1360,7 @@ impl Media {
                                 }
                                 metadata_due = Instant::now();
                                 truehdr = if use_truehdr {
-                                    truehdr_filter(&image, &runtime_config)
+                                    truehdr_filter(&image, &runtime_config, &s.launch.warnings)
                                 } else {
                                     None
                                 };
@@ -1444,7 +1449,7 @@ impl Media {
                                 Ok(if let Ok(Some(transformed)) = transformed.as_ref() {
                                     active.encode_gpu(transformed, idr, bitrate)?
                                 } else if let Err(error) = transformed {
-                                    tracing::warn!(%error, "TrueHDR conversion failed; continuing with SDR-to-PQ");
+                                    s.launch.warnings.set("display_truehdr", format!("TrueHDR conversion failed ({error:#}); continuing with SDR-to-PQ without HDR enhancement. Check TrueHDR support or disable it for this app."));
                                     truehdr = None;
                                     active.set_luminance(100. + runtime_config.integer("rtx_hdr_sdr_brightness",0).clamp(0,100) as f32, 1.);
                                     active.encode_gpu(&presented_image, idr, bitrate)?

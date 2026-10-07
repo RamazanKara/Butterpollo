@@ -34,6 +34,15 @@ pub struct StreamPreparation {
     pub display: Arc<Ready>,
     _limiter: limiter::Lease,
 }
+impl StreamPreparation {
+    pub fn report_limiter(&self, warnings: &butterpollo_core::session::Warnings) {
+        if let Some(message) = self._limiter.warning(&self.display.framegen) {
+            warnings.set("display_limiter", message);
+        } else {
+            warnings.clear("display_limiter");
+        }
+    }
+}
 
 /// A game may keep its display across transport disconnects. The heartbeat
 /// owns the resources, not the Ready Arc, so final teardown cannot form a cycle.
@@ -288,6 +297,11 @@ impl Prepared {
             && (display_request.explicit()
                 || display_request.output_virtual()
                 || butterpollo_windows::display::virtual_display_available());
+        if display_request.requested() && !virtual_mode {
+            launch.warnings.set("display_virtual", "Using a physical display because the virtual display driver is unavailable. The desktop is visible locally and its refresh can limit fresh frames; repair the virtual display driver or explicitly select the physical display.");
+        } else {
+            launch.warnings.clear("display_virtual");
+        }
         let generation = option("frame-generation-mode")
             .or_else(|| option("frame-generation-provider"))
             .unwrap_or("none");
@@ -619,6 +633,26 @@ impl Prepared {
             limiter_enabled = framegen.enabled,
             "stream display selection"
         );
+        let actual = (|| -> Result<_> {
+            let topology = butterpollo_windows::display::Topology::query()?;
+            let monitor = topology
+                .monitors()
+                .into_iter()
+                .find(|m| m.matches(&output))
+                .context("selected display missing after preparation")?;
+            let mode = butterpollo_windows::display::mode(&output)?;
+            let refresh = topology.refresh(&monitor.device_id)?;
+            Ok((
+                mode.dmPelsWidth,
+                mode.dmPelsHeight,
+                refresh.0,
+                monitor.hdr_enabled,
+            ))
+        })();
+        match actual {
+            Ok(actual) => butterpollo_core::display_policy::report_mode(&launch.warnings, (request.resolution, request.refresh, request.hdr), actual, stream.fps_millihz()),
+            Err(error) => launch.warnings.set("display_verify", format!("Could not verify the applied display mode ({error:#}); refresh and HDR may differ from the request. Check Windows display settings and reconnect.")),
+        }
         let recovery_profile = if stream.hdr {
             launch
                 .client

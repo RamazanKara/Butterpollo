@@ -2122,9 +2122,9 @@ fn lease_hdr(
 ) -> Result<()> {
     match hdr_action(chosen.hdr_supported, chosen.hdr_enabled, requested) {
         HdrAction::Keep => {}
-        HdrAction::Skip => tracing::info!(
+        HdrAction::Skip => tracing::warn!(
             output = %chosen.display_name,
-            "display does not support HDR; the stream continues in SDR"
+            "Display does not support HDR; capturing SDR content even if the wire stream is HDR. Use an HDR virtual display or disable HDR in the client"
         ),
         HdrAction::Set(enabled) => {
             let applied = settings.color.as_ref().map(|(_, _, applied)| applied);
@@ -2134,10 +2134,10 @@ fn lease_hdr(
                 settings.color = Some((chosen.clone(), previous, enabled));
                 return set(chosen, enabled);
             }
-            tracing::info!(
+            tracing::warn!(
                 output = %chosen.display_name,
                 hdr = chosen.hdr_enabled,
-                "another stream uses this display; keeping its HDR state"
+                "Another stream uses this display; keeping its HDR state. Use a separate virtual display or match the other stream HDR setting"
             );
         }
     }

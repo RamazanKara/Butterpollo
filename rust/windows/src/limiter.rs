@@ -6,7 +6,7 @@ use crate::{
 use anyhow::{Result, bail};
 use butterpollo_core::{
     config::Config,
-    framegen::{Policy, Provider},
+    framegen::{Policy, Provider, Rate},
     state::write_json,
 };
 use serde::{Deserialize, Serialize};
@@ -43,6 +43,7 @@ struct Journal {
 struct State {
     users: usize,
     active: String,
+    rate: Option<Rate>,
     directory: PathBuf,
     process: Option<(PathBuf, crate::process::Process)>,
     message: String,
@@ -264,8 +265,51 @@ fn apply_preferences(directory: &Path, journal: &mut Journal, config: &Config) -
     }
     Ok(())
 }
+fn limiter_warning(
+    enabled: bool,
+    provider: Provider,
+    active: &str,
+    error: &str,
+    rates: (Option<Rate>, Option<Rate>),
+) -> Option<String> {
+    if !enabled && rates.1.is_none() {
+        return None;
+    }
+    if active == "none" || active.is_empty() {
+        Some(format!(
+            "Frame limiter not applied: no usable RTSS or driver limiter ({error}). Game frame pacing may be uneven; install RTSS or set an in-game frame limit."
+        ))
+    } else if !error.is_empty() {
+        Some(format!(
+            "Frame limiter settings were not fully applied ({error}). Check RTSS and the driver limiter settings before relying on the requested cap."
+        ))
+    } else if let Some(rate) = rates.1
+        && rates.0 != rates.1
+    {
+        Some(format!(
+            "Another stream owns the frame limiter at {rate} fps; this session did not apply its requested cap. Match the other stream or disconnect it before changing the global limit."
+        ))
+    } else if provider == Provider::Rtss && active != "rtss" {
+        Some(format!(
+            "RTSS unavailable; using {active} for the frame limit. Pacing may differ; install RTSS or select the active provider."
+        ))
+    } else {
+        None
+    }
+}
+
 pub struct Lease;
 impl Lease {
+    pub fn warning(&self, policy: &Policy) -> Option<String> {
+        let state = state().lock().unwrap();
+        limiter_warning(
+            policy.enabled,
+            policy.provider,
+            &state.active,
+            &state.message,
+            (policy.enabled.then_some(policy.rate), state.rate),
+        )
+    }
     pub fn acquire(directory: &Path, config: &Config, policy: &Policy) -> Result<Self> {
         let mut state = state().lock().unwrap();
         if state.users != 0 {
@@ -274,6 +318,7 @@ impl Lease {
         }
         state.directory = directory.into();
         state.active = "none".into();
+        state.rate = policy.enabled.then_some(policy.rate);
         state.message.clear();
         if let Err(error) = recover(directory) {
             state.active = "rtss".into();
@@ -411,6 +456,70 @@ pub fn status(config: &Config) -> Json {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn limiter_reports_missing_failed_and_substituted_providers() {
+        assert!(
+            limiter_warning(true, Provider::Auto, "none", "", (None, None))
+                .unwrap()
+                .contains("not applied")
+        );
+        assert!(
+            limiter_warning(
+                true,
+                Provider::Rtss,
+                "nvidia-control-panel",
+                "",
+                (None, None)
+            )
+            .unwrap()
+            .contains("RTSS unavailable")
+        );
+        assert!(
+            limiter_warning(
+                true,
+                Provider::Auto,
+                "rtss",
+                "recovery pending",
+                (None, None)
+            )
+            .unwrap()
+            .contains("recovery pending")
+        );
+        assert!(limiter_warning(false, Provider::Auto, "none", "", (None, None)).is_none());
+        assert!(limiter_warning(true, Provider::Auto, "rtss", "", (None, None)).is_none());
+        assert!(
+            limiter_warning(
+                true,
+                Provider::Auto,
+                "rtss",
+                "",
+                (Some(Rate(116_000)), Some(Rate(60_000)))
+            )
+            .unwrap()
+            .contains("60 fps")
+        );
+        assert!(
+            limiter_warning(
+                false,
+                Provider::None,
+                "rtss",
+                "",
+                (None, Some(Rate(60_000)))
+            )
+            .is_some()
+        );
+        assert!(
+            limiter_warning(
+                true,
+                Provider::Auto,
+                "rtss",
+                "",
+                (Some(Rate(60_000)), Some(Rate(60_000)))
+            )
+            .is_none()
+        );
+    }
+
     #[test]
     fn old_nvidia_recovery_journals_keep_their_global_scope() {
         let change: NvChange = serde_json::from_str(

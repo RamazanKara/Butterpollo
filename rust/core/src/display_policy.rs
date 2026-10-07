@@ -81,6 +81,35 @@ pub fn physical_mode(
         .unwrap_or(current_rate);
     (width, height, rate)
 }
+pub fn report_mode(
+    warnings: &crate::session::Warnings,
+    requested: (Option<(u32, u32)>, Option<u32>, Option<bool>),
+    actual: (u32, u32, u32, bool),
+    stream_rate: u32,
+) {
+    if let Some((width, height)) = requested.0
+        && (width, height) != (actual.0, actual.1)
+    {
+        warnings.set("display_resolution", format!("Display resolution {width}x{height} was not applied; using {}x{} and scaling the stream. The mode may be unsupported or shared with another stream; select a supported mode or a virtual display.", actual.0, actual.1));
+    } else {
+        warnings.clear("display_resolution");
+    }
+    if requested
+        .1
+        .is_some_and(|rate| rate.abs_diff(actual.2) > 500)
+        || actual.2.saturating_add(500) < stream_rate
+    {
+        warnings.set("display_refresh", format!("Display refresh is {:.3} Hz for a {:.3} fps stream; the requested rate may be unsupported or held by another stream. Fresh frames cannot exceed the display rate. Select a supported refresh or a virtual display.", f64::from(actual.2) / 1000., f64::from(stream_rate) / 1000.));
+    } else {
+        warnings.clear("display_refresh");
+    }
+    if requested.2.is_some_and(|hdr| hdr != actual.3) {
+        warnings.set("display_hdr", format!("Requested display HDR state was not applied; capture source HDR is {}. The display may lack HDR or be shared. Check Windows HDR and the display policy, or reconnect with HDR disabled.", if actual.3 { "on" } else { "off" }));
+    } else {
+        warnings.clear("display_hdr");
+    }
+}
+
 /// Preserve libdisplaydevice's UUIDv5 identity, including its UTF-16 byte order
 /// and removal of the unstable parent portion of Windows' instance ID.
 pub fn legacy_device_id(path: &str, instance: Option<&str>, edid: &[u8]) -> String {
@@ -368,6 +397,34 @@ impl Arrangement {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unapplied_display_modes_are_visible_and_recovery_clears_them() {
+        let warnings = crate::session::Warnings::default();
+        let requested = (Some((3840, 2160)), Some(116_000), Some(true));
+        super::report_mode(&warnings, requested, (1920, 1080, 60_000, false), 116_000);
+        let entries = warnings.snapshot();
+        assert_eq!(
+            entries.iter().map(|w| w.code.as_str()).collect::<Vec<_>>(),
+            ["display_hdr", "display_refresh", "display_resolution"]
+        );
+        assert!(entries[1].message.contains("60.000 Hz"));
+        super::report_mode(&warnings, requested, (3840, 2160, 116_000, true), 116_000);
+        assert!(warnings.snapshot().is_empty());
+        super::report_mode(
+            &warnings,
+            (None, None, None),
+            (3840, 2160, 59_940, false),
+            60_000,
+        );
+        assert!(warnings.snapshot().is_empty());
+        super::report_mode(
+            &warnings,
+            (None, None, None),
+            (3840, 2160, 60_000, false),
+            116_000,
+        );
+        assert_eq!(warnings.snapshot()[0].code, "display_refresh");
+    }
     use super::*;
     #[test]
     fn other_shapes_are_centred_with_bars() {
