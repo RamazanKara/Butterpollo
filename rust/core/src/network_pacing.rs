@@ -71,8 +71,8 @@ impl Pacer {
     pub fn due(&self) -> Instant {
         self.due
     }
-    /// Called immediately after a batch is sent. Waiting in the socket or
-    /// oversleeping must not create credit to burst subsequent batches.
+    /// Called immediately after a batch is sent. Sending and short timer
+    /// overshoots consume the interval; a stall discards overdue credit.
     /// Account for bytes on the wire, including one header per datagram.
     pub fn sent(
         &mut self,
@@ -83,7 +83,8 @@ impl Pacer {
         bps: u64,
     ) {
         let bytes = payload.saturating_add(packets.saturating_mul(overhead(ipv6)));
-        self.due = completed + Duration::from_secs_f64(bytes as f64 * 8. / bps.max(1) as f64);
+        let interval = Duration::from_secs_f64(bytes as f64 * 8. / bps.max(1) as f64);
+        self.due = (self.due + interval).max(completed);
     }
 }
 
@@ -177,6 +178,18 @@ mod tests {
     }
 
     #[test]
+    fn socket_time_and_short_wake_delays_do_not_accumulate() {
+        let start = Instant::now();
+        let mut pacer = Pacer::new(start);
+        for batch in 1..=20 {
+            let woke = pacer.due() + Duration::from_micros(50);
+            let completed = woke + Duration::from_micros(200);
+            pacer.sent(completed, 934, 1, false, 8_000_000);
+            assert_eq!(pacer.due(), start + Duration::from_millis(batch));
+        }
+    }
+
+    #[test]
     fn socket_stalls_and_late_wakeups_cannot_create_catch_up_credit() {
         let start = Instant::now();
         let mut pacer = Pacer::new(start);
@@ -185,9 +198,13 @@ mod tests {
         assert_eq!(pacer.due(), start + Duration::from_millis(1));
         let after_stall = start + Duration::from_millis(6);
         pacer.sent(after_stall, 934, 1, false, 8_000_000);
+        assert_eq!(pacer.due(), after_stall);
+        pacer.sent(after_stall, 934, 1, false, 8_000_000);
         assert_eq!(pacer.due(), after_stall + Duration::from_millis(1));
         // Starting the next frame after a long idle period creates no debt.
         let next_frame = start + Duration::from_secs(1);
+        pacer.sent(next_frame, 934, 1, false, 8_000_000);
+        assert_eq!(pacer.due(), next_frame);
         pacer.sent(next_frame, 934, 1, false, 8_000_000);
         assert_eq!(pacer.due(), next_frame + Duration::from_millis(1));
     }
@@ -198,7 +215,8 @@ mod tests {
         let mut pacer = Pacer::new(start);
         pacer.sent(start, 2 * 914, 2, true, 8_000_000);
         assert_eq!(pacer.due(), start + Duration::from_millis(2));
-        pacer.sent(start, 0, 0, false, 8_000_000);
-        assert_eq!(pacer.due(), start);
+        let completed = start + Duration::from_millis(3);
+        pacer.sent(completed, 0, 0, false, 8_000_000);
+        assert_eq!(pacer.due(), completed);
     }
 }
