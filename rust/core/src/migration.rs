@@ -12,16 +12,19 @@ fn linked(metadata: &std::fs::Metadata) -> bool {
     #[cfg(not(windows))]
     metadata.file_type().is_symlink()
 }
+const FILE_LIMIT: u64 = 64 * 1024 * 1024;
+/// Copy a file the host needs. Leaving it out would lose paired devices,
+/// apps or credentials, so a link or an oversized file fails the import.
 fn copy_file(source: &Path, destination: &Path, files: &mut usize, total: &mut u64) -> Result<()> {
     let metadata = source.symlink_metadata()?;
     if linked(&metadata) {
         bail!("profile file is a link: {}", source.display());
     }
+    if metadata.len() > FILE_LIMIT {
+        bail!("profile file is larger than 64 MiB: {}", source.display());
+    }
     *files += 1;
     *total = total.saturating_add(metadata.len());
-    if *files > 10000 || metadata.len() > 64 * 1024 * 1024 || *total > 512 * 1024 * 1024 {
-        bail!("profile exceeds migration size limits");
-    }
     std::fs::create_dir_all(
         destination
             .parent()
@@ -29,6 +32,29 @@ fn copy_file(source: &Path, destination: &Path, files: &mut usize, total: &mut u
     )?;
     std::fs::copy(source, destination)?;
     Ok(())
+}
+/// Copy a file the host can do without. A link, a file over 64 MiB, or one
+/// past 10,000 files or 512 MiB in all is left out with a warning instead of
+/// failing the import. Returns whether the file was copied.
+fn copy_optional(
+    source: &Path,
+    destination: &Path,
+    files: &mut usize,
+    total: &mut u64,
+) -> Result<bool> {
+    let metadata = source.symlink_metadata()?;
+    let reason = if linked(&metadata) {
+        "it is a link"
+    } else if metadata.len() > FILE_LIMIT {
+        "it is larger than 64 MiB"
+    } else if *files >= 10000 || total.saturating_add(metadata.len()) > 512 * 1024 * 1024 {
+        "the import is limited to 10,000 files and 512 MiB"
+    } else {
+        copy_file(source, destination, files, total)?;
+        return Ok(true);
+    };
+    tracing::warn!(file = %source.display(), reason, "profile file not imported");
+    Ok(false)
 }
 pub fn profile_id(directory: &Path) -> String {
     let canonical = directory
@@ -38,30 +64,33 @@ pub fn profile_id(directory: &Path) -> String {
         canonical.to_string_lossy().to_lowercase().as_bytes(),
     ))
 }
-fn copy_tree(source: &Path, destination: &Path, files: &mut usize, total: &mut u64) -> Result<()> {
+/// Copy a profile folder. The previous host's logs folder stays behind: its
+/// session logs can fill hundreds of MiB, and the new host writes its own.
+fn copy_tree(
+    source: &Path,
+    destination: &Path,
+    files: &mut usize,
+    total: &mut u64,
+    root: bool,
+) -> Result<()> {
     std::fs::create_dir_all(destination)?;
     for entry in std::fs::read_dir(source)? {
         let entry = entry?;
         let metadata = entry.path().symlink_metadata()?;
-        if linked(&metadata) {
-            bail!(
-                "profile contains a symbolic link: {}",
-                entry.path().display()
-            );
-        }
-        if metadata.is_dir() {
-            copy_tree(
+        if linked(&metadata) || metadata.is_file() {
+            copy_optional(
                 &entry.path(),
                 &destination.join(entry.file_name()),
                 files,
                 total,
             )?;
-        } else if metadata.is_file() {
-            copy_file(
+        } else if metadata.is_dir() && !(root && entry.file_name().eq_ignore_ascii_case("logs")) {
+            copy_tree(
                 &entry.path(),
                 &destination.join(entry.file_name()),
                 files,
                 total,
+                false,
             )?;
         }
     }
@@ -102,7 +131,7 @@ pub fn import(source: &Path, destination: &Path) -> Result<()> {
     ));
     let result = (|| -> Result<()> {
         let (mut files, mut total) = (0, 0);
-        copy_tree(&source, &stage, &mut files, &mut total)?;
+        copy_tree(&source, &stage, &mut files, &mut total, true)?;
         let mut rewritten = config.clone();
         // The certificate and key only work as a pair. When one is missing
         // the C++ host makes a new pair; clearing the default place lets this
@@ -137,19 +166,23 @@ pub fn import(source: &Path, destination: &Path) -> Result<()> {
             ("cert", "credentials/cacert.pem"),
             ("pkey", "credentials/cakey.pem"),
         ] {
-            if !config.values.contains_key(key) {
-                continue;
-            }
+            let configured = config.values.contains_key(key);
             let original = config.path(key, &source, target);
             let usable = if matches!(key, "cert" | "pkey") {
                 identity_complete
             } else {
                 original.is_file()
             };
-            if usable {
+            if usable && (configured || !stage.join(target).is_file()) {
+                // The folder copy leaves out what is past its limits; these
+                // files are needed, so they are copied in any case.
                 let path = stage.join(target);
                 copy_file(&original, &path, &mut files, &mut total)?;
-                rewritten.values.insert(key.into(), target.into());
+                if configured {
+                    rewritten.values.insert(key.into(), target.into());
+                }
+            } else if usable || !configured {
+                continue;
             } else if key == "vibeshine_file_state" {
                 rewritten.values.insert(key.into(), target.into());
             } else {
@@ -192,9 +225,15 @@ pub fn import(source: &Path, destination: &Path) -> Result<()> {
                     {
                         continue;
                     }
+                    // A cover that is not copied keeps its path; the app
+                    // shows the default artwork if the host cannot use it.
                     let metadata = original.symlink_metadata()?;
                     if linked(&metadata) || metadata.len() > 16 * 1024 * 1024 {
-                        bail!("invalid profile cover: {}", original.display());
+                        tracing::warn!(
+                            cover = %original.display(),
+                            "cover not imported: it is a link or larger than 16 MiB"
+                        );
+                        continue;
                     }
                     let bytes = std::fs::read(&original)?;
                     if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
@@ -202,8 +241,10 @@ pub fn import(source: &Path, destination: &Path) -> Result<()> {
                     }
                     let target = PathBuf::from("covers")
                         .join(format!("{}.png", hex::encode(Sha256::digest(&bytes))));
-                    if !stage.join(&target).is_file() {
-                        copy_file(&original, &stage.join(&target), &mut files, &mut total)?;
+                    if !stage.join(&target).is_file()
+                        && !copy_optional(&original, &stage.join(&target), &mut files, &mut total)?
+                    {
+                        continue;
                     }
                     app["image-path"] =
                         serde_json::json!(destination.join(&target).to_string_lossy());
@@ -307,6 +348,36 @@ mod tests {
         // Without its key the certificate is useless; the host makes a new pair.
         assert!(!next.join("credentials/cacert.pem").exists());
         assert!(old.join("credentials/cacert.pem").is_file());
+    }
+    #[test]
+    fn logs_and_oversized_files_and_covers_are_left_out() {
+        let temp = tempfile::tempdir().unwrap();
+        let old = temp.path().join("old");
+        std::fs::create_dir_all(old.join("logs")).unwrap();
+        let sized = |path: &Path, bytes: &[u8], size: u64| {
+            let mut file = std::fs::File::create(path).unwrap();
+            std::io::Write::write_all(&mut file, bytes).unwrap();
+            file.set_len(size).unwrap();
+        };
+        sized(&old.join("logs/sunshine.log"), b"log", 70 * 1024 * 1024);
+        sized(&old.join("dump.bin"), b"dump", 65 * 1024 * 1024);
+        let cover = temp.path().join("huge.png");
+        sized(&cover, b"\x89PNG\r\n\x1a\n", 17 * 1024 * 1024);
+        let apps = serde_json::json!({"apps":[{"name":"Game","image-path":cover}]});
+        std::fs::write(old.join("apps.json"), apps.to_string()).unwrap();
+        std::fs::write(old.join("sunshine.conf"), "sunshine_name = PC\n").unwrap();
+        let next = temp.path().join("next");
+        import(&old, &next).unwrap();
+        assert!(!next.join("logs").exists());
+        assert!(!next.join("dump.bin").exists());
+        let imported = state::load_json(&next.join("apps.json"), serde_json::json!({})).unwrap();
+        assert_eq!(imported, apps);
+        assert_eq!(
+            Config::load(&next.join("sunshine.conf"))
+                .unwrap()
+                .get("sunshine_name", ""),
+            "PC"
+        );
     }
     #[test]
     fn covers_survive_original_profile_removal_and_a_failed_import_rolls_back() {
