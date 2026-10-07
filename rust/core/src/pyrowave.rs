@@ -18,6 +18,14 @@ pub fn aligned_payload(packet_size: usize) -> usize {
         0
     }
 }
+/// The bitrate below which a PyroWave picture visibly loses detail and
+/// colour: one bit per pixel per frame. Unlimited at 1080p60, the encoder
+/// used 1.8-2.4 bits per pixel for a desktop and 5-7 for a moving test
+/// picture; a reported stream at 0.18 showed only grey blobs.
+pub fn minimum_kbps(width: u32, height: u32, fps_millihz: u32) -> u32 {
+    (u64::from(width) * u64::from(height) * u64::from(fps_millihz) / 1_000_000)
+        .min(u64::from(u32::MAX)) as u32
+}
 pub fn max_frame_bytes(packet_size: usize, critical_fec: bool) -> usize {
     (packet_size.saturating_sub(16) * if critical_fec { 3000 } else { 4000 }).saturating_sub(8)
 }
@@ -488,6 +496,13 @@ mod tests {
             out.resize(out.len() + size - 8, 42);
         }
         out
+    }
+    #[test]
+    fn minimum_bitrate_is_one_bit_per_pixel_per_frame() {
+        assert_eq!(minimum_kbps(1280, 720, 60_000), 55_296);
+        assert_eq!(minimum_kbps(1920, 1080, 60_000), 124_416);
+        assert_eq!(minimum_kbps(3840, 2160, 59_940), 497_166);
+        assert_eq!(minimum_kbps(8192, 8192, 240_000), 16_106_127);
     }
     #[test]
     fn record_hash_ignores_only_the_sequence_bits() {

@@ -17,6 +17,11 @@
   const measured = $derived(perf.sample_frames > 0);
   const codec = $derived((CODEC_NAMES as readonly string[])[stream.video_format] ?? `Codec ${stream.video_format}`);
   const mbps = $derived(stream.encoder_bitrate_kbps / 1000);
+  // PyroWave below about one bit per pixel shows blurred grey blocks.
+  const starved = $derived(
+    stream.pyrowave_minimum_kbps != null && stream.encoder_bitrate_kbps < stream.pyrowave_minimum_kbps,
+  );
+  const needed = $derived(Math.ceil((stream.pyrowave_minimum_kbps ?? 0) / 1000));
   const trend = $derived(perf.history.map((sample) => sample.host_processing_mean_ms));
   const peak = $derived(trend.length ? Math.max(...trend) : 0);
   const latest = $derived(trend.at(-1) ?? 0);
@@ -45,6 +50,14 @@
     <li class="num">{mbps.toFixed(mbps < 100 ? 1 : 0)} Mbps</li>
     <li><span>Up <span class="num">{duration(stream.uptime_seconds)}</span></span></li>
   </ul>
+
+  {#if starved}
+    <p class="note warn" role="status">
+      PyroWave needs at least <span class="num">{needed}</span> Mbps at this resolution and frame rate. At
+      <span class="num">{mbps.toFixed(mbps < 100 ? 1 : 0)}</span> Mbps the picture loses detail and colour: raise the bitrate
+      in Moonlight, or use HEVC or AV1.
+    </p>
+  {/if}
 
   <dl class="metrics">
     <div>
@@ -168,6 +181,13 @@
   }
   .note {
     font-size: var(--text-sm);
+  }
+  .warn {
+    margin: 0;
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius);
+    background: var(--warn-soft);
+    color: var(--warn);
   }
   figure {
     margin: 0;

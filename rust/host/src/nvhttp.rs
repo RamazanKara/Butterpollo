@@ -1421,6 +1421,18 @@ async fn bitrate(
             s.bitrate
                 .store(applied, std::sync::atomic::Ordering::Release);
             count += 1;
+            let minimum = butterpollo_core::pyrowave::minimum_kbps(
+                s.config.width,
+                s.config.height,
+                s.config.fps_millihz(),
+            );
+            if s.config.codec == 3 && applied < minimum {
+                tracing::warn!(
+                    bitrate_kbps = applied,
+                    minimum_kbps = minimum,
+                    "PyroWave has too little bitrate for this resolution and frame rate: the picture loses detail and colour"
+                );
+            }
         }
     }
     if count == 0 {

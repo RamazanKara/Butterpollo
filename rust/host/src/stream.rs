@@ -828,6 +828,10 @@ impl Media {
                         .filter(|e| e.hardware())
                         .map(Encoder::backend);
                     tracing::info!(width=s.config.width,height=s.config.height,fps=f64::from(s.config.fps_millihz())/1000.,codec=s.config.codec,hdr=s.config.hdr,full_range=s.config.full_range(),color_matrix=s.config.color_matrix(),vrr=s.config.vrr_low_latency,requested_capture=%prepared.capture(),encoder=c.get("encoder","auto"),source_width=first.width,source_height=first.height,source_pixel=?first.pixel,"stream configured");
+                    let minimum = butterpollo_core::pyrowave::minimum_kbps(s.config.width, s.config.height, s.config.fps_millihz());
+                    if s.config.codec == 3 && s.bitrate.load(Ordering::Relaxed) < minimum {
+                        tracing::warn!(bitrate_kbps = s.bitrate.load(Ordering::Relaxed), minimum_kbps = minimum, "PyroWave has too little bitrate for this resolution and frame rate: the picture loses detail and colour. Raise the bitrate in Moonlight, or use HEVC or AV1");
+                    }
                     let metadata = first.gpu.hdr_metadata();
                     *s.hdr_metadata.write().unwrap() = metadata;
                     if let Some(encoder) = encoder.as_mut() {
