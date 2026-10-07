@@ -48,7 +48,7 @@ pub fn run(folder: &Path, start: bool, progress: &Progress) -> Result<()> {
         .extract(&staged)?;
     let entries = payload::verify(&staged)?;
     let previous = payload::manifest(&install)
-        .context("The installed package has no readable manifest; restore manifest.json from that release before upgrading")?;
+        .context("The installed package has no readable manifest; run the Butterpollo installer to repair it")?;
     let paths = previous
         .iter()
         .chain(&entries)

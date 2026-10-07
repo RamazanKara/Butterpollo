@@ -240,9 +240,10 @@ pub fn scan() -> Found {
 }
 /// Where Butterpollo is or will be installed.
 pub fn install_dir(found: &Found, requested: Option<PathBuf>) -> PathBuf {
+    // The running service's folder first: setup updates it in place.
     requested
-        .or_else(|| found.butterpollo.as_ref().and_then(|p| p.location.clone()))
         .or_else(|| found.service_install.clone())
+        .or_else(|| found.butterpollo.as_ref().and_then(|p| p.location.clone()))
         .unwrap_or_else(|| crate::system::program_files().join("Butterpollo"))
 }
 /// A short description for the confirmation dialog.

@@ -119,14 +119,15 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
     let mut notes = Vec::new();
     let mut restart_needed = false;
 
-    if let Some(current) = &found.service_install {
-        if current.canonicalize()? != install.canonicalize()? {
-            bail!(
-                "Update Butterpollo in its existing folder at {} so the previous version can be restored if needed",
-                current.display()
-            );
-        }
+    if updates_in_place(found.service_install.as_deref(), &install)? {
         crate::update::run(&install, options.start, progress)?;
+        // A reinstall also repairs the firewall rule, as it did before.
+        if let Err(error) = system::firewall_allow("Butterpollo", &install.join("butterpollo.exe"))
+        {
+            notes.push(format!(
+                "The Windows Firewall rule could not be updated: {error:#}"
+            ));
+        }
         restart_needed |= install_drivers(&install, options, progress, &mut notes);
         if let Err(error) = system::shortcut(
             &start_menu_link(),
@@ -351,6 +352,34 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
     })
 }
 
+/// Whether an installed Butterpollo service is updated in place, with a
+/// backup and rollback. An installation whose folder or manifest is gone has
+/// nothing to restore; the full installation repairs it instead.
+fn updates_in_place(service_install: Option<&Path>, install: &Path) -> Result<bool> {
+    let Some(current) = service_install else {
+        return Ok(false);
+    };
+    let Ok(current_folder) = current.canonicalize() else {
+        line(format!(
+            "the service folder {} is missing; installing in full",
+            current.display()
+        ));
+        return Ok(false);
+    };
+    if install.canonicalize().ok().as_ref() != Some(&current_folder) {
+        bail!(
+            "Butterpollo is installed in {}. Install the update into that folder so the previous version can be restored if needed. Nothing has been changed.",
+            current.display()
+        );
+    }
+    if let Err(error) = payload::manifest(&current_folder) {
+        line(format!(
+            "the installed package has no readable manifest ({error:#}); installing in full"
+        ));
+        return Ok(false);
+    }
+    Ok(true)
+}
 fn migration_source(
     found: &detect::Found,
     profile: &Path,
@@ -801,6 +830,28 @@ mod tests {
         });
         assert!(ensure_idle(address).is_err());
         server.join().unwrap()?;
+        Ok(())
+    }
+    #[test]
+    fn a_damaged_installation_is_repaired_by_the_full_installer() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let installed = temp.path().join("Butterpollo");
+        std::fs::create_dir(&installed)?;
+        assert!(!updates_in_place(None, &installed)?);
+        // A deleted folder or a missing or broken manifest leaves nothing to
+        // roll back to, so these do not block a reinstall.
+        let deleted = temp.path().join("deleted");
+        assert!(!updates_in_place(Some(&deleted), &deleted)?);
+        assert!(!updates_in_place(Some(&installed), &installed)?);
+        std::fs::write(installed.join("manifest.json"), "{")?;
+        assert!(!updates_in_place(Some(&installed), &installed)?);
+        std::fs::write(installed.join("manifest.json"), "[]")?;
+        assert!(updates_in_place(Some(&installed), &installed)?);
+        // Another folder would leave the service without its backup.
+        let other = temp.path().join("other");
+        assert!(updates_in_place(Some(&installed), &other).is_err());
+        std::fs::create_dir(&other)?;
+        assert!(updates_in_place(Some(&installed), &other).is_err());
         Ok(())
     }
     #[test]
