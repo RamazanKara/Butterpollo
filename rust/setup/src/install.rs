@@ -153,13 +153,26 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
     payload.extract(&staging)?;
     let entries = payload::verify(&staging)?;
 
+    let active_profile = previous
+        .as_ref()
+        .map(|root| {
+            if root.join("config/sunshine.conf").is_file() {
+                root.join("config")
+            } else {
+                root.clone()
+            }
+        })
+        .unwrap_or_else(|| profile.clone());
+    ensure_idle(probe(&active_profile))?;
     progress.set("Stopping the streaming host…");
     // Until the previous host is removed, a failure starts again exactly the
     // services that were running.
-    let mut restart = Restart {
-        services: stop_running(&OLD_SERVICES, system::service_running, system::stop_service),
-        start: system::start_service,
-    };
+    let mut restart = stop_running(
+        &OLD_SERVICES,
+        system::service_running,
+        system::stop_service,
+        system::start_service,
+    )?;
     system::kill(&HOST_PROCESSES);
     // An update that did not finish is rolled back first; its record would
     // otherwise make the service put that backup over this installation.
@@ -399,22 +412,24 @@ fn migration_source(
     }
     Ok(source)
 }
-/// Stop `services` and return those that were running before.
-fn stop_running(
+/// Stop `services`, restarting those that were running if any stop fails.
+fn stop_running<F: FnMut(&str) -> Result<()>>(
     services: &[&'static str],
     running: impl Fn(&str) -> bool,
     mut stop: impl FnMut(&str) -> Result<()>,
-) -> Vec<&'static str> {
-    let mut stopped = Vec::new();
+    start: F,
+) -> Result<Restart<F>> {
+    let mut restart = Restart {
+        services: Vec::new(),
+        start,
+    };
     for &service in services {
         if running(service) {
-            stopped.push(service);
+            restart.services.push(service);
         }
-        if let Err(error) = stop(service) {
-            line(format!("warning: {error:#}"));
-        }
+        stop(service)?;
     }
-    stopped
+    Ok(restart)
 }
 /// Starts `services` when dropped, so that setup returning early with an
 /// error never leaves the streaming host stopped; cleared on success.
@@ -626,6 +641,47 @@ pub(crate) fn register(install: &Path, entries: &[payload::Entry]) -> Result<()>
         ],
     )
 }
+pub(crate) fn ensure_idle(address: SocketAddr) -> Result<()> {
+    use std::io::{Read, Write};
+    let mut socket =
+        match std::net::TcpStream::connect_timeout(&address, Duration::from_millis(500)) {
+            Ok(socket) => socket,
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => return Ok(()),
+            Err(error) => {
+                return Err(error).context(
+                    "Cannot check whether the streaming host is idle; stop it before running setup",
+                );
+            }
+        };
+    socket.set_read_timeout(Some(Duration::from_secs(3)))?;
+    socket.set_write_timeout(Some(Duration::from_secs(3)))?;
+    write!(
+        socket,
+        "GET /serverinfo HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+    )?;
+    let mut response = String::new();
+    socket.take(65536).read_to_string(&mut response)?;
+    check_idle(&response)
+}
+
+fn check_idle(response: &str) -> Result<()> {
+    for field in [
+        "RustHostSessionCount",
+        "RustHostPendingSessionCount",
+        "RustHostApplicationActive",
+    ] {
+        let count = response.split_once(&format!("<{field}>"))
+            .and_then(|(_, value)| value.split_once(&format!("</{field}>")))
+            .and_then(|(value, _)| value.trim().parse::<u32>().ok())
+            .context("The running host does not report whether it is idle. Stop it before running setup; settings have not been changed")?;
+        if count != 0 {
+            bail!(
+                "Disconnect all streams and remote monitors and close host-launched games before installing. The running host has not been stopped."
+            );
+        }
+    }
+    Ok(())
+}
 /// Wait until the host answers serverinfo at `address` as a Rust host.
 pub(crate) fn wait_ready(address: SocketAddr, version: Option<&str>) -> Result<()> {
     use std::io::{Read, Write};
@@ -661,6 +717,18 @@ pub(crate) fn wait_ready(address: SocketAddr, version: Option<&str>) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn setup_refuses_streams_pending_connections_apps_and_unknown_status() {
+        for counts in [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]] {
+            let response = format!(
+                "<RustHostSessionCount>{}</RustHostSessionCount><RustHostPendingSessionCount>{}</RustHostPendingSessionCount><RustHostApplicationActive>{}</RustHostApplicationActive>",
+                counts[0], counts[1], counts[2]
+            );
+            assert_eq!(check_idle(&response).is_ok(), counts == [0, 0, 0]);
+        }
+        assert!(check_idle("<state>SUNSHINE_SERVER_FREE</state>").is_err());
+        assert!(check_idle("").is_err());
+    }
     #[test]
     fn a_previous_host_is_removed_only_after_its_profile_can_be_imported() -> Result<()> {
         let temp = tempfile::tempdir()?;
@@ -800,50 +868,49 @@ Caused by:\n    0: invalid JSON in C:\\ProgramData\\Butterpollo\\.butterpollo-im
         assert!(import_error("").is_none());
     }
     #[test]
-    fn every_service_that_was_running_starts_again() {
+    fn a_failed_stop_aborts_installation_and_restarts_the_previous_services() {
         let mut stopped = Vec::new();
-        let running = stop_running(
+        let mut started = Vec::new();
+        let result = stop_running(
             &OLD_SERVICES,
-            |service| service != "ApolloService" && service != "ApolloSvc",
+            |_| true,
             |service| {
                 stopped.push(service.to_owned());
                 if service == "SunshineService" {
-                    bail!("the {service} service did not stop");
+                    bail!("the service did not stop");
                 }
                 Ok(())
             },
-        );
-        // Every old service is still asked to stop, as before.
-        assert_eq!(stopped, OLD_SERVICES);
-        assert_eq!(
-            running,
-            ["SunshineService", "VibeshineService", "sunshinesvc"]
-        );
-        let mut started = Vec::new();
-        drop(Restart {
-            services: running,
-            start: |service: &str| {
+            |service: &str| {
                 started.push(service.to_owned());
-                if service == "SunshineService" {
-                    bail!("still stopping");
-                }
                 Ok(())
             },
-        });
-        assert_eq!(
-            started,
-            ["SunshineService", "VibeshineService", "sunshinesvc"]
         );
+        assert!(result.is_err());
+        drop(result);
+        assert_eq!(stopped, ["ApolloService", "SunshineService"]);
+        assert_eq!(started, stopped);
+    }
+    #[test]
+    fn only_previously_running_services_restart_on_failure() -> Result<()> {
         let mut started = Vec::new();
+        let restart = stop_running(
+            &OLD_SERVICES,
+            |service| service == "ApolloService",
+            |_| Ok(()),
+            |service: &str| {
+                started.push(service.to_owned());
+                Ok(())
+            },
+        )?;
+        drop(restart);
+        assert_eq!(started, ["ApolloService"]);
         let mut restart = Restart {
-            services: vec!["SunshineService"],
-            start: |service: &str| {
-                started.push(service.to_owned());
-                Ok(())
-            },
+            services: vec!["ApolloService"],
+            start: |_: &str| panic!("successful installation must not restart twice"),
         };
         restart.services.clear();
         drop(restart);
-        assert!(started.is_empty());
+        Ok(())
     }
 }

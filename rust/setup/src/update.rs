@@ -30,6 +30,7 @@ pub fn run(folder: &Path, start: bool, progress: &Progress) -> Result<()> {
         .context("Another update is already running")?;
     // The new backup must hold one whole version, not what an interrupted
     // update left.
+    install::ensure_idle(install::probe(&profile))?;
     recover_locked(&result).context("The update that did not finish could not be rolled back")?;
     let work = profile.join("updates").join(format!(
         "transaction-{}-{}",
@@ -56,6 +57,7 @@ pub fn run(folder: &Path, start: bool, progress: &Progress) -> Result<()> {
         .map(|e| e.path.clone())
         .chain(["manifest.json".into(), "uninstall.exe".into()])
         .collect::<BTreeSet<_>>();
+    install::ensure_idle(install::probe(&profile))?;
     write_result(&result, "installing", None)?;
     progress.set("Stopping Butterpollo…");
     stop_for_update(
