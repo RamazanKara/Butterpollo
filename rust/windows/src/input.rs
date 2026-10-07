@@ -1,5 +1,6 @@
 use anyhow::{Result, bail};
 use butterpollo_core::input::Input as Event;
+use butterpollo_core::input_policy::{VHF_AUTO, VIGEM_DS4, VIGEM_X360, gamepad_profile};
 use std::{
     collections::{BTreeMap, BTreeSet},
     mem::size_of,
@@ -9,7 +10,6 @@ use windows::{
         Devices::DeviceAndDriverInstallation::*,
         Foundation::*,
         Storage::FileSystem::*,
-        System::IO::DeviceIoControl,
         UI::{
             Controls::*,
             Input::{KeyboardAndMouse::*, Pointer::*},
@@ -18,6 +18,9 @@ use windows::{
     },
     core::{GUID, PCWSTR},
 };
+
+mod gamepad_backend;
+mod vigem;
 
 pub fn open_interface(guid: GUID) -> Result<HANDLE> {
     unsafe {
@@ -67,7 +70,7 @@ fn request(size: u32, id: Option<u32>) -> Vec<u8> {
     b
 }
 pub struct Gamepads {
-    handle: HANDLE,
+    backend: gamepad_backend::Backend,
     active: BTreeMap<u16, u16>,
     profile: u16,
     available: u32,
@@ -119,12 +122,12 @@ impl Gamepads {
         )
     }
     fn open_options(profile: u16, policy: butterpollo_core::input_policy::Policy) -> Result<Self> {
-        let handle = open_interface(GUID::from_u128(0x27debbf5_1d1e_4e9c_906d_d104b1418b2b))?;
-        let mut g = Self {
-            handle,
+        let (backend, available) = gamepad_backend::Backend::open(profile)?;
+        Ok(Self {
+            backend,
             active: BTreeMap::new(),
-            profile,
-            available: 0,
+            profile: if profile == VHF_AUTO { 0 } else { profile },
+            available,
             profiles: BTreeMap::new(),
             arrivals: BTreeMap::new(),
             states: BTreeMap::new(),
@@ -133,38 +136,7 @@ impl Gamepads {
             pointers: BTreeMap::new(),
             unsupported_touchpads: BTreeSet::new(),
             last_feedback: BTreeMap::new(),
-        };
-        let out = g.ioctl(0x800, &request(8, None), 28)?;
-        if out.len() != 28 || u16::from_le_bytes(out[4..6].try_into().unwrap()) != 2 {
-            bail!("incompatible VHF gamepad protocol");
-        }
-        g.available = u32::from_le_bytes(out[12..16].try_into().unwrap());
-        if profile != 0 && g.available & (1 << (profile - 1)) == 0 {
-            bail!("configured controller profile is unavailable in the installed VHF driver");
-        }
-        Ok(g)
-    }
-    fn ioctl(&mut self, function: u32, data: &[u8], output: usize) -> Result<Vec<u8>> {
-        unsafe {
-            let mut result = vec![0; output];
-            let mut n = 0;
-            DeviceIoControl(
-                self.handle,
-                (0x22 << 16) | (3 << 14) | (function << 2),
-                Some(data.as_ptr() as *const _),
-                data.len() as u32,
-                if output == 0 {
-                    None
-                } else {
-                    Some(result.as_mut_ptr() as *mut _)
-                },
-                output as u32,
-                Some(&mut n),
-                None,
-            )?;
-            result.truncate(n as usize);
-            Ok(result)
-        }
+        })
     }
     fn ensure(&mut self, id: u16) -> Result<()> {
         if id >= 16 {
@@ -174,15 +146,16 @@ impl Gamepads {
         let profile = self
             .policy
             .controller_profile(self.profile, kind, capabilities, self.available)
-            .ok_or_else(|| anyhow::anyhow!("VHF driver has no supported controller profile"))?;
+            .ok_or_else(|| anyhow::anyhow!("gamepad driver has no supported controller profile"))?;
         if let Some(global) = self.active.get(&id).copied() {
             if self.profiles.get(&id) == Some(&profile) {
                 return Ok(());
             }
             // Some clients send arrival capabilities after their first state.
-            self.ioctl(0x802, &request(12, Some(u32::from(global))), 0)?;
+            self.backend.unplug(u32::from(global))?;
             self.active.remove(&id);
             self.profiles.remove(&id);
+            self.last_feedback.remove(&id);
             self.pointers.retain(|(pad, _), _| u16::from(*pad) != id);
             SLOTS.lock().unwrap()[global as usize] = false;
         }
@@ -191,24 +164,28 @@ impl Gamepads {
             if slots[global as usize] {
                 continue;
             }
-            let mut b = request(16, Some(u32::from(global)));
-            b.extend_from_slice(&profile.to_le_bytes());
-            b.extend_from_slice(&0u16.to_le_bytes());
-            if self.ioctl(0x801, &b, 0).is_ok() {
-                slots[global as usize] = true;
-                self.active.insert(id, global);
-                self.profiles.insert(id, profile);
-                tracing::info!(
-                    controller = id,
-                    client_type = kind,
-                    capabilities = format!("{capabilities:#x}"),
-                    profile = profile_name(profile),
-                    "virtual controller connected"
-                );
-                return Ok(());
+            match self.backend.plug(u32::from(global), profile) {
+                Ok(()) => {
+                    slots[global as usize] = true;
+                    self.active.insert(id, global);
+                    self.profiles.insert(id, profile);
+                    tracing::info!(
+                        controller = id,
+                        client_type = kind,
+                        capabilities = format!("{capabilities:#x}"),
+                        backend = self.backend.name(),
+                        profile = profile_name(profile),
+                        "virtual controller connected"
+                    );
+                    return Ok(());
+                }
+                Err(error) if matches!(self.backend, gamepad_backend::Backend::Vigem(_)) => {
+                    return Err(error);
+                }
+                Err(_) => {}
             }
         }
-        bail!("no free VHF controller slots")
+        bail!("no free virtual controller slots")
     }
     pub fn apply(&mut self, event: &Event) -> Result<()> {
         match event {
@@ -225,11 +202,12 @@ impl Gamepads {
                 }
                 for (i, global) in self.active.clone() {
                     if active & (1 << i) == 0 {
-                        self.ioctl(0x802, &request(12, Some(u32::from(global))), 0)?;
+                        self.backend.unplug(u32::from(global))?;
                         self.active.remove(&i);
                         self.profiles.remove(&i);
                         self.arrivals.remove(&i);
                         self.states.remove(&i);
+                        self.last_feedback.remove(&i);
                         self.pointers.retain(|(id, _), _| u16::from(*id) != i);
                         self.unsupported_touchpads.remove(&(i as u8));
                         SLOTS.lock().unwrap()[global as usize] = false;
@@ -266,15 +244,8 @@ impl Gamepads {
                 if !self.motion_supported(u16::from(*id)) {
                     return Ok(());
                 }
-                let mut b = request(28, Some(self.slot(u16::from(*id))?));
-                b.extend_from_slice(&[*kind, 0, 0, 0]);
-                for f in xyz {
-                    b.extend_from_slice(
-                        &((*f as f64 * 1000.).clamp(i32::MIN as f64, i32::MAX as f64) as i32)
-                            .to_le_bytes(),
-                    );
-                }
-                self.ioctl(0x806, &b, 0)?;
+                self.backend
+                    .motion(self.slot(u16::from(*id))?, *kind, xyz)?;
             }
             Event::ControllerTouch { id, touchpad, .. } => {
                 // Protocol 2 exposes one PlayStation touch surface with two
@@ -296,7 +267,7 @@ impl Gamepads {
                     return Ok(());
                 };
                 if let Some(b) = gamepad_touch_request(&self.pointers, profile, global, event) {
-                    self.ioctl(0x805, &b.packet, 0)?;
+                    self.backend.touch(u32::from(global), &b)?;
                     b.submitted(&mut self.pointers);
                 }
             }
@@ -305,9 +276,8 @@ impl Gamepads {
                 if !self.motion_supported(u16::from(*id)) {
                     return Ok(());
                 }
-                let mut b = request(16, Some(self.slot(u16::from(*id))?));
-                b.extend_from_slice(&[*percent, *state, 0, 0]);
-                self.ioctl(0x807, &b, 0)?;
+                self.backend
+                    .battery(self.slot(u16::from(*id))?, *state, *percent)?;
             }
             _ => {}
         }
@@ -319,19 +289,12 @@ impl Gamepads {
     pub fn feedback(&mut self) -> Result<Vec<(u16, u16, Vec<u8>)>> {
         let mut output = vec![];
         for (id, global) in self.active.clone() {
-            let Ok(b) = self.ioctl(0x804, &request(12, Some(u32::from(global))), 48) else {
+            let Ok(Some(report)) = self.backend.feedback(u32::from(global)) else {
                 continue;
             };
-            if b.len() == 48 {
-                let kind = u16::from_le_bytes(b[12..14].try_into().unwrap());
-                let len = u16::from_le_bytes(b[14..16].try_into().unwrap()) as usize;
-                if kind != 0 && len <= 32 {
-                    let report = (kind, b[16..16 + len].to_vec());
-                    if self.last_feedback.get(&id) != Some(&report) {
-                        self.last_feedback.insert(id, report.clone());
-                        output.push((id, report.0, report.1));
-                    }
-                }
+            if self.last_feedback.get(&id) != Some(&report) {
+                self.last_feedback.insert(id, report.clone());
+                output.push((id, report.0, report.1));
             }
         }
         self.last_feedback
@@ -346,14 +309,8 @@ impl Gamepads {
         right: u8,
         sticks: &[i16; 4],
     ) -> Result<()> {
-        let mut b = request(28, Some(self.slot(id)?));
-        b.extend_from_slice(&buttons.to_le_bytes());
-        for stick in sticks {
-            b.extend_from_slice(&stick.to_le_bytes());
-        }
-        b.extend_from_slice(&[left, right, 0, 0]);
-        self.ioctl(0x803, &b, 0)?;
-        Ok(())
+        self.backend
+            .submit(self.slot(id)?, buttons, left, right, sticks)
     }
     /// The driver slot of a plugged-in pad. A pad whose re-plug failed has a
     /// state but no slot, and must not take the host down (panic = abort).
@@ -384,14 +341,17 @@ impl Gamepads {
         for (id, buttons, left, right, sticks) in updates {
             self.submit(id, buttons, left, right, &sticks)?;
         }
+        self.backend.refresh()?;
         Ok(())
     }
     pub fn motion_supported(&self, id: u16) -> bool {
-        matches!(self.profiles.get(&id), Some(5..=7))
+        matches!(self.profiles.get(&id).copied(), Some(5..=7 | VIGEM_DS4))
     }
 }
 fn profile_name(profile: u16) -> &'static str {
     match profile {
+        VIGEM_X360 => "x360",
+        VIGEM_DS4 => "ds4",
         3 => "vhf_xbox_one",
         4 => "vhf_xbox",
         5 => "vhf_ds4",
@@ -404,6 +364,7 @@ fn profile_name(profile: u16) -> &'static str {
 // independent of device IO so unsupported surfaces cannot change slot state.
 struct GamepadTouchRequest {
     packet: Vec<u8>,
+    position: [f32; 2],
     id: u8,
     pointer: u32,
     slot: u8,
@@ -438,7 +399,7 @@ fn gamepad_touch_request(
     else {
         return None;
     };
-    if *touchpad != 0 || !matches!(profile, 5 | 6) {
+    if *touchpad != 0 || !matches!(profile, 5 | 6 | VIGEM_DS4) {
         return None;
     }
     let event = match event {
@@ -469,6 +430,7 @@ fn gamepad_touch_request(
     b.extend_from_slice(&[0, 0]);
     Some(GamepadTouchRequest {
         packet: b,
+        position: [*x, *y],
         id: *id,
         pointer: *pointer,
         slot,
@@ -478,11 +440,8 @@ fn gamepad_touch_request(
 impl Drop for Gamepads {
     fn drop(&mut self) {
         for (_, global) in self.active.clone() {
-            let _ = self.ioctl(0x802, &request(12, Some(u32::from(global))), 0);
+            let _ = self.backend.unplug(u32::from(global));
             SLOTS.lock().unwrap()[global as usize] = false;
-        }
-        unsafe {
-            let _ = CloseHandle(self.handle);
         }
     }
 }
@@ -605,18 +564,7 @@ impl Injector {
             touch_device: None,
             pen_device: None,
             pen: Default::default(),
-            profile: match profile {
-                "vhf_xbox" => 4,
-                "vhf_xbox_one" | "x360" => 3,
-                "vhf_ds4" | "ds4" => 5,
-                "vhf_ds5" | "ds5" => 6,
-                "vhf_switch" => 7,
-                "vhf" => 0,
-                other => {
-                    butterpollo_core::config::fallback("gamepad", other, "auto");
-                    0
-                }
-            },
+            profile: gamepad_profile(profile),
             touch_refreshed: std::time::Instant::now(),
             pen_refreshed: std::time::Instant::now(),
             gamepads: None,
@@ -1726,6 +1674,19 @@ mod tests {
             drop(gamepad_touch_request(&pointers, 6, 2, &touch(2, 0, event, 17)).unwrap());
             assert_eq!(pointers, BTreeMap::from([((2, 17), 0)]));
         }
+    }
+
+    #[test]
+    fn vigem_ds4_keeps_primary_contact_slots_and_ignores_secondary_surfaces() {
+        let mut pointers = BTreeMap::new();
+        for pointer in [17, 18] {
+            submit_touch(&mut pointers, VIGEM_DS4, 2, &touch(2, 0, 1, pointer)).unwrap();
+        }
+        assert!(submit_touch(&mut pointers, VIGEM_DS4, 2, &touch(2, 0, 1, 19)).is_none());
+        assert!(submit_touch(&mut pointers, VIGEM_DS4, 2, &touch(2, 1, 7, 17)).is_none());
+        assert_eq!(pointers.len(), 2);
+        submit_touch(&mut pointers, VIGEM_DS4, 2, &touch(2, 0, 7, 17)).unwrap();
+        assert!(pointers.is_empty());
     }
 
     fn touch(id: u8, touchpad: u8, event: u8, pointer: u32) -> Event {

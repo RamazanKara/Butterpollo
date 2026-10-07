@@ -2,6 +2,43 @@ use crate::{config::Config, input::Input};
 use anyhow::Result;
 use std::{collections::BTreeMap, time::Duration};
 
+// Host profile IDs; 3..=7 retain the VHF driver's profile numbers.
+pub const VIGEM_X360: u16 = 8;
+pub const VIGEM_DS4: u16 = 9;
+pub const VHF_AUTO: u16 = 10;
+pub const VIGEM_PROFILES: u32 = (1 << (VIGEM_X360 - 1)) | (1 << (VIGEM_DS4 - 1));
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum GamepadBackend {
+    Vigem,
+    Vhf,
+}
+
+pub fn gamepad_backend(profile: u16, vigem_available: bool) -> GamepadBackend {
+    if matches!(profile, VIGEM_X360 | VIGEM_DS4) || (profile == 0 && vigem_available) {
+        GamepadBackend::Vigem
+    } else {
+        GamepadBackend::Vhf
+    }
+}
+
+pub fn gamepad_profile(value: &str) -> u16 {
+    match value {
+        "x360" => VIGEM_X360,
+        "ds4" => VIGEM_DS4,
+        "vhf_xbox_one" => 3,
+        "vhf_xbox" => 4,
+        "vhf_ds4" => 5,
+        "vhf_ds5" | "ds5" => 6,
+        "vhf_switch" => 7,
+        "vhf" => VHF_AUTO,
+        other => {
+            crate::config::fallback("gamepad", other, "auto");
+            0
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Policy {
     pub keyboard: bool,
@@ -101,6 +138,19 @@ impl Policy {
         capabilities: u16,
         available: u32,
     ) -> Option<u16> {
+        if available & VIGEM_PROFILES != 0 {
+            let desired = if configured != 0 {
+                configured
+            } else if kind == 2
+                || (self.motion_as_ds4 && capabilities & 0x30 != 0)
+                || (self.touchpad_as_ds4 && capabilities & 8 != 0)
+            {
+                VIGEM_DS4
+            } else {
+                VIGEM_X360
+            };
+            return (available & (1 << (desired - 1)) != 0).then_some(desired);
+        }
         let desired = if configured != 0 {
             configured
         } else if kind == 2 {
@@ -172,6 +222,75 @@ impl BackButton {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn automatic_backend_prefers_vigem_and_explicit_profiles_keep_their_backend() {
+        use GamepadBackend::*;
+        assert_eq!(gamepad_backend(gamepad_profile("auto"), true), Vigem);
+        assert_eq!(gamepad_backend(gamepad_profile("auto"), false), Vhf);
+        for available in [false, true] {
+            for value in ["x360", "ds4"] {
+                assert_eq!(gamepad_backend(gamepad_profile(value), available), Vigem);
+            }
+            for value in [
+                "vhf",
+                "vhf_xbox",
+                "vhf_xbox_one",
+                "vhf_ds4",
+                "vhf_ds5",
+                "vhf_switch",
+            ] {
+                assert_eq!(gamepad_backend(gamepad_profile(value), available), Vhf);
+            }
+        }
+    }
+    #[test]
+    fn vigem_selection_preserves_motion_and_touch_for_all_client_types() {
+        let policy = Policy::resolve(&Config::default()).unwrap();
+        for kind in 0..=3 {
+            for caps in [8, 0x10, 0x20, 0x38] {
+                assert_eq!(
+                    policy.controller_profile(0, kind, caps, VIGEM_PROFILES),
+                    Some(VIGEM_DS4)
+                );
+                assert_eq!(
+                    policy.controller_profile(VIGEM_X360, kind, caps, VIGEM_PROFILES),
+                    Some(VIGEM_X360)
+                );
+            }
+            assert_eq!(
+                policy.controller_profile(0, kind, 0, VIGEM_PROFILES),
+                Some(if kind == 2 { VIGEM_DS4 } else { VIGEM_X360 })
+            );
+            assert_eq!(
+                policy.controller_profile(VIGEM_DS4, kind, 0, VIGEM_PROFILES),
+                Some(VIGEM_DS4)
+            );
+        }
+        for (settings, motion, touch) in [
+            ("motion_as_ds4=false", VIGEM_X360, VIGEM_DS4),
+            ("touchpad_as_ds4=false", VIGEM_DS4, VIGEM_X360),
+            (
+                "motion_as_ds4=false\ntouchpad_as_ds4=false",
+                VIGEM_X360,
+                VIGEM_X360,
+            ),
+        ] {
+            let policy = Policy::resolve(&Config::parse(settings).unwrap()).unwrap();
+            assert_eq!(
+                policy.controller_profile(0, 1, 0x30, VIGEM_PROFILES),
+                Some(motion)
+            );
+            assert_eq!(
+                policy.controller_profile(0, 1, 8, VIGEM_PROFILES),
+                Some(touch)
+            );
+            assert_eq!(
+                policy.controller_profile(0, 2, 0x38, VIGEM_PROFILES),
+                Some(VIGEM_DS4)
+            );
+        }
+        assert_eq!(policy.controller_profile(0, 1, 0, 0), None);
+    }
     #[test]
     fn independent_controllers_match_client_type_and_available_driver_profiles() {
         let policy = Policy::resolve(&Config::default()).unwrap();

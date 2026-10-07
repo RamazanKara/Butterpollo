@@ -2111,6 +2111,19 @@ fn feedback_packets(id: u16, kind: u16, data: &[u8]) -> Vec<(u16, Vec<u8>)> {
 mod tests {
     use super::*;
     #[test]
+    fn vigem_feedback_forwards_rumble_and_only_ds4_lightbar() {
+        let report = [255, 255, 128, 128, 12, 34, 56, 0];
+        let x360 = feedback_packets(2, 3, &report);
+        assert_eq!(
+            x360,
+            vec![(0x010b, vec![0xee, 0xff, 0xc0, 0, 2, 0, 255, 255, 128, 128])]
+        );
+        let ds4 = feedback_packets(2, 1, &report);
+        assert_eq!(ds4[0], x360[0]);
+        assert_eq!(ds4[1], (0x5502, vec![2, 0, 12, 34, 56]));
+        assert_eq!(ds4.len(), 2);
+    }
+    #[test]
     fn an_override_the_host_cannot_use_is_skipped_and_the_rest_apply() {
         let mut config = Config::default();
         let overrides =
