@@ -459,7 +459,25 @@ impl Encoder {
             }
         }
     }
-    /// The settings that decide encode time, as the driver applied them.
+    /// A rate property, such as the frame rate the rate control budgets for.
+    fn read_rate(&self, name: &str) -> Option<(u32, u32)> {
+        unsafe {
+            let mut value = int(0);
+            if ((*(*self.component).pVtbl).GetProperty.unwrap())(
+                self.component,
+                wide(name).as_ptr(),
+                &mut value,
+            ) != AMF_RESULT_AMF_OK
+                || value.type_ != AMF_VARIANT_TYPE_AMF_VARIANT_RATE
+            {
+                return None;
+            }
+            let rate = value.__bindgen_anon_1.rateValue;
+            Some((rate.num, rate.den))
+        }
+    }
+    /// The settings that decide encode time and the bits each frame gets, as
+    /// the driver applied them.
     fn log_effective(&self) {
         let names: &[&str] = match self.codec {
             0 => &[
@@ -475,6 +493,12 @@ impl Encoder {
                 "FullRangeColor",
                 "MaxNumRefFrames",
                 "MaxOfLTRFrames",
+                "FrameRate",
+                "TargetBitrate",
+                "PeakBitrate",
+                "VBVBufferSize",
+                "EnforceHRD",
+                "FillerDataEnable",
             ],
             1 => &[
                 "HevcUsage",
@@ -490,6 +514,12 @@ impl Encoder {
                 "HevcNominalRange",
                 "HevcMaxNumRefFrames",
                 "HevcMaxOfLTRFrames",
+                "HevcFrameRate",
+                "HevcTargetBitrate",
+                "HevcPeakBitrate",
+                "HevcVBVBufferSize",
+                "HevcEnforceHRD",
+                "HevcFillerDataEnable",
             ],
             _ => &[
                 "Av1Usage",
@@ -505,13 +535,22 @@ impl Encoder {
                 "Av1NominalRange",
                 "Av1MaxNumRefFrames",
                 "Av1MaxNumLTRFrames",
+                "Av1FrameRate",
+                "Av1TargetBitrate",
+                "Av1PeakBitrate",
+                "Av1VBVBufferSize",
+                "Av1EnforceHRD",
+                "Av1FillerData",
             ],
         };
         let mut settings: Vec<String> = names
             .iter()
             .map(|name| match self.read(name) {
                 Some(value) => format!("{name}={value}"),
-                None => format!("{name}=?"),
+                None => match self.read_rate(name) {
+                    Some((num, den)) => format!("{name}={num}/{den}"),
+                    None => format!("{name}=?"),
+                },
             })
             .collect();
         unsafe {

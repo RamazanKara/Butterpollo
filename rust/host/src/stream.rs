@@ -791,11 +791,18 @@ impl Media {
                     let pyrowave_sender = if s.config.codec == 3 { Some(crate::pyrowave_send::Sender::new(m.video.clone(),s.clone(),c.clone(),h.clone(),start,prepared.capture() == "wgc")?) } else { None };
                     let period = butterpollo_core::framegen::Rate(s.config.fps_millihz()).period();
                     let mut cadence = butterpollo_core::stream_policy::Cadence::new(Instant::now(), period, c.boolean("wgc_pacing_smoothing", true));
-                    let arrival_pacing = !s.config.vrr_low_latency
-                        && butterpollo_core::stream_policy::Pacing::from_config(&c) == butterpollo_core::stream_policy::Pacing::Arrival;
+                    // VRR claims each frame as it arrives, but no faster than the
+                    // stream rate. The encoder budgets every frame from that rate,
+                    // and the VRR virtual display runs at 1000 Hz: uncapped, a game
+                    // or desktop faster than the stream starved every frame of
+                    // bits (a blurry picture, fringed text) and flooded the link.
+                    // The predictive waits stay off; they hold frames for a cadence.
+                    let vrr = s.config.vrr_low_latency;
+                    let arrival_pacing = vrr
+                        || butterpollo_core::stream_policy::Pacing::from_config(&c) == butterpollo_core::stream_policy::Pacing::Arrival;
                     let mut pacer = butterpollo_core::stream_policy::Pacer::new(Instant::now(), period)
-                        .with_prediction(c.boolean("frame_pacing_predictive", true))
-                        .with_source_phase(c.boolean("frame_pacing_source_phase", prepared.capture() == "wgc"));
+                        .with_prediction(!vrr && c.boolean("frame_pacing_predictive", true))
+                        .with_source_phase(!vrr && c.boolean("frame_pacing_source_phase", prepared.capture() == "wgc"));
                     let due = cadence.deadline();
                     let mut last_stamp = start;
                     let mut live_at = due;
@@ -981,6 +988,10 @@ impl Media {
                                         send_interval_p95_ms=timing["send_interval_p95_ms"].as_f64().unwrap_or(0.),
                                         send_interval_p99_ms=timing["send_interval_p99_ms"].as_f64().unwrap_or(0.),
                                         send_interval_max_ms=timing["send_interval_max_ms"].as_f64().unwrap_or(0.),
+                                        // Keyframes the client asked for since the start, as after
+                                        // packet loss, and the bitrate the encoder runs at now.
+                                        idr_requests=s.stats.idr_requests.load(Ordering::Relaxed),
+                                        bitrate_kbps=s.bitrate.load(Ordering::Relaxed),
                                         "stream timings"
                                     );
                                 }
@@ -1001,7 +1012,7 @@ impl Media {
                             };
                             let now = Instant::now();
                             let due = cadence.deadline();
-                            if !s.config.vrr_low_latency && !arrival_pacing && now < due {
+                            if !arrival_pacing && now < due {
                                 while Instant::now() < due {
                                     if encoder.as_ref().is_some_and(Encoder::pending) {
                                         send_frames(collect(&mut encoder, &mut encoder_failing)?, peer, Duration::ZERO)?;

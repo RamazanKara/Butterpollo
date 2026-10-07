@@ -437,10 +437,18 @@ mod tests {
     /// Claims (claim time, presented time) in milliseconds for source frames
     /// presented at `source` and observed `detect` milliseconds later.
     fn simulate(period: f64, source: &[f64], detect: impl Fn(usize) -> f64) -> Vec<(f64, f64)> {
+        simulate_with(period, source, detect, |pacer| pacer)
+    }
+    fn simulate_with(
+        period: f64,
+        source: &[f64],
+        detect: impl Fn(usize) -> f64,
+        configure: impl Fn(Pacer) -> Pacer,
+    ) -> Vec<(f64, f64)> {
         let start = Instant::now();
         let at = |ms: f64| start + Duration::from_secs_f64(ms / 1000.);
         let ms = |instant: Instant| instant.duration_since(start).as_secs_f64() * 1000.;
-        let mut pacer = Pacer::new(start, Duration::from_secs_f64(period / 1000.));
+        let mut pacer = configure(Pacer::new(start, Duration::from_secs_f64(period / 1000.)));
         let mut claims = vec![];
         let mut newest: Option<f64> = None;
         let mut deadline: Option<f64> = None;
@@ -506,6 +514,33 @@ mod tests {
             }
             assert!((claims.len() as f64 - 240.).abs() <= 2.);
         }
+    }
+    #[test]
+    fn a_vrr_stream_claims_on_arrival_but_never_faster_than_the_stream_rate() {
+        // VRR: no predictive waits, as the host configures it.
+        let vrr = |pacer: Pacer| pacer.with_prediction(false).with_source_phase(false);
+        // A game uncapped on the 1000 Hz virtual display: the encoder still
+        // gets the stream rate, each frame claimed within a source interval.
+        let claims = simulate_with(PERIOD, &source(1., 2., |_| 0.), |_| 0.2, vrr);
+        assert!(
+            (claims.len() as f64 - 240.).abs() <= 3.,
+            "{} claims",
+            claims.len()
+        );
+        assert!(
+            claims
+                .iter()
+                .all(|(claim, presented)| claim - presented <= 1.2 + 1e-6)
+        );
+        // A game below the stream rate is claimed the moment each frame arrives.
+        let frames = source(1000. / 48., 2., |_| 0.);
+        let claims = simulate_with(PERIOD, &frames, |_| 0.2, vrr);
+        assert_eq!(claims.len(), frames.len());
+        assert!(
+            claims
+                .iter()
+                .all(|(claim, presented)| (claim - presented - 0.2).abs() < 1e-6)
+        );
     }
     #[test]
     fn a_source_at_the_stream_rate_is_never_skipped_despite_jitter() {

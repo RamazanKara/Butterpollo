@@ -20,6 +20,7 @@ parser.add_argument('--codec', required=True)
 parser.add_argument('--mode', default='1280x720x60')
 parser.add_argument('--seconds', default='12')
 parser.add_argument('--bitrate', default='20000')
+parser.add_argument('--vrr', action='store_true', help='launch as a client asking for VRR')
 args = parser.parse_args()
 width, height, fps = args.mode.split('x')
 interop = pathlib.Path(__file__).resolve().parents[1] / 'tests' / 'interop.py'
@@ -29,7 +30,7 @@ info = ET.fromstring(plain.get('http://127.0.0.1:47989/serverinfo', timeout=3).t
 assert info.findtext('state') == 'SUNSHINE_SERVER_FREE', 'the installed host is streaming'
 assert info.findtext('RustHostApplicationActive') in (None, '0'), 'the installed host runs an app'
 
-case = args.work / f'e2e-{args.codec}'
+case = args.work / (f'e2e-{args.codec}' + ('-vrr' if args.vrr else ''))
 if case.exists():
     import shutil; shutil.rmtree(case)
 profile = case / 'config'; (profile / 'logs').mkdir(parents=True)
@@ -71,6 +72,8 @@ try:
     client_env.update(BUTTERPOLLO_TEST_PORT='48523', BUTTERPOLLO_TEST_CLIENT_EXE=str(args.client), BUTTERPOLLO_TEST_MATCH_DISPLAY='1',
                       BUTTERPOLLO_TEST_REQUIRE_PICTURE='1', BUTTERPOLLO_TEST_WARMUP_SECONDS='3',
                       BUTTERPOLLO_TEST_MIN_FPS=str(int(float(fps) * .9)))
+    if args.vrr:
+        client_env['BUTTERPOLLO_TEST_VRR'] = '1'
     (case / 'receiver').mkdir()
     receiver = spawn([sys.executable, str(interop), str(case / 'receiver'), args.codec, width, height, fps, args.seconds, args.bitrate, '4'], 'client.log', env=client_env)
     rc = receiver.wait(timeout=int(args.seconds) + 120)
