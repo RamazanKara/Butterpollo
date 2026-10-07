@@ -80,11 +80,14 @@ fn check_version(installed: &str, incoming: &str) -> anyhow::Result<()> {
         .split(['-', '+'])
         .next()
         .unwrap_or("");
+    // Without a readable version there is nothing to compare; refusing would
+    // keep the installer from repairing that installation.
     if release.split('.').count() < 3 || release.split('.').any(|part| part.parse::<u64>().is_err())
     {
-        anyhow::bail!(
-            "The installed Butterpollo version is unknown; restore its uninstall entry before upgrading"
-        );
+        crate::log::line(format!(
+            "the installed Butterpollo version {installed:?} is unreadable; not checking for a downgrade"
+        ));
+        return Ok(());
     }
     if crate::version::newer(installed, incoming) {
         anyhow::bail!(
@@ -287,6 +290,9 @@ mod tests {
             ("2.0.0-rc.9", "2.0.0-rc.10"),
             ("2.0.0-rc.21", "2.0.0-rc.21"),
             ("2.0.0-rc.21", "2.0.0"),
+            ("v2.0.0-rc.21+build.5", "2.0.0-rc.21"),
+            ("", "2.0.0-rc.21"),
+            ("unknown", "2.0.0-rc.21"),
         ] {
             assert!(check_version(installed, incoming).is_ok());
         }
@@ -294,8 +300,7 @@ mod tests {
             ("2.0.0-rc.10", "2.0.0-rc.9"),
             ("2.0.0", "2.0.0-rc.21"),
             ("2.1.0", "2.0.0"),
-            ("", "2.0.0-rc.21"),
-            ("unknown", "2.0.0-rc.21"),
+            ("2.0.0-rc.21", "2.0.0-rc.9"),
         ] {
             assert!(check_version(installed, incoming).is_err());
         }
