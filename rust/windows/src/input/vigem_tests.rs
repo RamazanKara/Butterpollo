@@ -13,6 +13,33 @@ fn missing_usb_read_does_not_disconnect_a_ready_target() {
 }
 
 #[test]
+fn failed_unplug_retains_the_targets_feedback() -> Result<()> {
+    let bus = INVALID_HANDLE_VALUE;
+    let now = Instant::now();
+    let mut target = Target {
+        bus,
+        serial: 1,
+        ds4: None,
+        notification: Some(Notification {
+            bus,
+            event: event()?,
+            pending: Box::new(Pending {
+                overlapped: OVERLAPPED::default(),
+                data: [0; 16],
+            }),
+            running: false,
+            ds4: false,
+        }),
+        last_report: now,
+        last_gyro: now,
+    };
+    assert!(target.unplug().is_err());
+    assert_eq!(target.serial, 1);
+    assert!(target.notification.is_some());
+    Ok(())
+}
+
+#[test]
 fn wire_headers_match_bus_shared_h() {
     assert_eq!(PLUGIN, 0x2aa004);
     assert_eq!(WAIT_READY, 0x2aa010);

@@ -480,8 +480,8 @@ impl Target {
         Ok(())
     }
     fn unplug(&mut self) -> Result<()> {
-        self.notification = None;
         control(self.bus, UNPLUG, &packet(8, self.serial))?;
+        self.notification = None;
         self.serial = 0;
         Ok(())
     }
