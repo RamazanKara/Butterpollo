@@ -760,6 +760,24 @@ const amd: Setting[] = [
     visibleWhen: amf,
   },
   {
+    key: 'amd_split_frame',
+    label: 'Split-frame encoding',
+    description:
+      "Lets the driver split each HEVC or AV1 frame across the GPU's two encoder engines; the driver still decides. Automatic asks for it only when the driver has it off. On an RX 7900 XT the driver already has it on, and On or Off made no difference up to 7680×2160. H.264 and GPUs with one engine, such as the RX 9070 XT, ignore it.",
+    category: 'encoders',
+    group: 'AMD AMF',
+    control: {
+      kind: 'select',
+      options: [
+        { value: 'auto', label: 'Automatic' },
+        { value: 'enabled', label: 'On' },
+        { value: 'disabled', label: 'Off' },
+      ],
+    },
+    default: 'auto',
+    visibleWhen: amf,
+  },
+  {
     key: 'amd_av1_latency_mode',
     label: 'AV1 latency mode',
     description:

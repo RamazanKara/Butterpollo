@@ -86,6 +86,7 @@ pub const GLOBAL: &[Setting] = settings! {
         "amd_high_motion_quality_boost", "High motion quality boost", Bool;
         "amd_lowlatency_mode", "Low-latency mode (H.264 and HEVC)", Bool;
         "amd_av1_latency_mode", "AV1 latency mode", Choice(&["none","power_saving","realtime","lowest"]);
+        "amd_split_frame", "Split-frame encoding (HEVC and AV1)", Choice(&["auto","enabled","disabled"]);
         "amd_input_queue_size", "AMF input queue size", Number;
         "amd_ltr_frames", "Long-term reference frames", Number;
     ]
