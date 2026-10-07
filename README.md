@@ -6,9 +6,9 @@ Stream your gaming PC to a laptop, TV or phone. Butterpollo is a Windows game-st
 
 **[Download rc.17](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.17)** · **[Get started](docs/getting-started.md)** · [Documentation](docs/README.md) · [Release notes](rust/RELEASE_NOTES.md)
 
-[![Butterpollo launch film: written in Rust, Radeon compute, measured comparisons, HDR and PyroWave 4:4:4](docs/media/demo.gif)](docs/media/demo.mp4)
+[![Butterpollo launch film: one frame through the Radeon path, Radeon compute measured, and what rc.17 brings to players](docs/media/demo.gif)](docs/media/demo.mp4)
 
-<sub>Follow one frame from capture to the decoded picture. 60 seconds · 1080p · 60 fps · original soundtrack. [Watch the film](docs/media/demo.mp4).</sub>
+<sub>Follow one frame from your game to the picture in Moonlight. 60 seconds · 1080p · 60 fps · original soundtrack. [Watch the film](docs/media/demo.mp4).</sub>
 
 ## The mission
 

@@ -1,18 +1,14 @@
 #!/usr/bin/env python3
-"""A 60-second Butterpollo launch film, rendered deterministically with Pillow.
+"""Butterpollo's 60-second launch film, rendered deterministically with Pillow.
 
 No service, game, display or GPU access. Requires Pillow and FFmpeg.
-The continuous gold frame connects explanatory motion and measured evidence.
-Timing in the queue diagram is schematic; all numerical claims are fixed.
+Diagrams are schematic; every number is a measurement, named in the footer
+of the scene that shows it (rust/PERFORMANCE.md has the runs).
 
-python3 docs/media/demo_audio.py --output /tmp/score.wav --duration 60
-python3 docs/media/render_launch_film.py --storyboard /tmp/film.jpg
-python3 docs/media/render_launch_film.py --output /tmp/film.mp4 --audio /tmp/score.wav
-python3 docs/media/render_launch_film.py --frame 21 --output /tmp/frame.png
-
-The optional original score generator requires NumPy. The film itself requires
-Pillow and FFmpeg only. All visuals are explanatory motion graphics; no rendered
-sequence is presented as recorded gameplay or a real-time benchmark.
+python docs/media/demo_audio.py --output score.wav --duration 60
+python docs/media/render_launch_film.py --storyboard film.jpg
+python docs/media/render_launch_film.py --output film.mp4 --audio score.wav
+python docs/media/render_launch_film.py --frame 21 --output frame.png
 """
 import argparse
 from functools import lru_cache
@@ -21,22 +17,32 @@ from pathlib import Path
 import shutil
 import subprocess
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 W, H, DURATION = 1920, 1080, 60
-BG = (10, 13, 19)
-INK = (246, 246, 242)
-GOLD = (255, 209, 72)
-MUTED = (163, 174, 190)
-DIM = (84, 97, 114)
-RULE = (42, 52, 66)
-PANEL = (21, 28, 39)
-TEAL = (118, 208, 203)
-STARTS = (0, 5, 16, 26, 38, 46, 54)
+BG = (9, 10, 14)
+INK = (244, 243, 238)
+BUTTER = (255, 201, 64)
+CORAL = (255, 110, 78)
+MINT = (98, 226, 184)
+MUTED = (150, 157, 172)
+DIM = (68, 74, 90)
+RULE = (36, 40, 52)
+CARD = (19, 22, 30)
+STARTS = (0, 6, 18, 30, 37, 47, 54)
 ENDS = STARTS[1:] + (60,)
-CHAPTERS = ('WRITTEN IN RUST', 'THE COMPUTE PATH', 'COMPUTE OFF / ON',
-            'WHOLE-HOST COMPARISON', 'NATIVE HDR VALIDATION', 'PYROWAVE', 'TRY BUTTERPOLLO')
+CHAPTERS = ('RC.17', 'FOLLOW ONE FRAME', 'RADEON COMPUTE', 'BUILT TOGETHER',
+            'MADE FOR PLAY', 'TRY IT SAFELY', 'BUTTERPOLLO')
+WIPE = .7
 
+# rc.17 with its default capture (WGC), idle desktop: October 7, 2026, three
+# runs alternating with rc.2 in one batch on the October 4 fixture (RX 7900 XT,
+# 1080p60 HEVC HDR, 20 Mbps, 120 Hz virtual display). Timestamped game frame
+# to the decoded picture of a local client.
+IDLE = {'mean': 14.86, 'p95': 16.04, 'fresh': 60.36}
+# Same build, compute off and on, beside a game-like load: October 4, 2026,
+# two runs per path (README and rust/PERFORMANCE.md).
+COMPUTE = {'mean': (41.0, 33.5), 'p95': (54.4, 42.3), 'host': (16.2, 11.2), 'game_fps': 174}
 
 def clamp(x):
     return min(1., max(0., x))
@@ -56,19 +62,27 @@ def mix(a, b, p):
     return tuple(round(x+(y-x)*clamp(p)) for x, y in zip(a, b))
 
 
-@lru_cache(maxsize=100)
+FONT_ROOTS = (Path('C:/Windows/Fonts'), Path('/mnt/c/Windows/Fonts'))
+
+
+@lru_cache(maxsize=None)
 def font(size, weight='regular'):
-    names = {'regular': 'segoeui.ttf', 'bold': 'segoeuib.ttf', 'light': 'segoeuil.ttf', 'mono': 'consola.ttf'}
-    for root in (Path('/mnt/c/Windows/Fonts'), Path('C:/Windows/Fonts')):
-        p = root/names[weight]
-        if p.exists():
-            return ImageFont.truetype(str(p), size)
-    name = {'regular': 'DejaVuSans.ttf', 'bold': 'DejaVuSans-Bold.ttf',
-            'light': 'DejaVuSans.ttf', 'mono': 'DejaVuSansMono.ttf'}[weight]
+    if weight == 'mono':
+        for root in FONT_ROOTS:
+            if (root/'consola.ttf').exists():
+                return ImageFont.truetype(str(root/'consola.ttf'), size)
+        return ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf', size)
+    for root in FONT_ROOTS:
+        if (root/'SegUIVar.ttf').exists():
+            f = ImageFont.truetype(str(root/'SegUIVar.ttf'), size)
+            f.set_variation_by_name({'light': 'Light Display', 'regular': 'Regular Display',
+                                     'semibold': 'Semibold Display', 'bold': 'Bold Display'}[weight])
+            return f
+    name = 'DejaVuSans-Bold.ttf' if weight in ('bold', 'semibold') else 'DejaVuSans.ttf'
     return ImageFont.truetype('/usr/share/fonts/truetype/dejavu/'+name, size)
 
 
-@lru_cache(maxsize=500)
+@lru_cache(maxsize=2000)
 def lettering(value, size, color, weight):
     f = font(size, weight)
     box = f.getbbox(value)
@@ -77,8 +91,12 @@ def lettering(value, size, color, weight):
     return im
 
 
-def txt(im, x, y, value, size=32, color=INK, weight='regular', align='left', opacity=1):
-    if opacity <= 0:
+def width_of(value, size, weight='regular'):
+    return lettering(value, size, INK, weight).width
+
+
+def txt(im, x, y, value, size=32, color=INK, weight='regular', align='left', opacity=1.):
+    if opacity <= 0 or not value:
         return
     stamp = lettering(value, size, color, weight)
     if align == 'center':
@@ -91,430 +109,504 @@ def txt(im, x, y, value, size=32, color=INK, weight='regular', align='left', opa
     im.paste(stamp, (round(x), round(y)), stamp)
 
 
-def reveal(im, x, y, value, size, local, at=0, color=INK, weight='bold', align='left'):
-    p = ease((local-at)/.65)
-    txt(im, x, y+24*(1-p), value, size, color, weight, align, p)
+def wrap(value, size, width, weight='regular'):
+    lines, current = [], ''
+    for word in value.split():
+        trial = (current+' '+word).strip()
+        if current and width_of(trial, size, weight) > width:
+            lines.append(current)
+            current = word
+        else:
+            current = trial
+    return lines+[current] if current else lines
+
+
+def reveal(im, x, y, value, size, local, at=0., color=INK, weight='bold', align='left', rise=28):
+    p = ease((local-at)/.6)
+    txt(im, x, y+rise*(1-p), value, size, color, weight, align, p)
+
+
+def draw(im):
+    return ImageDraw.Draw(im)
+
+
+def rect(im, box, fill=CARD, outline=None, width=1, radius=14):
+    draw(im).rounded_rectangle(tuple(round(v) for v in box), radius=radius, fill=fill,
+                               outline=outline, width=width)
 
 
 def line(im, xy, fill=RULE, width=2):
-    ImageDraw.Draw(im).line(xy, fill=fill, width=width)
+    draw(im).line(tuple(round(v) for v in xy), fill=fill, width=width)
 
 
-def rect(im, box, fill=PANEL, outline=None, width=1, radius=8):
-    ImageDraw.Draw(im).rounded_rectangle(tuple(round(v) for v in box), radius=radius,
-                                        fill=fill, outline=outline, width=width)
-
-
-def arrow(im, x0, y0, x1, y1, color=GOLD, width=3):
+def arrow(im, x0, y0, x1, y1, color=BUTTER, width=4):
     line(im, (x0, y0, x1, y1), color, width)
     angle = math.atan2(y1-y0, x1-x0)
-    points = [(x1, y1)] + [(x1-13*math.cos(angle+a), y1-13*math.sin(angle+a)) for a in (-.45, .45)]
-    ImageDraw.Draw(im).polygon(points, fill=color)
+    head = [(x1+4*math.cos(angle), y1+4*math.sin(angle))]
+    head += [(x1-16*math.cos(angle+a), y1-16*math.sin(angle+a)) for a in (-.5, .5)]
+    draw(im).polygon(head, fill=color)
+
+
+@lru_cache(maxsize=1)
+def backdrop():
+    im = Image.new('RGB', (W, H), BG)
+    d = ImageDraw.Draw(im)
+    for y in range(H):
+        d.line((0, y, W, y), fill=mix(BG, (14, 16, 23), y/H))
+    # A quiet dot grid: a measuring surface, not decoration that moves.
+    for y in range(36, H, 48):
+        for x in range(36, W, 48):
+            d.point((x, y), fill=(29, 32, 42))
+    return im
+
+
+@lru_cache(maxsize=1)
+def glow_sprite():
+    size = 120
+    im = Image.new('RGB', (size, size))
+    px = im.load()
+    for y in range(size):
+        for x in range(size):
+            d = math.hypot(x-size/2+.5, y-size/2+.5)/(size/2)
+            a = clamp(1-d)**2.4*.30
+            c = mix(CORAL, BUTTER, clamp(1.15-d))
+            px[x, y] = tuple(round(v*a) for v in c)
+    return im.resize((1500, 1500), Image.Resampling.BICUBIC)
+
+
+# Where the warm light sits in each scene; it drifts between them.
+GLOW = ((1480, 300), (1650, 980), (260, 920), (1500, 760), (300, 220), (1600, 300), (960, 560))
+
+
+def glow_at(t):
+    index = next((i for i, end in enumerate(ENDS) if t < end), len(ENDS)-1)
+    local = t-STARTS[index]
+    a = GLOW[max(0, index-1)] if local < 1.6 and index else GLOW[index]
+    b = GLOW[index]
+    p = smooth(local/1.6) if index else 1
+    # Still within a scene: a GIF of the film then changes only what moves.
+    return a[0]+(b[0]-a[0])*p, a[1]+(b[1]-a[1])*p
+
+
+def base(t):
+    layer = Image.new('RGB', (W, H))
+    x, y = glow_at(t)
+    layer.paste(glow_sprite(), (round(x-750), round(y-750)))
+    return ImageChops.add(backdrop(), layer)
+
+
+def title(im, value, local, subtitle=None):
+    reveal(im, 100, 150, value, 84, local, at=.1)
+    if subtitle:
+        reveal(im, 104, 262, subtitle, 32, local, at=.3, color=MUTED, weight='regular')
 
 
 def foot(im, *lines):
     for i, value in enumerate(lines):
-        txt(im, 104, 951+i*37, value, 28 if i == 0 else 26, MUTED)
+        txt(im, 104, 962+i*36, value, 24 if i == 0 else 22, MUTED if i == 0 else DIM, 'regular')
 
 
-@lru_cache(maxsize=1)
-def background():
-    im = Image.new('RGB', (W, H), BG)
-    d = ImageDraw.Draw(im)
-    # Very low-contrast vertical depth. No synthetic footage or decoration.
-    for y in range(H):
-        d.line((0, y, W, y), fill=mix(BG, (16, 22, 31), y/H*.65))
-    return im
-
-
-def title(im, value, local, subtitle=None):
-    reveal(im, 100, 175, value, 76, local, at=.15)
-    if subtitle:
-        reveal(im, 104, 279, subtitle, 31, local, at=.3, color=MUTED, weight='regular')
-
-
-def heading(im, index, t):
-    alpha = 1-smooth((t-53.7)/.6)
-    if alpha <= 0:
+def badge(im, x, y, size, opacity=1.):
+    if opacity <= 0:
         return
-    rect(im, (104, 61, 143, 100), mix(BG, GOLD, alpha), radius=10)
-    txt(im, 123, 64, 'B', 28, BG, 'bold', 'center', alpha)
-    txt(im, 158, 63, 'Butterpollo', 31, INK, 'bold', opacity=alpha)
-    txt(im, 1816, 69, CHAPTERS[index], 22, MUTED, 'mono', 'right', alpha)
+    rect(im, (x, y, x+size, y+size), mix(BG, BUTTER, opacity), radius=round(size*.26))
+    glyph = lettering('B', round(size*.66), BG, 'bold')
+    txt(im, x+size/2, y+(size-glyph.height)/2, 'B', round(size*.66), BG, 'bold', 'center', opacity)
 
 
-def intro(t):
-    t += .85  # The first frame already carries the audience hook.
-    im = background().copy()
-    reveal(im, 102, 205, 'Your Radeon.', 108, t, at=0)
-    reveal(im, 102, 334, 'A more responsive stream.', 94, t, at=.25)
-    reveal(im, 108, 477, 'Written in Rust.', 39, t, at=.6, color=GOLD)
-    reveal(im, 433, 481, 'Windows game streaming for Moonlight.', 35, t, at=.6,
-           color=MUTED, weight='regular')
-    txt(im, 108, 597, 'AVERAGE RENDER → DECODE', 25, MUTED, 'mono', opacity=ease((t-.7)/.5))
-    reveal(im, 100, 661, '41.0', 144, t, at=.75, color=(144, 155, 172), weight='light')
-    p = ease((t-1)/.6)
+def chrome(im, index, t):
+    alpha = 1-smooth((t-54.2)/.5)
+    if alpha > 0:
+        badge(im, 104, 58, 42, alpha)
+        txt(im, 160, 60, 'Butterpollo', 30, INK, 'bold', opacity=alpha)
+        txt(im, 1816, 70, f'{index+1:02d} / {CHAPTERS[index]}', 22, MUTED, 'mono', 'right', alpha)
+    # Film progress, a hairline along the top edge.
+    line(im, (0, 1, W*t/DURATION, 1), BUTTER, 3)
+
+
+def token(im, x, y, size=34, lit=1.):
+    """The frame the film follows: a picture tile with three scanlines."""
+    rect(im, (x-size/2, y-size/2, x+size/2, y+size/2), mix(CARD, BUTTER, .18*lit),
+         mix(DIM, BUTTER, lit), max(2, round(size*.07)), radius=round(size*.2))
+    for i, frac in enumerate((.56, .78, .44)):
+        yy = y-size*.2+i*size*.2
+        line(im, (x-size*.28, yy, x-size*.28+size*frac, yy), mix(DIM, BUTTER, lit),
+             max(2, round(size*.06)))
+
+
+# 1 · Hook ---------------------------------------------------------------------
+
+def hook(t):
+    t += .9  # The first frame already carries the message.
+    im = base(t-.9)
+    reveal(im, 100, 186, 'Your Radeon was', 120, t, at=0)
+    reveal(im, 100, 322, 'never the problem.', 120, t, at=.2, color=BUTTER)
+    reveal(im, 106, 498, 'Written in Rust. Built for Radeon. Made for Moonlight.', 40, t,
+           at=.55, color=INK, weight='semibold')
+    reveal(im, 106, 556, 'Butterpollo rc.17 · Windows game streaming for Radeon owners', 30, t,
+           at=.7, color=MUTED, weight='regular')
+    p = ease((t-1.3)/.6)
     if p:
-        arrow(im, 491, 742, 491+145*p, 742, mix(BG, GOLD, p), 4)
-    reveal(im, 685, 661, '33.5', 144, t, at=.85, color=GOLD)
-    reveal(im, 1006, 752, 'ms', 48, t, at=.85, color=GOLD, weight='regular')
-    # A labelled desktop frame is the same object followed throughout the film.
-    txt(im, 1575, 850, 'FOLLOW THE FRAME', 24, MUTED, 'mono', 'center', ease((t-1.2)/.5))
-    foot(im, 'Same-build compute off / on · RX 7900 XT · controlled GPU load',
-         '1080p60 HEVC HDR · render-to-decode measurement · full comparison follows')
+        y = 660+30*(1-p)
+        rect(im, (104, y, 1110, y+230), mix(BG, CARD, p), mix(BG, RULE, p), 2, radius=22)
+        txt(im, 144, y+30, 'GAME FRAME → DECODED PICTURE', 22, MUTED, 'mono', opacity=p)
+        txt(im, 138, y+62, f"{IDLE['mean']:.1f}", 120, BUTTER, 'bold', opacity=p)
+        mx = 144+width_of(f"{IDLE['mean']:.1f}", 120, 'bold')+10
+        txt(im, mx, y+128, 'ms', 48, BUTTER, 'semibold', opacity=p)
+        txt(im, 600, y+76, f"{IDLE['p95']:.1f} ms", 44, INK, 'bold', opacity=p)
+        txt(im, 600, y+128, 'for the slowest 5%', 26, MUTED, opacity=p)
+        txt(im, 850, y+76, f"{IDLE['fresh']:.0f}", 44, INK, 'bold', opacity=p)
+        txt(im, 850, y+128, 'new pictures / s', 26, MUTED, opacity=p)
+    q = ease((t-1.6)/.7)
+    if q:
+        token(im, 1490, 470+40*(1-q), 230, q)
+        txt(im, 1490, 630, 'FOLLOW THE FRAME', 22, MUTED, 'mono', 'center', ease((t-2)/.5))
+    foot(im, 'Average · rc.17 default capture (WGC) · idle desktop · RX 7900 XT · 1080p60 HEVC HDR · 20 Mbps',
+         'October 7, 2026 · timestamped game frame to the decoded picture of a local Moonlight client · three runs')
     return im
 
 
-def job(im, x0, x1, y, name, color, cursor, small=False):
-    h = 54
-    rect(im, (x0, y, x1, y+h), PANEL, RULE, radius=5)
-    p = clamp((cursor-x0)/(x1-x0))
+# 2 · Follow one frame ---------------------------------------------------------
+
+STATIONS = (('Game', 'renders on the graphics queue', 'monitor'),
+            ('Capture', 'WGC wakes the host as the frame lands', 'capture'),
+            ('Convert', 'Radeon compute, beside the game', 'convert'),
+            ('Encode', 'native AMF, not a generic wrapper', 'encode'),
+            ('Send', 'paced, and tagged for Wi-Fi priority', 'send'),
+            ('Decode', 'Moonlight shows the picture', 'decode'))
+CARD_W, GAP, CARD_Y = 262, 28, 430
+
+
+def station_x(i):
+    return 104+i*(CARD_W+GAP)
+
+
+def arrive(i):
+    return 1.1+i*1.2
+
+
+def icon(im, kind, cx, cy, color):
+    d = draw(im)
+    if kind == 'monitor':
+        d.rounded_rectangle((cx-38, cy-26, cx+38, cy+20), radius=5, outline=color, width=4)
+        line(im, (cx, cy+20, cx, cy+32), color, 4)
+        line(im, (cx-18, cy+33, cx+18, cy+33), color, 4)
+    elif kind == 'capture':
+        for sx, sy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
+            x, y = cx+sx*34, cy+sy*24
+            line(im, (x, y, x-sx*16, y), color, 4)
+            line(im, (x, y, x, y-sy*14), color, 4)
+        d.ellipse((cx-9, cy-9, cx+9, cy+9), fill=color)
+    elif kind == 'convert':
+        for i, c in enumerate(((235, 90, 80), (90, 210, 120), (90, 140, 245))):
+            d.ellipse((cx-44+i*15, cy-22, cx-24+i*15, cy-2), fill=mix(DIM, c, color == BUTTER))
+        arrow(im, cx-2, cy-12, cx+16, cy-12, color, 3)
+        d.rounded_rectangle((cx+24, cy-28, cx+44, cy+4), radius=3, outline=color, width=3)
+        line(im, (cx-40, cy+18, cx+44, cy+18), color, 4)
+    elif kind == 'encode':
+        for i, w in enumerate((76, 56, 36, 20)):
+            d.rounded_rectangle((cx-w/2, cy-28+i*15, cx+w/2, cy-20+i*15), radius=3, fill=color)
+    elif kind == 'send':
+        for r in (14, 30, 46):
+            d.arc((cx-r, cy+18-r, cx+r, cy+18+r), 225, 315, fill=color, width=5)
+        d.ellipse((cx-6, cy+12, cx+6, cy+24), fill=color)
+    else:
+        d.rounded_rectangle((cx-38, cy-26, cx+38, cy+26), radius=7, outline=color, width=4)
+        d.polygon([(cx-10, cy-14), (cx-10, cy+14), (cx+16, cy)], fill=color)
+
+
+def pipeline(t):
+    im = base(t+6)
+    title(im, 'Follow one frame.', t, 'The Radeon path from your game to the picture in Moonlight.')
+    rail_y = 386
+    first, last = station_x(0)+CARD_W/2, station_x(5)+CARD_W/2
+    line(im, (first, rail_y, last, rail_y), RULE, 4)
+    travel = clamp((t-arrive(0))/(arrive(5)-arrive(0)))
+    tx = first+(last-first)*smooth(travel) if t >= arrive(0) else first
+    if t >= arrive(0):
+        line(im, (first, rail_y, tx, rail_y), BUTTER, 4)
+    for i, (name, caption, kind) in enumerate(STATIONS):
+        x = station_x(i)
+        shown = ease((t-.35-i*.12)/.5)
+        if shown <= 0:
+            continue
+        y = CARD_Y+24*(1-shown)
+        lit = smooth((t-arrive(i)+.15)/.35)
+        rect(im, (x, y, x+CARD_W, y+262), mix(BG, CARD, shown), mix(RULE, BUTTER, lit*.9), 2, radius=18)
+        draw(im).ellipse((x+CARD_W/2-7, rail_y-7, x+CARD_W/2+7, rail_y+7), fill=mix(DIM, BUTTER, lit))
+        icon(im, kind, x+CARD_W/2, y+68, mix(DIM, BUTTER, lit))
+        txt(im, x+26, y+122, name, 34, mix(MUTED, INK, max(lit, .35)), 'bold', opacity=shown)
+        for j, value in enumerate(wrap(caption, 23, CARD_W-50)):
+            txt(im, x+26, y+172+j*30, value, 23, MUTED, opacity=shown)
+    if t < arrive(5)+.6:
+        token(im, tx, rail_y, 46, 1)
+    p = ease((t-arrive(5)-.4)/.7)
     if p:
-        rect(im, (x0, y, x0+max(5, (x1-x0)*p), y+h), mix(PANEL, color, .65), radius=5)
-    txt(im, (x0+x1)/2, y+13, name, 24 if small else 26,
-        INK if color != GOLD else mix(INK, BG, p), 'bold', 'center')
-
-
-def gate(im, x, y, active):
-    color = TEAL if active else DIM
-    line(im, (x, y-13, x, y+13), color, 3)
-    ImageDraw.Draw(im).polygon([(x, y-5), (x+5, y), (x, y+5), (x-5, y)], fill=color)
-
-
-def queue_cursor(local):
-    return 420+1280*clamp((local-.7)/7.6)
-
-
-def queue_frame(local):
-    cursor = queue_cursor(local)
-    return min(cursor, 1190), 849+77*clamp((cursor-810)/50), 40
-
-
-def schedule(t):
-    im = background().copy()
-    title(im, 'Prepare the frame alongside the game.', t,
-          'GPU copies + colour conversion move to D3D12 compute.')
-    cursor = queue_cursor(t)
-    txt(im, 104, 356, 'OTHER SUNSHINE HOSTS · D3D11', 27, INK, 'bold')
-    txt(im, 1816, 359, 'Reviewed path: Vibepollo 2.0', 26, MUTED, align='right')
-    txt(im, 104, 434, 'Graphics', 26, MUTED)
-    txt(im, 104, 522, 'Native AMF', 26, MUTED)
-    for x0, x1 in ((420, 640), (660, 880)):
-        job(im, x0, x1, 424, 'Game draw', DIM, cursor)
-    job(im, 902, 1062, 424, 'Copy', GOLD, cursor)
-    job(im, 1082, 1292, 424, 'RGB → YUV', GOLD, cursor)
-    line(im, (1298, 451, 1320, 451, 1320, 540, 1336, 540), DIM, 2)
-    gate(im, 1320, 491, cursor >= 1292)
-    job(im, 1340, 1570, 512, 'Encode', (67, 133, 159), cursor)
-    arrow(im, 1578, 539, 1637, 539, TEAL if cursor >= 1570 else DIM, 2)
-    rect(im, (1647, 512, 1815, 566), PANEL, GOLD if cursor >= 1570 else RULE, radius=5)
-    txt(im, 1731, 526, 'Bitstream', 25, GOLD if cursor >= 1570 else MUTED, 'bold', 'center')
-    line(im, (104, 605, 1816, 605), RULE, 1)
-    txt(im, 104, 630, 'BUTTERPOLLO · D3D12 COMPUTE', 27, GOLD, 'bold')
-    txt(im, 104, 705, 'Graphics', 26, MUTED)
-    txt(im, 104, 786, 'Compute', 26, GOLD)
-    txt(im, 104, 859, 'Native AMF', 26, MUTED)
-    for x0, x1 in ((420, 640), (660, 880)):
-        job(im, x0, x1, 695, 'Game draw', DIM, cursor)
-    job(im, 420, 580, 776, 'Copy', GOLD, cursor)
-    job(im, 600, 810, 776, 'RGB → YUV', GOLD, cursor)
-    gate(im, 402, 803, t >= .7)
-    gate(im, 590, 803, cursor >= 580)
-    line(im, (818, 803, 839, 803, 839, 876, 854, 876), DIM, 2)
-    gate(im, 839, 845, cursor >= 810)
-    job(im, 860, 1090, 849, 'Encode', (67, 133, 159), cursor)
-    arrow(im, 1098, 876, 1140, 876, TEAL if cursor >= 1090 else DIM, 2)
-    if t > 5:
-        txt(im, 1255, 853, 'Ready for the stream.', 31, GOLD, 'bold', opacity=ease((t-5)/.5))
-    if t > 8:
-        txt(im, 1255, 896, 'AMF releases the surface for reuse.', 23, MUTED, opacity=ease((t-8)/.5))
-    txt(im, 1540, 705, 'Output texture pool', 24, MUTED, align='center')
-    for i in range(3):
-        rect(im, (1476+i*47,750,1509+i*47,777), PANEL,
-             TEAL if t >= 8 else RULE, 2, radius=3)
-    if t >= 8:
-        p=smooth((t-8)/1.2)
-        x=1190+(1492-1190)*p
-        y=916+(763-916)*p-70*math.sin(p*math.pi)
-        rect(im,(x-13,y-10,x+13,y+10),PANEL,TEAL,2,radius=3)
-    foot(im, 'Scheduling schematic · equal game and encode work · graphics and compute share GPU resources',
-         'GPU textures in both paths · readiness fences protect copies and the encoder handoff')
+        y = 748+26*(1-p)
+        txt(im, 104, y, 'THE WHOLE TRIP, MEASURED', 22, MUTED, 'mono', opacity=p)
+        txt(im, 98, y+28, f"{IDLE['mean']:.1f} ms", 104, BUTTER, 'bold', opacity=p)
+        right = 104+width_of(f"{IDLE['mean']:.1f} ms", 104, 'bold')+56
+        txt(im, right, y+50, f"average · {IDLE['p95']:.1f} ms for the slowest 5%", 34, INK, 'semibold', opacity=p)
+        txt(im, right, y+100, f"{IDLE['fresh']:.0f} new pictures every second, none repeated", 30, MUTED, opacity=p)
+    foot(im, 'Schematic order of work · measured: rc.17 default capture (WGC), idle desktop, 1080p60 HEVC HDR, 20 Mbps',
+         'RX 7900 XT · October 7, 2026 · timestamped game frame to a local client\u2019s decoded picture · three runs')
     return im
 
 
-def chart(im, x, y, width, heading_text, values, t, delay=0):
-    txt(im, x, y, heading_text, 35, INK, 'bold')
+# 3 · Radeon compute, measured -------------------------------------------------
+
+def bars(im, x, y, width, heading_text, values, t, delay=0., unit='ms', top=60.):
+    txt(im, x, y, heading_text, 34, INK, 'bold')
     for i, (value, caption) in enumerate(zip(values, ('Compute off', 'Compute on'))):
-        yy = y+90+i*171
-        color = GOLD if i else (138, 153, 174)
-        p = ease((t-delay-.4-i*.9)/1.2)
-        txt(im, x, yy+13, caption, 29, MUTED)
+        yy = y+82+i*150
+        color = BUTTER if i else (126, 133, 150)
+        p = ease((t-delay-i*.8)/1.1)
+        txt(im, x, yy+8, caption, 28, MUTED)
+        rect(im, (x, yy+58, x+width, yy+100), CARD, radius=10)
         if p:
-            txt(im, x+width, yy-1, f'{value:.1f} ms', 53, color, 'bold', 'right')
-        rect(im, (x, yy+70, x+width, yy+108), PANEL, radius=4)
-        if p:
-            rect(im, (x, yy+70, x+max(5,width*value/60*p), yy+108), color, radius=4)
-    line(im, (x, y+399, x+width, y+399), RULE, 2)
-    for v in (0, 20, 40, 60):
-        xx = x+width*v/60
-        line(im, (xx, y+393, xx, y+405), MUTED, 1)
-        txt(im, xx, y+418, str(v), 23, MUTED, 'regular', 'center')
+            txt(im, x+width, yy-6, f'{value:.1f} {unit}', 52, color, 'bold', 'right', p)
+            rect(im, (x, yy+58, x+max(14, width*value/top*p), yy+100), color, radius=10)
 
 
 def compute(t):
-    im = background().copy()
-    title(im, 'The compute change, measured.', t,
-          'Same Butterpollo build. Compute off → compute on.')
-    chart(im, 104, 392, 725, 'Average picture delay', (41., 33.5), t, .4)
-    chart(im, 1091, 392, 725, 'Slower frames · 95th percentile', (54.4, 42.3), t, 2.5)
-    txt(im, 104, 871, 'Frame rendered → picture decoded', 29, INK)
-    txt(im, 1816, 871, 'Matching 0–60 ms scales', 27, MUTED, align='right')
-    foot(im, 'RX 7900 XT · DDX · 1080p60 HEVC HDR · controlled GPU load · two runs per path',
-         'October 4, 2026 · encrypted loopback · arithmetic means · methods in rust/PERFORMANCE.md')
-    return im
-
-
-def result_line(im, x, y, title_text, before, after, local, at):
-    p = ease((local-at)/.7)
-    txt(im, x, y, title_text, 28, MUTED, opacity=p)
-    txt(im, x-3, y+47, before, 74, (143, 155, 174), 'light', opacity=p)
+    im = base(t+18)
+    title(im, 'Radeon compute, measured.', t,
+          'Same Butterpollo build, one setting changed, a game loading the GPU.')
+    bars(im, 104, 360, 760, 'Average delay', COMPUTE['mean'], t, .5)
+    bars(im, 1056, 360, 760, 'Slowest 5%', COMPUTE['p95'], t, 1.6)
+    p = ease((t-3.4)/.7)
     if p:
-        arrow(im, x+287, y+95, x+386, y+95, mix(BG, GOLD, p), 3)
-    txt(im, x+423, y+47, after, 74, GOLD, 'bold', opacity=p)
-    txt(im, x+758, y+85, 'ms', 32, GOLD, opacity=p)
-
-
-def hosts(t):
-    im = background().copy()
-    title(im, 'Butterpollo vs other Sunshine hosts.', t,
-          'Historical whole-host comparison · 1080p60 HEVC HDR')
-    reveal(im, 91, 373, '56%', 205, t, at=.6, color=GOLD)
-    reveal(im, 105, 616, 'lower average picture delay', 34, t, at=.9,
-           color=INK, weight='regular')
-    result_line(im, 966, 396, 'Average · render → decode', '96.4', '42.4', t, .6)
-    result_line(im, 966, 600, '95th percentile · render → decode', '137.0', '56.5', t, 2.2)
-    line(im, (104, 776, 1816, 776), RULE, 1)
-    p = ease((t-5)/.6)
-    txt(im, 101, 811, '2.15×', 79, GOLD, 'bold', opacity=p)
-    txt(im, 388, 824, 'as many fresh pictures', 36, INK, opacity=p)
-    txt(im, 1816, 825, '23.9 → 51.4 FPS', 43, GOLD, 'bold', 'right', p)
-    foot(im, 'RX 7900 XT · DDX · 1080p60 HEVC HDR · 20 Mbps requested · controlled GPU load',
-         'Vibepollo 2.0 → Butterpollo rc.2 · October 4, 2026 · three runs per host · rust/PERFORMANCE.md')
+        line(im, (104, 712, 1816, 712), mix(BG, RULE, p), 2)
+        before, after = COMPUTE['host']
+        txt(im, 104, 744, 'Host time, present to send', 30, MUTED, opacity=p)
+        txt(im, 104, 790, f'{before:.1f} → {after:.1f} ms', 64, INK, 'bold', opacity=p)
+        txt(im, 1056, 744, 'The game beside it', 30, MUTED, opacity=p)
+        txt(im, 1056, 790, f"{COMPUTE['game_fps']} fps either way", 64, INK, 'bold', opacity=p)
+    foot(im, 'Copies and colour conversion on D3D12 compute queues instead of the graphics queue the game uses',
+         'RX 7900 XT · DDX · 1080p60 HEVC HDR · 120 Hz virtual display · two runs per path · October 4, 2026 · rust/PERFORMANCE.md')
     return im
 
 
-def hdr(t):
-    im = background().copy()
-    title(im, 'HDR, checked after decoding.', t,
-          'Native capture. Native AMD encoding. Independent pixel checks.')
-    stages = [('FP16 scRGB', 'Capture'), ('10-bit BT.2020 / PQ', 'Colour conversion'),
-              ('HEVC + AV1', 'Native AMF'), ('Decoded pixels', 'Compare to reference')]
-    for i, (head, note) in enumerate(stages):
-        x = 104+i*440
-        active = t >= .6+i*.85
-        line(im, (x, 389, x+350, 389), GOLD if active else RULE, 3)
-        txt(im, x, 418, head, 30, INK if active else MUTED, 'bold')
-        txt(im, x, 477, note, 27, MUTED)
-        if i < 3:
-            arrow(im, x+370, 472, x+415, 472, TEAL if t >= 1.2+i*.85 else DIM, 2)
-    reveal(im, 98, 644, '5,173 / 5,173', 133, t, at=2.7, color=GOLD)
-    reveal(im, 107, 812, 'frames decoded across four native HDR runs', 39, t, at=2.9,
-           color=INK, weight='regular')
-    foot(im, 'rc.10 · RX 7900 XT · native FP16 virtual HDR capture · HEVC + AV1 · 1280×720/60',
-         'Decoded BT.2020 / PQ and reference colours verified · results in rust/PERFORMANCE.md')
+# 4 · Built together -----------------------------------------------------------
+
+def together(t):
+    im = base(t+30)
+    title(im, 'Built on good work.', t,
+          'Butterpollo began as a fork of Vibepollo and rebuilds the host in Rust around the Radeon path.')
+    names = (('Vibepollo', 'Nonary'), ('Apollo', 'ClassicOldSong'), ('Sunshine', 'LizardByte and contributors'),
+             ('PyroWave', 'Themaister · joemossjr16'))
+    for i, (name, who) in enumerate(names):
+        p = ease((t-.5-i*.2)/.6)
+        x = 104+i*434
+        rect(im, (x, 400+20*(1-p), x+404, 540+20*(1-p)), mix(BG, CARD, p), mix(BG, RULE, p), 2, radius=20)
+        txt(im, x+30, 426+20*(1-p), name, 38, INK, 'bold', opacity=p)
+        txt(im, x+30, 482+20*(1-p), who, 24, MUTED, opacity=p)
+    reveal(im, 104, 616, 'Anything that works out here is GPL-3.0 for Vibepollo to take.', 40, t,
+           at=1.7, color=INK, weight='semibold')
+    p = ease((t-2.6)/.6)
+    if p:
+        label = 'On NVIDIA? Use Vibepollo.'
+        glyph = lettering(label, 40, BUTTER, 'bold')
+        y = 712+16*(1-p)
+        rect(im, (104, y, 104+glyph.width+96, y+96), mix(BG, CARD, p), mix(BG, BUTTER, p*.8), 2, radius=48)
+        txt(im, 152, y+(96-glyph.height)/2, label, 40, BUTTER, 'bold', opacity=p)
+    foot(im, 'Butterpollo includes NVENC, but it has not been tested on NVIDIA hardware',
+         'The native AMF encoder both hosts use came from Butterpollo\u2019s author (Vibepollo #342)')
     return im
 
 
-def sample_rgb(y, cb, cr):
-    return tuple(round(clamp(c)*255) for c in (y+1.5748*cr,
-                 y-.1873*cb-.4681*cr, y+1.8556*cb))
+# 5 · Made for play ------------------------------------------------------------
+
+FEATURES = (('Radeon quirks', 'Driver bugs worked around, and the fix removed once AMD ships one.', 'chip'),
+            ('Steam Deck', 'Gyro and touchpad work: it becomes a virtual DualSense.', 'deck'),
+            ('Wi-Fi', 'Video and voice go first on your home network.', 'wifi'),
+            ('HDR', '5,173 of 5,173 frames decoded in native HDR tests.', 'hdr'),
+            ('PyroWave', '10-bit HDR 4:4:4: full colour at every pixel.', 'pixels'),
+            ('VRR', 'Nonary\u2019s 1000 Hz mode: frames follow your game.', 'vrr'))
 
 
-def chroma_block(im, x, y, full, t):
-    # The two diagrams have identical luma values. Only chroma sample count changes.
-    lumas = (.38, .62, .62, .38)
-    # Nonzero mean chroma keeps the 4:2:0 example coloured too. Subsampling
-    # merges local colour differences; it does not generally remove colour.
-    chromas = ((.10, .21), (-.16, -.13), (.10, -.13), (-.16, .21))
-    for i, yy in enumerate(lumas):
-        xx, dy = i % 2, i//2
-        cb, cr = chromas[i] if full else (-.03, .04)
-        p = ease((t-.7-i*.22)/.6)
-        color = sample_rgb(yy, cb*p, cr*p)
-        rect(im, (x+xx*152, y+dy*152, x+xx*152+144, y+dy*152+144), color, radius=4)
-        # Colour sample markers make the sampling count explicit, independent of colour vision.
-        if full:
-            ImageDraw.Draw(im).ellipse((x+xx*152+65, y+dy*152+65, x+xx*152+79, y+dy*152+79), fill=BG)
-    if not full:
-        ImageDraw.Draw(im).ellipse((x+137, y+137, x+159, y+159), fill=GOLD, outline=BG, width=3)
+def feature_icon(im, kind, x, y, color):
+    d = draw(im)
+    if kind == 'chip':
+        d.rounded_rectangle((x+14, y+6, x+70, y+54), radius=6, outline=color, width=4)
+        d.rounded_rectangle((x+30, y+20, x+54, y+40), radius=3, fill=color)
+        for i in range(3):
+            line(im, (x+2, y+16+i*14, x+14, y+16+i*14), color, 3)
+            line(im, (x+70, y+16+i*14, x+82, y+16+i*14), color, 3)
+    elif kind == 'deck':
+        d.rounded_rectangle((x, y+8, x+92, y+50), radius=16, outline=color, width=4)
+        d.rounded_rectangle((x+28, y+16, x+64, y+42), radius=3, outline=color, width=3)
+        d.ellipse((x+8, y+22, x+20, y+34), fill=color)
+        d.ellipse((x+72, y+22, x+84, y+34), fill=color)
+    elif kind == 'wifi':
+        for r in (12, 26, 40):
+            d.arc((x+46-r, y+50-r, x+46+r, y+50+r), 220, 320, fill=color, width=5)
+        d.ellipse((x+40, y+44, x+52, y+56), fill=color)
+    elif kind == 'hdr':
+        for i in range(6):
+            d.rectangle((x+i*15, y+10, x+i*15+13, y+50), fill=mix((40, 44, 56), color, i/5))
+    elif kind == 'pixels':
+        for i in range(4):
+            for j in range(3):
+                d.rectangle((x+i*22, y+6+j*16, x+i*22+18, y+18+j*16),
+                            fill=mix((40, 44, 56), color, ((i+j) % 3+1)/3))
+    else:
+        points = [(x+i*9, y+30-18*math.sin(i*.8)*math.exp(-i*.04)) for i in range(11)]
+        d.line(points, fill=color, width=4, joint='curve')
 
 
-def pyrowave(t):
-    im = background().copy()
-    title(im, 'Colour detail. At every pixel.', t,
-          'PyroWave · full 10-bit HDR 4:4:4')
-    txt(im, 356, 364, '4:2:0', 47, MUTED, 'bold', 'center')
-    txt(im, 1509, 364, '4:4:4', 47, GOLD, 'bold', 'center')
-    chroma_block(im, 208, 450, False, t)
-    chroma_block(im, 1361, 450, True, t)
-    txt(im, 960, 484, 'Same 2×2 pixels.', 37, INK, 'bold', 'center')
-    txt(im, 960, 543, 'Same luma detail.', 30, MUTED, 'regular', 'center')
-    txt(im, 960, 605, 'Four colour samples.', 37, GOLD, 'bold', 'center')
-    arrow(im, 655, 693, 1235, 693, mix(RULE, GOLD, ease((t-1.7)/1.3)), 3)
-    txt(im, 356, 776, '1 Cb + 1 Cr', 30, MUTED, 'regular', 'center')
-    txt(im, 1509, 776, '4 Cb + 4 Cr', 30, GOLD, 'bold', 'center')
-    reveal(im, 960, 859, 'Full-resolution colour for fine text and edges.', 38, t,
-           at=2.5, color=INK, weight='regular', align='center')
-    foot(im, 'Chroma sampling schematic · PyroWave uses its own shared D3D11 / Vulkan path',
-         'Use Nonary’s compatible Moonlight client on a fast wired LAN')
+def play(t):
+    im = base(t+37)
+    title(im, 'Made for how you play.', t)
+    cw, ch, gx, gy = 548, 250, 34, 30
+    for i, (name, text, kind) in enumerate(FEATURES):
+        col, row = i % 3, i//3
+        x, y = 104+col*(cw+gx), 330+row*(ch+gy)
+        p = ease((t-.4-i*.3)/.6)
+        if p <= 0:
+            continue
+        y += 34*(1-p)
+        rect(im, (x, y, x+cw, y+ch), mix(BG, CARD, p), mix(BG, RULE, p), 2, radius=20)
+        feature_icon(im, kind, x+34, y+30, mix(BG, BUTTER, p))
+        txt(im, x+34, y+102, name, 38, INK, 'bold', opacity=p)
+        for j, value in enumerate(wrap(text, 26, cw-68)):
+            txt(im, x+34, y+156+j*34, value, 26, MUTED, opacity=p)
+    foot(im, 'HDR: rc.10 native HEVC and AV1 runs, decoded BT.2020 / PQ checked against reference colours',
+         'PyroWave and the 1000 Hz VRR mode need Nonary\u2019s Moonlight client; PyroWave wants a fast wired network')
     return im
 
+
+# 6 · Try it safely ------------------------------------------------------------
+
+def safely(t):
+    im = base(t+47)
+    title(im, 'Trying it costs nothing.', t, 'Already streaming with another host? Setup brings your profile along.')
+    for i, name in enumerate(('Sunshine', 'Apollo', 'Vibeshine', 'Vibepollo')):
+        p = ease((t-.4-i*.15)/.5)
+        x = 104+i*250
+        rect(im, (x, 380, x+226, 446), mix(BG, CARD, p), mix(BG, RULE, p), 2, radius=33)
+        txt(im, x+113, 392, name, 30, INK, 'semibold', 'center', p)
+    points = ('Settings, paired devices, apps and covers come along.',
+              'The original profile stays untouched.',
+              'If the import fails, your old host keeps running.',
+              'An interrupted update rolls itself back.')
+    for i, value in enumerate(points):
+        p = ease((t-1.2-i*.35)/.6)
+        y = 518+i*86
+        if p:
+            draw(im).ellipse((104, y+4, 144, y+44), fill=mix(BG, MINT, p))
+            line(im, (114, y+25, 122, y+33), BG, 5)
+            line(im, (122, y+33, 136, y+15), BG, 5)
+        txt(im, 172, y, value, 36, INK, 'semibold', opacity=p)
+    foot(im, 'Setup checks the imported profile with Butterpollo\u2019s own loaders before it switches',
+         'Uninstalling removes only Butterpollo\u2019s own files')
+    return im
+
+
+# 7 · Ending -------------------------------------------------------------------
 
 def ending(t):
-    im = background().copy()
-    reveal(im, 409, 236, 'Butterpollo', 148, t, at=.1)
-    reveal(im, 414, 425, 'Written in Rust. Built for Radeon. Made for Moonlight.', 39, t, at=.4,
-           color=MUTED, weight='regular')
-    for i, (x, value) in enumerate(((104, 'Install.'), (686, 'Pair Moonlight.'), (1505, 'Play.'))):
-        reveal(im, x, 630, value, 55, t, at=.65+i*.25, color=GOLD)
-    reveal(im, 960, 812, 'github.com/RamazanKara/Butterpollo', 55, t, at=1.35,
-           color=INK, weight='bold', align='center')
-    txt(im, 960, 937, 'WGC + Radeon compute by default · Free and open source', 30,
-        MUTED, 'regular', 'center', ease((t-1.8)/.65))
+    im = base(t+54)
+    p = ease((t-.1)/.7)
+    mark = width_of('Butterpollo', 156, 'bold')
+    left = (W-(150+48+mark))/2
+    badge(im, left, 222+20*(1-p), 150, p)
+    reveal(im, left+198, 208, 'Butterpollo', 156, t, at=.15)
+    reveal(im, 960, 430, 'Written in Rust. Built for Radeon. Made for Moonlight.', 44, t, at=.45,
+           color=INK, weight='semibold', align='center')
+    words, gap = ('Install.', 'Pair.', 'Play.'), 70
+    widths = [width_of(w, 62, 'bold') for w in words]
+    x = (W-sum(widths)-gap*2)/2
+    for i, value in enumerate(words):
+        reveal(im, x, 540, value, 62, t, at=.8+i*.2, color=BUTTER)
+        x += widths[i]+gap
+    reveal(im, 960, 720, 'github.com/RamazanKara/Butterpollo', 52, t, at=1.5, weight='bold', align='center')
+    txt(im, 960, 818, 'As long as AMD users are happy, Butterpollo is happy.', 32, MUTED, 'regular', 'center',
+        ease((t-2)/.6))
     return im
 
 
-DRAWERS = (intro, schedule, compute, hosts, hdr, pyrowave, ending)
+SCENES = (hook, pipeline, compute, together, play, safely, ending)
 
-# A single frame tile moves through the film. It leaves the schematic before
-# becoming a measurement marker; it does not imply schematic durations are data.
-KEYS = ((0,1575,710,220), (4.15,1575,710,220), (5.8,*queue_frame(.8)),
-        (14.7,*queue_frame(9.7)), (16.9,104,742,25), (18.9,508.79,742,25),
-        (19.1,508.79,742,25), (19.8,1091,742,25),
-        (21.1,1602.13,742,25), (25,1602.13,742,25), (27.1,1557,572,30),
-        (30,1557,572,30), (33.5,1567,775,26), (36.5,1768,779,26),
-        (38.8,277,554,65), (40,717,554,65), (41.2,1157,554,65),
-        (42.7,1597,554,65), (46.8,1597,554,65), (47.7,1509,598,324),
-        (53.9,1509,598,324), (55.1,268,333,170),
-        (60,268,333,170))
-
-
-def tracked_frame(im, t):
-    left, right = KEYS[0], KEYS[-1]
-    for a, b in zip(KEYS, KEYS[1:]):
-        if a[0] <= t < b[0]:
-            left, right = a, b
-            break
-    p = smooth((t-left[0])/max(.0001, right[0]-left[0]))
-    x, y, size = [a+(b-a)*p for a, b in zip(left[1:], right[1:])]
-    if 5.8 <= t <= 14.7:
-        x,y,size=queue_frame(t-5)
-    elif 16.9 <= t <= 19.1:
-        x=104+725*33.5/60*ease((t-16-1.7)/1.2)
-        y,size=742,25
-    elif 19.8 <= t <= 25:
-        x=1091+725*42.3/60*ease((t-16-3.8)/1.2)
-        y,size=742,25
-    d = ImageDraw.Draw(im)
-    box = (x-size/2, y-size/2, x+size/2, y+size/2)
-    logo = smooth((t-54.25)/.9)
-    macro = 46.8 <= t < 54
-    d.rounded_rectangle(box, radius=max(5, round(size*.14)), fill=None if macro else mix(PANEL,GOLD,logo),
-                        outline=GOLD, width=max(2,round(size*.02)))
-    if logo < 1 and not macro:
-        for i, frac in enumerate((.58,.78,.46)):
-            yy = y-size*.22+i*size*.22
-            line(im, (x-size*.31, yy, x-size*.31+size*frac, yy), mix(PANEL,GOLD,1-logo), max(2,round(size*.045)))
-    if logo > 0:
-        txt(im, x, y-size*.40, 'B', max(18,round(size*.72)), BG, 'bold', 'center', logo)
-
-
-def plate(index, local):
-    return DRAWERS[index](max(0,local))
+def scene_at(t):
+    index = next((i for i, end in enumerate(ENDS) if t < end), len(ENDS)-1)
+    return index, t-STARTS[index]
 
 
 def frame(t):
-    index = next((i for i, end in enumerate(ENDS) if t < end), len(ENDS)-1)
-    local = t-STARTS[index]
-    if index and local < .8:
-        # Follow the frame across a continuous horizontal canvas. The scene
-        # stays fully lit; outgoing and incoming text never double-expose.
-        old = plate(index-1, ENDS[index-1]-STARTS[index-1]-.001)
-        new = plate(index, local)
-        offset=round(W*smooth(local/.8))
-        im=background().copy()
-        im.paste(old,(-offset,0))
-        im.paste(new,(W-offset,0))
-    else:
-        im = plate(index, local)
-    heading(im, index, t)
-    tracked_frame(im, t)
+    index, local = scene_at(t)
+    im = SCENES[index](local)
+    if index and local < WIPE:
+        old = SCENES[index-1](ENDS[index-1]-STARTS[index-1]-.001)
+        p = smooth(local/WIPE)
+        lean = 260
+        edge = -lean-60+(W+2*lean+120)*p
+        mask = Image.new('L', (W, H), 0)
+        draw(mask).polygon([(-10, 0), (edge+lean, 0), (edge, H), (-10, H)], fill=255)
+        im = Image.composite(im, old, mask)
+        d = draw(im)
+        d.polygon([(edge+lean, 0), (edge+lean+46, 0), (edge+46, H), (edge, H)], fill=BUTTER)
+        d.polygon([(edge+lean+46, 0), (edge+lean+58, 0), (edge+58, H), (edge+46, H)], fill=CORAL)
+    chrome(im, index, t)
     return im
 
 
 def storyboard(destination):
-    times = (.8,3.5,7,10,14,18.5,23,28.5,33,36,40,44,48,52,56,59)
-    sheet = Image.new('RGB',(1920,4*588),BG)
-    for i,t in enumerate(times):
-        tile=frame(t).resize((480,270),Image.Resampling.LANCZOS)
-        x,y=i%4*480,i//4*588
-        # Each row includes a second, larger-text inspection strip of its scope.
-        sheet.paste(tile,(x,y))
-        txt(sheet,x+12,y+284,f'{t:04.1f}s',25,MUTED,'mono')
-        crop=frame(t).crop((60,925,1860,1040)).resize((480,31),Image.Resampling.LANCZOS)
-        sheet.paste(crop,(x,y+327))
-    # Compact the empty row spacing while preserving 16 representative frames.
-    compact = Image.new('RGB',(1920,4*380),BG)
-    for row in range(4):
-        compact.paste(sheet.crop((0,row*588,1920,row*588+380)),(0,row*380))
-    destination.parent.mkdir(parents=True,exist_ok=True)
-    compact.save(destination)
+    times = (.5, 3.5, 7.5, 11, 14.5, 20, 24, 28.5, 33, 36, 40, 45, 49, 53, 56, 59.5)
+    sheet = Image.new('RGB', (1920, 4*300), BG)
+    for i, t in enumerate(times):
+        tile = frame(t).resize((480, 270), Image.Resampling.LANCZOS)
+        x, y = i % 4*480, i//4*300
+        sheet.paste(tile, (x, y))
+        txt(sheet, x+10, y+272, f'{t:04.1f}s', 20, MUTED, 'mono')
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(destination)
 
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--output',type=Path)
-    p.add_argument('--audio',type=Path)
-    p.add_argument('--frame',type=float)
-    p.add_argument('--storyboard',type=Path)
-    p.add_argument('--fps',type=int,default=60)
-    p.add_argument('--width',type=int,default=1920)
-    args=p.parse_args()
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('--output', type=Path)
+    p.add_argument('--audio', type=Path)
+    p.add_argument('--frame', type=float)
+    p.add_argument('--storyboard', type=Path)
+    p.add_argument('--fps', type=int, default=60)
+    p.add_argument('--width', type=int, default=1920)
+    args = p.parse_args()
     if args.storyboard:
         storyboard(args.storyboard)
     if args.output and args.frame is not None:
-        args.output.parent.mkdir(parents=True,exist_ok=True)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
         frame(args.frame).save(args.output)
     elif args.output:
-        ffmpeg=shutil.which('ffmpeg')
+        ffmpeg = shutil.which('ffmpeg')
         if not ffmpeg:
             p.error('FFmpeg is required.')
-        args.output.parent.mkdir(parents=True,exist_ok=True)
-        vf=f'scale={args.width}:-2:flags=lanczos:out_color_matrix=bt709:out_range=tv'
-        cmd=[ffmpeg,'-hide_banner','-loglevel','error','-y','-f','rawvideo','-pixel_format','rgb24',
-             '-video_size',f'{W}x{H}','-framerate',str(args.fps),'-i','pipe:0']
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        vf = f'scale={args.width}:-2:flags=lanczos:out_color_matrix=bt709:out_range=tv'
+        cmd = [ffmpeg, '-hide_banner', '-loglevel', 'error', '-y', '-f', 'rawvideo', '-pixel_format', 'rgb24',
+               '-video_size', f'{W}x{H}', '-framerate', str(args.fps), '-i', 'pipe:0']
         if args.audio:
-            cmd+=['-i',str(args.audio),'-map','0:v','-map','1:a','-c:a','aac','-b:a','192k']
+            cmd += ['-i', str(args.audio), '-map', '0:v', '-map', '1:a', '-c:a', 'aac', '-b:a', '192k']
         else:
-            cmd+=['-an']
-        cmd+=['-vf',vf,'-c:v','libx264','-threads','4','-preset','medium','-crf','19',
-              '-pix_fmt','yuv420p','-movflags','+faststart','-color_primaries','bt709',
-              '-color_trc','bt709','-colorspace','bt709','-color_range','tv',
-              '-t',str(DURATION),str(args.output)]
-        with subprocess.Popen(cmd,stdin=subprocess.PIPE) as proc:
+            cmd += ['-an']
+        cmd += ['-vf', vf, '-c:v', 'libx264', '-threads', '4', '-preset', 'medium', '-crf', '19',
+                '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-color_primaries', 'bt709',
+                '-color_trc', 'bt709', '-colorspace', 'bt709', '-color_range', 'tv',
+                '-t', str(DURATION), str(args.output)]
+        with subprocess.Popen(cmd, stdin=subprocess.PIPE) as proc:
             try:
                 for n in range(DURATION*args.fps):
                     proc.stdin.write(frame(n/args.fps).tobytes())
-                    if n%(args.fps*5)==0:
-                        print(f'Rendered {n//args.fps}/{DURATION}s',flush=True)
+                    if n % (args.fps*5) == 0:
+                        print(f'Rendered {n//args.fps}/{DURATION}s', flush=True)
             finally:
                 proc.stdin.close()
             if proc.wait():
                 raise RuntimeError('FFmpeg encoding failed')
-        print(f'Wrote {args.output}',flush=True)
+        print(f'Wrote {args.output}', flush=True)
     elif not args.storyboard:
         p.error('Use --output or --storyboard.')
 
 
-if __name__=='__main__':
+if __name__ == '__main__':
     main()
