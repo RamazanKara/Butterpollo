@@ -843,6 +843,8 @@ impl Media {
                     let mut rebuild_encoder = false;
                     // Since when encoding has failed without a frame getting through.
                     let mut encoder_failing: Option<Instant> = None;
+                    // Separate encoder failures in this session, each counted once.
+                    let (mut failures, mut counted_failure) = (0u32, None);
                     let mut runtime_config = c.clone();
                     let mut profiles = None;
                     let mut foreground = None;
@@ -1164,11 +1166,20 @@ impl Media {
                             let rebuilt = rebuild_encoder;
                             if rebuild_encoder {
                                 encoder = None;
-                                // After a failure, convert on the graphics queue:
-                                // some drivers accept the compute path at creation
-                                // and fail on it later, every time.
+                                // Some drivers accept the compute path at creation and
+                                // fail on it later, every time: after a second failure
+                                // in the session, convert on the graphics queue. One
+                                // failure (a game holding the GPU, a driver reset) must
+                                // not cost the rest of the session the slower path,
+                                // 6-9 ms a frame beside a GPU-bound game.
+                                if let Some(since) = encoder_failing
+                                    && counted_failure != Some(since)
+                                {
+                                    counted_failure = Some(since);
+                                    failures += 1;
+                                }
                                 let mut tuning = c.clone();
-                                if encoder_failing.is_some() {
+                                if failures >= 2 {
                                     tuning.values.insert("gpu_compute_conversion".into(), "false".into());
                                 }
                                 match Encoder::new_gpu_options(
