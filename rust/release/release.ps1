@@ -35,7 +35,7 @@ param(
     # could not find a package built from inside it.
     [string] $Work = 'C:\src\butterpollo-release',
     # Machine settings, dot-sourced: the Rust build environment (PATH, FFmpeg,
-    # PyroWave, ...), BUTTERPOLLO_TEST_CLIENT_EXE and BUTTERPOLLO_TEST_PYTHON.
+    # PyroWave, ...) and BUTTERPOLLO_TEST_PYTHON.
     [string] $Settings = (Join-Path $Work 'settings.ps1'),
     [string] $Notes,
     [string] $Scope,
@@ -50,10 +50,6 @@ function Step($name) { Write-Host ('[{0:mm\:ss}] {1}' -f ((Get-Date) - $started)
 
 if (Test-Path $Settings) { . $Settings }
 $python = if ($env:BUTTERPOLLO_TEST_PYTHON) { $env:BUTTERPOLLO_TEST_PYTHON } else { 'python' }
-$client = $env:BUTTERPOLLO_TEST_CLIENT_EXE
-if (-not $client -or -not (Test-Path $client)) {
-    throw 'Set BUTTERPOLLO_TEST_CLIENT_EXE to the moonlight-common-c test client (rust/tests/moonlight_client.c).'
-}
 
 Step "checkout $Ref"
 if (-not (Test-Path $Checkout)) { git clone --quiet --filter=blob:none "https://github.com/$repo.git" $Checkout }
@@ -133,22 +129,36 @@ $tests = Select-String -Path "$qa\tests.log" -Pattern 'test result: ok\. (\d+) p
     ForEach-Object { [int]$_.Matches[0].Groups[1].Value } | Measure-Object -Sum
 Write-Host "  $($tests.Sum) tests passed"
 
+Step 'release gate tests and current receiver fixtures'
+& $python -m unittest discover -s $tools -p test_e2e_result.py *> "$qa\release-gate.log"
+git -C $Checkout submodule update --init --recursive --depth 1 third-party/moonlight-common-c
+& "$Checkout\rust\tests\build-moonlight-client.ps1" -ArtifactDirectory "$qa\fixtures" *> "$qa\receiver-build.log"
+cargo build --release --locked --manifest-path $manifest --target-dir "$target\ship" -p butterpollo-windows `
+    --example audio_probe --example motion_probe *> "$qa\probe-build.log"
+Copy-Item "$target\ship\release\examples\audio_probe.exe", "$target\ship\release\examples\motion_probe.exe" "$qa\fixtures"
+$client = "$qa\fixtures\moonlight-client.exe"
+
 Step "package from $previous"
 & $python "$tools\package.py" --repo $Checkout --build "$target\ship\release" --baseline-zip $baselineZip `
     --baseline-sums "$baseline\SHA256SUMS" --qa $qa --out $out | Out-Null
 $package = "$out\butterpollo-rust-release"
 
-foreach ($codec in 'h264', 'hevc', 'av1') {
-    Step "stream $codec"
+foreach ($case in 'h264', 'hevc', 'av1', 'hevc-vrr') {
+    $codec = $case -replace '-vrr$'
+    $stream = @('--package', $package, '--work', $run, '--client', $client, '--codec', $codec, '--seconds', '30')
+    if ($case.EndsWith('-vrr')) { $stream += '--vrr' }
+    Step "stream $case"
     try {
-        & $python "$tools\e2e.py" --package $package --work $run --client $client --codec $codec
+        & $python "$tools\e2e.py" @stream
     } catch {
         # Other load on the workstation can push one run under the frame-rate
         # floor; a regression fails twice. The first run's logs are kept.
-        Write-Warning "stream $codec failed; running it once more"
-        Remove-Item -Recurse -Force "$run\e2e-$codec-failed" -ErrorAction SilentlyContinue
-        Move-Item "$run\e2e-$codec" "$run\e2e-$codec-failed"
-        & $python "$tools\e2e.py" --package $package --work $run --client $client --codec $codec
+        Write-Warning "stream $case failed; running it once more"
+        $failed = Join-Path $run "e2e-$case-failed"
+        if (([IO.Path]::GetFullPath($failed) | Split-Path -Parent) -ne [IO.Path]::GetFullPath($run)) { throw 'Test output left the release directory' }
+        Remove-Item -LiteralPath $failed -Recurse -Force -ErrorAction SilentlyContinue
+        Move-Item -LiteralPath "$run\e2e-$case" -Destination $failed
+        & $python "$tools\e2e.py" @stream
     }
 }
 Step 'protocol checks'

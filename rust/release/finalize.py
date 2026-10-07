@@ -29,9 +29,11 @@ for asset in validation['assets']:
 results = sorted(work.glob('e2e-*/result.json'))
 streams = [json.loads(p.read_text()) for p in results if not p.parent.name.endswith('-failed')]
 assert streams and all(s['passed'] for s in streams), 'an end-to-end stream failed'
+assert {('h264', False), ('hevc', False), ('av1', False), ('hevc', True)} <= {(s['codec'], s.get('vrr', False)) for s in streams}, 'the fixed-rate or VRR release matrix is incomplete'
+assert all(s.get('audio_continuous') == 1 and s.get('motion_coverage', 0) >= .95 for s in streams), 'real audio and motion measurements are required'
 # A stream that failed once and passed when run again is recorded with both runs.
 for failed in (json.loads(p.read_text()) for p in results if p.parent.name.endswith('-failed')):
-    next(s for s in streams if s['codec'] == failed['codec'])['first_attempt_failed'] = failed
+    next(s for s in streams if (s['codec'], s['vrr']) == (failed['codec'], failed['vrr']))['first_attempt_failed'] = failed
 protocol = json.loads((work / 'protocol' / 'result.json').read_text())
 assert protocol['passed'], 'a protocol check failed'
 validation['changes'] = [line for line in args.changes.read_text(encoding='utf-8').splitlines() if line.strip()]
