@@ -1732,6 +1732,7 @@ impl Media {
         let mut feedback_at = Instant::now();
         while !h.stop.load(Ordering::Acquire) {
             let ping_timeout = crate::network::ping_timeout(&h.config.read().unwrap());
+            let mut disconnected = Vec::new();
             // Acknowledgements and anything else ENet sends wait until this
             // pass's input is applied.
             host.socket_mut().hold();
@@ -1790,11 +1791,6 @@ impl Media {
                     }
                     Event::Disconnect { peer, .. } => {
                         let id = peer.id();
-                        if peers.contains_key(&id) {
-                            // Dropping the peer waits for its gamepad thread
-                            // to unplug its pads: send what is held first.
-                            host.socket_mut().release()?;
-                        }
                         if let Some(p) = peers.remove(&id) {
                             let session = h.sessions.lock().unwrap().active.get(&p.id).cloned();
                             h.sessions.lock().unwrap().request_stop(Some(&p.id));
@@ -1810,6 +1806,7 @@ impl Media {
                                     Some(&session.launch.client.uuid),
                                 );
                             }
+                            disconnected.push(p);
                         }
                     }
                     Event::Receive { peer, packet, .. } => {
@@ -2070,6 +2067,8 @@ impl Media {
                 }
             }
             host.socket_mut().release()?;
+            // Unplugging gamepads can wait; finish this pass's input and sends first.
+            drop(disconnected);
             for peer in remove {
                 peers.remove(&peer);
             }
