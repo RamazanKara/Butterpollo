@@ -128,7 +128,22 @@ fn stand_in_tvs(permanent: u32, before: &BTreeSet<String>) -> Result<(String, St
     Ok((a, b))
 }
 
-fn beside_duplicated_tvs(a: &str, b: &str) -> Result<Value> {
+/// A dropped test display leaves asynchronously; Windows refuses a layout
+/// that still names it (ERROR_INVALID_PARAMETER).
+fn wait_gone(id: &str) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while active_ids()?.iter().any(|d| d == id) {
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "the test display did not go away"
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    Ok(())
+}
+
+/// The check and the test display's device.
+fn beside_duplicated_tvs(a: &str, b: &str) -> Result<(Value, String)> {
     let others = |m: &Monitor| m.device_id == a || m.device_id == b;
     let before = timings(others)?;
     let display = VirtualDisplay::create("butterpollo-self-test-b", 1280, 720, 60)?;
@@ -146,20 +161,23 @@ fn beside_duplicated_tvs(a: &str, b: &str) -> Result<Value> {
     // Windows lays out the displays again when one arrives and may break up
     // the duplicate; that is reported, not failed.
     let still_cloned = cloned(a, b)?;
-    Ok(json!({
+    let check = json!({
         "passed": on && unchanged,
         "stream_display_on": on,
         "switched_on_by_host": display.switched_on,
         "tvs_still_duplicated": still_cloned,
         "other_displays_unchanged": unchanged,
-    }))
+    });
+    Ok((check, target.device_id))
 }
 
 fn clone_layout_restored(a: &str, b: &str) -> Result<Value> {
     if !cloned(a, b)? {
         // As the stand-in TVs were first duplicated, and as a restore does.
-        Topology::set_active(&active_ids()?)?;
-        Topology::query()?.restore_clone_groups(&[vec![a.to_owned(), b.to_owned()]])?;
+        Topology::set_active(&active_ids()?).context("switching every display on")?;
+        Topology::query()?
+            .restore_clone_groups(&[vec![a.to_owned(), b.to_owned()]])
+            .context("duplicating the stand-in TVs again")?;
     }
     let saved = Snapshot::capture()?;
     anyhow::ensure!(
@@ -170,7 +188,7 @@ fn clone_layout_restored(a: &str, b: &str) -> Result<Value> {
         "the saved layout has no clone group"
     );
     // Give every display its own desktop, as set_active does.
-    Topology::set_active(&active_ids()?)?;
+    Topology::set_active(&active_ids()?).context("breaking up the clone group")?;
     let broken = !cloned(a, b)?;
     let restored = saved.restore();
     let rejoined = cloned(a, b)?;
@@ -199,10 +217,9 @@ pub fn run(report: &std::path::Path) -> Result<bool> {
         let mut before = before.clone();
         before.insert(test_display);
         let (a, b) = stand_in_tvs(permanent, &before)?;
-        checks.insert(
-            "beside_duplicated_tvs".into(),
-            beside_duplicated_tvs(&a, &b)?,
-        );
+        let (check, test_display) = beside_duplicated_tvs(&a, &b)?;
+        checks.insert("beside_duplicated_tvs".into(), check);
+        wait_gone(&test_display)?;
         checks.insert(
             "clone_layout_restored".into(),
             clone_layout_restored(&a, &b)?,
