@@ -292,6 +292,7 @@ use std::{
 
 type Latest = capture::Latest<GpuImage>;
 struct Source {
+    warnings: Arc<butterpollo_core::session::Warnings>,
     latest: Arc<Latest>,
     grid: Arc<Mutex<butterpollo_windows::capture::ClaimGrid>>,
     stop: Arc<AtomicBool>,
@@ -573,6 +574,8 @@ impl Media {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = stop.clone();
         let worker = latest.clone();
+        let warnings = Arc::new(butterpollo_core::session::Warnings::default());
+        let capture_warnings = warnings.clone();
         let grid = Arc::new(Mutex::new(butterpollo_windows::capture::ClaimGrid {
             anchor: Instant::now(),
             period: rate.period(),
@@ -595,7 +598,7 @@ impl Media {
                     // desktop of a UAC prompt or the lock screen.
                     butterpollo_windows::input::follow_input_desktop();
                     let mut capture =
-                        match Capture::open_for_stream(&target.0, &kind, hdr, &capture_config) {
+                        match Capture::open_for_stream_reported(&target.0, &kind, hdr, &capture_config, capture_warnings.clone()) {
                             Ok(c) => c,
                             Err(e) => {
                                 let _ = started_tx.send(Err(format!("{e:#}")));
@@ -634,7 +637,7 @@ impl Media {
                             // A UAC prompt or the lock screen switches the input
                             // desktop; duplication must be made on that desktop.
                             butterpollo_windows::input::follow_input_desktop();
-                            let opened = Capture::open_for_stream(&next.0, &kind, hdr, &capture_config);
+                            let opened = Capture::open_for_stream_reported(&next.0, &kind, hdr, &capture_config, capture_warnings.clone());
                             match opened {
                                 Ok(mut recovered) => {
                                     if next != *target {
@@ -686,6 +689,7 @@ impl Media {
                         }
                         match capture.next_gpu() {
                             Ok(Some(image)) => {
+                                capture_warnings.clear("capture_recovery");
                                 let captured = image.captured;
                                 worker.publish_captured(Arc::new(image), captured)?;
                             }
@@ -706,7 +710,7 @@ impl Media {
                                 }
                             }
                             Err(e) => {
-                                tracing::warn!(error=%format!("{e:#}"), output=%target.0, backend=capture.backend(), "capture restarting");
+                                capture_warnings.set("capture_recovery", format!("Capture interrupted ({e:#}); reopening capture, with a frozen picture until frames resume. If this repeats, keep the display mode stable and check the WGC helper and graphics driver."));
                                 let lost = std::mem::replace(&mut capture, Capture::Closed);
                                 capture = match reopen(lost, &target) {
                                     Ok(capture) => capture,
@@ -726,6 +730,7 @@ impl Media {
                 }
             })?;
         let latest = Arc::new(Source {
+            warnings,
             latest,
             grid,
             stop,
@@ -835,6 +840,7 @@ impl Media {
                         &s.launch.id,
                         prepared.clone(),
                     )?;
+                    *s.capture_warnings.write().unwrap() = latest.warnings.clone();
                     let mut capture_wake = latest.subscribe()?;
                     let first = {
                         let deadline = Instant::now() + Duration::from_secs(10);
@@ -1081,6 +1087,7 @@ impl Media {
                                         &s.launch.id,
                                         prepared.clone(),
                                     )?;
+                                    *s.capture_warnings.write().unwrap() = latest.warnings.clone();
                                     capture_wake = latest.subscribe()?;
                                     use_truehdr = enabled;
                                     rebuild_encoder = true;

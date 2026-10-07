@@ -133,7 +133,11 @@ fn capture_config(config: &Config) -> Config {
             .collect(),
     }
 }
-fn handoff(gpu: &Device, config: &Config) -> Option<crate::compute::Handoff> {
+fn handoff(
+    gpu: &Device,
+    config: &Config,
+    warnings: &butterpollo_core::session::Warnings,
+) -> Option<crate::compute::Handoff> {
     if !config.boolean("wgc_compute_copy", true)
         || !crate::compute::enabled(config)
         || !crate::compute::copies_on(&gpu.device)
@@ -145,7 +149,7 @@ fn handoff(gpu: &Device, config: &Config) -> Option<crate::compute::Handoff> {
     {
         Ok(copy) => Some(copy),
         Err(error) => {
-            tracing::warn!(error=%format!("{error:#}"), "WGC helper compute copies unavailable; using the graphics queue");
+            warnings.set("capture_compute", format!("WGC helper compute copies unavailable ({error:#}); using the graphics queue. Lower game GPU load or update the AMD driver if capture stutters."));
             None
         }
     }
@@ -240,7 +244,12 @@ pub struct Session {
     frame: crate::timing::Signal,
 }
 impl Session {
-    pub(super) fn new(name: &str, hdr: bool, config: &Config) -> Result<Self> {
+    pub(super) fn new(
+        name: &str,
+        hdr: bool,
+        config: &Config,
+        warnings: Arc<butterpollo_core::session::Warnings>,
+    ) -> Result<Self> {
         ensure!(
             desktop_available(),
             "WGC requires the unlocked user desktop"
@@ -314,7 +323,8 @@ impl Session {
         };
         let device: ID3D11Device1 = gpu.device.cast()?;
         let mut owned = GpuPool {
-            compute: handoff(&gpu, config),
+            compute: handoff(&gpu, config, &warnings),
+            warnings: warnings.clone(),
             ..Default::default()
         };
         let mut textures = Vec::with_capacity(SLOTS);
@@ -329,7 +339,7 @@ impl Session {
             if let Some(copy) = &mut owned.compute
                 && let Err(error) = copy.import_shared(&texture, raw(&handle))
             {
-                tracing::warn!(%error, "WGC shared texture cannot use compute; using the graphics queue");
+                warnings.set("capture_compute", format!("WGC shared texture cannot use compute ({error:#}); using the graphics queue. Lower game GPU load or update the AMD driver if capture stutters."));
                 owned.compute = None;
             }
             textures.push(Texture {
@@ -412,7 +422,7 @@ impl Session {
                 Some(Reply::Alive) => self.last_reply = now,
                 Some(Reply::ComputeFallback { message }) => {
                     self.last_reply = now;
-                    tracing::warn!(error=%message, "WGC helper compute copy failed; transfer uses the graphics queue");
+                    self.owned.warnings.set("capture_helper_compute", format!("WGC helper compute copy failed ({message}); transfer uses the graphics queue. Lower game GPU load or update the AMD driver if capture stutters."));
                 }
                 Some(Reply::Error { message }) => bail!("WGC helper: {message}"),
                 Some(Reply::Ready { .. }) => bail!("WGC helper replaced live textures"),
@@ -624,7 +634,8 @@ fn worker(pipe: &Pipe) -> Result<()> {
     desc.MiscFlags =
         (D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0 | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX.0) as u32;
     validate_texture(&desc, desc.Width, desc.Height, desc.Format.0)?;
-    let mut copy = handoff(&gpu, &config);
+    let compute_warnings = butterpollo_core::session::Warnings::default();
+    let mut copy = handoff(&gpu, &config, &compute_warnings);
     let mut textures = Vec::with_capacity(SLOTS);
     let mut handles = Vec::with_capacity(SLOTS);
     for _ in 0..SLOTS {
@@ -658,6 +669,12 @@ fn worker(pipe: &Pipe) -> Result<()> {
         format: desc.Format.0,
         compute: copy.is_some(),
     })?;
+    for warning in compute_warnings.snapshot() {
+        pipe.send(&Reply::ComputeFallback {
+            message: warning.message,
+        })?;
+    }
+
     let mut slots = Slots::default();
     loop {
         for _ in 0..=SLOTS {

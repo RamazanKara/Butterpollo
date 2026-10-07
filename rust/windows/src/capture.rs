@@ -451,7 +451,7 @@ impl Duplication {
             {
                 Ok(duplicate) => (duplicate, "DuplicateOutput1"),
                 Err(error) => {
-                    tracing::warn!(%error, "DuplicateOutput1 unavailable; trying legacy Desktop Duplication");
+                    tracing::warn!(%error, "DuplicateOutput1 unavailable; trying legacy Desktop Duplication, which may lose HDR or fail after display changes. Update Windows and the graphics driver or select WGC");
                     (
                         output.DuplicateOutput(&gpu.device).with_context(|| {
                             format!("opening legacy Desktop Duplication after DuplicateOutput1 failed: {error}")
@@ -659,6 +659,7 @@ impl GpuImage {
 
 #[derive(Default)]
 pub(crate) struct GpuPool {
+    pub(crate) warnings: std::sync::Arc<butterpollo_core::session::Warnings>,
     textures: Vec<std::sync::Arc<ID3D11Texture2D>>,
     /// Copies on a compute queue instead of the D3D11 graphics queue,
     /// where they wait behind a game's rendering.
@@ -742,7 +743,7 @@ impl GpuPool {
                     // D3D11. Waiting for another update can strand a stream on
                     // a static desktop. Consumers see an unshared texture and
                     // rebuild for the graphics queue.
-                    tracing::warn!(error = %format!("{error:#}"), "compute copy failed; copying on the graphics queue");
+                    self.warnings.set("capture_compute", format!("Compute capture copy failed ({error:#}); copying on the graphics queue. A busy game can delay capture; lower GPU load or update the AMD driver."));
                     self.compute = None;
                     self.textures.clear();
                     return self.copy(gpu, source);
@@ -1025,7 +1026,7 @@ impl Wgc {
                     "WGC minimum update interval configured"
                 ),
                 Err(error) => {
-                    tracing::debug!(%error, "WGC minimum update interval unavailable; using the Windows default")
+                    tracing::warn!(%error, "WGC minimum update interval unavailable; using the Windows default, which may limit capture fps. Update Windows or disable high-rate capture")
                 }
             }
             let capture = Self {
@@ -1240,16 +1241,25 @@ pub enum Capture {
 /// The desktop pointer a lost capture last saw, for the capture replacing it.
 pub struct Pointer(crate::cursor::Carried);
 
-fn open_stream_capture<T>(kind: &str, mut open: impl FnMut(&str) -> Result<T>) -> Result<T> {
+fn open_stream_capture<T>(
+    kind: &str,
+    warnings: &butterpollo_core::session::Warnings,
+    mut open: impl FnMut(&str) -> Result<T>,
+) -> Result<T> {
     match open(kind) {
-        Ok(capture) => Ok(capture),
+        Ok(capture) => {
+            if matches!(kind, "wgc" | "ddx" | "dxgi") {
+                warnings.clear("capture_backend");
+            }
+            Ok(capture)
+        }
         Err(error) if kind == "wgc" => {
             // WGC can be unavailable under SYSTEM or on a secure desktop.
             // Apply the same fallback at startup and after a capture restart.
             let capture = open("ddx").with_context(|| {
                 format!("WGC failed ({error:#}); Desktop Duplication fallback also failed")
             })?;
-            tracing::warn!(error = %format!("{error:#}"), "Windows Graphics Capture unavailable; capturing with Desktop Duplication");
+            warnings.set("capture_backend", format!("Capturing with Desktop Duplication: WGC unavailable ({error:#}). Capture timing and HDR may differ. Unlock the desktop or dismiss the UAC prompt; if this persists, check the WGC helper and graphics driver."));
             Ok(capture)
         }
         Err(error) => Err(error),
@@ -1334,8 +1344,19 @@ impl Capture {
         hdr: bool,
         config: &butterpollo_core::config::Config,
     ) -> Result<Self> {
-        open_stream_capture(kind, |backend| {
-            Self::new_options(name, backend, hdr, config)
+        Self::open_for_stream_reported(name, kind, hdr, config, Default::default())
+    }
+    pub fn open_for_stream_reported(
+        name: &str,
+        kind: &str,
+        hdr: bool,
+        config: &butterpollo_core::config::Config,
+        warnings: std::sync::Arc<butterpollo_core::session::Warnings>,
+    ) -> Result<Self> {
+        warnings.clear("capture_compute");
+        warnings.clear("capture_helper_compute");
+        open_stream_capture(kind, &warnings, |backend| {
+            Self::new_options_reported(name, backend, hdr, config, warnings.clone())
         })
     }
     pub fn new(name: &str, kind: &str) -> Result<Self> {
@@ -1350,11 +1371,20 @@ impl Capture {
         hdr: bool,
         config: &butterpollo_core::config::Config,
     ) -> Result<Self> {
+        Self::new_options_reported(name, kind, hdr, config, Default::default())
+    }
+    fn new_options_reported(
+        name: &str,
+        kind: &str,
+        hdr: bool,
+        config: &butterpollo_core::config::Config,
+        warnings: std::sync::Arc<butterpollo_core::session::Warnings>,
+    ) -> Result<Self> {
         if kind == "wgc"
             && (crate::process::is_system() || config.boolean("wgc_user_helper", false))
         {
             return Ok(Self::WgcWorker(Box::new(bridge::Session::new(
-                name, hdr, config,
+                name, hdr, config, warnings,
             )?)));
         }
         let gpu = Device::new_adapter(
@@ -1369,6 +1399,7 @@ impl Capture {
         // surface; on a compute queue that copy keeps pace beside a game.
         let duplication = |gpu: Device| -> Result<Duplication> {
             let mut duplication = Duplication::new_device(gpu, hdr)?;
+            duplication.owned.warnings = warnings.clone();
             if crate::compute::enabled(config) && crate::compute::copies_on(&duplication.gpu.device)
             {
                 match crate::compute::Compute::for_device(&duplication.gpu.device)
@@ -1376,7 +1407,7 @@ impl Capture {
                 {
                     Ok(compute) => duplication.owned.compute = Some(compute),
                     Err(error) => {
-                        tracing::warn!(error = %format!("{error:#}"), "compute copies unavailable; copying on the graphics queue")
+                        warnings.set("capture_compute", format!("Compute capture copies unavailable ({error:#}); copying on the graphics queue. Lower game GPU load or update the AMD driver if capture stutters."))
                     }
                 }
             }
@@ -1385,6 +1416,7 @@ impl Capture {
         let wgc = |gpu: Device| -> Result<Wgc> {
             let mut capture =
                 Wgc::new_device(gpu, hdr, config.boolean("wgc_high_rate_capture", false))?;
+            capture.owned.warnings = warnings.clone();
             capture.drain_to_newest = config.boolean("wgc_drain_to_newest", false);
             // The pool's textures can be shared with D3D12 on supported AMD
             // drivers. The same fenced handoff used by DDX keeps the copy and
@@ -1399,7 +1431,7 @@ impl Capture {
                 {
                     Ok(compute) => capture.owned.compute = Some(compute),
                     Err(error) => {
-                        tracing::warn!(error = %format!("{error:#}"), "WGC compute copies unavailable; copying on the graphics queue")
+                        warnings.set("capture_compute", format!("WGC compute copies unavailable ({error:#}); copying on the graphics queue. Lower game GPU load or update the AMD driver if capture stutters."))
                     }
                 }
             }
@@ -1408,9 +1440,13 @@ impl Capture {
         match kind {
             "wgc" => Ok(Self::Wgc(Box::new(wgc(gpu)?))),
             "ddx" | "dxgi" => Ok(Self::Dxgi(Box::new(duplication(gpu)?))),
-            _ => wgc(gpu.clone())
-                .map(|capture| Self::Wgc(Box::new(capture)))
-                .or_else(|_| duplication(gpu).map(|d| Self::Dxgi(Box::new(d)))),
+            _ => open_stream_capture("wgc", &warnings, |backend| {
+                if backend == "wgc" {
+                    wgc(gpu.clone()).map(|capture| Self::Wgc(Box::new(capture)))
+                } else {
+                    duplication(gpu.clone()).map(|d| Self::Dxgi(Box::new(d)))
+                }
+            }),
         }
     }
     pub fn next_frame(&mut self) -> Result<Option<Image>> {
@@ -1617,7 +1653,8 @@ mod tests {
         )
         .unwrap();
         let mut attempted = Vec::new();
-        let capture = open_stream_capture(&policy.capture, |kind| {
+        let warnings = butterpollo_core::session::Warnings::default();
+        let capture = open_stream_capture(&policy.capture, &warnings, |kind| {
             attempted.push(kind.to_owned());
             match kind {
                 "wgc" => bail!("CreateForMonitor: 0x80070424"),
@@ -1628,8 +1665,24 @@ mod tests {
         .unwrap();
         assert_eq!(capture, "working duplication");
         assert_eq!(attempted, ["wgc", "ddx"]);
+        let warning = &warnings.snapshot()[0];
+        assert_eq!(warning.code, "capture_backend");
+        assert!(warning.message.contains("0x80070424"));
+        assert!(warning.message.contains("Desktop Duplication"));
+        open_stream_capture("wgc", &warnings, |_| Ok(())).unwrap();
+        assert!(warnings.snapshot().is_empty());
+        open_stream_capture("auto", &warnings, |_| {
+            open_stream_capture("wgc", &warnings, |kind| {
+                if kind == "wgc" {
+                    bail!("helper unavailable");
+                }
+                Ok(())
+            })
+        })
+        .unwrap();
+        assert_eq!(warnings.snapshot()[0].code, "capture_backend");
 
-        let error = open_stream_capture::<()>("wgc", |kind| match kind {
+        let error = open_stream_capture::<()>("wgc", &warnings, |kind| match kind {
             "wgc" => bail!("CreateForMonitor: 0x80070424"),
             _ => bail!("DuplicateOutput: access denied"),
         })
@@ -1643,7 +1696,7 @@ mod tests {
     fn working_wgc_and_explicit_ddx_do_not_open_another_backend() {
         for kind in ["wgc", "ddx", "dxgi"] {
             let mut attempts = 0;
-            open_stream_capture(kind, |backend| {
+            open_stream_capture(kind, &Default::default(), |backend| {
                 attempts += 1;
                 assert_eq!(backend, kind);
                 Ok(())
@@ -1653,7 +1706,7 @@ mod tests {
         }
         for kind in ["ddx", "dxgi"] {
             let mut attempts = 0;
-            let error = open_stream_capture::<()>(kind, |_| {
+            let error = open_stream_capture::<()>(kind, &Default::default(), |_| {
                 attempts += 1;
                 bail!("duplication lost access")
             })
