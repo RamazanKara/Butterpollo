@@ -174,6 +174,17 @@ pub fn amf(config: &Config, stream: &Negotiated) -> Result<Vec<Property>> {
         Value::Boolean(config.boolean("amd_enforce_hrd", false)),
         config.values.contains_key("amd_enforce_hrd"),
     );
+    // Rate control must not drop a frame to stay on budget: a VRR client
+    // shows a dropped frame as a held picture. Vibepollo sets it off too.
+    // The RX 7900 XT's AV1 encoder has no such property; its settings log
+    // line shows the value where a driver has one.
+    if codec < 2 {
+        add(
+            format!("{prefix}RateControlSkipFrameEnable"),
+            Value::Boolean(false),
+            false,
+        );
+    }
     // Only on request, as the original backend and FFmpeg do: forcing a queue
     // of one for every VRR client exposed an RDNA4 driver freeze
     // (AlkaidLab/foundation-sunshine#666), video stalling while audio plays.

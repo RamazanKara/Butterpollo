@@ -510,6 +510,7 @@ impl Encoder {
                 "VBVBufferSize",
                 "EnforceHRD",
                 "FillerDataEnable",
+                "RateControlSkipFrameEnable",
             ],
             1 => &[
                 "HevcUsage",
@@ -531,6 +532,7 @@ impl Encoder {
                 "HevcVBVBufferSize",
                 "HevcEnforceHRD",
                 "HevcFillerDataEnable",
+                "HevcRateControlSkipFrameEnable",
             ],
             _ => &[
                 "Av1Usage",
@@ -552,6 +554,7 @@ impl Encoder {
                 "Av1VBVBufferSize",
                 "Av1EnforceHRD",
                 "Av1FillerData",
+                "Av1RateControlSkipFrame",
             ],
         };
         let mut settings: Vec<String> = names
