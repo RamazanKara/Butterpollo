@@ -265,6 +265,11 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
     let _ = std::fs::remove_dir_all(
         system::program_data().join("Microsoft\\Windows\\Start Menu\\Programs\\Vibepollo"),
     );
+    // Earlier installers' entry, with Apollo's icon.
+    let _ = std::fs::remove_file(
+        system::program_data()
+            .join("Microsoft\\Windows\\Start Menu\\Programs\\Butterpollo Rust.lnk"),
+    );
     register(&install, &entries)?;
 
     let web_port = web_port(&profile);

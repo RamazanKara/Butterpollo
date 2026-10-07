@@ -125,19 +125,33 @@ impl Tray {
                     if RegisterClassW(&class) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
                         bail!("cannot register tray window");
                     }
+                    // The executable's own icon (resource 1, see host/build.rs),
+                    // else the icon file, else the generic application icon.
+                    let (width, height) =
+                        (GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
                     let path: Vec<u16> = icon
                         .to_string_lossy()
                         .encode_utf16()
                         .chain(Some(0))
                         .collect();
                     let custom = LoadImageW(
-                        None,
-                        PCWSTR(path.as_ptr()),
+                        Some(HINSTANCE(module.0)),
+                        PCWSTR(1 as _),
                         IMAGE_ICON,
-                        16,
-                        16,
-                        LR_LOADFROMFILE,
+                        width,
+                        height,
+                        LR_DEFAULTCOLOR,
                     )
+                    .or_else(|_| {
+                        LoadImageW(
+                            None,
+                            PCWSTR(path.as_ptr()),
+                            IMAGE_ICON,
+                            width,
+                            height,
+                            LR_LOADFROMFILE,
+                        )
+                    })
                     .ok();
                     let icon = if let Some(handle) = custom {
                         HICON(handle.0)

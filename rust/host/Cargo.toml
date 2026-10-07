@@ -40,3 +40,6 @@ mdns-sd = "=0.21.1"
 igd-next = { version = "=0.17.1", default-features = false, features = ["aio_tokio"] }
 if-addrs = "=0.15.0"
 xmltree = "=0.10.3"
+
+[build-dependencies]
+embed-resource = "3.0.12"
