@@ -39,35 +39,87 @@ fn version(folder: &Path) -> Option<String> {
 fn installed_plugin() -> Option<PathBuf> {
     butterpollo_windows::playnite::extensions_dir().map(|dir| dir.join("SunshinePlaynite"))
 }
+fn needs_update(packaged: &str, target: &Path) -> bool {
+    match version(target) {
+        Some(installed) if playnite::newer(&installed, packaged) => false,
+        Some(installed) => playnite::newer(packaged, &installed) || !plugin_present(target),
+        None => true,
+    }
+}
+fn plugin_present(folder: &Path) -> bool {
+    PLUGIN_FILES.iter().all(|file| folder.join(file).is_file()) && version(folder).is_some()
+}
 /// Copy the packaged plugin into Playnite's extensions. Playnite loads it
 /// when it next starts.
 pub fn install_plugin(h: &Shared) -> Result<PathBuf> {
     let source = packaged_plugin(h);
-    if !PLUGIN_FILES.iter().all(|file| source.join(file).is_file()) {
-        bail!("this installation has no Playnite plugin");
-    }
     let target = installed_plugin().context("Playnite was not found on this PC")?;
-    std::fs::create_dir_all(&target)?;
-    for file in PLUGIN_FILES {
-        butterpollo_core::state::atomic_write(
-            &target.join(file),
-            &std::fs::read(source.join(file))?,
-        )?;
-    }
-    tracing::info!(folder = %target.display(), "installed the Playnite plugin");
+    copy_plugin(&source, &target)?;
     Ok(target)
 }
-/// Install the packaged plugin over an older one.
-fn update_plugin(h: &Shared) {
-    let (Some(target), Some(packaged)) = (installed_plugin(), version(&packaged_plugin(h))) else {
-        return;
-    };
-    if let Some(installed) = version(&target)
-        && playnite::newer(&packaged, &installed)
-        && let Err(error) = install_plugin(h)
-    {
-        tracing::warn!(error = %format!("{error:#}"), "the Playnite plugin could not be updated");
+fn copy_plugin(source: &Path, target: &Path) -> Result<()> {
+    if !plugin_present(source) {
+        bail!(
+            "the packaged Playnite plugin is missing or incomplete at {}",
+            source.display()
+        );
     }
+    std::fs::create_dir_all(target)
+        .with_context(|| format!("creating Playnite plugin folder {}", target.display()))?;
+    // Publish the version last so an interrupted copy is retried.
+    for file in PLUGIN_FILES.iter().rev() {
+        butterpollo_core::state::atomic_write(
+            &target.join(file),
+            &std::fs::read(source.join(file)).with_context(|| {
+                format!(
+                    "reading Playnite plugin file {}",
+                    source.join(file).display()
+                )
+            })?,
+        )
+        .with_context(|| {
+            format!(
+                "installing Playnite plugin file {}",
+                target.join(file).display()
+            )
+        })?;
+    }
+    tracing::info!(folder = %target.display(), "installed the Playnite plugin");
+    Ok(())
+}
+/// Install missing files or an upgrade before Playnite starts. An existing
+/// process keeps its loaded plugin until the user restarts Playnite.
+fn update_plugin(h: &Shared) -> bool {
+    let Some(target) = installed_plugin() else {
+        tracing::warn!("Playnite plugin folder could not be resolved for the signed-in user");
+        return false;
+    };
+    let source = packaged_plugin(h);
+    let present = plugin_present(&target);
+    let installed = version(&target);
+    let packaged = version(&source);
+    let running = butterpollo_windows::playnite::running().is_some();
+    tracing::info!(folder = %target.display(), ?installed, ?packaged, present, running, "Playnite plugin check");
+    let Some(packaged) = packaged else {
+        tracing::warn!(folder = %source.display(), "packaged Playnite plugin is unavailable");
+        return present;
+    };
+    if needs_update(&packaged, &target) {
+        if let Err(error) = copy_plugin(&source, &target) {
+            tracing::warn!(error = %format!("{error:#}"), "the Playnite plugin could not be installed or updated");
+            return present;
+        }
+        if running {
+            tracing::warn!("Playnite plugin files changed; restart Playnite to load them");
+        }
+        return !running || present;
+    }
+    if !present {
+        tracing::warn!(
+            "the installed Playnite plugin is not the supported script connector; using the CLI fallback"
+        );
+    }
+    present
 }
 
 /// What the plugin last reported.
@@ -86,7 +138,8 @@ static CATALOG: Mutex<Catalog> = Mutex::new(Catalog {
 });
 /// Ask the plugin for its library.
 fn snapshot() -> Result<()> {
-    let pipe = Pipe::connect(&json!({"type":"hello","role":"sunshine","pid":std::process::id()}))?;
+    let pipe = Pipe::connect(&json!({"type":"hello","role":"sunshine","pid":std::process::id()}))
+        .context("connecting to the Playnite plugin for library sync")?;
     let mut games = vec![];
     let (mut categories, mut plugins) = (vec![], vec![]);
     let (mut started, mut asked, mut complete) = (false, false, false);
@@ -126,6 +179,11 @@ fn snapshot() -> Result<()> {
             bail!("the Playnite library did not arrive in time");
         }
     }
+    tracing::info!(
+        games = games.len(),
+        elapsed_ms = opened.elapsed().as_millis(),
+        "Playnite library snapshot received"
+    );
     *CATALOG.lock().unwrap() = Catalog {
         games,
         categories,
@@ -214,6 +272,29 @@ static WATCH: Mutex<Watch> = Mutex::new(Watch {
     synced: None,
 });
 static RUNNING: AtomicBool = AtomicBool::new(false);
+fn sync_if_due(
+    watch: &mut Watch,
+    pid: u32,
+    settings: String,
+    at: Instant,
+    sync: impl FnOnce() -> Result<Outcome>,
+) -> Result<()> {
+    if watch.playnite == Some(pid)
+        && watch.settings == settings
+        && watch
+            .synced
+            .is_some_and(|last| at.duration_since(last) < Duration::from_secs(600))
+    {
+        return Ok(());
+    }
+    sync()?;
+    *watch = Watch {
+        playnite: Some(pid),
+        settings,
+        synced: Some(at),
+    };
+    Ok(())
+}
 /// The auto-sync check, every 30 seconds: keep the fullscreen entry as set,
 /// and sync when Playnite starts, the settings change, or every ten minutes.
 pub fn watch(h: &Shared) {
@@ -230,26 +311,15 @@ pub fn watch(h: &Shared) {
     if settings.enabled
         && settings.auto_sync
         && let Some((pid, _)) = butterpollo_windows::playnite::running()
+        && let Err(error) = sync_if_due(
+            &mut WATCH.lock().unwrap(),
+            pid,
+            format!("{settings:?}"),
+            Instant::now(),
+            || sync(h),
+        )
     {
-        let fingerprint = format!("{settings:?}");
-        let due = {
-            let watch = WATCH.lock().unwrap();
-            watch.playnite != Some(pid)
-                || watch.settings != fingerprint
-                || watch
-                    .synced
-                    .is_none_or(|at| at.elapsed() >= Duration::from_secs(600))
-        };
-        if due {
-            if let Err(error) = sync(h) {
-                tracing::debug!(error = %format!("{error:#}"), "Playnite auto-sync skipped");
-            }
-            *WATCH.lock().unwrap() = Watch {
-                playnite: Some(pid),
-                settings: fingerprint,
-                synced: Some(Instant::now()),
-            };
-        }
+        tracing::warn!(error = %format!("{error:#}"), "Playnite library sync failed; retrying on the next check");
     }
     RUNNING.store(false, Ordering::Release);
 }
@@ -367,7 +437,7 @@ impl Launch {
             .and_then(|dir| butterpollo_windows::playnite::executable(&dir))
             .context("Playnite launch failed: no Desktop or Fullscreen executable found; open Playnite once or repair its installation")?;
         tracing::info!(id, executable = %program.display(), running = butterpollo_windows::playnite::running().is_some(), "Playnite launch prepared");
-        update_plugin(h);
+        let plugin_ready = update_plugin(h);
         let baseline = butterpollo_windows::process::processes().unwrap_or_default();
         let state = Arc::new(Mutex::new(LaunchState {
             phase: Phase::Starting,
@@ -379,7 +449,7 @@ impl Launch {
             let (id, environment) = (id.to_owned(), environment.clone());
             std::thread::Builder::new()
                 .name("playnite-launch".into())
-                .spawn(move || run(&program, &id, &environment, &state, &stop))
+                .spawn(move || run(&program, &id, &environment, &state, &stop, plugin_ready))
                 .context("starting the Playnite launch worker")?
         };
         Ok(Self {
@@ -426,8 +496,13 @@ fn run(
     environment: &BTreeMap<String, String>,
     state: &Mutex<LaunchState>,
     stop: &AtomicBool,
+    plugin_ready: bool,
 ) {
     let set = |phase: Phase| state.lock().unwrap().phase = phase;
+    if !plugin_ready {
+        fallback(program, id, environment, state);
+        return;
+    }
     if butterpollo_windows::playnite::running().is_none()
         && let Err(error) = butterpollo_windows::playnite::launch(program, &[], environment)
     {
@@ -445,14 +520,7 @@ fn run(
             Ok(pipe) => break pipe,
             Err(error) if Instant::now() >= deadline => {
                 tracing::warn!(error = %format!("{error:#}"), "the Playnite plugin is not available; starting the game without tracking it");
-                match butterpollo_windows::playnite::launch(program, &["--start", id], environment)
-                {
-                    Ok(()) => set(Phase::Untracked),
-                    Err(error) => {
-                        tracing::error!(id, error = %format!("{error:#}"), "Playnite fallback launch failed");
-                        set(Phase::Exited);
-                    }
-                }
+                fallback(program, id, environment, state);
                 return;
             }
             Err(_) => std::thread::sleep(Duration::from_secs(1)),
@@ -517,6 +585,26 @@ fn run(
         }
     }
 }
+fn fallback(
+    program: &Path,
+    id: &str,
+    environment: &BTreeMap<String, String>,
+    state: &Mutex<LaunchState>,
+) {
+    match butterpollo_windows::playnite::launch(program, &["--start", id], environment) {
+        Ok(()) => {
+            tracing::warn!(
+                id,
+                "Playnite CLI fallback requested; game start is unconfirmed and the stream stays until ended manually"
+            );
+            state.lock().unwrap().phase = Phase::Untracked;
+        }
+        Err(error) => {
+            tracing::error!(id, error = %format!("{error:#}"), "Playnite fallback launch failed");
+            state.lock().unwrap().phase = Phase::Exited;
+        }
+    }
+}
 /// The command that opens Playnite's fullscreen mode.
 pub fn fullscreen_command() -> Option<String> {
     let dir = butterpollo_windows::playnite::install_dir()?;
@@ -534,4 +622,83 @@ pub fn close_fullscreen(timeout: Duration) {
         .map(|p| (p.pid, p.started))
         .collect();
     butterpollo_windows::process::stop_processes(&fullscreen, timeout);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plugin_repairs_missing_and_partial_installs_without_downgrading() {
+        let target =
+            std::env::temp_dir().join(format!("butterpollo-playnite-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&target).unwrap();
+        assert!(needs_update("0.4.14", &target));
+        std::fs::write(target.join("extension.yaml"), "Version: 0.4.14").unwrap();
+        assert!(needs_update("0.4.14", &target));
+        std::fs::write(target.join("SunshinePlaynite.psm1"), "module").unwrap();
+        assert!(!needs_update("0.4.14", &target));
+        assert!(needs_update("0.4.15", &target));
+        assert!(!needs_update("0.4.13", &target));
+        std::fs::write(target.join("extension.yaml"), "Version: 0.5.0").unwrap();
+        std::fs::remove_file(target.join("SunshinePlaynite.psm1")).unwrap();
+        assert!(!needs_update("0.4.14", &target));
+        std::fs::remove_dir_all(target).unwrap();
+    }
+
+    #[test]
+    fn plugin_copy_publishes_the_version_only_after_the_module() {
+        let root =
+            std::env::temp_dir().join(format!("butterpollo-playnite-{}", uuid::Uuid::new_v4()));
+        let source = root.join("packaged");
+        let target = root.join("Çağrı/Extensions/SunshinePlaynite");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(target.join("SunshinePlaynite.psm1")).unwrap();
+        std::fs::write(source.join("extension.yaml"), "Version: 0.4.14").unwrap();
+        std::fs::write(source.join("SunshinePlaynite.psm1"), "module").unwrap();
+        std::fs::write(target.join("extension.yaml"), "Version: 0.4.13").unwrap();
+        assert!(copy_plugin(&source, &target).is_err());
+        assert_eq!(version(&target).as_deref(), Some("0.4.13"));
+        std::fs::remove_dir(target.join("SunshinePlaynite.psm1")).unwrap();
+        copy_plugin(&source, &target).unwrap();
+        assert_eq!(version(&target).as_deref(), Some("0.4.14"));
+        assert!(plugin_present(&target));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_sync_retries_on_the_next_watch_tick() {
+        let mut watch = Watch {
+            playnite: None,
+            settings: String::new(),
+            synced: None,
+        };
+        let at = Instant::now();
+        assert!(
+            sync_if_due(&mut watch, 1, "settings".into(), at, || bail!(
+                "plugin still starting"
+            ))
+            .is_err()
+        );
+        assert!(watch.synced.is_none());
+        let mut calls = 0;
+        for seconds in [30, 60] {
+            sync_if_due(
+                &mut watch,
+                1,
+                "settings".into(),
+                at + Duration::from_secs(seconds),
+                || {
+                    calls += 1;
+                    Ok(Outcome {
+                        changed: false,
+                        games: 2,
+                    })
+                },
+            )
+            .unwrap();
+        }
+        assert_eq!(calls, 1);
+        assert_eq!(watch.synced, Some(at + Duration::from_secs(30)));
+    }
 }
