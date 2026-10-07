@@ -662,6 +662,13 @@ impl Injector {
         if output.is_empty() {
             return;
         }
+        if self
+            .lookup
+            .as_ref()
+            .is_some_and(|lookup| !lookup.output.eq_ignore_ascii_case(output))
+        {
+            self.lookup = None;
+        }
         self.settle_lookup(false);
         let renamed = !output.eq_ignore_ascii_case(&self.output);
         if self.rect.is_none() {
@@ -2327,6 +2334,35 @@ mod tests {
         assert!(injector.apply_all(&events).is_empty());
         assert!(injector.rect.is_some());
         assert_eq!(calls().len(), 1);
+    }
+
+    #[test]
+    fn returning_to_the_current_display_discards_an_obsolete_lookup() {
+        let mut injector = recording();
+        injector.settle_lookup(true);
+        let output = injector.output.clone();
+        let current = RECT {
+            left: 0,
+            top: 0,
+            right: 100,
+            bottom: 100,
+        };
+        injector.rect = Some(current);
+        injector.lookup = Some(Lookup {
+            output: r"\\.\DISPLAY98".into(),
+            started: std::time::Instant::now(),
+            thread: Some(std::thread::spawn(|| {
+                Ok(RECT {
+                    left: 100,
+                    top: 0,
+                    right: 200,
+                    bottom: 100,
+                })
+            })),
+        });
+        injector.set_output(&output);
+        assert_eq!(injector.display(), Some(current));
+        assert_eq!(injector.output, output);
     }
 
     #[test]
