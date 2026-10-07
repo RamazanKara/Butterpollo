@@ -57,6 +57,24 @@ The same fixture three days later, with rc.2 and rc.17 alternating in one batch:
 On the same capture path the two releases deliver the picture at the same time. rc.17's default WGC capture delivers it about 2 ms sooner beside the load, and the host latency Moonlight reports falls from 5.7 to 1.9 ms. rc.2 measured 35.7 ms here against 42.3 ms on October 4: compare only rows from one batch.
 
 [Runs and settings →](../rust/PERFORMANCE.md#october-7-rc17-against-rc2-on-the-october-4-fixture)
+
+## New in rc.19
+
+Two changes in rc.19 target Radeon cards under pressure, measured on the RX 7900 XT against the code before them. rc.19's idle render-to-decode delay on the fixture above is 14.9 ms, as rc.17's.
+
+| | Before rc.19 | rc.19 |
+| --- | ---: | ---: |
+| **PyroWave beside a GPU-heavy game**, per 1080p120 HDR 4:4:4 frame | 5.7 ms | **0.55 ms** |
+| PyroWave beside the game, paced at 120 fps | 4.62 ms | **0.71 ms** |
+| **Encoder saturated** (5120×1440 HEVC at 240 fps), game frame to packet | 42.7 ms | **11.1 ms** |
+| Encoder saturated, 99th percentile | 45.9 ms | **13.3 ms** |
+
+PyroWave's colour conversion now runs on the Radeon compute queue instead of waiting behind the game on the graphics queue; idle it takes 0.47 ms either way, and the planes are byte-identical. When the encoder cannot keep up, the host now claims a new picture only while fewer than two wait in the encoder, so the frames it sends are fresh; the encoder delivered 220 fps either way.
+
+[PyroWave runs →](../rust/PERFORMANCE.md#october-7-pyrowave-conversion-on-the-compute-queue) · [Encoder queue runs →](../rust/PERFORMANCE.md#october-7-two-frames-in-the-encoder)
+
+**AMF's low-latency switches were checked too.** With the default ultra-low-latency usage, the driver already applies its internal low-latency mode and AV1's lowest latency; forcing them changed neither encode time nor output size, so they stay on Driver default. [When forcing them helps →](configuration.md#capture-and-video)
+
 ## WGC capture and pacing
 
 Since rc.9, Automatic capture prefers WGC and supported Radeon streams use compute by default. Guarded source-phase pacing waits for a predicted fresh update when the capture history supports it.

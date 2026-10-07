@@ -14,6 +14,7 @@ Start with the defaults below. Settings imported from an older installation keep
 | Compute conversion — `gpu_compute_conversion` | `true` | Uses a separate compute queue for supported AMD capture and colour conversion paths. |
 | Encode from GPU memory — `wgc_direct_encoder_input` | `true` | Keeps WGC frames on the GPU instead of copying them through system memory. |
 | Encoder — `encoder` | `auto` | Selects an available encoder for the capture GPU. |
+| AMD usage — `amd_usage` | `ultralowlatency` | AMD's lowest-latency preset. The driver also turns on its internal low-latency mode, and the lowest latency for AV1. |
 | AMD quality — `amd_quality` | `speed` | Favours low encoding latency. |
 | Frame pacing — `frame_pacing` | `arrival` | Encodes arriving frames, limited to the requested stream rate. |
 | HEVC / AV1 support — `hevc_mode`, `av1_mode` | `0` | Automatic capability detection; only working profiles are offered. |
@@ -44,6 +45,8 @@ For **native HDR**, enable HDR in the client and use an HDR-capable display and 
 **PyroWave needs a compatible client** and much more bandwidth than conventional codecs—typically hundreds of Mbps. Enabling it does not force ordinary Moonlight clients to use it. Start with HEVC or AV1 for constrained networks.
 
 **VRR is client-negotiated.** A VRR request can use a 1000 Hz virtual display when automatic virtual refresh is enabled. That is the host's virtual display rate, not a claim that your TV or monitor refreshes at 1000 Hz. Client and display support still matter.
+
+**Leave AMF's low-latency mode and AV1 latency mode on Driver default.** With the default usage, ultra-low latency, AMD's driver already runs H.264 and HEVC in its internal low-latency mode and AV1 at its lowest latency. Forcing them (`amd_lowlatency_mode`, `amd_av1_latency_mode`) gave the same encode time and the same output size on an RX 7900 XT. They only matter after choosing the Low latency or Transcoding usage, which leave them off: forcing them there saved about 0.4 ms per HEVC frame and 1.3 ms per AV1 frame at 1440p. Forcing the low-latency mode has frozen HEVC encoding on RX 9000 cards (video stops while audio plays), so it stays opt-in. [Measurements →](../rust/PERFORMANCE.md#october-7-amf-low-latency-mode-and-av1-latency-mode)
 
 ## Displays and RTSS
 

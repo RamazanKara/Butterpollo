@@ -38,7 +38,7 @@ Butterpollo began as a fork of [Vibepollo](https://github.com/Nonary/Vibepollo),
 
 | What you get | How it helps |
 | --- | --- |
-| **Radeon compute** | Frame copies and colour conversion run on D3D12 compute queues alongside the game's graphics work. Native AMF encodes the result. |
+| **Radeon compute** | Frame copies and colour conversion run on D3D12 compute queues alongside the game's graphics work. Native AMF, or PyroWave, encodes the result. |
 | **A Rust host throughout** | Streaming, protocol handling, native helpers, service and setup share the Rust implementation. |
 | **HEVC and AV1 HDR** | Native capture and ten-bit BT.2020/PQ conversion preserve the HDR signal through encoding. H.264 is also available. |
 | **PyroWave HDR 4:4:4** | Full-resolution colour keeps fine coloured text and edges crisp. |
@@ -64,6 +64,8 @@ Carried over from Vibepollo, Apollo and Sunshine and rebuilt in Rust: per-device
 **Next to Vibepollo 2.0** in a matched setup, Butterpollo rc.2 averaged 42.4 ms against 96.4 ms beside the same load and delivered 51.4 fresh pictures a second against 23.9. Most of that gap is not the compute path: with compute off, Butterpollo still delivered about 57 fresh pictures a second in an earlier batch. Vibepollo handed its native AMF encoder about 24 frames a second, and the encoder logged that its output had not caught up. That encoder came from Butterpollo's author; where the frames are lost is still being traced, and the fix goes to Vibepollo. [Matched comparison →](docs/performance.md#next-to-vibepollo-20)
 
 **rc.17 against rc.2**, alternating on the same fixture on October 7: the same delay on the same capture path, and about 2 ms less beside the load with rc.17's default WGC capture (33.4 against 35.7 ms). [rc.17 against rc.2 →](docs/performance.md#rc17-against-rc2)
+
+**New in rc.19:** beside a GPU-heavy game, PyroWave encodes a 1080p HDR 4:4:4 frame in 0.55 ms instead of 5.7 ms, now that its colour conversion runs on Radeon compute. When the encoder cannot keep up (5120×1440 HEVC at 240 fps), a game frame reaches the network in 11.1 ms instead of 42.7 ms, at the same 220 fps. [New in rc.19 →](docs/performance.md#new-in-rc19)
 
 [Benchmarks, current WGC results and HDR validation →](docs/performance.md)
 

@@ -1966,6 +1966,69 @@ three output sizes and a composited pointer
 The fixture client does not decode PyroWave, so no PyroWave stream was
 played end to end; equal planes and equal frame sizes show the encoder
 reads the same pictures.
+## October 7: two frames in the encoder
+
+The stream claimed a picture whenever the pacer allowed one, and AMF only
+pushed back at eight frames in flight. When one encode takes longer than a
+frame interval, up to eight frames queued and each was that much older when
+it came out, without any more frames per second for it. Since rc.19 a claim
+waits while two frames are in the encoder, enough to keep both of a Radeon's
+encoder instances busy, and the host takes the encoder's output first.
+
+5120×1440 HEVC at 240 fps and 150 Mbps on the RX 7900 XT, whose encoder
+manages 220 fps there; two alternating runs each:
+
+| Encoder saturated | rc.18 | rc.19 |
+|---|---|---|
+| Present to send, mean | 42.7 ms | 11.1 ms |
+| Present to send, p99 | 45.9 ms | 13.3 ms |
+| Host latency | 39.6 ms | 8.9 ms |
+| Frames per second | 220 | 220 |
+
+Streams the encoder keeps up with are unchanged: H.264, HEVC, AV1 and HEVC
+VRR at 2560×720 and 60 fps pass the release e2e.
+## October 7: AMF low-latency mode and AV1 latency mode
+
+`amd_lowlatency_mode` (AMF's `LowLatencyInternal`, H.264 and HEVC) and
+`amd_av1_latency_mode` (`Av1EncodingLatencyMode`) default to `auto`, which
+leaves the property unset. Whether forcing them on is worth a default was
+measured with `examples/performance.rs --synthetic 16 --paced` at 2560×1440
+and 120 fps, 20 Mbps, `speed`, `vbr_latency`, on the RX 7900 XT with driver
+32.0.31041.1004. The probe reports submission to output; the settings line
+the host logs shows what the driver applied.
+
+With the default usage, ultra-low latency, the driver already applies both:
+`LowLatencyInternal=1` and `Av1EncodingLatencyMode=3` (lowest) with the
+properties unset. Forcing them changed nothing. Three alternating runs each:
+
+| Ultra-low latency, mean / p95 (ms) | `auto` | forced on |
+|---|---|---|
+| H.264 | 3.12 / 3.58, 3.13 / 3.50, 3.08 / 3.40 | 3.19 / 3.64, 3.10 / 3.37, 3.09 / 3.46 |
+| HEVC | 3.13 / 3.62, 3.17 / 3.64, 3.17 / 3.64 | 3.12 / 3.48, 3.16 / 3.62, 3.31 / 3.69 |
+| AV1 | 2.61 / 3.11, 2.62 / 3.11, 2.62 / 3.12 | 2.66 / 3.11, 2.64 / 3.12, 2.65 / 3.13 |
+
+Every forced run produced the same number of bytes as its `auto` pair, to
+the byte. The other usages, one run each:
+
+| Usage | Codec | Driver's choice | `auto`, mean / p95 | Forced on |
+|---|---|---|---|---|
+| Low latency | HEVC | `LowLatencyInternal=0` | 3.59 / 3.92 ms | 3.16 / 3.63 ms |
+| Low latency | AV1 | mode 0 (none) | 3.89 / 4.28 ms | 2.64 / 3.13 ms |
+| Low latency, high quality | HEVC | `LowLatencyInternal=1` | 3.50 / 3.87 ms | 3.58 / 3.83 ms |
+| Low latency, high quality | AV1 | mode 3 (lowest) | 3.48 / 3.76 ms | 3.51 / 3.83 ms |
+| Transcoding | HEVC | `LowLatencyInternal=0` | 3.43 / 3.76 ms | 3.04 / 3.34 ms |
+| Transcoding | AV1 | mode 0 (none) | 3.92 / 4.22 ms | 2.60 / 2.95 ms |
+
+Forcing them helps only with a usage that leaves them off: about 0.4 ms per
+HEVC frame and 1.3 ms per AV1 frame here, at the same output size. Both stay
+`auto`. A default of on would change nothing for the default usage and
+override a user's deliberate choice of another one, and writing
+`LowLatencyInternal` explicitly froze HEVC encoding on RX 9000 cards with
+Adrenalin 26.5 (video stalls while audio plays), the reason the native AMF
+encoder stopped forcing it. The setting descriptions now say which usages
+already have them on. The fallback console page saved the low-latency switch
+as `amd_low_latency_internal`, a key nothing reads; it now saves
+`amd_lowlatency_mode` and offers the AV1 latency mode too.
 ## Limits
 
 This machine validates AMD AMF. Native NVENC now calls the installed NVIDIA driver directly, supports reviewed API versions 11.0–13.0, reference frame invalidation, D3D11 4:2:0/8-bit 4:4:4 and GPU-only CUDA interop for ten-bit 4:4:4. Seven mock-driver tests exercise compatibility, asynchronous ownership, timeout teardown, metadata lifetime, loss recovery and bitrate changes; NVIDIA execution/performance still needs NVIDIA hardware. QSV has native D3D11 imports, and TrueHDR has a shared-device GPU path; these need Intel/NVIDIA hardware respectively. PyroWave uses shared D3D11/Vulkan planar GPU inputs and reads back only the encoded bitstream. Unsupported native formats and software encoding use CPU compatibility paths. The wired LAN checks above do not establish Wi-Fi performance, multiple concurrent 4K sessions, dynamic game content, native 4K capture or end-to-end input/display latency. The GPU texture pools and native encoder queues are bounded to eight retained frames; capacity runs may intentionally keep those queues occupied. [PARITY.md](PARITY.md) separates implemented features from native validation.

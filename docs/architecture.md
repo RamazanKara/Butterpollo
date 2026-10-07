@@ -23,7 +23,7 @@ The older `src/` and CMake tree remain available as migration references. The [R
 
 1. **Capture.** Automatic capture prefers Windows Graphics Capture (WGC), with Desktop Duplication available as an explicit choice and fallback.
 2. **Copy and convert.** Shared GPU textures move through D3D12 compute queues for copies and RGB-to-YUV conversion on supported AMD GPUs.
-3. **Encode.** Native AMD AMF consumes D3D12 surfaces and produces H.264, HEVC or AV1 bitstreams.
+3. **Encode.** Native AMD AMF consumes D3D12 surfaces and produces H.264, HEVC or AV1 bitstreams. The host claims a new picture only while fewer than two wait in the encoder, so an encoder that cannot keep up costs frames per second, not picture age.
 4. **Deliver.** The host encrypts and packetizes the stream for Moonlight. Bounded queues keep retained work controlled.
 
 ![Scheduling schematic comparing the reviewed Sunshine-derived D3D11 path with Butterpollo's D3D12 compute path](media/compute-comparison.png)
@@ -50,7 +50,7 @@ WGC requests an explicit zero minimum update interval where Windows supports it.
 
 The native HDR path captures FP16 scRGB, resizes in linear light and converts to ten-bit BT.2020/PQ. Shader math preserves absolute ST.2084 luminance. Windows HDR detection distinguishes an active HDR output from wide-gamut SDR colour management. [Independent decoding and reference-pixel checks](performance.md#hdr-and-pyrowave-validation) verify the tested pixel path.
 
-**PyroWave provides full 10-bit HDR 4:4:4** through its own shared D3D11/Vulkan path. GPU conversion produces planar textures, a shared fence synchronizes the Vulkan import, and the encoded bitstream returns to the CPU. Full-resolution chroma gives each pixel its own colour samples. Use [Nonary's compatible Moonlight client](https://github.com/Nonary/moonlight-qt) and a fast wired LAN; [client selection](getting-started.md#choose-your-stream-format) explains the options.
+**PyroWave provides full 10-bit HDR 4:4:4** through its own shared D3D11/Vulkan path. A compute pass on the D3D12 compute queue that also prepares AMF's frames writes its planar textures, a shared fence orders that pass with the Vulkan import, and the encoded bitstream returns to the CPU. Full-resolution chroma gives each pixel its own colour samples. Use [Nonary's compatible Moonlight client](https://github.com/Nonary/moonlight-qt) and a fast wired LAN; [client selection](getting-started.md#choose-your-stream-format) explains the options.
 
 ## Encoding beyond Radeon
 
