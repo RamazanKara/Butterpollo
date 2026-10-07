@@ -46,7 +46,8 @@ fn wire_headers_match_bus_shared_h() {
     assert_eq!(XUSB_SUBMIT, 0x2aa808);
     assert_eq!(DS4_SUBMIT, 0x2aa80c);
     assert_eq!(XUSB_NOTIFICATION, 0x2ae804);
-    assert_eq!(DS4_NOTIFICATION, 0x2ae810);
+    // BUSENUM_W_IOCTL, unlike the XUSB notification's BUSENUM_RW_IOCTL.
+    assert_eq!(DS4_NOTIFICATION, 0x2aa810);
     assert_eq!(packet(8, 0x12345678), [8, 0, 0, 0, 0x78, 0x56, 0x34, 0x12]);
     assert_eq!(Ds4Report::new().0.len() + 8, 71);
 }
@@ -459,6 +460,69 @@ fn neutral_targets_enumerate_once_and_unplug_on_peer_drop() -> Result<()> {
         if !added.is_empty() {
             assert_eq!(arrivals, 1, "inspect Steam's new controller records");
         }
+    }
+    Ok(())
+}
+
+/// The bus's final status for `code` with serial 0. ViGEmBus pends every
+/// request first, so an unknown code only fails once the request completes.
+fn serial_zero_status(bus: HANDLE, code: u32, size: usize, output: bool) -> WIN32_ERROR {
+    let event = event().unwrap();
+    let mut overlapped = OVERLAPPED {
+        hEvent: handle(&event),
+        ..Default::default()
+    };
+    let mut data = packet(size, 0);
+    let pointer = data.as_mut_ptr();
+    let result = unsafe {
+        DeviceIoControl(
+            bus,
+            code,
+            Some(pointer.cast()),
+            size as u32,
+            output.then_some(pointer.cast()),
+            if output { size as u32 } else { 0 },
+            None,
+            Some(&mut overlapped),
+        )
+    };
+    let result = match result {
+        Err(error) if error.code() == ERROR_IO_PENDING.to_hresult() => unsafe {
+            if WaitForSingleObject(handle(&event), 1000) != WAIT_OBJECT_0 {
+                let _ = CancelIoEx(bus, Some(&overlapped));
+                let _ = GetOverlappedResult(bus, &overlapped, &mut 0, true);
+                return ERROR_IO_PENDING;
+            }
+            GetOverlappedResult(bus, &overlapped, &mut 0, false)
+        },
+        other => other,
+    };
+    match result {
+        Ok(()) => ERROR_SUCCESS,
+        Err(error) => WIN32_ERROR::from_error(&error).unwrap(),
+    }
+}
+
+#[test]
+#[ignore = "opens the installed ViGEmBus; plugs nothing"]
+fn installed_bus_routes_every_target_request() -> Result<()> {
+    // Serial 0 is rejected by each handler with INVALID_PARAMETER before it
+    // touches a target. A code missing from the bus's table fails with
+    // NOT_SUPPORTED instead, and a notification with a wrong code still
+    // reports IO_PENDING when it is issued.
+    let bus = open_bus()?;
+    for (name, code, size, output) in [
+        ("WAIT_READY", WAIT_READY, 8, false),
+        ("XUSB_SUBMIT", XUSB_SUBMIT, 20, false),
+        ("DS4_SUBMIT", DS4_SUBMIT, 71, false),
+        ("XUSB_NOTIFICATION", XUSB_NOTIFICATION, 12, true),
+        ("DS4_NOTIFICATION", DS4_NOTIFICATION, 16, true),
+    ] {
+        assert_eq!(
+            serial_zero_status(handle(&bus), code, size, output),
+            ERROR_INVALID_PARAMETER,
+            "{name} {code:#x}"
+        );
     }
     Ok(())
 }

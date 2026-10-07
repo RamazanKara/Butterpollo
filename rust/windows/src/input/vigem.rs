@@ -30,7 +30,8 @@ const WAIT_READY: u32 = ioctl(0x804, 2);
 const XUSB_NOTIFICATION: u32 = ioctl(0xa01, 3);
 const XUSB_SUBMIT: u32 = ioctl(0xa02, 2);
 const DS4_SUBMIT: u32 = ioctl(0xa03, 2);
-const DS4_NOTIFICATION: u32 = ioctl(0xa04, 3);
+// Write-only access, unlike the XUSB notification: the bus routes only this code.
+const DS4_NOTIFICATION: u32 = ioctl(0xa04, 2);
 
 fn handle(value: &OwnedHandle) -> HANDLE {
     HANDLE(value.as_raw_handle())
