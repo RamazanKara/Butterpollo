@@ -18,9 +18,76 @@ pub enum Role {
     InputOnly,
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct Warning {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Default)]
+pub struct Warnings(std::sync::Mutex<BTreeMap<String, String>>);
+impl Warnings {
+    /// Keep one current warning per condition, without flooding a retry loop.
+    pub fn set(&self, code: &str, message: impl Into<String>) {
+        let message = message.into();
+        let mut warnings = self.0.lock().unwrap();
+        if warnings.get(code) != Some(&message) {
+            tracing::warn!(code, "{message}");
+            warnings.insert(code.into(), message);
+        }
+    }
+    pub fn clear(&self, code: &str) {
+        self.0.lock().unwrap().remove(code);
+    }
+    pub fn snapshot(&self) -> Vec<Warning> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(code, message)| Warning {
+                code: code.clone(),
+                message: message.clone(),
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn warnings_survive_preparation_and_clear_after_recovery() {
+        let launch = launch("warnings", Role::Stream);
+        launch.warnings.set("display", "Physical display in use");
+        let session = Session::new(launch.clone(), Negotiated::default());
+        *session.encoder.write().unwrap() = "amf".into();
+        let capture = Arc::new(Warnings::default());
+        *session.capture_warnings.write().unwrap() = capture.clone();
+        capture.set("capture", "Desktop Duplication in use");
+        launch.warnings.set("display", "Physical display in use");
+        assert_eq!(session.info()["encoder"], "amf");
+        assert_eq!(
+            session.info()["warnings"],
+            serde_json::json!([
+                {"code":"display", "message":"Physical display in use"},
+                {"code":"capture", "message":"Desktop Duplication in use"}
+            ])
+        );
+        capture.set("capture", "Capture recovering");
+        assert_eq!(
+            session.info()["warnings"][1]["message"],
+            "Capture recovering"
+        );
+        capture.clear("capture");
+        launch.warnings.clear("display");
+        assert_eq!(session.info()["warnings"], serde_json::json!([]));
+        let other = Session::new(
+            super::tests::launch("other", Role::Stream),
+            Negotiated::default(),
+        );
+        launch.warnings.set("audio", "Audio interrupted");
+        assert_eq!(other.info()["warnings"], serde_json::json!([]));
+    }
     #[test]
     fn a_launch_still_being_prepared_does_not_expire() {
         let mut sessions = Sessions::default();
@@ -64,6 +131,7 @@ mod tests {
             options: Default::default(),
             audio_preparation: Default::default(),
             preparing: Default::default(),
+            warnings: Default::default(),
         }
     }
     #[test]
@@ -211,6 +279,7 @@ mod tests {
 }
 #[derive(Clone)]
 pub struct Launch {
+    pub warnings: Arc<Warnings>,
     pub id: String,
     pub client: Client,
     pub peer: IpAddr,
@@ -249,6 +318,8 @@ pub struct Stats {
     pub performance: std::sync::Mutex<crate::performance::Performance>,
 }
 pub struct Session {
+    pub encoder: std::sync::RwLock<String>,
+    pub capture_warnings: std::sync::RwLock<Arc<Warnings>>,
     pub launch: Launch,
     pub config: Negotiated,
     pub stop: AtomicBool,
@@ -267,6 +338,8 @@ impl Session {
     pub fn new(launch: Launch, config: Negotiated) -> Arc<Self> {
         let bitrate = config.bitrate_kbps;
         Arc::new(Self {
+            encoder: Default::default(),
+            capture_warnings: Default::default(),
             launch,
             config,
             stop: AtomicBool::new(false),
@@ -325,7 +398,9 @@ impl Session {
         *pending = Some(pending.map_or((first, last), |(a, b)| (a.min(first), b.max(last))));
     }
     pub fn info(&self) -> serde_json::Value {
-        serde_json::json!({"uuid":self.launch.client.uuid,"device_name":self.launch.client.name,"width":self.config.width,"height":self.config.height,"fps":self.config.fps,"video_format":self.config.codec,"hdr":self.config.hdr,"vrr":self.config.vrr_low_latency,"encoder_bitrate_kbps":self.bitrate.load(Ordering::Relaxed),"pyrowave_minimum_kbps":(self.config.codec == 3).then(|| crate::pyrowave::minimum_kbps(self.config.width, self.config.height, self.config.fps_millihz())),"pyrowave_recommended_kbps":(self.config.codec == 3).then(|| crate::pyrowave::recommended_kbps(self.config.width, self.config.height, self.config.fps_millihz())),"audio_channels":self.config.audio_channels,"state":if self.stopping(){"STOPPING"}else{"RUNNING"},"frames_sent":self.stats.frames.load(Ordering::Relaxed),"frames_replaced":self.stats.frames_replaced.load(Ordering::Relaxed),"packets_sent":self.stats.packets.load(Ordering::Relaxed),"bytes_sent":self.stats.bytes.load(Ordering::Relaxed),"idr_requests":self.stats.idr_requests.load(Ordering::Relaxed),"reference_invalidations":self.stats.reference_invalidations.load(Ordering::Relaxed),"encode_latency_ms":self.stats.latency_us.load(Ordering::Relaxed) as f64/1000.,"performance":self.stats.performance.lock().unwrap().snapshot(Instant::now()),"uptime_seconds":self.started.elapsed().as_secs_f64(),"role":self.launch.role})
+        let mut warnings = self.launch.warnings.snapshot();
+        warnings.extend(self.capture_warnings.read().unwrap().snapshot());
+        serde_json::json!({"warnings":warnings,"encoder":*self.encoder.read().unwrap(),"uuid":self.launch.client.uuid,"device_name":self.launch.client.name,"width":self.config.width,"height":self.config.height,"fps":self.config.fps,"video_format":self.config.codec,"hdr":self.config.hdr,"vrr":self.config.vrr_low_latency,"encoder_bitrate_kbps":self.bitrate.load(Ordering::Relaxed),"pyrowave_minimum_kbps":(self.config.codec == 3).then(|| crate::pyrowave::minimum_kbps(self.config.width, self.config.height, self.config.fps_millihz())),"pyrowave_recommended_kbps":(self.config.codec == 3).then(|| crate::pyrowave::recommended_kbps(self.config.width, self.config.height, self.config.fps_millihz())),"audio_channels":self.config.audio_channels,"state":if self.stopping(){"STOPPING"}else{"RUNNING"},"frames_sent":self.stats.frames.load(Ordering::Relaxed),"frames_replaced":self.stats.frames_replaced.load(Ordering::Relaxed),"packets_sent":self.stats.packets.load(Ordering::Relaxed),"bytes_sent":self.stats.bytes.load(Ordering::Relaxed),"idr_requests":self.stats.idr_requests.load(Ordering::Relaxed),"reference_invalidations":self.stats.reference_invalidations.load(Ordering::Relaxed),"encode_latency_ms":self.stats.latency_us.load(Ordering::Relaxed) as f64/1000.,"performance":self.stats.performance.lock().unwrap().snapshot(Instant::now()),"uptime_seconds":self.started.elapsed().as_secs_f64(),"role":self.launch.role})
     }
 }
 #[derive(Default)]

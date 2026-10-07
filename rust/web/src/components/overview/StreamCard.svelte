@@ -48,11 +48,16 @@
   <ul class="spec">
     <li class="num">{stream.width}×{stream.height} at {stream.fps} fps</li>
     <li>{codec}</li>
+    {#if stream.encoder}<li>Encoder: {stream.encoder}</li>{/if}
     {#if stream.hdr}<li><Badge>HDR</Badge></li>{/if}
     {#if stream.vrr}<li><Badge>VRR</Badge></li>{/if}
     <li class="num">{mbps.toFixed(mbps < 100 ? 1 : 0)} Mbps</li>
     <li><span>Up <span class="num">{duration(stream.uptime_seconds)}</span></span></li>
   </ul>
+
+  {#each stream.warnings ?? [] as warning (warning.code)}
+    <p class="note warn" role="status">{warning.message}</p>
+  {/each}
 
   {#if starved || belowRecommended}
     <p class="note warn" class:danger={starved} role="status">

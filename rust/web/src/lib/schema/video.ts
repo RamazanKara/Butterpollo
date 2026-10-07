@@ -324,7 +324,7 @@ const encoders: Setting[] = [
     key: 'encoder',
     label: 'Encoder',
     description:
-      'Automatic chooses an encoder when the stream starts: AMF on AMD Radeon GPUs or NVENC on NVIDIA GPUs, with compatible hardware and software fallbacks. Select an encoder to edit its settings. The stream log records the encoder actually used; PyroWave streams always use their own encoder.',
+      'Automatic chooses an encoder when the stream starts: AMF on AMD Radeon GPUs or NVENC on NVIDIA GPUs, and fails if that native encoder cannot start. Software encoding requires selecting Software explicitly. Select an encoder to edit its settings. The stream card and log show the encoder actually used; PyroWave streams always use their own encoder.',
     category: 'encoders',
     group: 'Encoder',
     control: {

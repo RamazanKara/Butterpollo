@@ -307,6 +307,8 @@ export interface Performance {
 }
 export type Role = 'stream' | 'remote_monitor' | 'input_only';
 export interface StreamSession {
+  encoder: string;
+  warnings: { code: string; message: string }[];
   uuid: string;
   device_name: string;
   width: number;

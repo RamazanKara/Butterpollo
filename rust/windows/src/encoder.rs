@@ -2,8 +2,8 @@ use crate::{
     capture::{GpuImage, Image},
     ff,
 };
-use anyhow::{Result, bail};
-use butterpollo_core::rtsp::Negotiated;
+use anyhow::{Context, Result, bail};
+use butterpollo_core::{rtsp::Negotiated, session::Warnings};
 use std::{
     ffi::{CStr, CString},
     ptr,
@@ -604,6 +604,26 @@ impl Drop for Ffmpeg {
         }
     }
 }
+fn native_failure(backend: &str, error: anyhow::Error) -> anyhow::Error {
+    tracing::warn!(error = %format!("{error:#}"), backend, "Hardware encoder failed; refusing an automatic encoder downgrade. Check the GPU driver and codec, or explicitly select Software at a lower resolution and frame rate");
+    error.context(format!("{backend} failed; refusing an automatic encoder downgrade. Check the GPU driver and codec, or explicitly select Software at a lower resolution and frame rate"))
+}
+
+fn ffmpeg_candidates(codec: u8, preference: &str) -> Result<Vec<String>> {
+    let codec_name = match codec {
+        0 => "h264",
+        1 => "hevc",
+        2 => "av1",
+        _ => bail!("unsupported codec"),
+    };
+    Ok(match preference {
+        "nvenc_legacy" => vec![format!("{codec_name}_nvenc")],
+        "quicksync" | "qsv" => vec![format!("{codec_name}_qsv")],
+        "software" => vec![["libx264", "libx265", "libsvtav1"][codec as usize].into()],
+        _ => vec![format!("{codec_name}_nvenc"), format!("{codec_name}_qsv")],
+    })
+}
+
 pub enum Encoder {
     Ffmpeg(Box<Ffmpeg>),
     Amf(Box<crate::amf::Encoder>),
@@ -647,6 +667,17 @@ impl Encoder {
         image: &GpuImage,
         tuning: &butterpollo_core::config::Config,
     ) -> Result<Self> {
+        Self::new_gpu_reported(config, preference, image, tuning, &Default::default())
+    }
+    pub fn new_gpu_reported(
+        config: &Negotiated,
+        preference: &str,
+        image: &GpuImage,
+        tuning: &butterpollo_core::config::Config,
+        warnings: &std::sync::Arc<Warnings>,
+    ) -> Result<Self> {
+        warnings.clear("encoder_conversion");
+        warnings.clear("encoder_readback");
         let preference = butterpollo_core::encoder_policy::canonical_name(preference);
         if config.codec == 3 {
             return Ok(Self::Pyrowave(Box::new(
@@ -665,12 +696,7 @@ impl Encoder {
         {
             match crate::nvenc::Encoder::new_device_options(config, image.gpu.clone(), tuning) {
                 Ok(encoder) => return Ok(Self::Nvenc(Box::new(encoder))),
-                Err(error) if matches!(preference, "nvenc" | "nvenc_experimental") => {
-                    return Err(error);
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "Native NVENC unavailable; trying compatible encoders")
-                }
+                Err(error) => return Err(native_failure("NVENC", error)),
             }
         }
         if config.codec != 3
@@ -688,11 +714,14 @@ impl Encoder {
                 match crate::compute::Compute::for_device(&image.gpu.device) {
                     Ok(compute) => Some(compute),
                     Err(error) => {
-                        tracing::warn!(error = %format!("{error:#}"), "compute conversion unavailable; converting on the graphics queue");
+                        warnings.set("encoder_conversion", format!("AMF compute conversion unavailable ({error:#}); converting on the graphics queue. A busy game can delay frames; lower its GPU load or update the AMD driver."));
                         None
                     }
                 }
             } else {
+                if !config.yuv444 && crate::compute::enabled(tuning) {
+                    warnings.set("encoder_conversion", "AMF compute conversion unavailable: the capture texture cannot be shared. Converting on the graphics queue; lower game GPU load or update the AMD driver if frames are delayed.");
+                }
                 None
             };
             let created = match crate::amf::Encoder::new_gpu(
@@ -702,17 +731,20 @@ impl Encoder {
                 compute.clone(),
             ) {
                 Err(error) if compute.is_some() => {
-                    tracing::warn!(error = %format!("{error:#}"), "AMF on the compute queue failed; converting on the graphics queue");
+                    warnings.set("encoder_conversion", format!("AMF compute queue initialization failed ({error:#}); retrying conversion on the graphics queue. Lower game GPU load or update the AMD driver if frames are delayed."));
                     crate::amf::Encoder::new_gpu(config, image.gpu.clone(), tuning, None)
                 }
                 created => created,
             };
             match created {
-                Ok(encoder) => return Ok(Self::Amf(Box::new(encoder))),
-                Err(error) if preference == "amf" => return Err(error),
-                Err(error) => tracing::warn!(%error, "AMF unavailable; trying other encoders"),
+                Ok(mut encoder) => {
+                    encoder.warnings = warnings.clone();
+                    return Ok(Self::Amf(Box::new(encoder)));
+                }
+                Err(error) => return Err(native_failure("AMF", error)),
             }
         }
+        let mut import_errors = Vec::new();
         if !config.yuv444
             && config.codec < 3
             && matches!(
@@ -738,12 +770,20 @@ impl Encoder {
                         return Ok(Self::Ffmpeg(Box::new(encoder)));
                     }
                     Err(error) => {
-                        tracing::debug!(%error,%name,"native codec import unavailable; trying compatible input")
+                        import_errors.push(format!("{name}: {error:#}"));
                     }
                 }
             }
         }
-        Self::new_options(config, preference, &image.gpu.display.display_name, tuning)
+        let encoder =
+            Self::new_options(config, preference, &image.gpu.display.display_name, tuning)?;
+        if matches!(&encoder, Self::Ffmpeg(e) if e.native.is_none()) {
+            warnings.set("encoder_readback", format!("Encoding with {} using CPU frame copies and colour conversion: {}. This can lower fps and increase latency; select AMF on AMD, or reduce resolution and frame rate.", encoder.backend(), if import_errors.is_empty() { "this codec/input mode has no native GPU import".into() } else { import_errors.join("; ") }));
+        }
+        if !encoder.hardware() {
+            warnings.set("encoder_software", "Encoding in software because Software was selected. CPU encoding can miss the requested frame rate; select Automatic or AMF on AMD, or lower resolution and frame rate.");
+        }
+        Ok(encoder)
     }
     pub fn encode_gpu(
         &mut self,
@@ -870,56 +910,29 @@ impl Encoder {
                 crate::nvenc::Encoder::new_device_options(config, device()?, tuning)?,
             )));
         }
-        let mut tried_amf = false;
-        if matches!(preference, "" | "auto")
-            && let Ok(device) = device()
-        {
-            // The GPU's own encoder first, as on the streaming path: FFmpeg's
-            // NVENC below runs on an NVIDIA card whichever GPU was chosen.
+        if matches!(preference, "" | "auto") {
+            let device = device().context("Automatic encoder selection could not open the configured GPU; check the adapter setting")?;
             if device
                 .display
                 .adapter
                 .to_ascii_lowercase()
                 .contains("nvidia")
             {
-                match crate::nvenc::Encoder::new_device_options(config, device, tuning) {
-                    Ok(e) => return Ok(Self::Nvenc(Box::new(e))),
-                    Err(error) => {
-                        tracing::warn!(%error, "Native NVENC unavailable; trying compatible encoders")
-                    }
-                }
+                return crate::nvenc::Encoder::new_device_options(config, device, tuning)
+                    .map(|e| Self::Nvenc(Box::new(e)))
+                    .map_err(|error| native_failure("NVENC", error));
             } else if device.display.adapter.contains("Radeon") {
-                tried_amf = true;
-                match crate::amf::Encoder::new_device_options(config, device, tuning) {
-                    Ok(e) => return Ok(Self::Amf(Box::new(e))),
-                    Err(error) => tracing::warn!(%error, "AMF unavailable; trying other encoders"),
-                }
+                return crate::amf::Encoder::new_device_options(config, device, tuning)
+                    .map(|e| Self::Amf(Box::new(e)))
+                    .map_err(|error| native_failure("AMF", error));
             }
         }
-        let codec = match config.codec {
-            0 => "h264",
-            1 => "hevc",
-            2 => "av1",
-            _ => bail!("unsupported codec"),
-        };
         if preference == "amf" {
             return Ok(Self::Amf(Box::new(
                 crate::amf::Encoder::new_device_options(config, device()?, tuning)?,
             )));
         }
-        let candidates: Vec<String> = match preference {
-            "nvenc_legacy" => vec![format!("{codec}_nvenc")],
-            "quicksync" | "qsv" => vec![format!("{codec}_qsv")],
-            "software" => vec![
-                match config.codec {
-                    0 => "libx264",
-                    1 => "libx265",
-                    _ => "libsvtav1",
-                }
-                .into(),
-            ],
-            _ => vec![format!("{codec}_nvenc"), format!("{codec}_qsv")],
-        };
+        let candidates = ffmpeg_candidates(config.codec, preference)?;
         let mut errors = vec![];
         for name in candidates {
             match Ffmpeg::new_options(config, &name, tuning) {
@@ -927,23 +940,10 @@ impl Encoder {
                 Err(e) => errors.push(format!("{name}: {e}")),
             }
         }
-        if preference.is_empty() || preference == "auto" {
-            if !tried_amf {
-                match crate::amf::Encoder::new_device_options(config, device()?, tuning) {
-                    Ok(e) => return Ok(Self::Amf(Box::new(e))),
-                    Err(e) => errors.push(format!("AMF: {e}")),
-                }
-            }
-            let name = match config.codec {
-                0 => "libx264",
-                1 => "libx265",
-                _ => "libsvtav1",
-            };
-            if let Ok(e) = Ffmpeg::new_options(config, name, tuning) {
-                return Ok(Self::Ffmpeg(Box::new(e)));
-            }
-        }
-        bail!("unable to initialize encoder: {}", errors.join("; "))
+        bail!(
+            "unable to initialize encoder: {}. Automatic never falls back to software; check the GPU driver and selected codec, or explicitly select Software for a lower-load stream",
+            errors.join("; ")
+        )
     }
     pub fn encode(&mut self, image: &Image, idr: bool, bitrate: u32) -> Result<Vec<Encoded>> {
         match self {
@@ -957,6 +957,25 @@ impl Encoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn automatic_never_selects_a_software_codec() {
+        for codec in 0..=2 {
+            for preference in ["", "auto", "nvenc_legacy", "qsv"] {
+                assert!(
+                    ffmpeg_candidates(codec, preference)
+                        .unwrap()
+                        .iter()
+                        .all(|name| name.ends_with("_nvenc") || name.ends_with("_qsv"))
+                );
+            }
+            assert!(ffmpeg_candidates(codec, "software").unwrap()[0].starts_with("lib"));
+        }
+        let error = native_failure("AMF", anyhow::anyhow!("driver rejected mode"));
+        let message = format!("{error:#}");
+        assert!(message.contains("AMF failed"));
+        assert!(message.contains("refusing an automatic encoder downgrade"));
+        assert!(message.contains("driver rejected mode"));
+    }
     /// Needs the packaged FFmpeg libraries on PATH.
     #[test]
     #[ignore]

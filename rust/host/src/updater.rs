@@ -527,6 +527,7 @@ mod tests {
             options: Default::default(),
             audio_preparation: Default::default(),
             preparing: Default::default(),
+            warnings: Default::default(),
         }
     }
     #[test]

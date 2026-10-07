@@ -927,6 +927,7 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
             audio_preparation: Default::default(),
             options: args.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
             preparing: Default::default(),
+            warnings: Default::default(),
         };
         let rtsp_port = h.config.read().unwrap().ports()?.rtsp;
         if !launch.rtsp_encrypted

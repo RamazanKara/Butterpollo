@@ -41,6 +41,7 @@ fn encoder_progress(
 fn collect(
     encoder: &mut Option<Encoder>,
     failing: &mut Option<Instant>,
+    warnings: &butterpollo_core::session::Warnings,
 ) -> Result<Vec<butterpollo_windows::encoder::Encoded>> {
     let Some(active) = encoder.as_mut() else {
         return Ok(vec![]);
@@ -55,7 +56,7 @@ fn collect(
             if since.elapsed() >= ENCODER_RECOVERY {
                 return Err(error.context("the encoder kept failing"));
             }
-            tracing::warn!(error = %format!("{error:#}"), "collecting encoder output failed; recreating the encoder");
+            warnings.set("encoder_recovery", format!("Encoder output failed ({error:#}); recreating the same encoder while the picture freezes. Lower game GPU load or update the graphics driver if this repeats."));
             *encoder = None;
             Ok(vec![])
         }
@@ -850,12 +851,14 @@ impl Media {
                             if let Some(image) = latest.wait_for_frame(&timer, &capture_wake, (Instant::now() + Duration::from_millis(50)).min(deadline))? { break image; }
                         }
                     };
-                    let mut encoder = Some(Encoder::new_gpu_options(
+                    let mut encoder = Some(Encoder::new_gpu_reported(
                         &s.config,
                         c.get("encoder", "auto"),
                         &first,
                         &c,
+                        &s.launch.warnings,
                     )?);
+                    *s.encoder.write().unwrap() = encoder.as_ref().unwrap().backend().into();
                     // A rebuilt encoder keeps the hardware family the stream
                     // started with: while a GPU recovers, "auto" would fall
                     // through to a software encoder and stay there.
@@ -983,6 +986,7 @@ impl Media {
                                            peer: std::net::SocketAddr,
                                            call_latency: Duration|
                      -> Result<()> {
+                        if !output.is_empty() { s.launch.warnings.clear("encoder_recovery"); }
                         if let Some(sender) = &pyrowave_sender { return sender.submit(output,peer,call_latency); }
                         let polled = Instant::now();
                         let micros = |d: Duration| d.as_micros().min(u128::from(u64::MAX)) as u64;
@@ -1160,7 +1164,7 @@ impl Media {
                             if !arrival_pacing && now < due {
                                 while Instant::now() < due {
                                     if encoder.as_ref().is_some_and(Encoder::pending) {
-                                        send_frames(collect(&mut encoder, &mut encoder_failing)?, peer, Duration::ZERO)?;
+                                        send_frames(collect(&mut encoder, &mut encoder_failing, &s.launch.warnings)?, peer, Duration::ZERO)?;
                                         if encoder.as_ref().is_some_and(Encoder::pending) {
                                             timer.until(
                                                 (Instant::now() + OUTPUT_POLL)
@@ -1216,7 +1220,7 @@ impl Media {
                                 if encoder.as_ref().is_some_and(Encoder::pending)
                                     && deadline.saturating_duration_since(Instant::now()) >= Duration::from_millis(1)
                                 {
-                                    send_frames(collect(&mut encoder, &mut encoder_failing)?, peer, Duration::ZERO)?;
+                                    send_frames(collect(&mut encoder, &mut encoder_failing, &s.launch.warnings)?, peer, Duration::ZERO)?;
                                 }
                                 let until = if encoder.as_ref().is_some_and(Encoder::pending) {
                                     deadline.min(Instant::now() + OUTPUT_POLL)
@@ -1246,7 +1250,7 @@ impl Media {
                                     .is_some_and(|previous| Arc::ptr_eq(previous, &image))
                                 && Instant::now() < repeat_due
                             {
-                                if encoder.as_ref().is_some_and(Encoder::pending) { send_frames(collect(&mut encoder, &mut encoder_failing)?, peer, Duration::ZERO)?; }
+                                if encoder.as_ref().is_some_and(Encoder::pending) { send_frames(collect(&mut encoder, &mut encoder_failing, &s.launch.warnings)?, peer, Duration::ZERO)?; }
                                 let wait = if encoder.as_ref().is_some_and(Encoder::pending) { OUTPUT_POLL } else { period };
                                 latest.wait_if_current(&timer, &capture_wake, &image, Instant::now() + wait.min(repeat_due.saturating_duration_since(Instant::now())))?;
                                 continue;
@@ -1265,11 +1269,11 @@ impl Media {
                                     if since.elapsed() >= ENCODER_RECOVERY {
                                         anyhow::bail!("the encoder stopped returning frames");
                                     }
-                                    tracing::warn!("the encoder returned no frame for 100 ms; recreating it");
+                                    s.launch.warnings.set("encoder_recovery", "The encoder returned no frame for 100 ms; recreating the same encoder while the picture freezes. Lower game GPU load or update the graphics driver if this repeats.");
                                     encoder = None;
                                     continue;
                                 }
-                                send_frames(collect(&mut encoder, &mut encoder_failing)?, peer, Duration::ZERO)?;
+                                send_frames(collect(&mut encoder, &mut encoder_failing, &s.launch.warnings)?, peer, Duration::ZERO)?;
                                 continue;
                             }
                             backlog_since = None;
@@ -1317,20 +1321,27 @@ impl Media {
                                 let mut tuning = c.clone();
                                 if failures >= 2 {
                                     tuning.values.insert("gpu_compute_conversion".into(), "false".into());
+                                    if butterpollo_windows::compute::enabled(&c) && matches!(pinned_backend, Some("amf" | "pyrowave")) {
+                                        s.launch.warnings.set("encoder_compute_recovery", "Compute conversion disabled after repeated encoder failures; using the graphics queue for the rest of this session. A busy game can delay frames; lower game GPU load or update the AMD driver, then reconnect to retry compute.");
+                                    }
                                 }
-                                match Encoder::new_gpu_options(
+                                match Encoder::new_gpu_reported(
                                     &s.config,
                                     pinned_backend.unwrap_or(c.get("encoder", "auto")),
                                     &image,
                                     &tuning,
+                                    &s.launch.warnings,
                                 ) {
-                                    Ok(created) => encoder = Some(created),
+                                    Ok(created) => {
+                                        *s.encoder.write().unwrap() = created.backend().into();
+                                        encoder = Some(created);
+                                    },
                                     Err(error) => {
                                         let since = *encoder_failing.get_or_insert_with(Instant::now);
                                         if since.elapsed() >= ENCODER_RECOVERY {
                                             return Err(error.context("the encoder could not be recreated"));
                                         }
-                                        tracing::debug!(error = %format!("{error:#}"), "encoder recreation failed; retrying");
+                                        s.launch.warnings.set("encoder_recovery", format!("Encoder recreation failed ({error:#}); retrying the same backend while the picture freezes. Check the driver and lower game GPU load; the session will fail if frames do not resume."));
                                         timer.until(Instant::now() + Duration::from_millis(100));
                                         continue;
                                     }
@@ -1453,7 +1464,7 @@ impl Media {
                                     if since.elapsed() >= ENCODER_RECOVERY {
                                         return Err(error.context("the encoder kept failing"));
                                     }
-                                    tracing::warn!(error = %format!("{error:#}"), client = %s.launch.client.name, "encoding failed; recreating the encoder");
+                                    s.launch.warnings.set("encoder_recovery", format!("Encoding failed ({error:#}); recreating the same encoder while the picture freezes. Lower game GPU load or update the graphics driver if this repeats."));
                                     rebuild_encoder = true;
                                     continue;
                                 }
@@ -1495,7 +1506,7 @@ impl Media {
                 })();
                 if let Err(e) = result {
                     s.fail();
-                    tracing::error!(error=%e,client=%s.launch.client.name,"session failed");
+                    tracing::error!(error=%format!("{e:#}"),client=%s.launch.client.name,"session failed; check the reported encoder, capture or socket error before reconnecting");
                 }
                 s.stop();
                 m.peers

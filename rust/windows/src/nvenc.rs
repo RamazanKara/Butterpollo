@@ -333,6 +333,7 @@ impl Session {
             ) {
                 Ok(session) => return Ok(session),
                 Err(error) if retry_version(&error) => {
+                    tracing::warn!(error = %format!("{error:#}"), major = api.0, minor = api.1, "NVENC rejected this driver API; retrying a reviewed older API. Update the NVIDIA driver, or use Vibepollo if encoding remains unstable");
                     failures.push(format!("{}.{}: {error}", api.0, api.1))
                 }
                 Err(error) => return Err(error),
@@ -493,6 +494,10 @@ impl Session {
         };
         if result != SUCCESS {
             if let Some(get) = self.functions.nvEncGetEncodePresetConfig {
+                tracing::warn!(
+                    code = result,
+                    "NVENC low-latency preset query failed; using a compatible preset with explicit low-latency settings. Update the NVIDIA driver or use Vibepollo if frame times worsen"
+                );
                 preset = NV_ENC_PRESET_CONFIG {
                     version: self.api.preset(),
                     presetCfg: NV_ENC_CONFIG {
@@ -518,6 +523,16 @@ impl Session {
         let custom_vbv = self.optional_cap(_NV_ENC_CAPS_NV_ENC_CAPS_SUPPORT_CUSTOM_VBV_BUF_SIZE);
         let temporal_aq =
             tuning.temporal_aq && self.optional_cap(_NV_ENC_CAPS_NV_ENC_CAPS_SUPPORT_TEMPORAL_AQ);
+        if !custom_vbv {
+            tracing::warn!(
+                "NVENC custom VBV unavailable; the driver controls buffering and may increase latency. Update the NVIDIA driver or use Vibepollo"
+            );
+        }
+        if tuning.temporal_aq && !temporal_aq {
+            tracing::warn!(
+                "NVENC temporal AQ unavailable; encoding without the requested quality feature. Update the NVIDIA driver or disable temporal AQ"
+            );
+        }
         let rc = &mut self.config.rcParams;
         rc.version = self.api.structure(1, false);
         rc.rateControlMode = _NV_ENC_PARAMS_RC_MODE_NV_ENC_PARAMS_RC_CBR;
@@ -546,13 +561,25 @@ impl Session {
         let single_slice =
             intra_refresh && self.optional_cap(_NV_ENC_CAPS_NV_ENC_CAPS_SINGLE_SLICE_INTRA_REFRESH);
         if self.stream.intra_refresh && !intra_refresh {
-            tracing::warn!("NVENC intra-refresh unavailable; keeping IDR recovery");
+            tracing::warn!(
+                "NVENC intra-refresh unavailable; keeping IDR recovery, which can cause larger recovery frames. Reduce bitrate on lossy links or use Vibepollo"
+            );
         }
         let ten = self.stream.ten_bit();
         let depth = if ten { 10 } else { 8 };
         let chroma = if self.stream.yuv444 { 3 } else { 1 };
         let metadata = self.stream.hdr && self.api >= ApiVersion(13, 0);
         let cabac = !tuning.cavlc && self.optional_cap(_NV_ENC_CAPS_NV_ENC_CAPS_SUPPORT_CABAC);
+        if self.stream.hdr && !metadata {
+            tracing::warn!(
+                "NVENC driver API cannot embed HDR mastering metadata; only control-channel metadata is available. Update the NVIDIA driver or use Vibepollo if HDR tone mapping is wrong"
+            );
+        }
+        if self.stream.codec == 0 && !tuning.cavlc && !cabac {
+            tracing::warn!(
+                "NVENC CABAC unavailable; using CAVLC with lower compression efficiency. Update the NVIDIA driver or select HEVC or AV1"
+            );
+        }
         match self.stream.codec {
             0 => {
                 self.config.profileGUID = if self.stream.yuv444 {
@@ -1198,7 +1225,7 @@ impl Encoder {
         match self.session.invalidate(first, last) {
             Ok(applied) => applied,
             Err(error) => {
-                tracing::warn!(%error, "NVENC reference recovery failed; requesting IDR");
+                tracing::warn!(%error, "NVENC reference recovery failed; requesting a larger IDR recovery frame. Reduce bitrate on lossy links or update the NVIDIA driver");
                 self.session.force_idr = true;
                 false
             }

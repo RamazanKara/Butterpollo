@@ -217,6 +217,9 @@ pub fn amf(config: &Config, stream: &Negotiated) -> Result<Vec<Property>> {
     };
     // AMF's PA accepts NV12: retain the previous host's HDR demotion.
     let rc = if stream.hdr && requested_rc.is_some_and(|r| r >= 4) {
+        tracing::warn!(
+            "AMF quality rate control requires SDR pre-analysis; HDR uses peak VBR instead. Select peak VBR for HDR or disable HDR to use quality rate control"
+        );
         Some(2)
     } else {
         requested_rc
@@ -226,6 +229,11 @@ pub fn amf(config: &Config, stream: &Negotiated) -> Result<Vec<Property>> {
             format!("{prefix}RateControlMethod"),
             Value::Integer(value),
             config.values.contains_key("amd_rc") || value >= 4,
+        );
+    }
+    if stream.hdr && config.boolean("amd_preanalysis", false) {
+        tracing::warn!(
+            "AMF pre-analysis requires NV12 SDR input; disabled for HDR. Disable HDR to use pre-analysis, or leave pre-analysis disabled for HDR streams"
         );
     }
     // Quality VBR modes require PA. Keep the original one-frame lookahead.

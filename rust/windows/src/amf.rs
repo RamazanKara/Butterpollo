@@ -42,7 +42,7 @@ fn guard_smart_access_video(properties: &mut [butterpollo_core::encoder_policy::
         // Do not proceed with both paths enabled if the driver refuses this.
         property.required = true;
         tracing::warn!(
-            "AMF SmartAccess Video disabled because forced low latency can reset the GPU"
+            "AMF SmartAccess Video disabled because forced low latency can reset the GPU. Disable forced low latency to request SmartAccess Video safely"
         );
     }
 }
@@ -55,6 +55,7 @@ struct Submission {
     _converted: Option<std::sync::Arc<windows::Win32::Graphics::Direct3D11::ID3D11Texture2D>>,
 }
 pub struct Encoder {
+    pub(crate) warnings: std::sync::Arc<butterpollo_core::session::Warnings>,
     component: *mut AMFComponent,
     context: *mut AMFContext,
     convert: Option<Convert>,
@@ -138,7 +139,7 @@ impl Encoder {
         if config.intra_refresh && !effective_config.intra_refresh {
             tracing::warn!(
                 client_max_reference_frames = config.references,
-                "AMF H.264 intra refresh requires two references; using IDR recovery for this decoder"
+                "AMF H.264 intra refresh requires two references; using larger IDR recovery frames for this decoder. Reduce bitrate if recovery stutters or use a client with two-reference support"
             );
         }
         let config = &effective_config;
@@ -233,6 +234,7 @@ impl Encoder {
                 _ => None,
             };
             let mut e = Self {
+                warnings: Default::default(),
                 component,
                 context,
                 convert: None,
@@ -259,7 +261,7 @@ impl Encoder {
                         return Err(error)
                             .with_context(|| format!("AMF setting {}", property.name));
                     }
-                    tracing::warn!(%error, setting=%property.name, "AMF setting unavailable; retaining driver default");
+                    tracing::warn!(%error, setting=%property.name, "AMF setting unavailable; retaining driver default. Check the named setting and update the AMD driver if quality or cadence differs");
                 }
             }
             e.property(
@@ -371,7 +373,7 @@ impl Encoder {
                     if config.hdr {
                         return Err(error);
                     }
-                    tracing::warn!(error = %format!("{error:#}"), property = name, "AMF output colour property unavailable");
+                    tracing::warn!(error = %format!("{error:#}"), property = name, "AMF output colour property unavailable; driver colour defaults remain. Update the AMD driver or use another codec if colours look wrong");
                 }
             }
             let full = AMFVariantStruct {
@@ -387,7 +389,7 @@ impl Encoder {
             let mut range = |name: &str| {
                 if let Err(error) = e.property_raw(name, full) {
                     if config.full_range() {
-                        tracing::warn!(error = %format!("{error:#}"), property = name, "AMF range property unavailable; full-range colours may be off");
+                        tracing::warn!(error = %format!("{error:#}"), property = name, "AMF range property unavailable; full-range colours may be off. Select limited range or update the AMD driver");
                     } else {
                         tracing::debug!(error = %format!("{error:#}"), property = name, "AMF range property unavailable");
                     }
@@ -546,6 +548,15 @@ impl Encoder {
         let instances = self.cap(cap).unwrap_or(0);
         let driver = self.read(name).map(|value| value != 0);
         let setting = options.get("amd_split_frame", "auto");
+        if instances <= 1
+            && butterpollo_core::encoder_policy::tristate(options, "amd_split_frame", None)
+                == Some(true)
+        {
+            tracing::warn!(
+                instances,
+                "AMF split-frame encoding was requested but multiple encode instances are unavailable. Encoding remains on one engine; select Automatic or check the AMD GPU and driver capabilities"
+            );
+        }
         match butterpollo_core::encoder_policy::amf_split_frame(
             options, self.codec, instances, driver,
         ) {
@@ -568,7 +579,7 @@ impl Encoder {
                     error = %format!("{error:#}"),
                     setting,
                     instances,
-                    "AMF split-frame request not accepted; the driver decides"
+                    "AMF split-frame request not accepted; the driver decides and encoding may take longer. Update the AMD driver or leave split-frame encoding on Automatic"
                 ),
             },
         }
@@ -712,7 +723,7 @@ impl Encoder {
                 "AMF HDR metadata in the bitstream"
             ),
             Err(error) => {
-                tracing::warn!(error = %format!("{error:#}"), "AMF HDR metadata not written")
+                tracing::warn!(error = %format!("{error:#}"), "AMF HDR metadata not written; HDR tone mapping may be incorrect. Update the AMD driver or reconnect with HDR disabled")
             }
         }
     }
@@ -901,7 +912,7 @@ impl Encoder {
             }
             Err(error) => {
                 let _ = self.property_raw(maximum, int(0));
-                tracing::warn!(%error,"AMF LTR unavailable; using IDR recovery");
+                tracing::warn!(%error,"AMF LTR unavailable; using larger IDR recovery frames. Disable amd_ltr_frames or update the AMD driver; reduce bitrate if recovery stutters");
             }
         }
     }
@@ -931,7 +942,7 @@ impl Encoder {
             Ok(())
         })();
         if let Err(error) = ltr {
-            tracing::warn!(%error,"AMF LTR surface rejected; requesting IDR recovery");
+            tracing::warn!(%error,"AMF LTR surface rejected; requesting a larger IDR recovery frame. Disable amd_ltr_frames if this repeats");
             self.references.disable();
             idr = true;
             plan = self.references.plan(self.index as u64 + 1, true);
@@ -968,10 +979,7 @@ impl Encoder {
             .is_some_and(|s| s.started.elapsed() > Duration::from_secs(2))
         {
             let stale = self.in_flight.pop_front();
-            tracing::warn!(
-                pts = stale.map(|s| s.pts),
-                "AMF returned no output for a frame; the next frame is a keyframe"
-            );
+            self.warnings.set("encoder_dropped", format!("AMF returned no output for frame {:?} within two seconds; dropping it and requesting a keyframe. You may see a pause; lower game GPU load or update the AMD driver if this repeats.", stale.map(|s| s.pts)));
             self.recover = true;
         }
         unsafe {
@@ -1176,10 +1184,11 @@ impl Encoder {
             if let Err(error) = self.property("TargetBitrate", int(i64::from(bitrate) * 1000)) {
                 // A rate the driver refuses keeps the current one: every frame
                 // failed on it until the stream ended.
-                tracing::warn!(error = %format!("{error:#}"), bitrate, "AMF kept its current bitrate");
+                self.warnings.set("encoder_bitrate", format!("AMF rejected the requested bitrate {bitrate} Kbps ({error:#}); the driver kept its previous rate, so the displayed target is not the applied bitrate. Reconnect at the desired bitrate or update the AMD driver."));
                 self.bitrate = bitrate;
                 return Ok(());
             }
+            self.warnings.clear("encoder_bitrate");
             for suffix in [
                 "PeakBitrate",
                 "VBVBufferSize",
@@ -1225,7 +1234,7 @@ impl Encoder {
                             scaled = scaled.min((*info).maxValue.__bindgen_anon_1.int64Value);
                         }
                         if let Err(error) = self.property_raw(&name, int(scaled)) {
-                            tracing::debug!(%error,"AMF driver retains its existing rate-control buffer");
+                            self.warnings.set("encoder_buffer", format!("AMF rate-control buffer update rejected ({error:#}); the driver retained its old buffer and may exceed the expected frame budget. Reconnect at the desired bitrate or update the AMD driver."));
                         }
                     }
                 }
