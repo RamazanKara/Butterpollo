@@ -906,7 +906,7 @@ impl Media {
                     let audio_s = s.clone();
                     let audio = thread::Builder::new().name("audio".into()).spawn(move || {
                         if let Err(e) = audio_m.audio(audio_h, audio_s.clone()) {
-                            tracing::warn!(error=%e,"audio worker stopped");
+                            audio_s.launch.warnings.set("audio_stopped", format!("Audio stopped ({e:#}); video is still running without sound. Check the playback device and network, then reconnect."));
                         }
                     })?;
                     let mut packetizer = VideoPacketizer {
@@ -1580,6 +1580,7 @@ impl Media {
         let mut heard = Instant::now();
         let mut audio_qos = Tagged::default();
         let mut loss = butterpollo_core::audio::HostLoss::default();
+        let mut last_loss = None;
         let mut next = Instant::now();
         let timer = butterpollo_windows::timing::Timer::new()?;
         let silence = vec![0.; frames * s.config.audio_channels as usize];
@@ -1617,20 +1618,37 @@ impl Media {
                         Err(error) => {
                             let detail = format!("{error:#}");
                             if audio_error.as_ref() != Some(&detail) {
-                                tracing::warn!(error=%detail, "audio routing failed; retrying");
+                                s.launch.warnings.set("audio_route", format!("Audio routing failed ({detail}); sending silence while retrying. Select an available playback or virtual audio device in Audio settings."));
                                 audio_error = Some(detail);
                             }
                         }
                     }
                 }
                 if let Some(route) = &route {
-                    if let Err(error) = route.maintain_default() {
-                        tracing::debug!(%error, "audio default could not be maintained");
+                    s.launch.warnings.clear("audio_route");
+                    if let Some(message) = route.warning(s.launch.host_audio) {
+                        s.launch.warnings.set("audio_virtual_sink", message);
+                    } else {
+                        s.launch.warnings.clear("audio_virtual_sink");
                     }
-                    let selected = route
-                        .capture_sink(&config)
-                        .unwrap_or_else(|_| route.sink.clone());
+                    match route.maintain_default() {
+                        Ok(()) => s.launch.warnings.clear("audio_default"),
+                        Err(error) => s.launch.warnings.set("audio_default", format!("Could not keep the streaming playback device as default ({error:#}); game audio may go to another device. Check the Windows default playback device.")),
+                    }
+                    let selected = match route.capture_sink(&config) {
+                        Ok(selected) => {
+                            s.launch.warnings.clear("audio_device_query");
+                            selected
+                        }
+                        Err(error) => {
+                            s.launch.warnings.set("audio_device_query", format!("Could not find the current audio capture device ({error:#}); retaining the previous route. Check the Windows default playback device if sound is missing."));
+                            route.sink.clone()
+                        }
+                    };
                     if selected != sink {
+                        if !sink.is_empty() {
+                            s.launch.warnings.set("audio_device_changed", "Audio capture device changed because the Windows default playback device changed. WASAPI is reopening and sound may briefly pause; select a fixed capture sink if the change was unintended.");
+                        }
                         capture = None;
                         sink = selected;
                         capture_failed = false;
@@ -1638,8 +1656,9 @@ impl Media {
                     if capture.is_none()
                         && (!capture_failed || config.boolean("auto_capture_sink", true))
                     {
-                        if let Err(error) = route.set_channels(s.config.audio_channels as usize) {
-                            tracing::warn!(%error, "virtual surround format could not be applied");
+                        match route.set_channels(s.config.audio_channels as usize) {
+                            Ok(()) => s.launch.warnings.clear("audio_surround"),
+                            Err(error) => s.launch.warnings.set("audio_surround", format!("Virtual surround format could not be applied ({error:#}); channels may be downmixed. Select stereo or check the virtual audio driver.")),
                         }
                         match Loopback::new_sink(s.config.audio_channels as usize, &sink) {
                             Ok(value) => {
@@ -1649,6 +1668,7 @@ impl Media {
                                     "WASAPI audio capture started"
                                 );
                                 capture = Some(value);
+                                s.launch.warnings.clear("audio_capture");
                                 capture_failed = false;
                                 audio_error = None;
                             }
@@ -1656,7 +1676,7 @@ impl Media {
                                 capture_failed = true;
                                 let detail = format!("{error:#}");
                                 if audio_error.as_ref() != Some(&detail) {
-                                    tracing::warn!(error=%detail, "WASAPI audio capture failed; retrying");
+                                    s.launch.warnings.set("audio_capture", format!("Audio capture failed ({detail}); sending silence while retrying. Check that the playback device is available and reconnect if it does not recover."));
                                     audio_error = Some(detail);
                                 }
                             }
@@ -1684,7 +1704,7 @@ impl Media {
                     Ok(Some(samples)) => packets.push(samples),
                     Ok(None) => break,
                     Err(error) => {
-                        tracing::warn!(%error, "audio endpoint changed; reopening WASAPI");
+                        s.launch.warnings.set("audio_capture", format!("Audio capture interrupted ({error:#}); reopening WASAPI and sending silence until it recovers. Check the playback device if this repeats."));
                         capture = None;
                         capture_failed = true;
                     }
@@ -1721,16 +1741,14 @@ impl Media {
             } else if start.elapsed() > crate::network::ping_timeout(&config) {
                 anyhow::bail!("client audio ping timed out");
             }
-            if let Some(report) = loss.report(Instant::now()) {
-                let ms = |d: Duration| d.as_secs_f64() * 1000.;
-                tracing::warn!(
-                    late_reads = report.late_reads,
-                    lost_ms = ms(report.lost),
-                    longest_wait_ms = ms(report.longest),
-                    buffer_ms = ms(report.buffer),
-                    unsent_packets = report.unsent,
-                    "audio lost on the host before sending"
-                );
+            let now = Instant::now();
+            if let Some(report) = loss.report(now) {
+                last_loss = Some(now);
+                s.launch.warnings.set("audio_loss", format!("Audio lost on the host before sending: {} late reads, {:.1} ms beyond the capture buffer, {} unsent packets (longest wait {:.1} ms, buffer {:.1} ms). You may hear gaps; lower video bitrate and game GPU load, and check the network adapter.", report.late_reads, report.lost.as_secs_f64() * 1000., report.unsent, report.longest.as_secs_f64() * 1000., report.buffer.as_secs_f64() * 1000.));
+            } else if last_loss.is_some_and(|at| now.duration_since(at) >= Duration::from_secs(10))
+            {
+                s.launch.warnings.clear("audio_loss");
+                last_loss = None;
             }
         }
         Ok(())

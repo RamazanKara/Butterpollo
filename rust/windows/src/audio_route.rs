@@ -489,7 +489,17 @@ fn apply_virtual_format(
     Err(last_error.context("no usable virtual audio format")?)
         .with_context(|| format!("setting {channels}-channel virtual speaker format"))
 }
+fn virtual_sink_warning(
+    host_audio: bool,
+    capture_only: bool,
+    virtual_sink: bool,
+) -> Option<&'static str> {
+    (!host_audio && !capture_only && !virtual_sink).then_some("Virtual audio sink unavailable; capturing a physical playback device. Sound may play on the host and surround channels may be lost. Select an installed virtual sink in Audio settings or enable host audio intentionally.")
+}
 impl Route {
+    pub fn warning(&self, host_audio: bool) -> Option<&'static str> {
+        virtual_sink_warning(host_audio, self.capture_only, self.virtual_sink)
+    }
     pub fn acquire(
         config: &Config,
         directory: &Path,
@@ -584,6 +594,9 @@ impl Route {
             format: None,
         };
         let managed_virtual = selected.virtual_sink || !config.get("virtual_sink", "").is_empty();
+        if let Some(message) = virtual_sink_warning(host_audio, capture_only, managed_virtual) {
+            tracing::warn!("{message}");
+        }
         let policy = if capture_only {
             None
         } else {
@@ -742,6 +755,22 @@ impl Drop for Route {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn physical_audio_fallback_warns_only_when_a_virtual_route_was_expected() {
+        assert!(
+            virtual_sink_warning(false, false, false)
+                .unwrap()
+                .contains("Sound may play on the host")
+        );
+        for (host, capture, virtual_sink) in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+        ] {
+            assert!(virtual_sink_warning(host, capture, virtual_sink).is_none());
+        }
+    }
+
     #[test]
     fn streams_sharing_the_sink_get_the_most_channels_any_asked_for() {
         assert_eq!(shared_channels(&BTreeMap::new()), None);
