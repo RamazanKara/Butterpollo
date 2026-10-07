@@ -139,6 +139,15 @@ fn ds4_motion_uses_vigem_calibration_and_preserves_other_fields() {
 }
 
 #[test]
+fn ds4_battery_clamps_out_of_range_client_percentages() {
+    for percent in [251, 101, 254] {
+        let mut report = Ds4Report::new();
+        report.battery(3, percent);
+        assert_eq!((report.0[11], report.0[29]), (255, 0x1a));
+    }
+}
+
+#[test]
 fn ds4_battery_scaling_and_unknown_values_match_vibepollo() {
     let mut report = Ds4Report::new();
     for (percent, scaled, level) in [

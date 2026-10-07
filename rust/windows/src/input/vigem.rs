@@ -440,6 +440,7 @@ impl Ds4Report {
             _ => {}
         }
         if percent != 255 {
+            let percent = percent.min(100);
             self.0[11] = (u16::from(percent) * 255 / 100) as u8;
             if self.0[29] & 0x10 != 0 && self.0[29] & 15 <= 10 {
                 self.0[29] = (self.0[29] & !15) | ((percent + 5) / 10);
