@@ -63,8 +63,8 @@ function encoder(values: Values): string {
       return 'auto';
   }
 }
-const nvenc = (values: Values) => ['auto', 'nvenc', 'nvenc_legacy'].includes(encoder(values));
-const amf = (values: Values) => ['auto', 'amf'].includes(encoder(values));
+const nvenc = (values: Values) => ['nvenc', 'nvenc_legacy'].includes(encoder(values));
+const amf = (values: Values) => encoder(values) === 'amf';
 const qsv = (values: Values) => ['qsv', 'quicksync'].includes(encoder(values));
 const software = (values: Values) => encoder(values) === 'software';
 
@@ -324,16 +324,16 @@ const encoders: Setting[] = [
     key: 'encoder',
     label: 'Encoder',
     description:
-      'Automatic uses NVENC on NVIDIA GPUs and AMF on AMD Radeon GPUs, then tries Quick Sync and finally software encoding. A chosen hardware encoder must be on the GPU that captures the display; PyroWave streams always use their own encoder.',
+      'Automatic chooses an encoder when the stream starts: AMF on AMD Radeon GPUs or NVENC on NVIDIA GPUs, with compatible hardware and software fallbacks. Select an encoder to edit its settings. The stream log records the encoder actually used; PyroWave streams always use their own encoder.',
     category: 'encoders',
     group: 'Encoder',
     control: {
       kind: 'select',
       options: [
         { value: 'auto', label: 'Automatic' },
+        { value: 'amf', label: 'AMD AMF' },
         { value: 'nvenc', label: 'NVIDIA NVENC' },
         { value: 'nvenc_legacy', label: 'NVIDIA NVENC (FFmpeg)' },
-        { value: 'amf', label: 'AMD AMF' },
         { value: 'quicksync', label: 'Intel Quick Sync' },
         { value: 'software', label: 'Software' },
         { value: 'pyrowave', label: 'PyroWave (automatic for other codecs)' },
