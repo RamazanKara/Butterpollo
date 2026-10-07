@@ -506,8 +506,8 @@ struct Slot {
 pub struct Converter {
     compute: Arc<Compute>,
     root: ID3D12RootSignature,
-    luma: ID3D12PipelineState,
-    chroma: ID3D12PipelineState,
+    /// Luma and chroma in one pass over 2x2 blocks.
+    convert: ID3D12PipelineState,
     heap: ID3D12DescriptorHeap,
     increment: u32,
     constants: ID3D12Resource,
@@ -607,8 +607,7 @@ impl Converter {
                     })?,
                 )
             };
-            let luma = pipeline(b"luma_cs\0")?;
-            let chroma = pipeline(b"chroma_cs\0")?;
+            let convert = pipeline(b"yuv420_cs\0")?;
             let heap: ID3D12DescriptorHeap =
                 device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
                     Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
@@ -654,8 +653,7 @@ impl Converter {
             Ok(Self {
                 compute,
                 root,
-                luma,
-                chroma,
+                convert,
                 heap,
                 increment,
                 constants,
@@ -907,7 +905,7 @@ impl Converter {
                 allocator, list, ..
             } = &self.slots[slot];
             allocator.Reset()?;
-            list.Reset(allocator, &self.luma)?;
+            list.Reset(allocator, &self.convert)?;
             let mut barriers = [transition(
                 target.as_ref(),
                 D3D12_RESOURCE_STATE_COMMON,
@@ -926,8 +924,6 @@ impl Converter {
             };
             list.SetComputeRootDescriptorTable(1, table(0));
             list.SetComputeRootDescriptorTable(2, table(2));
-            list.Dispatch(self.width.div_ceil(8), self.height.div_ceil(8), 1);
-            list.SetPipelineState(&self.chroma);
             list.Dispatch(
                 (self.width / 2).div_ceil(8),
                 (self.height / 2).div_ceil(8),

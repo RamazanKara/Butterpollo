@@ -99,36 +99,49 @@ float3 nonlinear(float2 target) {
     return pq(gamut2020(rgb) / 125.0);
 }
 float3 weights() { return colorMatrix == 2 ? float3(0.2627, 0.6780, 0.0593) : colorMatrix == 0 ? float3(0.299, 0.587, 0.114) : float3(0.2126, 0.7152, 0.0722); }
-float4 luma(float4 p : SV_Position) : SV_Target {
-    float y = dot(nonlinear(p.xy - 0.5), weights());
-    float code = tenBit != 0 ? floor(clamp((fullRange != 0 ? 1023 * y : 64 + 876 * y), 0, 1023) + 0.5) * 64 / 65535.0
-                            : floor(clamp((fullRange != 0 ? 255 * y : 16 + 219 * y), 0, 255) + 0.5) / 255.0;
-    return float4(code, 0, 0, 1);
+// The luma code of a pixel, and the chroma code of a 2x2 block's average.
+// Shared by the graphics and compute conversions, so both write the same codes.
+float lumaCode(float3 rgb) {
+    float y = dot(rgb, weights());
+    return tenBit != 0 ? floor(clamp((fullRange != 0 ? 1023 * y : 64 + 876 * y), 0, 1023) + 0.5) * 64 / 65535.0
+                       : floor(clamp((fullRange != 0 ? 255 * y : 16 + 219 * y), 0, 255) + 0.5) / 255.0;
 }
-float4 chroma(float4 p : SV_Position) : SV_Target {
-    float2 at = floor(p.xy) * 2;
-    float3 rgb = (nonlinear(at) + nonlinear(at + float2(1, 0)) +
-                  nonlinear(at + float2(0, 1)) + nonlinear(at + float2(1, 1))) * 0.25;
+float2 chromaCode(float3 c00, float3 c10, float3 c01, float3 c11) {
+    float3 rgb = (c00 + c10 + c01 + c11) * 0.25;
     float3 k = weights();
     float y = dot(rgb, k);
     float2 uv = float2((rgb.b - y) / (2 * (1 - k.b)), (rgb.r - y) / (2 * (1 - k.r)));
-    float2 code = tenBit != 0 ? floor(clamp(512 + (fullRange != 0 ? 1023 : 896) * uv, 0, 1023) + 0.5) * 64 / 65535.0
-                             : floor(clamp(128 + (fullRange != 0 ? 255 : 224) * uv, 0, 255) + 0.5) / 255.0;
-    return float4(code, 0, 1);
+    return tenBit != 0 ? floor(clamp(512 + (fullRange != 0 ? 1023 : 896) * uv, 0, 1023) + 0.5) * 64 / 65535.0
+                       : floor(clamp(128 + (fullRange != 0 ? 255 : 224) * uv, 0, 255) + 0.5) / 255.0;
+}
+float4 luma(float4 p : SV_Position) : SV_Target {
+    return float4(lumaCode(nonlinear(p.xy - 0.5)), 0, 0, 1);
+}
+float4 chroma(float4 p : SV_Position) : SV_Target {
+    float2 at = floor(p.xy) * 2;
+    return float4(chromaCode(nonlinear(at), nonlinear(at + float2(1, 0)),
+                             nonlinear(at + float2(0, 1)), nonlinear(at + float2(1, 1))), 0, 1);
 }
 // The same conversion on a compute queue, which keeps running while a game
 // fills the graphics queue. The two views address the luma and chroma planes.
 RWTexture2D<float> lumaPlane : register(u0);
 RWTexture2D<float2> chromaPlane : register(u1);
+// One thread per 2x2 block: its four pixels are converted once for their
+// four luma codes and the block's chroma, instead of in a luma and a chroma
+// pass that each converted every pixel.
 [numthreads(8, 8, 1)]
-void luma_cs(uint3 id : SV_DispatchThreadID) {
-    if (any(id.xy >= targetSize)) return;
-    lumaPlane[id.xy] = luma(float4(float2(id.xy) + 0.5, 0, 1)).r;
-}
-[numthreads(8, 8, 1)]
-void chroma_cs(uint3 id : SV_DispatchThreadID) {
+void yuv420_cs(uint3 id : SV_DispatchThreadID) {
     if (any(id.xy >= targetSize / 2)) return;
-    chromaPlane[id.xy] = chroma(float4(float2(id.xy) + 0.5, 0, 1)).rg;
+    uint2 at = id.xy * 2;
+    float3 c00 = nonlinear(float2(at));
+    float3 c10 = nonlinear(float2(at + uint2(1, 0)));
+    float3 c01 = nonlinear(float2(at + uint2(0, 1)));
+    float3 c11 = nonlinear(float2(at + uint2(1, 1)));
+    lumaPlane[at] = lumaCode(c00);
+    lumaPlane[at + uint2(1, 0)] = lumaCode(c10);
+    lumaPlane[at + uint2(0, 1)] = lumaCode(c01);
+    lumaPlane[at + uint2(1, 1)] = lumaCode(c11);
+    chromaPlane[id.xy] = chromaCode(c00, c10, c01, c11);
 }
 float3 yuv444(float2 p) {
     float3 rgb = nonlinear(p);
