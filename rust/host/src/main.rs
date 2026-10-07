@@ -67,6 +67,8 @@ struct Args {
     service_stop_source: Option<String>,
     #[arg(long, hide = true)]
     display_watch: Option<u32>,
+    #[arg(long, hide = true)]
+    crash_reporter: bool,
     /// Run the display self-test and write its report; see
     /// butterpollo-service.exe --display-self-test.
     #[arg(long, hide = true)]
@@ -90,6 +92,9 @@ struct Args {
 async fn main() -> Result<()> {
     butterpollo_windows::capture::enable_dpi_awareness();
     let args = Args::parse();
+    if args.crash_reporter {
+        return butterpollo_windows::crash::reporter();
+    }
     if let Some(pipe) = &args.codec_probe_worker {
         return butterpollo_windows::codec_probe::worker(pipe, args.codec_probe_parent.unwrap());
     }
