@@ -499,7 +499,8 @@ impl Duplication {
                 info.LastPresentTime != 0,
             )?;
             if let Some(image) = image.as_mut() {
-                image.captured = qpc_instant(info.LastPresentTime.max(info.LastMouseUpdateTime));
+                image.captured =
+                    qpc_timestamps(info.LastPresentTime.max(info.LastMouseUpdateTime)).0;
                 image.acquired = Instant::now();
                 image.cursor = self.cursor.snapshot();
             }
@@ -555,9 +556,13 @@ pub struct GpuImage {
     pub width: u32,
     pub height: u32,
     pub pixel: Pixel,
-    /// When Windows presented this desktop image.
+    /// Capture timestamp used by pacing and encoders. Future, missing or
+    /// more than two-second-old stamps fall back to the conversion time.
     pub captured: Instant,
-    /// When the capture worker took it from Windows.
+    /// Unclamped WGC SystemRelativeTime, for diagnostics only. This is not
+    /// an application Present time and can be later than host acquisition.
+    pub wgc_stamp: Option<Instant>,
+    /// When the host submitted its owned copy, before GPU completion.
     pub acquired: Instant,
     pub gpu: Device,
     pub texture: std::sync::Arc<ID3D11Texture2D>,
@@ -620,6 +625,7 @@ impl GpuImage {
                 height: image.height,
                 pixel: image.pixel,
                 captured: image.captured,
+                wgc_stamp: None,
                 acquired: Instant::now(),
                 gpu: gpu.clone(),
                 texture: std::sync::Arc::new(texture.unwrap()),
@@ -730,6 +736,7 @@ impl GpuPool {
                 height: desc.Height,
                 pixel,
                 captured: Instant::now(),
+                wgc_stamp: None,
                 acquired: Instant::now(),
                 gpu: gpu.clone(),
                 texture,
@@ -857,7 +864,7 @@ pub struct Wgc {
     intervals: butterpollo_core::capture_policy::Intervals,
     origin: Instant,
     last_publish: Instant,
-    held: Option<(Direct3D11CaptureFrame, Instant, Instant)>,
+    held: Option<(Direct3D11CaptureFrame, Instant, Instant, Option<Instant>)>,
     size: (i32, i32),
     color_space: Option<DXGI_COLOR_SPACE_TYPE>,
     color_check: Instant,
@@ -873,28 +880,46 @@ pub(crate) fn qpc_frequency() -> i64 {
     })
 }
 static QPC_FREQUENCY: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
-fn qpc_instant(ticks: i64) -> Instant {
+fn qpc_timestamps(ticks: i64) -> (Instant, Option<Instant>) {
     let now = Instant::now();
     let mut current = 0;
     if ticks <= 0
         || unsafe { windows::Win32::System::Performance::QueryPerformanceCounter(&mut current) }
             .is_err()
     {
-        return now;
+        return (now, None);
     }
-    let elapsed = current.saturating_sub(ticks).max(0) as u64;
-    let age = Duration::from_secs_f64(elapsed as f64 / qpc_frequency() as f64);
-    if age > Duration::from_secs(2) {
+    qpc_timestamps_at(ticks, current, qpc_frequency(), now)
+}
+fn qpc_timestamps_at(
+    ticks: i64,
+    current: i64,
+    frequency: i64,
+    now: Instant,
+) -> (Instant, Option<Instant>) {
+    if ticks <= 0 || current <= 0 || frequency <= 0 {
+        return (now, None);
+    }
+    let delta = Duration::from_secs_f64(ticks.abs_diff(current) as f64 / frequency as f64);
+    let stamp = if ticks > current {
+        now.checked_add(delta)
+    } else {
+        now.checked_sub(delta)
+    };
+    // Keep the historical clock for pacing; diagnostics retain the raw stamp.
+    let captured = if ticks > current || delta > Duration::from_secs(2) {
         now
     } else {
-        now.checked_sub(age).unwrap_or(now)
-    }
+        stamp.unwrap_or(now)
+    };
+    (captured, stamp)
 }
-fn wgc_presentation(frame: &Direct3D11CaptureFrame) -> Instant {
+fn wgc_qpc(ticks: i64, frequency: i64) -> i64 {
+    (i128::from(ticks) * i128::from(frequency) / 10_000_000).clamp(0, i128::from(i64::MAX)) as i64
+}
+fn wgc_presentation(frame: &Direct3D11CaptureFrame) -> (Instant, Option<Instant>) {
     let ticks = frame.SystemRelativeTime().map(|t| t.Duration).unwrap_or(0);
-    let ticks = (i128::from(ticks) * i128::from(qpc_frequency()) / 10_000_000)
-        .clamp(0, i128::from(i64::MAX)) as i64;
-    qpc_instant(ticks)
+    qpc_timestamps(wgc_qpc(ticks, qpc_frequency()))
 }
 fn pin_capture_runtime() -> Result<()> {
     use std::sync::OnceLock;
@@ -1044,7 +1069,7 @@ impl Wgc {
         let now = Instant::now();
         if let Some(frame) = self.next_native_frame()? {
             let composition = self.intervals.observe(nanos(now, self.origin));
-            if let Some((previous, _, _)) = self.held.take()
+            if let Some((previous, _, _, _)) = self.held.take()
                 && let Err(error) = previous.Close()
             {
                 let _ = frame.Close();
@@ -1068,17 +1093,17 @@ impl Wgc {
                     }
                 })
             });
-            let presented = wgc_presentation(&frame);
-            self.held = Some((frame, deadline.unwrap_or(now), presented));
+            let (presented, stamp) = wgc_presentation(&frame);
+            self.held = Some((frame, deadline.unwrap_or(now), presented, stamp));
         }
         if self
             .held
             .as_ref()
-            .is_none_or(|(_, deadline, _)| *deadline > now)
+            .is_none_or(|(_, deadline, _, _)| *deadline > now)
         {
             return Ok(None);
         }
-        let (frame, _, captured) = self.held.take().unwrap();
+        let (frame, _, captured, stamp) = self.held.take().unwrap();
         let result = (|| {
             let surface = frame.Surface()?;
             let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
@@ -1086,6 +1111,7 @@ impl Wgc {
             let mut image = self.owned.copy(&self.gpu, &texture)?;
             if let Some(image) = image.as_mut() {
                 image.captured = captured;
+                image.wgc_stamp = stamp;
             }
             Ok(image)
         })();
@@ -1161,7 +1187,7 @@ impl Wgc {
         if let Some((_, token)) = self.notifications.take() {
             let _ = self.pool.RemoveFrameArrived(token);
         }
-        if let Some((frame, _, _)) = self.held.take() {
+        if let Some((frame, _, _, _)) = self.held.take() {
             let _ = frame.Close();
         }
         let _ = self.session.Close();
@@ -1245,7 +1271,7 @@ impl Capture {
     }
     pub fn publication_deadline(&self) -> Option<Instant> {
         match self {
-            Self::Wgc(wgc) => wgc.held.as_ref().map(|(_, deadline, _)| *deadline),
+            Self::Wgc(wgc) => wgc.held.as_ref().map(|(_, deadline, _, _)| *deadline),
             Self::WgcWorker(worker) => worker.publication_deadline(),
             _ => None,
         }
@@ -1386,6 +1412,60 @@ impl Capture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_timestamps_preserve_past_and_future_stamps_without_changing_pacing() {
+        let now = Instant::now();
+        let frequency = 10_000_000;
+        let current = 100_000_000;
+        for (offset, expected) in [
+            (-10_000, now - Duration::from_millis(1)),
+            (0, now),
+            (7_900, now + Duration::from_micros(790)),
+        ] {
+            let (captured, stamp) = qpc_timestamps_at(current + offset, current, frequency, now);
+            assert_eq!(stamp, Some(expected));
+            assert_eq!(captured, expected.min(now));
+        }
+    }
+
+    #[test]
+    fn capture_timestamps_keep_old_stamp_diagnostics_and_the_two_second_pacing_cutoff() {
+        let now = Instant::now();
+        for (age, clamped) in [(20_000_000, false), (20_000_001, true), (30_000_000, true)] {
+            let expected = now - Duration::from_nanos(age as u64 * 100);
+            let (captured, stamp) =
+                qpc_timestamps_at(100_000_000 - age, 100_000_000, 10_000_000, now);
+            assert_eq!(stamp, Some(expected));
+            assert_eq!(captured, if clamped { now } else { expected });
+        }
+    }
+
+    #[test]
+    fn capture_timestamps_do_not_report_missing_or_invalid_stamps_as_zero_delay() {
+        let now = Instant::now();
+        for (ticks, current, frequency) in [(0, 100, 10), (-1, 100, 10), (1, 0, 10), (1, 100, 0)] {
+            assert_eq!(
+                qpc_timestamps_at(ticks, current, frequency, now),
+                (now, None)
+            );
+        }
+    }
+
+    #[test]
+    fn wgc_ticks_convert_from_100ns_on_other_qpc_frequencies() {
+        let now = Instant::now();
+        let frequency = 24_000_000;
+        assert_eq!(wgc_qpc(10_000_000, frequency), frequency);
+        assert_eq!(wgc_qpc(0, frequency), 0);
+        assert_eq!(wgc_qpc(-1, frequency), 0);
+        assert_eq!(wgc_qpc(i64::MAX, frequency), i64::MAX);
+        let stamp = now - Duration::from_micros(125);
+        assert_eq!(
+            qpc_timestamps_at(wgc_qpc(9_998_750, frequency), frequency, frequency, now),
+            (stamp, Some(stamp))
+        );
+    }
 
     #[test]
     fn newest_frame_selection_is_bounded_and_preserves_lone_static_updates() -> Result<()> {

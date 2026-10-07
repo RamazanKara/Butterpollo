@@ -18,11 +18,12 @@ struct Frame {
 pub struct Timing {
     /// Claim through completed codec output, including asynchronous work.
     pub encode: u64,
-    /// Claim through packetization: the host latency reported to Moonlight,
+    /// Claim through the pre-packetization sample: host latency sent to Moonlight,
     /// measured as the previous C++ host measured it.
     pub host: u64,
-    /// Windows presentation through the claim. Moonlight never sees this, so
-    /// it is recorded separately to keep waiting before the claim visible.
+    /// Legacy capture timestamp through the claim. WGC's stamp is not app
+    /// Present time and may be clamped to arrival; this is an age estimate.
+    /// Moonlight never sees this. Static repeats use a refreshed timestamp.
     pub age: u64,
     /// Claim through sending the final packet, including packetization and pacing.
     pub sent: u64,

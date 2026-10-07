@@ -12,6 +12,28 @@ Butterpollo's performance work targets fresh pictures and lower picture age. Thi
 | **95th percentile (p95)** | The slower end of the sample: 95% of observations are at or below this delay. |
 | **Fresh pictures per second** | Distinct pictures received, counted from changing picture IDs. Repeated frames do not increase this count. |
 | **Encoder time** | The encoder's submission-to-completion interval. It covers one part of the frame journey. |
+| **`detect_mean_ms`, `detect_p95_ms`** | Legacy capture timestamp to host-owned copy submission, on newly claimed pictures. On DDX the stamp is the later of desktop presentation and cursor update. On WGC it is `SystemRelativeTime`, with future, missing or more than two-second-old stamps replaced by the time of conversion. This is a clamped estimate, not app-Present-to-capture delay. |
+| **`claim_wait_mean_ms`, `claim_wait_p95_ms`** | Host-owned copy submission to the encoder's claim, on newly claimed pictures. The copy may still be running on the GPU. |
+| **`wgc_stamp_to_host_mean_ms`, `wgc_stamp_to_host_p95_ms`** | Signed time from WGC's unclamped `SystemRelativeTime` to host-owned copy submission. Negative means the stamp was still in the future. The helper path includes transport through the helper and shared textures; both paths exclude completion of the host's GPU copy. These are stamp offsets, not app-Present latency. |
+| **`wgc_stamp_frames`, `wgc_stamp_future_frames`** | Number of valid raw WGC stamps sampled and how many were later than host acquisition. Missing stamps are excluded, not counted as zero delay. With no valid WGC samples, both counts are zero and the two stamp-offset fields are absent. |
+| **`frame_age_mean_ms`, `frame_age_p95_ms`, `frame_age_p99_ms`** | Legacy capture timestamp to encoder claim, for sent frames. This inherits the timestamp limitations above; static repeats refresh that timestamp. It is not the age of the original rendered picture. |
+| **`present_to_send_mean_ms`, `present_to_send_p95_ms`, `present_to_send_p99_ms`** | `frame_age` plus claim to final packet sent, including packetization and send pacing. The historical name remains for compatibility; its start is the legacy capture stamp, not a measured application Present. |
+| **`host_mean_ms`, `host_p95_ms`, `host_p99_ms`, `host_max_ms`** | Claim to the pre-packetization sample, matching Moonlight's host latency. The session API calls these `host_processing_*`. Capture age and final-packet sending are separate. |
+
+The `stream timings` capture split and WGC stamp diagnostics use up to 4,096
+newly claimed pictures since the previous log (normally five seconds).
+`frame_age`, `present_to_send`, host and encoder statistics use sent frames
+from the last two seconds, up to 1,024 frames. Their different populations
+mean the averages need not add up exactly.
+
+On the October 7 physical-display stamp probe, 92% of WGC stamps lay in the
+future at arrival, with an average signed offset of about -0.79 ms. The old
+clamped `detect_mean_ms` of about 0.12 ms did not establish near-zero capture
+delay. WGC supplies no reliably matched application Present time here, so
+the host reports the raw signed offset separately instead of inventing one.
+Use the [picture-ID capture study](../rust/PERFORMANCE.md#october-7-where-wgc-loses-a-millisecond)
+or an end-to-end rendered-picture fixture to compare delivery latency.
+The raw diagnostic does not change the timestamp used by pacing or encoders.
 
 Game input-to-display latency requires its own measurement. Read each row using its named metric, capture path, source and client fixture.
 

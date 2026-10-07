@@ -918,9 +918,10 @@ impl Media {
                     let limit_static_rate = minimum_fps < f64::from(s.config.fps_millihz()) / 1000.;
                     let mut last_image: Option<Arc<GpuImage>> = None;
                     let mut encoded_at = Instant::now();
-                    // Where a new frame's age comes from: Windows to the capture
-                    // worker, then the capture worker to the encoder's claim.
+                    // Keep the legacy age split beside WGC's signed raw stamp
+                    // offset: a future stamp must not look like instant delivery.
                     let mut claim_ages: Vec<(u64, u64)> = Vec::with_capacity(1024);
+                    let mut wgc_stamp_ages: Vec<f64> = Vec::with_capacity(1024);
                     // The first pacing decision for the newest fresh frame, kept
                     // for the per-claim trace.
                     let mut first_seen: Option<(usize, Instant, Option<Duration>, Option<Instant>)> = None;
@@ -1054,6 +1055,12 @@ impl Media {
                                     let (detect_mean_ms, detect_p95_ms) = split(|age| age.0);
                                     let (claim_wait_mean_ms, claim_wait_p95_ms) = split(|age| age.1);
                                     claim_ages.clear();
+                                    wgc_stamp_ages.sort_by(f64::total_cmp);
+                                    let wgc_stamp_frames = wgc_stamp_ages.len();
+                                    let wgc_stamp_future_frames = wgc_stamp_ages.iter().filter(|age| **age < 0.).count();
+                                    let wgc_stamp_to_host_mean_ms = (wgc_stamp_frames > 0).then(|| wgc_stamp_ages.iter().sum::<f64>() / wgc_stamp_frames as f64);
+                                    let wgc_stamp_to_host_p95_ms = wgc_stamp_ages.get(wgc_stamp_frames.saturating_sub(1) * 95 / 100).copied();
+                                    wgc_stamp_ages.clear();
 
                                     tracing::info!(
                                         fps=ms("fps"),
@@ -1072,6 +1079,10 @@ impl Media {
                                         detect_p95_ms,
                                         claim_wait_mean_ms,
                                         claim_wait_p95_ms,
+                                        wgc_stamp_to_host_mean_ms,
+                                        wgc_stamp_to_host_p95_ms,
+                                        wgc_stamp_frames,
+                                        wgc_stamp_future_frames,
 
                                         send_interval_p95_ms=timing["send_interval_p95_ms"].as_f64().unwrap_or(0.),
                                         send_interval_p99_ms=timing["send_interval_p99_ms"].as_f64().unwrap_or(0.),
@@ -1326,6 +1337,14 @@ impl Media {
                                     micros(image.acquired.saturating_duration_since(image.captured)),
                                     micros(begin.saturating_duration_since(image.acquired)),
                                 ));
+                                if let Some(stamp) = image.wgc_stamp {
+                                    let age = if image.acquired >= stamp {
+                                        image.acquired.duration_since(stamp).as_secs_f64()
+                                    } else {
+                                        -stamp.duration_since(image.acquired).as_secs_f64()
+                                    };
+                                    wgc_stamp_ages.push(age * 1000.);
+                                }
                             }
                             if Instant::now() >= metadata_due {
                                 let metadata = image.gpu.hdr_metadata();

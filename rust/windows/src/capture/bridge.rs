@@ -223,7 +223,7 @@ pub struct Session {
     textures: Vec<Texture>,
     owned: GpuPool,
     slots: Slots,
-    pending: VecDeque<(usize, u64, Instant)>,
+    pending: VecDeque<(usize, u64, Instant, Option<Instant>)>,
     published: u64,
     held: Option<(GpuImage, Instant)>,
     grid: Option<Arc<Mutex<ClaimGrid>>>,
@@ -406,7 +406,8 @@ impl Session {
                 }) => {
                     self.slots.publish(slot, sequence)?;
                     self.last_reply = now;
-                    self.pending.push_back((slot, sequence, qpc_instant(qpc)));
+                    let (captured, stamp) = qpc_timestamps(qpc);
+                    self.pending.push_back((slot, sequence, captured, stamp));
                 }
                 Some(Reply::Alive) => self.last_reply = now,
                 Some(Reply::ComputeFallback { message }) => {
@@ -425,7 +426,7 @@ impl Session {
         let mut newest = None;
         let mut attempted_copy = false;
         for index in (0..self.pending.len()).rev() {
-            let (slot, sequence, captured) = self.pending[index];
+            let (slot, sequence, captured, stamp) = self.pending[index];
             let texture = &self.textures[slot];
             if !acquire(&texture.mutex, 1)? {
                 continue;
@@ -448,6 +449,7 @@ impl Session {
             self.pipe.send(&Request::Release { slot })?;
             if let Some(mut image) = copied? {
                 image.captured = captured;
+                image.wgc_stamp = stamp;
                 self.published = sequence;
                 newest = Some(image);
             }
@@ -712,8 +714,7 @@ fn worker(pipe: &Pipe) -> Result<()> {
                     .context("WGC sequence exhausted")?;
                 slots.publish(slot, sequence)?;
                 let relative = frame.0.SystemRelativeTime()?.Duration;
-                let qpc = (i128::from(relative) * i128::from(qpc_frequency()) / 10_000_000)
-                    .clamp(0, i128::from(i64::MAX)) as i64;
+                let qpc = wgc_qpc(relative, qpc_frequency());
                 pipe.send(&Reply::Frame {
                     slot,
                     sequence,
