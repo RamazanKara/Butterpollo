@@ -410,17 +410,127 @@ pub fn uninstall_plugin() -> Result<()> {
 }
 
 /// How a game started through Playnite is going.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 enum Phase {
+    #[default]
     Starting,
     Running,
     Exited,
+    Stopping,
     /// Started without the plugin: the stream stays until it is ended.
     Untracked,
 }
+const START_TIMEOUT: Duration = Duration::from_secs(120);
+const EXIT_GRACE: Duration = Duration::from_secs(15);
+#[derive(Default)]
 struct LaunchState {
     phase: Phase,
     install_dir: String,
+    exe: String,
+    stopped: bool,
+    pipe_closed: bool,
+    saw_process: bool,
+    missing_since: Option<Instant>,
+}
+impl LaunchState {
+    fn status(&mut self, id: &str, message: Message) {
+        let Message::Status {
+            name,
+            id: game,
+            install_dir,
+            exe,
+        } = message
+        else {
+            return;
+        };
+        let game = game.trim().trim_matches(['{', '}']);
+        let ours =
+            !game.is_empty() && game.eq_ignore_ascii_case(id.trim().trim_matches(['{', '}']));
+        match name.as_str() {
+            "gameStarted" if ours => {
+                self.phase = Phase::Running;
+                if !install_dir.is_empty() {
+                    self.install_dir = install_dir;
+                }
+                if !exe.is_empty() {
+                    self.exe = exe;
+                }
+                self.stopped = false;
+                self.missing_since = None;
+                tracing::info!(id, folder = %self.install_dir, exe = %self.exe, "Playnite started the game");
+            }
+            "gameStopped" if ours => {
+                if self.phase == Phase::Running {
+                    self.stopped = true;
+                    tracing::info!(
+                        id,
+                        "Playnite reports the game stopped; verifying game processes"
+                    );
+                } else {
+                    tracing::warn!(
+                        id,
+                        "Playnite reported gameStopped before gameStarted; still waiting for startup"
+                    );
+                }
+            }
+            "stopRequested" if ours || game.is_empty() => {
+                self.phase = Phase::Stopping;
+                tracing::info!(id, "Playnite requested game cleanup and stream shutdown");
+            }
+            "playniteExiting" => {
+                tracing::info!(id, "Playnite is closing; checking the game independently");
+                self.disconnected();
+            }
+            _ => {}
+        }
+    }
+    fn disconnected(&mut self) {
+        self.pipe_closed = true;
+        if self.phase == Phase::Starting {
+            self.phase = Phase::Untracked;
+        }
+    }
+    fn start_timeout(&mut self, elapsed: Duration) -> bool {
+        if self.phase == Phase::Starting && elapsed >= START_TIMEOUT {
+            self.phase = Phase::Untracked;
+            true
+        } else {
+            false
+        }
+    }
+    fn verifying(&self) -> bool {
+        self.phase == Phase::Running && (self.stopped || self.pipe_closed)
+    }
+    fn has_process_hint(&self) -> bool {
+        !self.install_dir.trim().is_empty() || Path::new(&self.exe).is_absolute()
+    }
+    fn poll(&mut self, at: Instant, alive: Option<bool>) {
+        if !self.verifying() {
+            return;
+        }
+        if alive == Some(true) {
+            self.saw_process = true;
+            self.missing_since = None;
+            return;
+        }
+        if self.has_process_hint() && alive.is_none() {
+            self.missing_since = None;
+            return;
+        }
+        if !self.has_process_hint() && !self.stopped {
+            self.phase = Phase::Untracked;
+            return;
+        }
+        let missing = at.duration_since(*self.missing_since.get_or_insert(at));
+        if !self.stopped && !self.saw_process {
+            // A lost connector is not proof that a slow game ever started.
+            if missing >= START_TIMEOUT {
+                self.phase = Phase::Untracked;
+            }
+        } else if missing >= EXIT_GRACE {
+            self.phase = Phase::Exited;
+        }
+    }
 }
 /// A Playnite game started for a stream.
 pub struct Launch {
@@ -433,16 +543,16 @@ impl Launch {
     /// Start Playnite if needed, then ask the plugin to start game `id` with
     /// the stream's environment.
     pub fn start(h: &Shared, id: &str, environment: &BTreeMap<String, String>) -> Result<Self> {
+        let id = uuid::Uuid::parse_str(id)
+            .context("Playnite launch failed: invalid game ID")?
+            .to_string();
         let program = butterpollo_windows::playnite::install_dir()
             .and_then(|dir| butterpollo_windows::playnite::executable(&dir))
             .context("Playnite launch failed: no Desktop or Fullscreen executable found; open Playnite once or repair its installation")?;
         tracing::info!(id, executable = %program.display(), running = butterpollo_windows::playnite::running().is_some(), "Playnite launch prepared");
         let plugin_ready = update_plugin(h);
         let baseline = butterpollo_windows::process::processes().unwrap_or_default();
-        let state = Arc::new(Mutex::new(LaunchState {
-            phase: Phase::Starting,
-            install_dir: String::new(),
-        }));
+        let state = Arc::new(Mutex::new(LaunchState::default()));
         let stop = Arc::new(AtomicBool::new(false));
         let worker = {
             let (state, stop) = (state.clone(), stop.clone());
@@ -461,7 +571,10 @@ impl Launch {
     }
     /// Whether Playnite reported the game stopped.
     pub fn finished(&self) -> bool {
-        self.state.lock().unwrap().phase == Phase::Exited
+        matches!(
+            self.state.lock().unwrap().phase,
+            Phase::Exited | Phase::Stopping
+        )
     }
     /// The game's folder, once Playnite has reported it.
     pub fn folder(&self) -> impl Fn() -> Option<String> + Send + 'static {
@@ -510,78 +623,116 @@ fn run(
         set(Phase::Exited);
         return;
     }
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let opened = Instant::now();
+    let deadline = opened + START_TIMEOUT;
+    let mut attempts = 0;
     let hello = json!({"type":"hello","role":"launcher","pid":std::process::id(),"mode":"standard","gameId":id});
     let pipe = loop {
         if stop.load(Ordering::Acquire) {
             return;
         }
+        attempts += 1;
         match Pipe::connect(&hello) {
-            Ok(pipe) => break pipe,
+            Ok(pipe) => {
+                tracing::info!(
+                    id,
+                    attempts,
+                    elapsed_ms = opened.elapsed().as_millis(),
+                    "Playnite launch pipe connected"
+                );
+                break pipe;
+            }
             Err(error) if Instant::now() >= deadline => {
-                tracing::warn!(error = %format!("{error:#}"), "the Playnite plugin is not available; starting the game without tracking it");
+                tracing::warn!(id, attempts, elapsed_ms = opened.elapsed().as_millis(), error = %format!("{error:#}"), "the Playnite plugin is not available; starting the game without tracking it");
                 fallback(program, id, environment, state);
                 return;
             }
-            Err(_) => std::thread::sleep(Duration::from_secs(1)),
+            Err(error) => {
+                if attempts == 1 {
+                    tracing::info!(id, error = %format!("{error:#}"), "waiting up to 120 seconds for the Playnite launch pipe");
+                }
+                std::thread::sleep(Duration::from_secs(1));
+            }
         }
     };
     if let Err(error) =
         pipe.send(&json!({"type":"command","command":"launch","id":id,"env":environment}))
     {
-        tracing::warn!(%error, "the Playnite launch request failed");
-        set(Phase::Untracked);
+        tracing::warn!(id, error = %format!("{error:#}"), "the Playnite launch request failed; trying the CLI fallback");
+        fallback(program, id, environment, state);
         return;
     }
     tracing::info!(id, "asked Playnite to start the game");
+    let requested = Instant::now();
+    let mut checked = requested;
+    let mut pipe = Some(pipe);
     // The connection stays open for the stream: Playnite keeps the
     // stream's environment for the game until it closes.
     while !stop.load(Ordering::Acquire) {
-        match pipe.lines.recv_timeout(Duration::from_millis(200)) {
+        let message = match &pipe {
+            Some(pipe) => pipe.lines.recv_timeout(Duration::from_millis(200)),
+            None => {
+                std::thread::sleep(Duration::from_millis(200));
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            }
+        };
+        match message {
             Ok(line) => {
-                let Message::Status {
-                    name,
-                    id: game,
-                    install_dir,
-                    ..
-                } = playnite::parse(&line)
-                else {
-                    continue;
-                };
-                let ours = game.is_empty() || game.eq_ignore_ascii_case(id);
-                match name.as_str() {
-                    "gameStarted" if ours => {
-                        let mut state = state.lock().unwrap();
-                        state.phase = Phase::Running;
-                        if !install_dir.is_empty() {
-                            state.install_dir = install_dir;
-                        }
-                        tracing::info!(id, folder = %state.install_dir, "Playnite started the game");
-                    }
-                    "gameStopped" if ours => {
-                        tracing::info!(id, "Playnite reports the game stopped");
-                        set(Phase::Exited);
-                        return;
-                    }
-                    "playniteExiting" => {
-                        tracing::info!("Playnite is closing");
-                        set(Phase::Exited);
-                        return;
-                    }
-                    _ => {}
+                let mut state = state.lock().unwrap();
+                state.status(id, playnite::parse(&line));
+                if matches!(state.phase, Phase::Exited | Phase::Stopping) {
+                    return;
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                let mut state = state.lock().unwrap();
-                state.phase = if state.phase == Phase::Running {
-                    Phase::Exited
-                } else {
-                    Phase::Untracked
-                };
-                tracing::info!("the Playnite plugin closed the connection");
-                return;
+                pipe = None;
+                state.lock().unwrap().disconnected();
+                tracing::warn!(
+                    id,
+                    "the Playnite plugin closed the connection; game exit is unconfirmed"
+                );
             }
+        }
+        let mut state = state.lock().unwrap();
+        if state.start_timeout(requested.elapsed()) {
+            tracing::warn!(
+                id,
+                "Playnite did not confirm gameStarted within 120 seconds; leaving the stream open for a slow launch or a Playnite dialog"
+            );
+        }
+        if state.verifying() && checked.elapsed() >= Duration::from_secs(1) {
+            checked = Instant::now();
+            let alive = if state.has_process_hint() {
+                match butterpollo_windows::process::processes() {
+                    Ok(processes) => Some(processes.iter().any(|p| {
+                        butterpollo_windows::process::image_path(p.pid).is_some_and(|path| {
+                            playnite::game_process(&path, &state.install_dir, &state.exe)
+                        })
+                    })),
+                    Err(error) => {
+                        tracing::warn!(id, error = %format!("{error:#}"), "Playnite game process check failed; keeping the stream open");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            state.poll(checked, alive);
+            match state.phase {
+                Phase::Exited => {
+                    tracing::info!(id, "Playnite game exit confirmed; ending the stream");
+                    return;
+                }
+                Phase::Untracked => tracing::warn!(
+                    id,
+                    "Playnite game could not be tracked; the stream stays until ended manually"
+                ),
+                _ => {}
+            }
+        }
+        if pipe.is_none() && state.phase == Phase::Untracked {
+            return;
         }
     }
 }
@@ -627,6 +778,89 @@ pub fn close_fullscreen(timeout: Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn launch_state() -> LaunchState {
+        LaunchState::default()
+    }
+    fn status(name: &str, id: &str) -> Message {
+        playnite::parse(&json!({"type":"status","status":{"name":name,"id":id,"installDir":"C:/Games/Nightfire"}}).to_string())
+    }
+    #[test]
+    fn a_stop_before_start_does_not_end_the_stream() {
+        let mut state = launch_state();
+        state.status("game", status("gameStopped", "game"));
+        assert_eq!(state.phase, Phase::Starting);
+    }
+    #[test]
+    fn a_lost_plugin_connection_is_not_a_game_exit() {
+        let mut state = launch_state();
+        state.status("game", status("gameStarted", "game"));
+        state.disconnected();
+        assert_eq!(state.phase, Phase::Running);
+    }
+    #[test]
+    fn store_handoffs_and_transient_stops_wait_for_the_real_game_exit() {
+        let mut state = launch_state();
+        let at = Instant::now();
+        state.status("game", status("gameStarted", "game"));
+        state.status("game", status("gameStopped", "game"));
+        state.poll(at, Some(false));
+        state.poll(at + EXIT_GRACE - Duration::from_secs(1), Some(true));
+        assert_eq!(state.phase, Phase::Running);
+        state.poll(at + Duration::from_secs(30), Some(false));
+        state.poll(at + Duration::from_secs(44), Some(false));
+        assert_eq!(state.phase, Phase::Running);
+        state.poll(at + Duration::from_secs(45), Some(false));
+        assert_eq!(state.phase, Phase::Exited);
+    }
+    #[test]
+    fn closing_playnite_tracks_the_game_until_its_process_exits() {
+        let mut state = launch_state();
+        let at = Instant::now();
+        state.status("game", status("gameStarted", "game"));
+        state.status("game", status("playniteExiting", ""));
+        state.poll(at, Some(true));
+        state.poll(at + Duration::from_secs(1), Some(false));
+        assert_eq!(state.phase, Phase::Running);
+        state.poll(at + Duration::from_secs(1) + EXIT_GRACE, Some(false));
+        assert_eq!(state.phase, Phase::Exited);
+    }
+    #[test]
+    fn unknown_and_slow_launches_remain_open_and_accept_late_start_events() {
+        let mut state = launch_state();
+        assert!(!state.start_timeout(START_TIMEOUT - Duration::from_secs(1)));
+        assert!(state.start_timeout(START_TIMEOUT));
+        assert_eq!(state.phase, Phase::Untracked);
+        state.status("game", status("gameStarted", "game"));
+        assert_eq!(state.phase, Phase::Running);
+        state.disconnected();
+        let at = Instant::now();
+        state.poll(at, Some(false));
+        state.poll(at + START_TIMEOUT, Some(false));
+        assert_eq!(state.phase, Phase::Untracked);
+    }
+    #[test]
+    fn unrelated_or_missing_game_ids_cannot_end_the_stream() {
+        let mut state = launch_state();
+        state.status("game", status("gameStarted", "{GAME}"));
+        for id in ["other", ""] {
+            state.status("game", status("gameStopped", id));
+            assert!(!state.verifying());
+        }
+        state.status("game", status("stopRequested", "game"));
+        assert_eq!(state.phase, Phase::Stopping);
+    }
+    #[test]
+    fn failed_process_checks_do_not_count_towards_exit_grace() {
+        let mut state = launch_state();
+        state.status("game", status("gameStarted", "game"));
+        state.status("game", status("gameStopped", "game"));
+        let at = Instant::now();
+        state.poll(at, Some(false));
+        state.poll(at + EXIT_GRACE, None);
+        state.poll(at + EXIT_GRACE + Duration::from_secs(1), Some(false));
+        assert_eq!(state.phase, Phase::Running);
+    }
 
     #[test]
     fn plugin_repairs_missing_and_partial_installs_without_downgrading() {

@@ -213,14 +213,18 @@ impl Pipe {
         let mut control =
             open(PIPE, Duration::from_secs(2)).context("the Playnite plugin is not running")?;
         let deadline = Instant::now() + Duration::from_secs(2);
-        while available(&control)? < 80 {
+        while available(&control).context("reading the Playnite control pipe handshake")? < 80 {
             if Instant::now() > deadline {
-                bail!("the Playnite plugin did not answer");
+                bail!(
+                    "the Playnite plugin did not send its 80-byte control pipe handshake within 2 seconds"
+                );
             }
             std::thread::sleep(Duration::from_millis(10));
         }
         let mut message = [0u8; 80];
-        control.read_exact(&mut message)?;
+        control
+            .read_exact(&mut message)
+            .context("reading the Playnite private pipe name")?;
         let units: Vec<u16> = message
             .as_chunks::<2>()
             .0
@@ -232,8 +236,11 @@ impl Pipe {
         if name.is_empty() || name.contains(['\\', '/']) {
             bail!("the Playnite plugin sent an invalid pipe name");
         }
-        control.write_all(&[2])?;
-        let file = open(&format!(r"\\.\pipe\{name}"), Duration::from_secs(5))?;
+        control
+            .write_all(&[2])
+            .context("acknowledging the Playnite pipe handshake")?;
+        let file = open(&format!(r"\\.\pipe\{name}"), Duration::from_secs(5))
+            .context("connecting to the Playnite private pipe")?;
         drop(control);
         let file = Arc::new(Mutex::new(file));
         let (sender, lines) = mpsc::channel();
@@ -253,9 +260,9 @@ impl Pipe {
                                     let mut chunk = vec![0; count.min(1 << 20) as usize];
                                     file.read(&mut chunk)
                                         .inspect(|&n| pending.extend_from_slice(&chunk[..n]))
-                                        .map_err(|_| ())
+                                        .map_err(anyhow::Error::from)
                                 }
-                                Err(_) => Err(()),
+                                Err(error) => Err(error),
                             }
                         };
                         match read {
@@ -272,7 +279,10 @@ impl Pipe {
                                 }
                             }
                             // Closed: the receiver sees the channel end.
-                            Err(()) => return,
+                            Err(error) => {
+                                tracing::warn!(error = %format!("{error:#}"), "Playnite data pipe closed or failed");
+                                return;
+                            }
                         }
                     }
                 })?
@@ -283,15 +293,17 @@ impl Pipe {
             stop,
             reader: Some(reader),
         };
-        pipe.send(hello)?;
+        pipe.send(hello)
+            .context("sending the Playnite plugin hello")?;
         Ok(pipe)
     }
     pub fn send(&self, message: &serde_json::Value) -> Result<()> {
         let mut line = serde_json::to_vec(message)?;
         line.push(b'\n');
         let mut file = self.file.lock().unwrap();
-        file.write_all(&line)?;
-        file.flush()?;
+        file.write_all(&line)
+            .context("writing to the Playnite data pipe")?;
+        file.flush().context("flushing the Playnite data pipe")?;
         Ok(())
     }
 }

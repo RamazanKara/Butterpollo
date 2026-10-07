@@ -301,6 +301,36 @@ fn key(id: &str) -> String {
 fn path_key(path: &str) -> String {
     path.replace('"', "").replace('/', "\\").to_lowercase()
 }
+/// Match a game or emulator after its launcher hands it off. Store clients
+/// remaining open do not prove that the game is still running.
+pub fn game_process(path: &str, install_dir: &str, exe: &str) -> bool {
+    let path = path_key(path);
+    let name = path.rsplit('\\').next().unwrap_or("");
+    if matches!(
+        name,
+        "steam.exe"
+            | "steamwebhelper.exe"
+            | "steamservice.exe"
+            | "gameoverlayui.exe"
+            | "epicgameslauncher.exe"
+            | "eadesktop.exe"
+            | "upc.exe"
+            | "ubisoftconnect.exe"
+            | "battle.net.exe"
+            | "galaxyclient.exe"
+            | "playnite.desktopapp.exe"
+            | "playnite.fullscreenapp.exe"
+    ) {
+        return false;
+    }
+    let folder = path_key(install_dir);
+    let folder = folder.trim_end_matches('\\');
+    (!folder.is_empty()
+        && path
+            .strip_prefix(folder)
+            .is_some_and(|rest| rest.starts_with('\\')))
+        || (!exe.is_empty() && path == path_key(exe))
+}
 fn name_key(name: &str) -> String {
     name.split_whitespace()
         .collect::<Vec<_>>()
@@ -673,6 +703,37 @@ pub fn newer(a: &str, b: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn game_processes_survive_store_handoffs_without_tracking_the_store() {
+        let folder = r"C:\Games\Nightfire";
+        assert!(game_process(
+            r"C:\Games\Nightfire\bin\game.exe",
+            folder,
+            "steam://run/123"
+        ));
+        for store in [r"C:\Steam\steam.exe", r"C:\Epic\EpicGamesLauncher.exe"] {
+            assert!(!game_process(store, r"C:\", store));
+        }
+        assert!(!game_process(r"C:\Games\Nightfire2\game.exe", folder, ""));
+    }
+    #[test]
+    fn game_process_paths_preserve_unicode_and_match_external_emulators() {
+        assert!(game_process(
+            r"C:\Çağrı\Oyun\game.exe",
+            "C:/Çağrı/Oyun/",
+            ""
+        ));
+        assert!(game_process(
+            r"D:\Emulators\emu.exe",
+            r"C:\ROMs",
+            "D:/Emulators/emu.exe"
+        ));
+        assert!(!game_process(
+            r"D:\Other\emu.exe",
+            r"C:\ROMs",
+            "D:/Emulators/emu.exe"
+        ));
+    }
     #[test]
     fn messages_and_times_parse_like_vibepollo() {
         assert_eq!(parse_time("1970-01-02T00:00:00Z"), Some(86400));
