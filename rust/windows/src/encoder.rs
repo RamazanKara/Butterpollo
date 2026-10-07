@@ -680,7 +680,9 @@ impl Encoder {
         {
             // Colour conversion on a compute queue keeps running beside a
             // game that fills the GPU's graphics queue.
-            let compute = if crate::compute::enabled(tuning)
+            // AMF rejects 4:4:4 regardless of which queue converts the input.
+            let compute = if !config.yuv444
+                && crate::compute::enabled(tuning)
                 && crate::compute::shareable(&image.texture)
             {
                 match crate::compute::Compute::for_device(&image.gpu.device) {
