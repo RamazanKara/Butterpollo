@@ -202,7 +202,17 @@ impl Gamepads {
                 }
                 for (i, global) in self.active.clone() {
                     if active & (1 << i) == 0 {
-                        self.backend.unplug(u32::from(global))?;
+                        // A pad that would not unplug stays tracked and is
+                        // tried again with the next state; this state still
+                        // goes to the live pad.
+                        if let Err(error) = self.backend.unplug(u32::from(global)) {
+                            tracing::debug!(
+                                controller = i,
+                                error = format!("{error:#}"),
+                                "virtual controller removal failed"
+                            );
+                            continue;
+                        }
                         self.active.remove(&i);
                         self.profiles.remove(&i);
                         self.arrivals.remove(&i);
