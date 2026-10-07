@@ -4,7 +4,7 @@
 
 Start with the current stream's settings, the console and the logs. Record the time of a failure before changing anything, and change one setting at a time. Capture and performance probes add work to the GPU; use an idle session for those comparisons.
 
-**Find a symptom:** [Pairing](#moonlight-cannot-find-or-pair-with-the-pc) · [Console or port](#the-console-will-not-open-or-a-port-is-occupied) · [Black screen](#black-picture-no-display-or-wgc-fails) · [HDR colour](#hdr-looks-washed-out-too-bright-or-different-between-clients) · [Stutter](#low-latency-is-reported-but-motion-still-stutters) · [RTSS](#rtss-does-not-start-or-the-game-ignores-the-cap) · [Display restoration](#monitors-stay-on-or-the-display-layout-does-not-return) · [Updates](#an-update-stays-queued) · [Logs and support](#logs-and-a-useful-report)
+**Find a symptom:** [Pairing](#moonlight-cannot-find-or-pair-with-the-pc) · [Console or port](#the-console-will-not-open-or-a-port-is-occupied) · [Black screen](#black-picture-no-display-or-wgc-fails) · [Blurred PyroWave](#pyrowave-shows-blurred-grey-blocks) · [HDR colour](#hdr-looks-washed-out-too-bright-or-different-between-clients) · [Stutter](#low-latency-is-reported-but-motion-still-stutters) · [RTSS](#rtss-does-not-start-or-the-game-ignores-the-cap) · [Display restoration](#monitors-stay-on-or-the-display-layout-does-not-return) · [Updates](#an-update-stays-queued) · [Logs and support](#logs-and-a-useful-report)
 
 ## Moonlight cannot find or pair with the PC
 
@@ -45,6 +45,10 @@ Separate the host's HDR source, the negotiated stream and the client's display o
 - Report whether black levels, mid-grey menus, bright highlights or colour saturation are wrong. Include the client app/version, device and display model, codec, stream resolution/rate and the host log time.
 
 The Xbox HDR colour-appearance report remains under investigation. A TV detecting HDR10 does not by itself prove correct colour rendering. rc.10's native HEVC/AV1 tests verify FP16 capture, ten-bit BT.2020/PQ decoding and reference pixels; they do not calibrate the TV or validate every client's output. See the [native HDR evidence](../rust/PERFORMANCE.md#final-native-virtual-hdr-pixels-excluding-physical-panel-calibration).
+
+## PyroWave shows blurred grey blocks
+
+The bitrate is far too low for PyroWave. Unlike HEVC or AV1 it spends its bits on speed, not compression: below about one bit per pixel per frame only its coarsest brightness layers fit, without colour or fine detail. Moonlight's default for 720p60, 10 Mbps, gives it a fifth of a bit. Raise the bitrate in the client to at least about 55 Mbps for 720p60, 125 Mbps for 1080p60 or 500 Mbps for 4K60, on a wired network, or use HEVC or AV1. The console's stream card and the log (`PyroWave has too little bitrate`) say when a stream is below that.
 
 ## Low latency is reported, but motion still stutters
 

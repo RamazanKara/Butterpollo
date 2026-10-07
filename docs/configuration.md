@@ -42,7 +42,7 @@ H.264, HEVC and AV1 depend on the encoder and client. For `hevc_mode` and `av1_m
 
 For **native HDR**, enable HDR in the client and use an HDR-capable display and encoder path. Leave **Display HDR** on Automatic so Butterpollo can set the source display appropriately. **10-bit SDR instead of HDR** (`prefer_sdr_10bit`, default `false`) deliberately keeps the stream in SDR; leave it off when you want HDR. RTX HDR is a separate SDR-to-HDR conversion feature, with its own hardware requirements.
 
-**PyroWave needs a compatible client** and much more bandwidth than conventional codecs—typically hundreds of Mbps. Enabling it does not force ordinary Moonlight clients to use it. Start with HEVC or AV1 for constrained networks.
+**PyroWave needs a compatible client** and much more bandwidth than conventional codecs. Set the client's bitrate to at least about 55 Mbps for 720p60, 125 Mbps for 1080p60 or 500 Mbps for 4K60 (one bit per pixel per frame); PyroWave itself targets 200 Mbps and more on a wired LAN. At the 10–50 Mbps usual for HEVC, the picture turns into blurred grey blocks, and the console's stream card and the log warn about it. Enabling PyroWave does not force ordinary Moonlight clients to use it. Start with HEVC or AV1 for constrained networks.
 
 **VRR is client-negotiated.** A VRR request can use a 1000 Hz virtual display when automatic virtual refresh is enabled. That is the host's virtual display rate, not a claim that your TV or monitor refreshes at 1000 Hz. Client and display support still matter.
 

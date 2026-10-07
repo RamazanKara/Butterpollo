@@ -2029,6 +2029,33 @@ encoder stopped forcing it. The setting descriptions now say which usages
 already have them on. The fallback console page saved the low-latency switch
 as `amd_low_latency_internal`, a key nothing reads; it now saves
 `amd_lowlatency_mode` and offers the AV1 latency mode too.
+## October 7: how much bitrate PyroWave needs
+
+A user streamed PyroWave at 720p60 with Moonlight's bitrate at 10 Mbps and
+saw blurred grey blocks: a fifth of a bit per pixel per frame leaves room for
+only the coarsest brightness layers. To see what the encoder takes when the
+bitrate does not limit it, `examples/performance.rs --codec pyrowave
+--records --paced --bitrate 1000000` at 1920×1080 and 60 fps, four seconds
+each, on the RX 7900 XT:
+
+| Picture | Per frame | Bits per pixel | Mbps at 60 fps |
+|---|---|---|---|
+| Desktop, SDR 4:2:0 | 624 KB | 2.41 | 300 |
+| Desktop, HDR 4:4:4 | 478 KB | 1.84 | 229 |
+| Moving test picture (`--synthetic 16`), SDR 4:2:0 | 1,822 KB | 7.03 | 875 |
+| Moving test picture, HDR 4:4:4 | 1,344 KB | 5.18 | 645 |
+
+The PyroWave README targets "~200+ mbit/s" on a wired LAN. A 720p60 HDR
+stream to Nonary's client at 149 Mbps (2.7 bits per pixel) worked, at 60 fps
+and 0.68-0.78 ms from present to encoded frame.
+
+Below one bit per pixel per frame, less than half of what a desktop takes,
+the host now warns: once when the stream starts and when the client lowers
+the bitrate (`PyroWave has too little bitrate`), and on the console's stream
+card. That is about 55 Mbps at 720p60, 125 Mbps at 1080p60 and 500 Mbps at
+4K60 (`pyrowave::minimum_kbps`). The setting's description and the
+configuration guide give the same numbers. The host does not raise the
+bitrate itself: the client's choice may reflect its network.
 ## Limits
 
 This machine validates AMD AMF. Native NVENC now calls the installed NVIDIA driver directly, supports reviewed API versions 11.0–13.0, reference frame invalidation, D3D11 4:2:0/8-bit 4:4:4 and GPU-only CUDA interop for ten-bit 4:4:4. Seven mock-driver tests exercise compatibility, asynchronous ownership, timeout teardown, metadata lifetime, loss recovery and bitrate changes; NVIDIA execution/performance still needs NVIDIA hardware. QSV has native D3D11 imports, and TrueHDR has a shared-device GPU path; these need Intel/NVIDIA hardware respectively. PyroWave uses shared D3D11/Vulkan planar GPU inputs and reads back only the encoded bitstream. Unsupported native formats and software encoding use CPU compatibility paths. The wired LAN checks above do not establish Wi-Fi performance, multiple concurrent 4K sessions, dynamic game content, native 4K capture or end-to-end input/display latency. The GPU texture pools and native encoder queues are bounded to eight retained frames; capacity runs may intentionally keep those queues occupied. [PARITY.md](PARITY.md) separates implemented features from native validation.
