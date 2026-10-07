@@ -2,7 +2,7 @@
 //! linked to a Playnite game is started through Playnite with the stream's
 //! environment, ending when Playnite reports the game stopped.
 use crate::state::Shared;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use butterpollo_core::playnite::{self, Artwork, Game, Message, Settings};
 use butterpollo_windows::playnite::Pipe;
 use serde_json::{Value, json};
@@ -54,10 +54,41 @@ fn plugin_present(folder: &Path) -> bool {
 pub fn install_plugin(h: &Shared) -> Result<PathBuf> {
     let source = packaged_plugin(h);
     let target = installed_plugin().context("Playnite was not found on this PC")?;
-    copy_plugin(&source, &target)?;
+    copy_plugin_as_user(&source, &target)?;
     Ok(target)
 }
-fn copy_plugin(source: &Path, target: &Path) -> Result<()> {
+fn copy_plugin_as_user(source: &Path, target: &Path) -> Result<()> {
+    use butterpollo_windows::process::{Process, Target};
+    let program = std::env::current_exe()?;
+    // Both paths can come from user-writable locations. Resolve junctions
+    // and perform every write with the user's token, never the service's.
+    let worker = Process::spawn(
+        &program,
+        &[
+            "--playnite-install".into(),
+            std::path::absolute(source)?.into_os_string(),
+            std::path::absolute(target)?.into_os_string(),
+        ],
+        program.parent(),
+        Target::User { elevated: false },
+        &BTreeMap::new(),
+        true,
+    )
+    .context("starting the Playnite plugin installer as the signed-in user")?;
+    let code = worker.wait(Duration::from_secs(30))?;
+    ensure!(
+        code == 0,
+        "Playnite plugin installer failed (0x{code:08x}) for {}",
+        target.display()
+    );
+    tracing::info!(folder = %target.display(), "installed the Playnite plugin");
+    Ok(())
+}
+pub fn install_worker(source: &Path, target: &Path) -> Result<()> {
+    ensure!(
+        !butterpollo_windows::process::is_system(),
+        "the Playnite plugin installer must run as the signed-in user"
+    );
     if !plugin_present(source) {
         bail!(
             "the packaged Playnite plugin is missing or incomplete at {}",
@@ -84,7 +115,6 @@ fn copy_plugin(source: &Path, target: &Path) -> Result<()> {
             )
         })?;
     }
-    tracing::info!(folder = %target.display(), "installed the Playnite plugin");
     Ok(())
 }
 /// Install missing files or an upgrade before Playnite starts. An existing
@@ -105,7 +135,7 @@ fn update_plugin(h: &Shared) -> bool {
         return present;
     };
     if needs_update(&packaged, &target) {
-        if let Err(error) = copy_plugin(&source, &target) {
+        if let Err(error) = copy_plugin_as_user(&source, &target) {
             tracing::warn!(error = %format!("{error:#}"), "the Playnite plugin could not be installed or updated");
             return present;
         }
@@ -1058,10 +1088,10 @@ mod tests {
         std::fs::write(source.join("extension.yaml"), "Version: 0.4.14").unwrap();
         std::fs::write(source.join("SunshinePlaynite.psm1"), "module").unwrap();
         std::fs::write(target.join("extension.yaml"), "Version: 0.4.13").unwrap();
-        assert!(copy_plugin(&source, &target).is_err());
+        assert!(install_worker(&source, &target).is_err());
         assert_eq!(version(&target).as_deref(), Some("0.4.13"));
         std::fs::remove_dir(target.join("SunshinePlaynite.psm1")).unwrap();
-        copy_plugin(&source, &target).unwrap();
+        install_worker(&source, &target).unwrap();
         assert_eq!(version(&target).as_deref(), Some("0.4.14"));
         assert!(plugin_present(&target));
         std::fs::remove_dir_all(root).unwrap();
