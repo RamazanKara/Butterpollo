@@ -33,7 +33,7 @@ fn wide(s: &std::ffi::OsStr) -> Result<Vec<u16>> {
     value.push(0);
     Ok(value)
 }
-fn quote(s: &std::ffi::OsStr) -> Result<String> {
+pub(crate) fn quote(s: &std::ffi::OsStr) -> Result<String> {
     let s = s.to_string_lossy();
     if s.contains('\0') {
         bail!("process argument contains NUL");
@@ -439,7 +439,7 @@ impl Process {
         )
     }
     #[allow(clippy::too_many_arguments)]
-    fn spawn_command(
+    pub(crate) fn spawn_command(
         program: &Path,
         line: &str,
         directory: Option<&Path>,

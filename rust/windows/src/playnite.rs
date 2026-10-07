@@ -5,7 +5,7 @@ use std::{
     fs::File,
     io::{Read, Write},
     os::windows::io::AsRawHandle,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -18,6 +18,8 @@ use windows::Win32::{
     System::{
         Pipes::{PeekNamedPipe, WaitNamedPipeW},
         Registry::{HKEY_LOCAL_MACHINE, HKEY_USERS},
+        RemoteDesktop::ProcessIdToSessionId,
+        Threading::GetCurrentProcessId,
     },
 };
 
@@ -26,66 +28,142 @@ use crate::steam::registry_string;
 const PIPE: &str = r"\\.\pipe\Sunshine.PlayniteExtension";
 pub const PROCESSES: [&str; 2] = ["Playnite.DesktopApp.exe", "Playnite.FullscreenApp.exe"];
 
+fn session(pid: u32) -> Option<u32> {
+    let mut session = 0;
+    unsafe { ProcessIdToSessionId(pid, &mut session).ok()? };
+    Some(session)
+}
 /// The running Playnite process (id and program), if any.
 pub fn running() -> Option<(u32, PathBuf)> {
-    crate::process::processes()
-        .ok()?
+    let current = session(unsafe { GetCurrentProcessId() })?;
+    find_running(
+        crate::process::processes().ok()?,
+        current,
+        session,
+        crate::process::image_path,
+    )
+}
+fn find_running(
+    processes: Vec<butterpollo_core::steam::Process>,
+    current: u32,
+    mut session: impl FnMut(u32) -> Option<u32>,
+    mut image: impl FnMut(u32) -> Option<String>,
+) -> Option<(u32, PathBuf)> {
+    processes
         .into_iter()
-        .find(|p| {
+        .filter(|p| {
             PROCESSES
                 .iter()
                 .any(|name| p.name.eq_ignore_ascii_case(name))
+                && session(p.pid) == Some(current)
         })
-        .and_then(|p| Some((p.pid, PathBuf::from(crate::process::image_path(p.pid)?))))
+        .find_map(|p| Some((p.pid, PathBuf::from(image(p.pid)?))))
 }
-/// Playnite's program folder: the running Playnite, else the program the
-/// signed-in user's `playnite:` links open.
+/// The running Playnite's folder, then the user's association, installer
+/// record and default installation folder.
 pub fn install_dir() -> Option<PathBuf> {
     if let Some((_, exe)) = running() {
         return exe.parent().map(PathBuf::from);
     }
-    let command = crate::process::user_sid()
-        .and_then(|sid| {
-            registry_string(
-                HKEY_USERS,
-                &format!("{sid}\\Software\\Classes\\playnite\\shell\\open\\command"),
-                "",
-            )
-        })
-        .or_else(|| {
-            registry_string(
-                HKEY_LOCAL_MACHINE,
-                "Software\\Classes\\playnite\\shell\\open\\command",
-                "",
-            )
-        })?;
-    let exe = PathBuf::from(crate::process::command_target(&command));
-    exe.is_file()
-        .then(|| exe.parent().map(PathBuf::from))
-        .flatten()
-}
-/// Where Playnite loads extensions from: the user's roaming folder for an
-/// installed Playnite, the program folder for a portable one.
-pub fn extensions_dir() -> Option<PathBuf> {
-    let installed = crate::process::user_sid().is_some_and(|sid| {
-        registry_string(
+    let mut candidates = Vec::new();
+    if let Some(sid) = crate::process::user_sid() {
+        if let Some(command) = registry_string(
+            HKEY_USERS,
+            &format!("{sid}\\Software\\Classes\\playnite\\shell\\open\\command"),
+            "",
+        ) {
+            candidates.extend(
+                Path::new(crate::process::command_target(&command))
+                    .parent()
+                    .map(PathBuf::from),
+            );
+        }
+        if let Some(folder) = registry_string(
             HKEY_USERS,
             &format!(
                 "{sid}\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Playnite_is1"
             ),
             "InstallLocation",
-        )
-        .is_some()
-    });
-    if installed {
-        let environment = crate::process::user_environment().ok()?;
-        return Some(
-            PathBuf::from(environment.get("APPDATA")?)
-                .join("Playnite")
-                .join("Extensions"),
+        ) {
+            candidates.push(PathBuf::from(folder));
+        }
+    }
+    if let Some(command) = registry_string(
+        HKEY_LOCAL_MACHINE,
+        "Software\\Classes\\playnite\\shell\\open\\command",
+        "",
+    ) {
+        candidates.extend(
+            Path::new(crate::process::command_target(&command))
+                .parent()
+                .map(PathBuf::from),
         );
     }
-    install_dir().map(|dir| dir.join("Extensions"))
+    if let Ok(environment) = crate::process::user_environment()
+        && let Some(local) = environment.get("LOCALAPPDATA")
+    {
+        candidates.push(PathBuf::from(local).join("Playnite"));
+    }
+    find_install(candidates)
+}
+fn find_install(candidates: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
+    candidates.into_iter().find(|dir| executable(dir).is_some())
+}
+pub fn executable(dir: &Path) -> Option<PathBuf> {
+    PROCESSES
+        .iter()
+        .map(|name| dir.join(name))
+        .find(|exe| exe.is_file())
+}
+/// Where Playnite loads extensions from: the user's roaming folder for an
+/// installed Playnite, the program folder for a portable one.
+pub fn extensions_dir() -> Option<PathBuf> {
+    let dir = install_dir()?;
+    let environment = crate::process::user_environment().ok();
+    extensions_at(
+        &dir,
+        environment
+            .as_ref()
+            .and_then(|env| env.get("APPDATA"))
+            .map(Path::new),
+    )
+}
+fn extensions_at(dir: &Path, roaming: Option<&Path>) -> Option<PathBuf> {
+    // Playnite itself uses the uninstaller's presence to choose its data folder.
+    if dir.join("unins000.exe").is_file() {
+        Some(roaming?.join("Playnite").join("Extensions"))
+    } else {
+        Some(dir.join("Extensions"))
+    }
+}
+/// Start the resolved executable in the signed-in user's session, without
+/// depending on a URI association or cmd.exe reporting a launch failure.
+pub fn launch(
+    program: &Path,
+    args: &[&str],
+    environment: &std::collections::BTreeMap<String, String>,
+) -> Result<()> {
+    let mut command = crate::process::quote(program.as_os_str())?;
+    for arg in args {
+        command.push(' ');
+        command.push_str(&crate::process::quote(std::ffi::OsStr::new(arg))?);
+    }
+    crate::process::Process::spawn_command(
+        program,
+        &command,
+        program.parent(),
+        crate::process::Target::User { elevated: false },
+        environment,
+        false,
+        true,
+    )
+    .with_context(|| {
+        format!(
+            "starting Playnite executable {} in the signed-in user's session",
+            program.display()
+        )
+    })?;
+    Ok(())
 }
 
 fn handle(file: &File) -> HANDLE {
@@ -223,5 +301,73 @@ impl Drop for Pipe {
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn running_ignores_other_sessions_and_unreadable_processes() {
+        let processes = (1..=3)
+            .map(|pid| butterpollo_core::steam::Process {
+                pid,
+                parent: 0,
+                started: 1,
+                name: PROCESSES[1].into(),
+            })
+            .collect();
+        let found = find_running(
+            processes,
+            2,
+            |pid| Some(if pid == 1 { 1 } else { 2 }),
+            |pid| (pid != 2).then(|| "C:/Çağrı/Playnite.FullscreenApp.exe".into()),
+        );
+        assert_eq!(
+            found,
+            Some((3, PathBuf::from("C:/Çağrı/Playnite.FullscreenApp.exe")))
+        );
+    }
+
+    #[test]
+    fn discovery_skips_stale_paths_and_finds_either_mode_with_unicode() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("Çağrı & Oyunlar");
+        std::fs::create_dir(&dir).unwrap();
+        let fullscreen = dir.join(PROCESSES[1]);
+        std::fs::write(&fullscreen, []).unwrap();
+        assert_eq!(
+            find_install([temp.path().join("missing"), dir.clone()]),
+            Some(dir.clone())
+        );
+        assert_eq!(executable(&dir), Some(fullscreen));
+        std::fs::write(dir.join(PROCESSES[0]), []).unwrap();
+        assert_eq!(executable(&dir), Some(dir.join(PROCESSES[0])));
+    }
+
+    #[test]
+    fn extensions_follow_playnites_portable_detection() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        let roaming = dir.join("Çağrı");
+        assert_eq!(
+            extensions_at(dir, Some(&roaming)),
+            Some(dir.join("Extensions"))
+        );
+        std::fs::write(dir.join("unins000.exe"), []).unwrap();
+        assert_eq!(
+            extensions_at(dir, Some(&roaming)),
+            Some(roaming.join("Playnite/Extensions"))
+        );
+        assert_eq!(extensions_at(dir, None), None);
+    }
+
+    #[test]
+    fn missing_executable_returns_the_actual_start_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let exe = temp.path().join("Çağrı Playnite.exe");
+        let error = launch(&exe, &[], &Default::default()).unwrap_err();
+        assert!(format!("{error:#}").contains("Çağrı Playnite.exe"));
     }
 }

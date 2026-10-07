@@ -917,7 +917,11 @@ pub fn launch(
     if let Some(id) = playnite_id
         && config.boolean("playnite_enabled", true)
     {
-        running.playnite = Some(crate::playnite::Launch::start(h, &id, &running.environment));
+        running.playnite = Some(crate::playnite::Launch::start(
+            h,
+            &id,
+            &running.environment,
+        )?);
     }
     if let (Some(options), Some(baseline)) = (lossless, baseline) {
         let folder: Box<dyn Fn() -> Option<String> + Send> = match &running.playnite {

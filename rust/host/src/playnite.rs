@@ -362,7 +362,11 @@ pub struct Launch {
 impl Launch {
     /// Start Playnite if needed, then ask the plugin to start game `id` with
     /// the stream's environment.
-    pub fn start(h: &Shared, id: &str, environment: &BTreeMap<String, String>) -> Self {
+    pub fn start(h: &Shared, id: &str, environment: &BTreeMap<String, String>) -> Result<Self> {
+        let program = butterpollo_windows::playnite::install_dir()
+            .and_then(|dir| butterpollo_windows::playnite::executable(&dir))
+            .context("Playnite launch failed: no Desktop or Fullscreen executable found; open Playnite once or repair its installation")?;
+        tracing::info!(id, executable = %program.display(), running = butterpollo_windows::playnite::running().is_some(), "Playnite launch prepared");
         update_plugin(h);
         let baseline = butterpollo_windows::process::processes().unwrap_or_default();
         let state = Arc::new(Mutex::new(LaunchState {
@@ -375,15 +379,15 @@ impl Launch {
             let (id, environment) = (id.to_owned(), environment.clone());
             std::thread::Builder::new()
                 .name("playnite-launch".into())
-                .spawn(move || run(&id, &environment, &state, &stop))
-                .ok()
+                .spawn(move || run(&program, &id, &environment, &state, &stop))
+                .context("starting the Playnite launch worker")?
         };
-        Self {
+        Ok(Self {
             state,
             stop,
-            worker,
+            worker: Some(worker),
             baseline,
-        }
+        })
     }
     /// Whether Playnite reported the game stopped.
     pub fn finished(&self) -> bool {
@@ -417,21 +421,19 @@ impl Launch {
     }
 }
 fn run(
+    program: &Path,
     id: &str,
     environment: &BTreeMap<String, String>,
     state: &Mutex<LaunchState>,
     stop: &AtomicBool,
 ) {
     let set = |phase: Phase| state.lock().unwrap().phase = phase;
-    let shell = |command: &str| {
-        if let Err(error) =
-            butterpollo_windows::process::Process::shell_detached(command, None, false, environment)
-        {
-            tracing::warn!(%error, command, "could not open Playnite");
-        }
-    };
-    if butterpollo_windows::playnite::running().is_none() {
-        shell("playnite://");
+    if butterpollo_windows::playnite::running().is_none()
+        && let Err(error) = butterpollo_windows::playnite::launch(program, &[], environment)
+    {
+        tracing::error!(id, error = %format!("{error:#}"), "Playnite startup failed");
+        set(Phase::Exited);
+        return;
     }
     let deadline = Instant::now() + Duration::from_secs(120);
     let hello = json!({"type":"hello","role":"launcher","pid":std::process::id(),"mode":"standard","gameId":id});
@@ -443,8 +445,14 @@ fn run(
             Ok(pipe) => break pipe,
             Err(error) if Instant::now() >= deadline => {
                 tracing::warn!(error = %format!("{error:#}"), "the Playnite plugin is not available; starting the game without tracking it");
-                shell(&format!("playnite://playnite/start/{id}"));
-                set(Phase::Untracked);
+                match butterpollo_windows::playnite::launch(program, &["--start", id], environment)
+                {
+                    Ok(()) => set(Phase::Untracked),
+                    Err(error) => {
+                        tracing::error!(id, error = %format!("{error:#}"), "Playnite fallback launch failed");
+                        set(Phase::Exited);
+                    }
+                }
                 return;
             }
             Err(_) => std::thread::sleep(Duration::from_secs(1)),
@@ -512,13 +520,8 @@ fn run(
 /// The command that opens Playnite's fullscreen mode.
 pub fn fullscreen_command() -> Option<String> {
     let dir = butterpollo_windows::playnite::install_dir()?;
-    let desktop = dir.join("Playnite.DesktopApp.exe");
-    let program = if desktop.is_file() {
-        format!("\"{}\" --startfullscreen", desktop.display())
-    } else {
-        format!("\"{}\"", dir.join("Playnite.FullscreenApp.exe").display())
-    };
-    Some(program)
+    let program = butterpollo_windows::playnite::executable(&dir)?;
+    Some(format!("\"{}\" --startfullscreen", program.display()))
 }
 /// Close Playnite's fullscreen mode after its stream.
 pub fn close_fullscreen(timeout: Duration) {
