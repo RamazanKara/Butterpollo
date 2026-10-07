@@ -66,6 +66,44 @@ pub fn amf_ltr_frames(config: &Config, stream: &Negotiated) -> usize {
     }
 }
 
+/// The capability that counts a codec's encoder engines and the property
+/// that lets the driver split one frame across them. H.264 has neither.
+pub fn amf_multi_instance(codec: u8) -> Option<(&'static str, &'static str)> {
+    match codec {
+        1 => Some(("HevcNumOfHwInstances", "HevcMultiHwInstanceEncode")),
+        2 => Some(("Av1CapNumOfHwInstances", "Av1MultiHwInstanceEncode")),
+        _ => None,
+    }
+}
+
+/// What to write for split-frame encoding (`amd_split_frame`), given the
+/// engines the caps report and the value the driver has before Init. AMD
+/// documents the property as a hint: the driver still decides whether a frame
+/// is split. `auto` asks for it only where the driver left it off, as the
+/// original host did. A single engine gets nothing written in any mode, and a
+/// driver that rejects the property keeps the stream.
+pub fn amf_split_frame(
+    config: &Config,
+    codec: u8,
+    instances: i64,
+    current: Option<bool>,
+) -> Option<Property> {
+    let (_, name) = amf_multi_instance(codec)?;
+    if instances <= 1 {
+        return None;
+    }
+    let on = match tristate(config, "amd_split_frame", None) {
+        Some(on) => on,
+        None if current == Some(true) => return None,
+        None => true,
+    };
+    Some(Property {
+        name: name.into(),
+        value: Value::Boolean(on),
+        required: false,
+    })
+}
+
 pub fn amf(config: &Config, stream: &Negotiated) -> Result<Vec<Property>> {
     let codec = stream.codec;
     let intra_refresh = amf_intra_refresh(stream);
@@ -567,6 +605,81 @@ mod tests {
         }
     }
 
+    #[test]
+    fn amf_split_frame_hint_follows_the_setting_and_the_engine_count() {
+        let request = |text: &str, codec, instances, current| {
+            amf_split_frame(&Config::parse(text).unwrap(), codec, instances, current).map(
+                |property| {
+                    assert!(!property.required);
+                    (property.name, property.value)
+                },
+            )
+        };
+        let on = |name: &str| Some((name.to_owned(), Value::Boolean(true)));
+        let off = |name: &str| Some((name.to_owned(), Value::Boolean(false)));
+        for (codec, name) in [
+            (1, "HevcMultiHwInstanceEncode"),
+            (2, "Av1MultiHwInstanceEncode"),
+        ] {
+            // Auto asks only where the driver left it off or cannot say.
+            for text in ["", "amd_split_frame=auto\n"] {
+                assert_eq!(request(text, codec, 2, Some(true)), None);
+                assert_eq!(request(text, codec, 2, Some(false)), on(name));
+                assert_eq!(request(text, codec, 2, None), on(name));
+            }
+            for current in [Some(true), Some(false), None] {
+                assert_eq!(
+                    request("amd_split_frame=enabled\n", codec, 2, current),
+                    on(name)
+                );
+                assert_eq!(
+                    request("amd_split_frame=disabled\n", codec, 2, current),
+                    off(name)
+                );
+                // One engine, as the RX 9070 XT's HEVC, or no readable cap.
+                for instances in [-1, 0, 1] {
+                    for text in [
+                        "",
+                        "amd_split_frame=enabled\n",
+                        "amd_split_frame=disabled\n",
+                    ] {
+                        assert_eq!(request(text, codec, instances, current), None);
+                    }
+                }
+            }
+        }
+        // H.264 has no multi-instance property.
+        for text in [
+            "",
+            "amd_split_frame=enabled\n",
+            "amd_split_frame=disabled\n",
+        ] {
+            assert_eq!(request(text, 0, 2, None), None);
+        }
+        assert_eq!(amf_multi_instance(0), None);
+        assert_eq!(
+            amf_multi_instance(1),
+            Some(("HevcNumOfHwInstances", "HevcMultiHwInstanceEncode"))
+        );
+        assert_eq!(
+            amf_multi_instance(2),
+            Some(("Av1CapNumOfHwInstances", "Av1MultiHwInstanceEncode"))
+        );
+        // The encoder properties written for every stream never include it.
+        for codec in 0..=2 {
+            let stream = Negotiated {
+                codec,
+                ..Default::default()
+            };
+            let config = Config::parse("amd_split_frame=enabled\n").unwrap();
+            assert!(
+                !amf(&config, &stream)
+                    .unwrap()
+                    .iter()
+                    .any(|property| property.name.contains("MultiHwInstance"))
+            );
+        }
+    }
     #[test]
     fn imported_encoder_names_keep_the_selected_vendor_and_legacy_backend() {
         for name in [

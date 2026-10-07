@@ -526,6 +526,7 @@ pub fn override_allowed(key: &str) -> bool {
         "amd_ltr_frames",
         "amd_input_queue_size",
         "amd_smart_access_video",
+        "amd_split_frame",
         "amd_lowlatency_mode",
         "amd_high_motion_quality_boost",
         "amd_av1_screen_content",

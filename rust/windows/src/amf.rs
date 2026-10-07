@@ -232,56 +232,7 @@ impl Encoder {
                 compute,
             };
             for property in butterpollo_core::encoder_policy::amf(options, config)? {
-                use butterpollo_core::encoder_policy::Value;
-                let value = match property.value {
-                    Value::Integer(n) => int(n),
-                    Value::Boolean(on) => AMFVariantStruct {
-                        type_: AMF_VARIANT_TYPE_AMF_VARIANT_BOOL,
-                        __bindgen_anon_1: AMFVariantStruct__bindgen_ty_1 {
-                            boolValue: u8::from(on),
-                        },
-                    },
-                };
-                let result = e.property_raw(&property.name, value).and_then(|()| {
-                    let mut applied = int(0);
-                    check(((*(*e.component).pVtbl).GetProperty.unwrap())(
-                        e.component,
-                        wide(&property.name).as_ptr(),
-                        &mut applied,
-                    ))?;
-                    let matches = match property.value {
-                        Value::Integer(n) => {
-                            applied.type_ == AMF_VARIANT_TYPE_AMF_VARIANT_INT64
-                                && (applied.__bindgen_anon_1.int64Value == n
-                                    || (property.name == "Av1NumTilesPerFrame"
-                                        && applied.__bindgen_anon_1.int64Value > 0))
-                        }
-                        Value::Boolean(on) => match applied.type_ {
-                            AMF_VARIANT_TYPE_AMF_VARIANT_BOOL => {
-                                (applied.__bindgen_anon_1.boolValue != 0) == on
-                            }
-                            AMF_VARIANT_TYPE_AMF_VARIANT_INT64 => {
-                                (applied.__bindgen_anon_1.int64Value != 0) == on
-                            }
-                            _ => false,
-                        },
-                    };
-                    if !matches {
-                        bail!(
-                            "AMF did not apply {} = {:?} (reported variant {}, integer {})",
-                            property.name,
-                            property.value,
-                            applied.type_,
-                            if applied.type_ == AMF_VARIANT_TYPE_AMF_VARIANT_INT64 {
-                                applied.__bindgen_anon_1.int64Value
-                            } else {
-                                -1
-                            }
-                        );
-                    }
-                    Ok(())
-                });
-                if let Err(error) = result {
+                if let Err(error) = e.apply(&property) {
                     if property.required {
                         return Err(error)
                             .with_context(|| format!("AMF setting {}", property.name));
@@ -436,6 +387,7 @@ impl Encoder {
                 );
             }
             e.configure_ltr(ltr_count);
+            e.request_split_frame(options);
             check(((*(*e.component).pVtbl).Init.unwrap())(
                 e.component,
                 if config.ten_bit() {
@@ -487,6 +439,112 @@ impl Encoder {
             }
             let rate = value.__bindgen_anon_1.rateValue;
             Some((rate.num, rate.den))
+        }
+    }
+    /// An integer capability of this encoder, such as its engine count.
+    fn cap(&self, name: &str) -> Option<i64> {
+        unsafe {
+            let mut caps = ptr::null_mut();
+            if ((*(*self.component).pVtbl).GetCaps.unwrap())(self.component, &mut caps)
+                != AMF_RESULT_AMF_OK
+                || caps.is_null()
+            {
+                return None;
+            }
+            let mut value = int(0);
+            let result =
+                ((*(*caps).pVtbl).GetProperty.unwrap())(caps, wide(name).as_ptr(), &mut value);
+            ((*(*caps).pVtbl).Release.unwrap())(caps);
+            (result == AMF_RESULT_AMF_OK && value.type_ == AMF_VARIANT_TYPE_AMF_VARIANT_INT64)
+                .then_some(value.__bindgen_anon_1.int64Value)
+        }
+    }
+    /// Set a property and read it back: a driver can accept a value and keep
+    /// another.
+    fn apply(&mut self, property: &butterpollo_core::encoder_policy::Property) -> Result<()> {
+        use butterpollo_core::encoder_policy::Value;
+        let value = match property.value {
+            Value::Integer(n) => int(n),
+            Value::Boolean(on) => crate::amf_gpu::boolean(on),
+        };
+        self.property_raw(&property.name, value)?;
+        let mut applied = int(0);
+        unsafe {
+            check(((*(*self.component).pVtbl).GetProperty.unwrap())(
+                self.component,
+                wide(&property.name).as_ptr(),
+                &mut applied,
+            ))?;
+            let matches = match property.value {
+                Value::Integer(n) => {
+                    applied.type_ == AMF_VARIANT_TYPE_AMF_VARIANT_INT64
+                        && (applied.__bindgen_anon_1.int64Value == n
+                            || (property.name == "Av1NumTilesPerFrame"
+                                && applied.__bindgen_anon_1.int64Value > 0))
+                }
+                Value::Boolean(on) => match applied.type_ {
+                    AMF_VARIANT_TYPE_AMF_VARIANT_BOOL => {
+                        (applied.__bindgen_anon_1.boolValue != 0) == on
+                    }
+                    AMF_VARIANT_TYPE_AMF_VARIANT_INT64 => {
+                        (applied.__bindgen_anon_1.int64Value != 0) == on
+                    }
+                    _ => false,
+                },
+            };
+            if !matches {
+                bail!(
+                    "AMF did not apply {} = {:?} (reported variant {}, integer {})",
+                    property.name,
+                    property.value,
+                    applied.type_,
+                    if applied.type_ == AMF_VARIANT_TYPE_AMF_VARIANT_INT64 {
+                        applied.__bindgen_anon_1.int64Value
+                    } else {
+                        -1
+                    }
+                );
+            }
+        }
+        Ok(())
+    }
+    /// Split-frame encoding across the GPU's encoder engines, after usage,
+    /// rate control and pre-analysis have set the driver's defaults. The
+    /// value after Init is in the settings line; even that does not prove a
+    /// frame is split, which the driver decides.
+    fn request_split_frame(&mut self, options: &butterpollo_core::config::Config) {
+        let Some((cap, name)) = butterpollo_core::encoder_policy::amf_multi_instance(self.codec)
+        else {
+            return;
+        };
+        let instances = self.cap(cap).unwrap_or(0);
+        let driver = self.read(name).map(|value| value != 0);
+        let setting = options.get("amd_split_frame", "auto");
+        match butterpollo_core::encoder_policy::amf_split_frame(
+            options, self.codec, instances, driver,
+        ) {
+            None => tracing::info!(
+                setting,
+                instances,
+                driver_value = ?driver,
+                "AMF split-frame encoding left to the driver"
+            ),
+            Some(property) => match self.apply(&property) {
+                Ok(()) => tracing::info!(
+                    setting,
+                    instances,
+                    driver_value = ?driver,
+                    requested = property.value
+                        == butterpollo_core::encoder_policy::Value::Boolean(true),
+                    "AMF split-frame encoding requested"
+                ),
+                Err(error) => tracing::warn!(
+                    error = %format!("{error:#}"),
+                    setting,
+                    instances,
+                    "AMF split-frame request not accepted; the driver decides"
+                ),
+            },
         }
     }
     /// The settings that decide encode time and the bits each frame gets, as
@@ -569,30 +627,14 @@ impl Encoder {
                 },
             })
             .collect();
-        unsafe {
-            let mut caps = ptr::null_mut();
-            if ((*(*self.component).pVtbl).GetCaps.unwrap())(self.component, &mut caps)
-                == AMF_RESULT_AMF_OK
-                && !caps.is_null()
-            {
-                let names = match self.codec {
-                    0 => ["NumOfHwInstances", "ColorConversion"],
-                    1 => ["HevcNumOfHwInstances", "HevcColorConversion"],
-                    _ => ["Av1CapNumOfHwInstances", "Av1CapColorConversion"],
-                };
-                for name in names {
-                    let mut value = int(0);
-                    if ((*(*caps).pVtbl).GetProperty.unwrap())(
-                        caps,
-                        wide(name).as_ptr(),
-                        &mut value,
-                    ) == AMF_RESULT_AMF_OK
-                        && value.type_ == AMF_VARIANT_TYPE_AMF_VARIANT_INT64
-                    {
-                        settings.push(format!("{name}={}", value.__bindgen_anon_1.int64Value));
-                    }
-                }
-                ((*(*caps).pVtbl).Release.unwrap())(caps);
+        let caps = match self.codec {
+            0 => ["NumOfHwInstances", "ColorConversion"],
+            1 => ["HevcNumOfHwInstances", "HevcColorConversion"],
+            _ => ["Av1CapNumOfHwInstances", "Av1CapColorConversion"],
+        };
+        for name in caps {
+            if let Some(value) = self.cap(name) {
+                settings.push(format!("{name}={value}"));
             }
         }
         tracing::info!(
