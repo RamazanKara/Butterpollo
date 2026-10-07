@@ -179,6 +179,30 @@ mod tests {
         sessions.expire();
         assert!(!sessions.pending.contains_key("slow"));
     }
+    #[test]
+    fn pending_launches_and_streams_keep_sessions_busy_until_they_expire_or_end() {
+        let mut sessions = Sessions::default();
+        assert!(sessions.idle());
+        let mut pending = launch("pending", Role::Stream);
+        sessions.pending.insert(pending.id.clone(), pending.clone());
+        assert!(!sessions.idle());
+        pending.created = Instant::now() - Duration::from_secs(31);
+        sessions.pending.insert(pending.id.clone(), pending.clone());
+        assert!(sessions.idle());
+        assert!(sessions.owns_capture());
+        pending.preparing.store(true, Ordering::Release);
+        assert!(!sessions.idle());
+        pending.preparing.store(false, Ordering::Release);
+        let fresh = launch("fresh", Role::Stream);
+        sessions.pending.insert(fresh.id.clone(), fresh.clone());
+        sessions.start(fresh, Negotiated::default()).unwrap();
+        assert!(!sessions.idle());
+        sessions.active.clear();
+        sessions.teardown = 1;
+        assert!(!sessions.idle());
+        sessions.teardown = 0;
+        assert!(sessions.idle());
+    }
     fn launch(id: &str, role: Role) -> Launch {
         Launch {
             id: id.into(),
@@ -383,6 +407,12 @@ pub struct Launch {
     /// connects only after the launch reply.
     pub preparing: Arc<AtomicBool>,
 }
+impl Launch {
+    /// Still waiting for its client: being prepared, or prepared under 30 s ago.
+    fn live(&self) -> bool {
+        self.preparing.load(Ordering::Acquire) || self.created.elapsed() < Duration::from_secs(30)
+    }
+}
 #[derive(Default)]
 pub struct Stats {
     pub frames: AtomicU64,
@@ -488,9 +518,7 @@ pub struct Sessions {
 }
 impl Sessions {
     pub fn expire(&mut self) {
-        self.pending.retain(|_, p| {
-            p.preparing.load(Ordering::Acquire) || p.created.elapsed() < Duration::from_secs(30)
-        });
+        self.pending.retain(|_, p| p.live());
     }
     /// Withdraw a client's launches and streams in one role. Moonlight starts a
     /// stream only after abandoning its previous one, which may never have
@@ -563,6 +591,12 @@ impl Sessions {
     }
     pub fn owns_capture(&self) -> bool {
         !self.pending.is_empty() || !self.active.is_empty() || self.teardown != 0
+    }
+    /// No stream runs, tears down or is about to start. Unlike
+    /// `owns_capture`, an expired launch that nothing has removed yet, such
+    /// as one the client abandoned, does not count.
+    pub fn idle(&self) -> bool {
+        self.active.is_empty() && self.teardown == 0 && !self.pending.values().any(Launch::live)
     }
     pub fn stop_role(&mut self, role: Role, client: Option<&str>) {
         self.pending

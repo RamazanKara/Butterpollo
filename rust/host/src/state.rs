@@ -17,6 +17,8 @@ pub type Shared = Arc<Host>;
 use crate::web_sessions::{self, WebSession};
 
 const STANDARD_CODECS: u32 = 0x1 | 0x100 | 0x200 | 0x10000 | 0x20000;
+/// Bits from the separate PyroWave (Vulkan) probe.
+const PYROWAVE_CODECS: u32 = 0x0780_0000;
 const CODEC_RETRY_MIN: Duration = Duration::from_secs(5);
 const CODEC_RETRY_MAX: Duration = Duration::from_secs(60);
 
@@ -345,6 +347,7 @@ impl Host {
         std::thread::spawn(move || {
             use std::sync::atomic::Ordering;
             let mut retry = CodecRetry::new(Instant::now());
+            let mut retrying = false;
             loop {
                 if h.stop.load(Ordering::Acquire) {
                     return;
@@ -354,9 +357,21 @@ impl Host {
                 let mut config = h.config.read().unwrap().clone();
                 // Probe the driver's ability independently of the stream's opt-in.
                 config.values.insert("amd_ltr_frames".into(), "4".into());
-                let (flags, error, retry_pyrowave) = h
-                    .probe_codecs_once(&config)
-                    .unwrap_or_else(|error| (0, Some(format!("{error:#}")), false));
+                let result = h.probe_codecs_once(&config, retrying);
+                retrying = true;
+                let Some((flags, error, retry_pyrowave)) =
+                    result.unwrap_or_else(|error| Some((0, Some(format!("{error:#}")), false)))
+                else {
+                    // A stream is starting: leave the encoder to it and probe
+                    // again once it has ended, without judging this attempt.
+                    h.probing_codecs.store(false, Ordering::Release);
+                    h.metadata.lock().unwrap().take();
+                    tracing::debug!("encoder capability probe paused for a stream");
+                    if !h.wait_for_codec_retry(&retry) {
+                        return;
+                    }
+                    continue;
+                };
                 h.codecs.store(flags, Ordering::Release);
                 h.video_codecs_ready.send_replace(true);
                 h.probing_codecs.store(false, Ordering::Release);
@@ -381,8 +396,19 @@ impl Host {
             }
         });
     }
-    fn probe_codecs_once(&self, config: &Config) -> Result<(u32, Option<String>, bool)> {
+    /// One pass over every codec. A retry (`yield_to_streams`) stops before
+    /// opening another encoder once a launch or stream appears, returning
+    /// None: a probe must not compete with a stream for the encoder.
+    fn probe_codecs_once(
+        &self,
+        config: &Config,
+        yield_to_streams: bool,
+    ) -> Result<Option<(u32, Option<String>, bool)>> {
         let _com = butterpollo_windows::capture::ComGuard::new()?;
+        let busy = || yield_to_streams && !self.sessions.lock().unwrap().idle();
+        // Until this pass publishes its result, keep advertising what the
+        // separate PyroWave probe found last time.
+        let pyrowave = self.codecs.load(std::sync::atomic::Ordering::Acquire) & PYROWAVE_CODECS;
         let mut first_error = None;
         let image = butterpollo_windows::capture::Image {
             width: 640,
@@ -425,6 +451,9 @@ impl Host {
             if self.stop.load(std::sync::atomic::Ordering::Acquire) {
                 break;
             }
+            if busy() {
+                return Ok(None);
+            }
             let negotiated = butterpollo_core::rtsp::Negotiated {
                 width: 640,
                 height: 480,
@@ -455,7 +484,7 @@ impl Host {
                             Ok(packets) if !packets.is_empty() => {
                                 flags |= bit;
                                 self.codecs
-                                    .store(flags, std::sync::atomic::Ordering::Release);
+                                    .store(flags | pyrowave, std::sync::atomic::Ordering::Release);
                                 if encoder.supports_invalidation() {
                                     flags |= 0x40000000;
                                 }
@@ -483,9 +512,12 @@ impl Host {
         // Publish standard codecs together before the optional Vulkan
         // probe. A driver/overlay failure in that child cannot kill them.
         self.codecs
-            .store(flags, std::sync::atomic::Ordering::Release);
+            .store(flags | pyrowave, std::sync::atomic::Ordering::Release);
         self.video_codecs_ready.send_replace(true);
         let mut retry_pyrowave = false;
+        if busy() {
+            return Ok(None);
+        }
         if config.boolean("pyrowave", true) && !self.stop.load(std::sync::atomic::Ordering::Acquire)
         {
             match butterpollo_windows::codec_probe::pyrowave(config) {
@@ -501,7 +533,7 @@ impl Host {
                 }
             }
         }
-        Ok((flags, first_error, retry_pyrowave))
+        Ok(Some((flags, first_error, retry_pyrowave)))
     }
     fn wait_for_codec_retry(&self, retry: &CodecRetry) -> bool {
         use std::sync::atomic::Ordering;
@@ -522,12 +554,14 @@ impl Host {
             std::thread::sleep(Duration::from_millis(250));
         }
     }
+    /// A user is signed in, and no stream runs or is being launched: a
+    /// launch asks for a probe, which must wait until its stream has ended.
     fn probe_session_ready(&self) -> bool {
         !(butterpollo_windows::process::is_system()
             && !butterpollo_windows::process::user_signed_in())
-            && self.sessions.lock().unwrap().active.is_empty()
+            && self.sessions.lock().unwrap().idle()
     }
-    /// Wait `delay`, then until a user is signed in and no stream runs.
+    /// Wait `delay`, then until a user is signed in and no stream runs or starts.
     /// False when the host is stopping.
     fn wait_for_session(&self, delay: Duration) -> bool {
         use std::sync::atomic::Ordering;
