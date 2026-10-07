@@ -7,6 +7,7 @@
 //! resolution and priority class; --trace prints the input module's logs.
 //! Mouse input is zero-distance moves only. vhf and pad-contention plug a
 //! neutral virtual pad and remove it: run them while no one streams.
+//! pad-contention runs VHF and ViGEm X360 separately.
 use butterpollo_windows::capture::Priority;
 use std::{
     net::UdpSocket,
@@ -527,7 +528,9 @@ fn vhf_section(loads: &[String]) {
         std::thread::spawn(move || {
             let _p = Priority::new();
             let t = Instant::now();
-            let opened = butterpollo_windows::input::Gamepads::open(0);
+            let opened = butterpollo_windows::input::Gamepads::open(
+                butterpollo_core::input_policy::VHF_AUTO,
+            );
             println!(
                 "Gamepads::open (SetupDi + CreateFile + version ioctl): {:.1} us -> {}",
                 t.elapsed().as_secs_f64() * 1e6,
@@ -602,13 +605,15 @@ fn vhf_section(loads: &[String]) {
 /// state and one zero-distance mouse move per millisecond, plus the 8 ms
 /// refresh and feedback poll. Reports how long the mouse move waited from the
 /// start of its pass. A neutral pad is plugged and removed at the end.
-fn pad_contention_section(loads: &[String]) {
+fn pad_contention_section(loads: &[String], profile: &'static str) {
     use butterpollo_core::input::Input;
-    println!("== mouse move behind a controller state (Injector, neutral pad, zero moves) ==");
+    println!(
+        "== {profile}: mouse move behind a controller state (Injector, neutral pad, zero moves) =="
+    );
     let loads = loads.to_vec();
     std::thread::spawn(move || {
         let _p = Priority::input();
-        let mut injector = butterpollo_windows::input::Injector::new("", "vhf").unwrap();
+        let mut injector = butterpollo_windows::input::Injector::new("", profile).unwrap();
         let state = Input::Controller {
             id: 0,
             active: 1,
@@ -869,7 +874,9 @@ fn main() {
         vhf_section(&loads);
     }
     if sections.iter().any(|a| *a == "pad-contention") {
-        pad_contention_section(&loads);
+        for profile in ["vhf", "x360"] {
+            pad_contention_section(&loads, profile);
+        }
     }
     if has("injector") {
         injector_section();

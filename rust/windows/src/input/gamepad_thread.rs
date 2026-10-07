@@ -1,7 +1,6 @@
-//! The virtual gamepads on their own thread. Every driver call is a blocking
-//! DeviceIoControl into a user-mode driver host at normal priority: with the
-//! CPUs busy one took up to 365 ms, and keyboard, mouse, touch and the
-//! control stream's acknowledgements waited behind it on the input thread.
+//! Drive either virtual gamepad backend off the input thread. Blocking VHF
+//! or ViGEmBus calls must not delay keyboard, mouse, touch or the control
+//! stream's acknowledgements.
 use super::{Event, Gamepads};
 use anyhow::Result;
 use butterpollo_core::input::Batch;
@@ -35,7 +34,7 @@ pub enum PadReport {
     Motion { id: u8, capabilities: u16 },
 }
 
-/// The pads the thread drives: the VHF driver, or a stand-in in tests.
+/// The pads the thread drives: VHF or ViGEmBus, or a stand-in in tests.
 pub(super) trait Pads {
     fn apply(&mut self, event: &Event) -> Result<()>;
     fn refresh(&mut self) -> Result<()>;
@@ -386,10 +385,15 @@ mod tests {
     }
 
     #[test]
-    fn mouse_input_does_not_wait_for_a_stalled_driver() {
+    fn keyboard_and_mouse_do_not_wait_for_a_stalled_driver() {
+        static INJECTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let (pads, gate, _) = fake();
         let mut injector = super::super::Injector::new(r"\\.\DISPLAY99", "vhf").unwrap();
         injector.gamepads = pads;
+        injector.inject = |inputs| {
+            INJECTED.fetch_add(inputs.len(), Ordering::Relaxed);
+            inputs.len()
+        };
         let controller = |buttons| Event::Controller {
             id: 0,
             active: 1,
@@ -400,22 +404,34 @@ mod tests {
         };
         injector.apply(&controller(0)).unwrap();
         gate.wait_entered(1);
-        // Absolute moves onto a display that does not exist reach no one,
-        // but take the same path as every other input; the driver call in
-        // progress never returns while they do.
+        // Nothing reaches the desktop, but keyboard and mouse take the
+        // production batching path while the driver call cannot return.
         for buttons in 1..20 {
-            injector.apply(&controller(buttons)).unwrap();
-            injector
-                .apply(&Event::Absolute {
-                    x: 10,
-                    y: 20,
-                    width: 100,
-                    height: 100,
-                })
-                .unwrap();
+            assert!(
+                injector
+                    .apply_all(&[
+                        controller(buttons),
+                        Event::Keyboard {
+                            key: 0x46,
+                            down: true,
+                            flags: 0,
+                            modifiers: 0,
+                        },
+                        Event::Keyboard {
+                            key: 0x46,
+                            down: false,
+                            flags: 0,
+                            modifiers: 0,
+                        },
+                        Event::Relative { x: 0, y: 0 },
+                    ])
+                    .is_empty()
+            );
         }
-        assert_eq!(gate.entered.load(Ordering::SeqCst), 1);
+        let entered = gate.entered.load(Ordering::SeqCst);
         gate.open();
+        assert_eq!(entered, 1);
+        assert_eq!(INJECTED.load(Ordering::Relaxed), 19 * 3);
     }
 
     #[test]

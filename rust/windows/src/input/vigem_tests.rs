@@ -196,6 +196,95 @@ fn require_idle_host() -> Result<()> {
     Ok(())
 }
 
+#[test]
+#[ignore = "briefly plugs neutral VHF and ViGEm DS4 pads on the worker; requires both drivers and an idle installed host"]
+fn backend_open_does_not_block_input_and_worker_drop_frees_slots() -> Result<()> {
+    use crate::input::{GamepadThread, Injector, PadReport};
+    use butterpollo_core::input_policy::VHF_AUTO;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    };
+
+    static INJECTED: AtomicUsize = AtomicUsize::new(0);
+    for (profile, backend) in [(VHF_AUTO, "VHF"), (0, "ViGEmBus")] {
+        require_idle_host()?;
+        let slots_before = *SLOTS.lock().unwrap();
+        let (ready, opened) = mpsc::channel();
+        let (release, resume) = mpsc::channel();
+        let mut injector = Injector::new(r"\\.\DISPLAY99", "auto")?;
+        injector.gamepads = GamepadThread::spawn(move || {
+            let pads = Gamepads::open(profile)?;
+            ready.send((std::thread::current().id(), pads.backend.name()))?;
+            // Hold a real backend on its worker before open completes. Input
+            // must finish while the control thread has not released it.
+            resume.recv_timeout(Duration::from_secs(10))?;
+            Ok(pads)
+        })?;
+        INJECTED.store(0, Ordering::Relaxed);
+        injector.inject = |inputs| {
+            INJECTED.fetch_add(inputs.len(), Ordering::Relaxed);
+            inputs.len()
+        };
+        injector.apply(&Input::Arrival {
+            id: 0,
+            kind: 2,
+            capabilities: 0x30,
+            buttons: 0,
+        })?;
+        let (thread, selected) = opened.recv_timeout(Duration::from_secs(10))?;
+        assert_ne!(thread, std::thread::current().id());
+        assert_eq!(selected, backend);
+        let events = [
+            Input::Keyboard {
+                key: 0x46,
+                down: true,
+                flags: 0,
+                modifiers: 0,
+            },
+            Input::Keyboard {
+                key: 0x46,
+                down: false,
+                flags: 0,
+                modifiers: 0,
+            },
+            Input::Relative { x: 0, y: 0 },
+        ];
+        for _ in 0..100 {
+            assert!(injector.apply_all(&events).is_empty());
+        }
+        assert_eq!(INJECTED.load(Ordering::Relaxed), 300);
+        assert_eq!(*SLOTS.lock().unwrap(), slots_before);
+        release.send(())?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !injector.gamepad_reports().any(|report| {
+            matches!(
+                report,
+                PadReport::Motion {
+                    id: 0,
+                    capabilities: 0x30
+                }
+            )
+        }) {
+            require_idle_host()?;
+            anyhow::ensure!(
+                Instant::now() < deadline,
+                "{backend} arrival was not reported"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_ne!(*SLOTS.lock().unwrap(), slots_before);
+        std::thread::sleep(Duration::from_millis(24));
+        require_idle_host()?;
+        drop(injector);
+        assert_eq!(*SLOTS.lock().unwrap(), slots_before);
+        eprintln!(
+            "{backend}: opened on {thread:?}; 100 keyboard/mouse passes completed while open was held; motion reply received and slots freed on worker drop"
+        );
+    }
+    Ok(())
+}
+
 #[repr(C)]
 #[derive(Default)]
 struct XInputState {
