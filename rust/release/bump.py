@@ -5,8 +5,9 @@ Writes LF line endings on any platform.
 usage: python rust/release/bump.py 2.0.0-rc.14 [--notes FILE]
 
 Updates the workspace version (Cargo.toml and the workspace crates in
-Cargo.lock), the version and installer names in the READMEs, docs and
-rust/RELEASE_NOTES.md, and adds a "## New in <label>" section above the
+Cargo.lock); the full version, "Download rc.N" and "For rc.N," in the
+READMEs and docs; the title, history and installer names in
+rust/RELEASE_NOTES.md; and adds a "## New in <label>" section above the
 previous one: the contents of --notes, or the bullets to fill in.
 """
 import argparse, pathlib, re, sys
@@ -45,10 +46,13 @@ assert count, 'no workspace crate in Cargo.lock'
 lock.write_text(text, encoding='utf-8', newline='')
 
 short = re.compile(r'(?<![\w.])%s(?![\w])' % re.escape(label(old)))
+# Only the short labels that name the release to download: a sentence about
+# what an older release measured or changed keeps its version.
+current = re.compile(r'(?<=Download ){0}(?![\w])|(?<=For ){0}(?=,)'.format(re.escape(label(old))))
 for name in ('README.md', 'docs/README.md', 'docs/getting-started.md', 'rust/README.md'):
     path = root / name
     text = path.read_text(encoding='utf-8')
-    path.write_text(short.sub(label(new), text.replace(old, new)), encoding='utf-8', newline='')
+    path.write_text(current.sub(label(new), text.replace(old, new)), encoding='utf-8', newline='')
 
 notes = root / 'rust/RELEASE_NOTES.md'
 lines = notes.read_text(encoding='utf-8').split('\n')
