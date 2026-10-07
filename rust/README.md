@@ -4,7 +4,7 @@
 
 The Windows host, protocol implementation, native helpers, service and setup are written in Rust. The browser console is Svelte. The Rust executables do not link the previous C++ host; codec libraries, GPU SDKs and Windows drivers are external dependencies.
 
-The workspace version is **2.0.0-rc.21**. This guide covers development and isolated validation. For feature status and exact hardware evidence, use [PARITY.md](PARITY.md) and [PERFORMANCE.md](PERFORMANCE.md).
+The workspace version is **2.0.0-rc.22**. This guide covers development and isolated validation. For feature status and exact hardware evidence, use [PARITY.md](PARITY.md) and [PERFORMANCE.md](PERFORMANCE.md).
 
 ## Start streaming
 

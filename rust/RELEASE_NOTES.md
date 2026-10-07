@@ -1,10 +1,36 @@
-# Butterpollo 2.0.0-rc.21 release candidate for Windows
+# Butterpollo 2.0.0-rc.22 release candidate for Windows
 
 [Documentation](../docs/README.md) · [Install and migrate](../docs/getting-started.md) · [Configuration](../docs/configuration.md) · [Compatibility](PARITY.md)
 
-**Release history:** [rc.21](#new-in-rc21) · [rc.20](#new-in-rc20) · [rc.19](#new-in-rc19) · [rc.18](#new-in-rc18) · [rc.17](#new-in-rc17) · [rc.16](#new-in-rc16) · [rc.15](#new-in-rc15) · [rc.14](#new-in-rc14) · [rc.13](#new-in-rc13) · [rc.12](#new-in-rc12) · [rc.11](#new-in-rc11) · [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
+**Release history:** [rc.22](#new-in-rc22) · [rc.21](#new-in-rc21) · [rc.20](#new-in-rc20) · [rc.19](#new-in-rc19) · [rc.18](#new-in-rc18) · [rc.17](#new-in-rc17) · [rc.16](#new-in-rc16) · [rc.15](#new-in-rc15) · [rc.14](#new-in-rc14) · [rc.13](#new-in-rc13) · [rc.12](#new-in-rc12) · [rc.11](#new-in-rc11) · [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
 
-Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.21 installer is named `butterpollo-setup-2.0.0-rc.21.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.22 installer is named `butterpollo-setup-2.0.0-rc.22.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+
+## New in rc.22
+
+- **Stream display problems:**
+  - **VRR streams no longer settle at 60 Hz:** the virtual display gets the stream's resolution and refresh after it is created and after every recovery. Before, Windows picked a saved mode, and for some 4K VRR streams that was 60 Hz, so a 116 fps game streamed at about 60 fps. The log now shows `virtual display mode applied requested=… actual=…`, and the stream card warns if Windows kept a different mode.
+  - **The stream no longer silently shows your physical desktop:** when Windows switched the virtual display off mid-stream (for example when a game reset display settings on exit), capture fell back to the main monitor, so the stream showed the host's desktop at its own resolution. Capture now waits for the stream's display to come back. A temporary "display busy" error no longer rebuilds the display, and a display Windows switched off is switched back on with the exclusive layout and HDR.
+  - **Saved 60 Hz modes no longer cap VRR:** a 60 Hz mode saved for a device also limited the game to 60 fps under VRR. The frame limiter now follows the stream rate, and a VRR stream never reuses a display prepared without VRR.
+- **No silent downgrades:**
+  - Automatic picks the encoder by GPU vendor (AMD → AMF, NVIDIA → NVENC). If it can't start, it tries other hardware encoders and says so on the stream card; it never falls back to software.
+  - The console's stream card shows the encoder in use, plus warnings for capture fallback, display modes or frame limits that weren't applied, audio route changes and loss, network limits, and missing input features.
+  - The console no longer shows NVENC settings on AMD hosts under Automatic.
+- **Install and update safety:**
+  - A failed update keeps the previous installation working and keeps its backup for a retry.
+  - Manual reinstalls and upgrades use the same rollback as in-app updates.
+  - Incomplete packages are rejected before anything changes, and downgrades are refused.
+  - Migrating from Vibepollo, Apollo or Sunshine checks the old profile before replacing the old host.
+  - Driver setup works with non-ASCII user folders and treats "reboot needed" as success.
+  - A setup interrupted earlier can't run driver tasks later.
+- **Controllers:**
+  - DualShock 4 rumble and lightbar now work on ViGEmBus.
+  - Repeated feedback failures show up in the log.
+- **Fewer ways for a stream to end:**
+  - A PyroWave frame that can't be prepared drops that frame instead of ending the session.
+  - A handle leak in the capture threads is fixed.
+- **Wi-Fi pacing only where it helps:** 2× pacing now applies only to confirmed wireless routes. Wired hosts behind a Hyper-V switch, VPN or Tailscale keep full-speed pacing again.
+- **Playnite plugin installed as you:** the plugin is installed and removed as the signed-in user instead of SYSTEM, so a link in a user folder can't redirect a SYSTEM write or delete.
 
 ## New in rc.21
 
@@ -271,8 +297,8 @@ Current automated validation: 263 ordinary tests passed, with 27 environment-dep
 
 ## Install
 
-- `butterpollo-setup-2.0.0-rc.21.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
-- For a portable copy, extract `butterpollo-rust-2.0.0-rc.21-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
+- `butterpollo-setup-2.0.0-rc.22.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
+- For a portable copy, extract `butterpollo-rust-2.0.0-rc.22-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
 - These are unsigned test builds. Keep a copy of your configuration and the previous installer for rollback.
 
 ## Lower latency
