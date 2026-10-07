@@ -150,7 +150,7 @@ fn program_folder(program: &Path) -> Option<PathBuf> {
     Some(folder.to_path_buf())
 }
 /// Whether a previous host's folder holds settings to import.
-fn has_profile(root: &Path) -> bool {
+pub(crate) fn has_profile(root: &Path) -> bool {
     root.join("config").join("sunshine.conf").is_file() || root.join("sunshine.conf").is_file()
 }
 

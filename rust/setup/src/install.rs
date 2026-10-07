@@ -116,7 +116,6 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
     line(format!("found: {found:#?}"));
     let install = system::win32_path(&detect::install_dir(&found, options.install_dir.clone()))?;
     let profile = profile();
-    let previous = migration_source(&found, &profile, &install)?;
     let mut notes = Vec::new();
     let mut restart_needed = false;
 
@@ -146,6 +145,8 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
         });
     }
 
+    // Previous hosts are only removed by a full installation.
+    let previous = migration_source(&found, &profile, &install)?;
     progress.set("Unpacking Butterpollo…");
     let staging = system::program_data().join("Butterpollo").join("setup");
     let _ = std::fs::remove_dir_all(&staging);
@@ -355,33 +356,28 @@ fn migration_source(
     profile: &Path,
     install: &Path,
 ) -> Result<Option<PathBuf>> {
-    let mut source = None;
+    let mut sources: Vec<(&str, PathBuf)> = Vec::new();
     for product in found
         .packages
         .iter()
         .chain(&found.legacy)
         .chain(&found.vibepollo_entries)
     {
-        let root = product.location.as_ref().with_context(|| {
-            format!(
-                "The settings for {} could not be located; back them up before removing that host",
+        // An entry left behind after its folder was deleted has nothing to
+        // import, and its removal deletes nothing.
+        let Some(root) = product
+            .location
+            .as_ref()
+            .and_then(|root| root.canonicalize().ok())
+        else {
+            line(format!(
+                "{} has no installation folder; nothing to import",
                 product.name
-            )
-        })?;
-        if !root.join("config/sunshine.conf").is_file() && !root.join("sunshine.conf").is_file() {
-            bail!(
-                "The settings for {} were not found in {}; that host has not been removed",
-                product.name,
-                root.display()
-            );
-        }
-        let root = root.canonicalize()?;
-        if source.as_ref().is_some_and(|previous| previous != &root) {
-            bail!(
-                "More than one previous host has settings. Back up and import the profile you want before removing the other hosts."
-            );
-        }
-        let root_path = system::win32_path(&root)?.to_string_lossy().to_lowercase();
+            ));
+            continue;
+        };
+        let root = system::win32_path(&root)?;
+        let root_path = root.to_string_lossy().to_lowercase();
         let install_path = system::win32_path(
             &install
                 .canonicalize()
@@ -395,22 +391,44 @@ fn migration_source(
                 root.display()
             );
         }
-        source = Some(root);
-    }
-    if source.is_some() {
-        let empty = match std::fs::read_dir(profile) {
-            Ok(mut entries) => entries.next().transpose()?.is_none(),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-            Err(error) => return Err(error).context("checking the existing Butterpollo profile"),
-        };
-        if !empty {
-            bail!(
-                "Butterpollo already has a profile at {}. The previous host has not been removed; back up both profiles before choosing which to keep.",
-                profile.display()
-            );
+        // The confirmation summary already says these settings were not
+        // found; such a host is replaced without an import, as before.
+        if !detect::has_profile(&root) {
+            line(format!(
+                "{} in {} has no settings to import",
+                product.name,
+                root.display()
+            ));
+        } else if !sources.iter().any(|(_, known)| known == &root) {
+            sources.push((&product.name, root));
         }
     }
-    Ok(source)
+    let Some((name, source)) = sources.first() else {
+        return Ok(None);
+    };
+    if sources.len() > 1 {
+        let hosts = sources
+            .iter()
+            .map(|(name, root)| format!("{name} ({})", root.display()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        bail!(
+            "Setup can import the settings of only one previous host, and these each have their own: {hosts}. Uninstall the ones whose settings you do not need, then run setup again. Nothing has been changed."
+        );
+    }
+    let empty = match std::fs::read_dir(profile) {
+        Ok(mut entries) => entries.next().transpose()?.is_none(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => return Err(error).context("checking the existing Butterpollo profile"),
+    };
+    if !empty {
+        bail!(
+            "Butterpollo already has settings in {}, and {name} has its own in {}. To keep Butterpollo's, uninstall {name} first; to import {name}'s instead, move the Butterpollo folder elsewhere. Then run setup again. Nothing has been changed.",
+            profile.display(),
+            source.display()
+        );
+    }
+    Ok(Some(source.clone()))
 }
 /// Stop `services`, restarting those that were running if any stop fails.
 fn stop_running<F: FnMut(&str) -> Result<()>>(
@@ -810,10 +828,8 @@ mod tests {
             legacy: vec![product.clone()],
             ..Default::default()
         };
-        assert_eq!(
-            migration_source(&found, &profile, &install)?,
-            Some(old.canonicalize()?)
-        );
+        let source = system::win32_path(&old.canonicalize()?)?;
+        assert_eq!(migration_source(&found, &profile, &install)?, Some(source));
         assert!(migration_source(&found, &profile, &old).is_err());
         assert!(migration_source(&found, &profile, &old.join("nested")).is_err());
         std::fs::create_dir_all(&profile)?;
@@ -829,12 +845,28 @@ mod tests {
         std::fs::write(other.join("sunshine.conf"), "encoder=software")?;
         found.legacy.push(detect::Product {
             location: Some(other),
-            ..product
+            ..product.clone()
         });
         assert!(migration_source(&found, &profile, &install).is_err());
         found.legacy.pop();
+        // The same host listed twice (its MSI and its own entry) is one source.
+        found.vibepollo_entries.push(product.clone());
+        assert!(migration_source(&found, &profile, &install)?.is_some());
+        found.vibepollo_entries.clear();
+        // Hosts with nothing to import are replaced as the summary says, and
+        // stale entries without a folder do not block setup.
+        for location in [None, Some(temp.path().join("deleted"))] {
+            found.legacy.push(detect::Product {
+                location,
+                ..product.clone()
+            });
+        }
         std::fs::remove_file(old.join("config/sunshine.conf"))?;
-        assert!(migration_source(&found, &profile, &install).is_err());
+        assert_eq!(migration_source(&found, &profile, &install)?, None);
+        // Even then Butterpollo is not installed where a host is removed.
+        assert!(migration_source(&found, &profile, &old.join("nested")).is_err());
+        std::fs::write(profile.join("sunshine_state.json"), "existing pairings")?;
+        assert_eq!(migration_source(&found, &profile, &install)?, None);
         assert_eq!(
             migration_source(&detect::Found::default(), &profile, &install)?,
             None
