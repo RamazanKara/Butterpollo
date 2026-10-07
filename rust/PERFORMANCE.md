@@ -2233,12 +2233,12 @@ The PyroWave README targets "~200+ mbit/s" on a wired LAN. A 720p60 HDR
 stream to Nonary's client at 149 Mbps (2.7 bits per pixel) worked, at 60 fps
 and 0.68-0.78 ms from present to encoded frame.
 
-Below one bit per pixel per frame, less than half of what a desktop takes,
-the host now warns: once when the stream starts and when the client lowers
+The initial warning used one bit per pixel per frame, less than half of
+what that desktop took: once when the stream starts and when the client lowers
 the bitrate (`PyroWave has too little bitrate`), and on the console's stream
 card. That is about 55 Mbps at 720p60, 125 Mbps at 1080p60 and 500 Mbps at
-4K60 (`pyrowave::minimum_kbps`). The setting's description and the
-configuration guide give the same numbers. The host does not raise the
+4K60 (`pyrowave::minimum_kbps`). The representative-picture measurements
+below replace this initial threshold. The host does not raise the
 bitrate itself: the client's choice may reflect its network.
 ## October 7: PyroWave decoded end to end
 
@@ -2375,9 +2375,10 @@ requested budgets at 60 fps, not measured network throughput.
 | 1280x720 | HDR10 | 4:4:4 | 125 | 33.18/31.73/37.17 | 288.2/144.2/86.9 |
 | 1280x720 | HDR10 | 4:4:4 | 30 | 25.05/29.58/35.52 | 459.5/195.7/91.6 |
 
-At 1080p60, `minimum_kbps` is 124,416 kbps (one bit per pixel per frame).
+At the time of this chart test, `minimum_kbps` was 124,416 kbps at 1080p60
+(one bit per pixel per frame).
 The 400, 125 and 30 Mbps budgets are 3.215, 1.005 and 0.241 bits per pixel
-per frame. At 720p60 the warning is 55,296 kbps, and the same budgets are
+per frame. At 720p60 the warning was 55,296 kbps, and the same budgets are
 7.234, 2.261 and 0.543 bits per pixel per frame. These are nominal encoder
 budgets; framing, FEC and network headers add bytes on the wire.
 
@@ -2388,7 +2389,7 @@ not show a sharp quality cliff at one bit per pixel. In the 1080p SDR8
 luma scores are 33.34, 22.34 and 18.64 dB. Quality is already poor at the
 warning's boundary; the larger drop is between 400 and 125 Mbps.
 
-The current threshold remains a conservative warning about very low
+That threshold was a conservative warning about very low
 bitrate, not a promise of good quality above it. If it is intended to
 protect fine SDR text, about 3.2 bits per pixel per frame is a candidate
 for 4:2:0: 400 Mbps is the lowest tested 1080p rate to keep both text and
@@ -2398,7 +2399,314 @@ not cover 4:4:4: at 400 Mbps the 1080p SDR8 plane scores are only
 28.83/25.90/27.26 dB. Only the 1000 Mbps control clears 40 dB on all planes
 throughout this matrix. More rates near a proposed boundary and real
 desktop/game captures are needed before choosing a replacement that
-applies across content and chroma formats. `minimum_kbps` is unchanged.
+applies across content and chroma formats. The following representative
+picture sweep replaces that provisional warning.
+
+## October 7: PyroWave bitrate from representative pictures
+
+The ignored `pyrowave::decode_test::pyrowave_quality_*` tests extend the
+decoded end-to-end harness above. All pictures are generated in Rust; no
+downloaded images or captures are used:
+
+- Desktop: a light editor, coloured text, navigation, toolbars, a graph,
+  selection changes and one-, two- or four-pixel font strokes at 720p,
+  1080p and 4K respectively.
+- Game: a sky gradient, clouds, a bright sun, stone and brick textures,
+  foliage noise at several spatial scales, a crosshair and a health bar.
+  The second picture translates the textures and foliage and moves clouds.
+- Dark: a dim light gradient, low-contrast edges and moving fine noise.
+
+Each scene runs at 1280x720, 1920x1080 and 3840x2160, in SDR8 and HDR10,
+with 4:2:0 and 4:4:4, at nominal 30, 60 and 120 fps. Requested budgets are
+0.25, 0.5, 0.75, 1, 1.5, 2, 2.5, 3, 3.2, 3.5, 4, 4.5 and 5 bits per pixel
+per frame (bpp). Each combination has two pictures and two repeats. The
+rate order alternates low/high budgets (0.25/5, 0.5/4.5, and so on), then
+reverses for the repeat. Every batch records the installed host log's last
+connect/disconnect event. Other GPU work is not controlled.
+
+The path is the same full encoder, packetizer, independent receive parser,
+Vulkan decoder and staging readback used above, with compute conversion,
+record framing, 1392-byte packets, 20% critical FEC and no detail FEC.
+The previous encoder timestamp is reset for every sample, so CPU work
+cannot inflate the nominal frame budget. These are quality tests at those
+budgets, not measurements of sustained frame rate, latency or a live client.
+
+At 4K the normal record/FEC transport limit caps the actual encoder budget
+at 3,921,592 bytes per frame (about 3.78 bpp). The requested 4, 4.5 and
+5 bpp points therefore test the same cap, not those actual bit allocations.
+The `pyrowave_quality_2160p_without_fec` control repeats 4, 4.5 and 5 bpp
+with critical FEC disabled in the test configuration. Its larger transport
+cap allows those budgets; the control uses the same scenes, formats,
+frame rates, phases and alternating repeats. It does not change the
+installed host or the normal stream defaults.
+The sweep supplies bitrate directly to the encoder. Normal stream setup
+also caps bitrate at 2 Gbps, and the runtime `/bitrate` endpoint caps it at
+500 Mbps; this test does not raise either limit. A high requested rate in
+the tables is not evidence that a client can negotiate or sustain it.
+
+HDR uses 200-nit desktop/game white, a sun reaching 1000 nits, and a dark
+scene below 20 nits. Each HDR scene has FP16 scRGB and packed ten-bit PQ
+input, compared with the independent full-range BT.2020 PQ reference.
+SDR uses full-range BT.709. PSNR is reported on each Y/Cb/Cr plane with
+peaks of 255 or 1023. The 4:2:0 reference already includes chroma averaging;
+these scores do not measure its loss relative to 4:4:4.
+
+The simple SSIM diagnostic averages non-overlapping uniform 8x8 windows
+(partial edge windows included), using population variance/covariance and
+constants `(0.01 L)^2` and `(0.03 L)^2`. It has no Gaussian weighting,
+multiscale processing or perceptual HDR weighting. HDR scores are in PQ
+code space, not linear light, and are not directly comparable with SDR.
+Unit tests cover identity, opposite constant pictures, ten-bit output
+scaling and inverted structure. Dark scenes can score highly even when
+subtle detail is lost; their scores do not establish freedom from banding.
+
+The quality criteria are:
+
+- Severe-loss floor: desktop and game luma PSNR at least 25 dB and luma
+  SSIM at least 0.80 in every tested picture.
+- Clean-picture recommendation: desktop and game PSNR at least 35 dB on
+  **every** plane and luma SSIM at least 0.95 in every tested picture.
+
+These are explicit engineering targets for these synthetic scenes, not
+universal visual thresholds. The earlier chart remains a harder stress
+test. Actual game captures, small coloured text, HDR display rendering,
+compression artifacts in motion and other GPUs still need wider validation.
+AMD is the measured platform; NVIDIA users should use Vibepollo.
+
+To reproduce, use the SDK environment and DLL from the preceding section:
+
+```powershell
+. 'C:\Users\ramaz\.codex\artifacts\butterpollo-rust-20260930\performance-probe\rust-env.ps1'
+cargo test -p butterpollo-windows --lib --release --no-run --target-dir target\qa
+if ($LASTEXITCODE) { throw 'Test build failed' }
+Copy-Item "$env:BUTTERPOLLO_PYROWAVE_ROOT\bin\libpyrowave-shared-0.dll" target\qa\release\deps\
+cargo test -p butterpollo-windows --lib --release pyrowave::decode_test::pyrowave_quality_ --target-dir target\qa -- --ignored --nocapture --test-threads=1 2>&1 | Tee-Object target\qa\pyrowave-quality.log
+if ($LASTEXITCODE) { throw 'PyroWave quality sweep failed' }
+```
+
+`PYROWAVE_QUALITY` JSON lines contain the scene, size, format, chroma, fps,
+requested bpp/kbps, critical FEC percentage, actual byte budget, padded frame bytes, RTP datagram
+bytes (including parity but excluding UDP/IP headers), and per-plane PSNR,
+maximum code error and SSIM. Null PSNR with zero error means an exact match.
+The existing chart test is still available separately.
+
+### Measured results and warning levels
+
+On October 7, the AMD Radeon RX 7900 XT, driver 32.0.31041.1004,
+decoded all 5,616 comparisons in the complete three-size matrix.
+The SDK was bitstream `186f0393`, with the three patches listed above.
+All 216 batch checks found the last service event was `CLIENT DISCONNECTED`
+at 15:51:34 UTC. Other GPU work was not controlled. Matched repeats
+had a maximum spread of **0.00 dB PSNR, 0 SSIM and 0 frame bytes**.
+At fixed bpp, 30/60/120 fps also produced identical scores and frame sizes.
+
+The complete 1080p data is retained from the interrupted first sweep.
+The subsequent 720p and 4K sweeps passed in 56.36 and 303.39 seconds
+respectively in the release test build. All 1,551 comparable samples
+from the interrupted 4K sweep matched the complete rerun exactly.
+The tables use only one complete sweep per size. Raw JSON is in
+`target/qa/pyrowave-quality.log` (1080p),
+`target/qa/pyrowave-quality-720p.log` and
+`target/qa/pyrowave-quality-2160p.log`.
+
+Each cell below is **minimum PSNR across Y/Cb/Cr, in dB / minimum luma
+SSIM**, over desktop and game pictures, both phases, all three frame rates
+and both repeats. The two minima need not come from the same picture.
+Bpp is the requested encoder budget, not measured network throughput.
+At 4K, the 4–5 bpp requests all reach the same 3.78 bpp budget cap.
+Decisions use unrounded scores.
+
+**1280x720: desktop and game**
+
+| Requested bpp | SDR 4:2:0 | SDR 4:4:4 | HDR 4:2:0 | HDR 4:4:4 |
+|---:|---|---|---|---|
+| 0.25 | 15.71 / 0.4324 | 15.71 / 0.4324 | 23.68 / 0.6278 | 23.68 / 0.6278 |
+| 0.5 | 16.53 / 0.5101 | 16.53 / 0.5101 | 24.41 / 0.6929 | 24.41 / 0.6929 |
+| 0.75 | 17.67 / 0.5681 | 17.67 / 0.5681 | 25.88 / 0.7502 | 25.86 / 0.7498 |
+| 1 | 19.66 / 0.6288 | 19.65 / 0.6287 | 27.28 / 0.7992 | 27.26 / 0.7989 |
+| 1.5 | 23.49 / 0.7619 | 23.35 / 0.7555 | 31.18 / 0.9000 | 31.12 / 0.8981 |
+| 2 | 24.84 / 0.8065 | 24.70 / 0.8049 | 32.50 / 0.9231 | 32.40 / 0.9211 |
+| 2.5 | 27.12 / 0.8297 | 27.01 / 0.8249 | 35.86 / 0.9400 | 33.44 / 0.9307 |
+| 3 | 30.46 / 0.8550 | 29.98 / 0.8466 | 39.41 / 0.9618 | 38.98 / 0.9572 |
+| 3.2 | 32.57 / 0.8842 | 30.15 / 0.8500 | 40.56 / 0.9673 | 39.39 / 0.9616 |
+| 3.5 | 34.35 / 0.9086 | 32.59 / 0.8850 | 41.28 / 0.9712 | 40.61 / 0.9677 |
+| 4 | 36.09 / 0.9369 | 34.64 / 0.9147 | 45.03 / 0.9855 | 41.99 / 0.9750 |
+| 4.5 | 39.91 / 0.9662 | 37.08 / 0.9488 | 47.07 / 0.9915 | 45.03 / 0.9855 |
+| 5 | 41.82 / 0.9751 | 39.99 / 0.9672 | 48.56 / 0.9946 | 46.83 / 0.9907 |
+
+**1920x1080: desktop and game**
+
+| Requested bpp | SDR 4:2:0 | SDR 4:4:4 | HDR 4:2:0 | HDR 4:4:4 |
+|---:|---|---|---|---|
+| 0.25 | 18.48 / 0.6140 | 18.47 / 0.6134 | 26.37 / 0.7745 | 26.37 / 0.7746 |
+| 0.5 | 19.78 / 0.7070 | 19.77 / 0.7068 | 27.56 / 0.8325 | 27.56 / 0.8325 |
+| 0.75 | 20.05 / 0.7489 | 20.05 / 0.7474 | 27.86 / 0.8511 | 27.86 / 0.8507 |
+| 1 | 21.69 / 0.7846 | 21.69 / 0.7825 | 30.56 / 0.8935 | 30.08 / 0.8875 |
+| 1.5 | 28.56 / 0.8824 | 27.05 / 0.8668 | 36.40 / 0.9559 | 36.38 / 0.9517 |
+| 2 | 30.77 / 0.9086 | 30.75 / 0.9073 | 38.78 / 0.9675 | 38.34 / 0.9628 |
+| 2.5 | 32.82 / 0.9281 | 32.13 / 0.9233 | 40.36 / 0.9798 | 39.26 / 0.9678 |
+| 3 | 37.33 / 0.9611 | 35.24 / 0.9487 | 44.70 / 0.9887 | 42.58 / 0.9809 |
+| 3.2 | 38.92 / 0.9721 | 38.26 / 0.9653 | 46.17 / 0.9912 | 45.23 / 0.9894 |
+| 3.5 | 42.39 / 0.9854 | 40.79 / 0.9780 | 49.92 / 0.9961 | 49.05 / 0.9948 |
+| 4 | 44.82 / 0.9905 | 41.93 / 0.9889 | 53.68 / 0.9986 | 51.35 / 0.9962 |
+| 4.5 | 45.85 / 0.9926 | 43.52 / 0.9906 | 57.79 / 0.9994 | 54.54 / 0.9986 |
+| 5 | 49.69 / 0.9966 | 43.53 / 0.9925 | 64.56 / 0.9999 | 54.86 / 0.9993 |
+
+**3840x2160: desktop and game**
+
+| Requested bpp | SDR 4:2:0 | SDR 4:4:4 | HDR 4:2:0 | HDR 4:4:4 |
+|---:|---|---|---|---|
+| 0.25 | 22.33 / 0.7449 | 22.33 / 0.7442 | 30.03 / 0.8435 | 30.03 / 0.8436 |
+| 0.5 | 23.65 / 0.7947 | 23.64 / 0.7932 | 31.48 / 0.8701 | 31.48 / 0.8698 |
+| 0.75 | 26.22 / 0.8251 | 26.19 / 0.8061 | 34.95 / 0.8960 | 34.55 / 0.8894 |
+| 1 | 32.13 / 0.8673 | 30.78 / 0.8469 | 38.28 / 0.9205 | 37.97 / 0.9136 |
+| 1.5 | 35.93 / 0.9332 | 35.16 / 0.9188 | 40.46 / 0.9549 | 40.37 / 0.9539 |
+| 2 | 37.57 / 0.9464 | 36.98 / 0.9416 | 42.49 / 0.9683 | 41.95 / 0.9648 |
+| 2.5 | 39.42 / 0.9655 | 37.84 / 0.9491 | 45.22 / 0.9834 | 42.50 / 0.9684 |
+| 3 | 43.07 / 0.9863 | 39.44 / 0.9656 | 49.11 / 0.9934 | 46.23 / 0.9869 |
+| 3.2 | 44.73 / 0.9910 | 40.68 / 0.9747 | 50.88 / 0.9956 | 49.24 / 0.9936 |
+| 3.5 | 45.31 / 0.9921 | 41.29 / 0.9849 | 51.96 / 0.9966 | 50.62 / 0.9956 |
+| 4 | 45.48 / 0.9925 | 42.02 / 0.9910 | 56.18 / 0.9987 | 51.37 / 0.9962 |
+| 4.5 | 45.48 / 0.9925 | 42.02 / 0.9910 | 56.18 / 0.9987 | 51.37 / 0.9962 |
+| 5 | 45.48 / 0.9925 | 42.02 / 0.9910 | 56.18 / 0.9987 | 51.37 / 0.9962 |
+
+**4K control: full 4–5 bpp budgets without critical FEC**
+
+All 432 additional decodes passed in 84.64 seconds. All 72 batch checks
+again found the last disconnect at 15:51:34 UTC. Repeat and frame-rate
+spreads were zero for PSNR, SSIM and frame bytes. This brings the total
+to 6,048 decoded comparisons. Raw JSON is in
+`target/qa/pyrowave-quality-2160p-without-fec.log`.
+
+Without critical FEC, the test can pass 4,147,196, 4,665,596 and 5,183,996
+bytes to the encoder at 4, 4.5 and 5 bpp respectively. These values are
+within four bytes of the requested budgets, below the 5,228,792-byte
+transport budget cap. The following scores use the same desktop/game
+minimum PSNR / luma SSIM convention as the main tables. These control
+results are separate from the default-FEC results used for the warnings.
+
+| Requested bpp | SDR 4:2:0 | SDR 4:4:4 | HDR 4:2:0 | HDR 4:4:4 |
+|---:|---|---|---|---|
+| 4 | 46.65 / 0.9940 | 42.03 / 0.9910 | 58.65 / 0.9992 | 51.37 / 0.9962 |
+| 4.5 | 51.90 / 0.9981 | 43.60 / 0.9925 | 64.60 / 0.9999 | 54.70 / 0.9988 |
+| 5 | 55.12 / 0.9991 | 44.25 / 0.9925 | 64.60 / 0.9999 | 55.80 / 0.9993 |
+
+The dark-scene control scores (minima over both chroma formats) were:
+
+| Requested bpp | SDR | HDR (PQ code space) |
+|---:|---|---|
+| 4 | 57.02 / 0.9998 | 58.12 / 0.9985 |
+| 4.5 | 57.02 / 0.9998 | 63.18 / 0.9996 |
+| 5 | 57.02 / 0.9998 | 63.18 / 0.9996 |
+
+**Dark scene**
+
+These are minimum Y/Cb/Cr PSNR / minimum luma SSIM across all three sizes,
+both chroma formats, phases, frame rates and repeats. The small signal
+range makes this scene a poor basis for a bitrate recommendation.
+
+| Requested bpp | SDR | HDR (PQ code space) |
+|---:|---|---|
+| 0.25 | 48.72 / 0.9856 | 44.42 / 0.9628 |
+| 0.5 | 49.04 / 0.9866 | 44.78 / 0.9657 |
+| 0.75 | 49.27 / 0.9872 | 45.01 / 0.9674 |
+| 1 | 49.44 / 0.9877 | 45.17 / 0.9687 |
+| 1.5 | 50.37 / 0.9901 | 46.58 / 0.9774 |
+| 2 | 51.59 / 0.9926 | 47.84 / 0.9832 |
+| 2.5 | 52.52 / 0.9940 | 48.94 / 0.9871 |
+| 3 | 53.23 / 0.9949 | 50.09 / 0.9901 |
+| 3.2 | 53.68 / 0.9954 | 50.68 / 0.9913 |
+| 3.5 | 56.07 / 0.9974 | 52.27 / 0.9939 |
+| 4 | 56.70 / 0.9993 | 55.02 / 0.9968 |
+| 4.5 | 56.70 / 0.9993 | 55.02 / 0.9968 |
+| 5 | 56.70 / 0.9993 | 55.02 / 0.9968 |
+
+The lowest tested budgets meeting each criterion, also passing at every
+higher tested budget, were:
+
+| Size | Format | Chroma | Floor bpp | Clean bpp |
+|---|---|---|---:|---:|
+| 720p | SDR8 | 4:2:0 | 2.5 | 4.5 |
+| 720p | SDR8 | 4:4:4 | 2.5 | 5 |
+| 720p | HDR10 | 4:2:0 | 1.5 | 3 |
+| 720p | HDR10 | 4:4:4 | 1.5 | 3 |
+| 1080p | SDR8 | 4:2:0 | 1.5 | 3 |
+| 1080p | SDR8 | 4:4:4 | 1.5 | 3.2 |
+| 1080p | HDR10 | 4:2:0 | 0.5 | 1.5 |
+| 1080p | HDR10 | 4:4:4 | 0.5 | 1.5 |
+| 2160p | SDR8 | 4:2:0 | 0.75 | 2.5 |
+| 2160p | SDR8 | 4:4:4 | 0.75 | 3 |
+| 2160p | HDR10 | 4:2:0 | 0.25 | 1.5 |
+| 2160p | HDR10 | 4:4:4 | 0.25 | 1.5 |
+
+Use **2.5 bpp for the floor and 5 bpp for the recommendation below 1080
+lines**, and **1.5 / 3.2 bpp at 1080 lines and above**. Keep the same
+levels for SDR/HDR and 4:2:0/4:4:4. The 1080p levels are conservative
+at 4K. This avoids treating the 720p one-pixel desktop text as if it
+were the two- or four-pixel text in the larger pictures. At 720p, 2 bpp
+still gives only 24.70 dB luma on the worst desktop; 4.5 bpp passes
+35 dB on all planes but misses 0.95 SSIM in SDR 4:4:4. At 1080p,
+1 bpp gives 21.69 dB / 0.7825 SSIM on the worst desktop, and 3 bpp
+still misses 0.95 SSIM in SDR 4:4:4. There is no universal visual cliff.
+
+The following scores at the selected levels retain separate scene
+results. Each cell is minimum Y/Cb/Cr PSNR / minimum luma SSIM across
+all tested formats, phases, rates and repeats at that size.
+
+| Size | Level | bpp | Desktop | Game |
+|---|---|---:|---|---|
+| 720p | Floor | 2.5 | 27.01 / 0.8249 | 37.52 / 0.9468 |
+| 720p | Recommended | 5 | 39.99 / 0.9672 | 43.57 / 0.9923 |
+| 1080p | Floor | 1.5 | 27.05 / 0.8668 | 34.96 / 0.9135 |
+| 1080p | Recommended | 3.2 | 38.26 / 0.9658 | 39.39 / 0.9653 |
+| 2160p | Floor | 1.5 | 37.30 / 0.9628 | 35.16 / 0.9188 |
+| 2160p | Recommended | 3.2 | 48.26 / 0.9952 | 40.68 / 0.9747 |
+
+Rates at 60 fps, calculated from those measured budget levels and rounded
+up to whole Mbps (the functions round up to kbps):
+
+| Stream | Floor | Recommended |
+|---|---:|---:|
+| 720p60 | 139 Mbps | 277 Mbps |
+| 1080p60 | 187 Mbps | 399 Mbps |
+| 4K60 | 747 Mbps | 1593 Mbps |
+
+Within each height band, rates scale with width, height and frame rate.
+The stepped height rule is an estimate for untested resolutions and UI
+scales, not a measured transition at exactly 1080 lines. A desktop with
+smaller text at 1080p or 4K can need more. The recommendation meets the
+stated criteria for these scenes; it does not make the earlier stress
+chart, every game, or HDR rendering on a real display clean.
+
+Packet overhead, padding and recovery data require network headroom.
+At the recommended budget, the measured RTP datagram bytes per frame
+correspond to the following **calculated 60 fps rates**, not measured
+network throughput. Ranges cover every tested scene and format:
+
+| Stream | Requested Mbps | RTP bytes/frame converted to Mbps |
+|---|---:|---:|
+| 720p60 | 276.480 | 227.8–331.8 |
+| 1080p60 | 398.132 | 412.3–458.9 |
+| 2160p60 | 1592.525 | 1643.6–1884.9 |
+
+These rates exclude UDP/IP and link headers. The 4K60 recommendation
+needs more than gigabit Ethernet. The scaled 4K120 recommendation
+(3185 Mbps rounded up) exceeds the current 2 Gbps stream-setup limit;
+the harness can supply that budget directly, but a normal stream cannot
+negotiate it. The `/bitrate` limit of 500 Mbps can also prevent reaching
+the 4K60 target through a runtime change. Use HEVC or AV1 when the client
+or network cannot carry the rate. Neither limit is changed here.
+
+Checks passed: `cargo fmt --all`; Clippy for core, Windows and host with
+all targets and warnings denied; 171 core tests; 63 host binary tests
+(two existing tests ignored); and the PSNR/SSIM unit test. `npm ci` and
+`npm run check` passed with 0 errors and 0 warnings across 163 files.
+Playwright checked the Overview card at 1440x1080 and 390x844 with mocked
+sessions: red below the floor, amber at the floor and below the
+recommendation, no warning at the recommendation, no PyroWave warning
+for HEVC, and the 720p/4K examples. The cards wrapped without horizontal
+overflow; there were no page errors, console warnings/errors or framework
+overlays. The temporary web server did not connect to the installed host.
 
 ## October 7: 4:4:4 from AMF
 
