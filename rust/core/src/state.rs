@@ -126,6 +126,39 @@ impl Client {
         crypto::certificate_der(&self.cert)
     }
 }
+/// Sunshine's and Apollo's property-tree writer stored an empty list or
+/// object as "". Only the known containers are read back as empty, as in
+/// Vibepollo; every other value is kept as it is.
+fn empty_containers(root: &mut Value) {
+    let list = |value: &mut Value| {
+        if *value == "" {
+            *value = json!([]);
+        }
+    };
+    if let Some(devices) = root.get_mut("named_devices") {
+        list(devices);
+        for device in devices.as_array_mut().into_iter().flatten() {
+            for key in ["do", "undo"] {
+                if let Some(commands) = device.get_mut(key) {
+                    list(commands);
+                }
+            }
+            if let Some(overrides) = device.get_mut("config_overrides")
+                && *overrides == ""
+            {
+                *overrides = json!({});
+            }
+        }
+    }
+    if let Some(devices) = root.get_mut("devices") {
+        list(devices);
+        for device in devices.as_array_mut().into_iter().flatten() {
+            if let Some(certs) = device.get_mut("certs") {
+                list(certs);
+            }
+        }
+    }
+}
 #[derive(Clone)]
 pub struct PairedState {
     pub document: Value,
@@ -148,6 +181,7 @@ impl PairedState {
         if !root.is_object() {
             bail!("paired state root must be an object");
         }
+        empty_containers(root);
         let unique_id = match root.get("uniqueid") {
             Some(Value::String(s)) if !s.is_empty() => s.clone(),
             Some(_) => bail!("invalid persisted host identity"),
@@ -192,7 +226,20 @@ impl PairedState {
         let mut ids = HashSet::new();
         let mut unique = Vec::with_capacity(clients.len());
         for mut c in clients {
-            if !certs.insert(c.der()?) {
+            // Such a device could never connect; it must not keep every
+            // other device from loading.
+            let der = match c.der() {
+                Ok(der) => der,
+                Err(error) => {
+                    tracing::warn!(
+                        device = %c.name,
+                        error = %format!("{error:#}"),
+                        "paired device has an unreadable certificate; skipped"
+                    );
+                    continue;
+                }
+            };
+            if !certs.insert(der) {
                 continue;
             }
             if !ids.insert(c.uuid.clone()) {
@@ -409,6 +456,30 @@ mod tests {
         assert_eq!(loaded.clients.len(), 1);
         let der = loaded.clients[0].der().unwrap();
         assert!(loaded.client_by_certificate(&der).is_some());
+    }
+    #[test]
+    fn property_tree_empty_lists_and_unreadable_certificates_load() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("state.json");
+        let write = |document: Value| std::fs::write(&p, document.to_string()).unwrap();
+        write(json!({"root":{"uniqueid":"same-id","named_devices":"","devices":""}}));
+        let s = PairedState::load(&p).unwrap();
+        assert!(s.clients.is_empty());
+        assert_eq!(s.unique_id, "same-id");
+        let identity = crypto::Identity::generate().unwrap();
+        write(json!({"root":{"uniqueid":"same-id","named_devices":[
+            {"name":"Broken","cert":"not a certificate","uuid":"a"},
+            {"name":"Phone","cert":identity.certificate,"uuid":"b",
+             "do":"","undo":"","config_overrides":"","other":""}
+        ],"devices":[{"certs":""}]}}));
+        let s = PairedState::load(&p).unwrap();
+        assert_eq!(s.clients.len(), 1);
+        let phone = &s.clients[0];
+        assert_eq!(phone.name, "Phone");
+        assert_eq!(phone.extra["do"], json!([]));
+        assert_eq!(phone.extra["undo"], json!([]));
+        assert_eq!(phone.extra["config_overrides"], json!({}));
+        assert_eq!(phone.extra["other"], "");
     }
     #[test]
     fn existing_credentials_format() {
