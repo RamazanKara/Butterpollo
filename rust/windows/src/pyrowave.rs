@@ -173,12 +173,98 @@ impl Drop for Interop {
         }
     }
 }
+/// The colour conversion on the GPU's compute queue. Beside a game using the
+/// whole GPU, the D3D11 conversion of a 1080p HDR 4:4:4 frame waited 5.1 ms
+/// on the graphics queue, against 0.15 ms idle, nearly all of the encode's
+/// 5.7 ms; PyroWave's own GPU work took 0.2 ms either way.
+struct ComputePlanes {
+    converter: crate::compute::Converter,
+    target: crate::compute::Planes,
+}
+impl ComputePlanes {
+    fn new(
+        d3d: &Device,
+        config: &Negotiated,
+        textures: &[Arc<ID3D11Texture2D>; 3],
+        fence: &ID3D11Fence,
+    ) -> Result<Self> {
+        let compute = crate::compute::Compute::for_device(&d3d.device)?;
+        let converter = crate::compute::Converter::new(
+            compute.clone(),
+            config.width,
+            config.height,
+            config.ten_bit(),
+        )?;
+        let planes = [
+            compute.open(&textures[0])?,
+            compute.open(&textures[1])?,
+            compute.open(&textures[2])?,
+        ];
+        let fence = unsafe {
+            let handle = fence.CreateSharedHandle(None, GENERIC_ALL.0, PCWSTR::null())?;
+            let mut opened: Option<windows::Win32::Graphics::Direct3D12::ID3D12Fence> = None;
+            let result = compute.device.OpenSharedHandle(handle, &mut opened);
+            let _ = CloseHandle(handle);
+            result.context("opening the PyroWave fence on the compute queue")?;
+            opened.context("no shared fence")?
+        };
+        Ok(Self {
+            converter,
+            target: crate::compute::Planes {
+                planes,
+                format: if config.ten_bit() {
+                    DXGI_FORMAT_R16_UNORM
+                } else {
+                    DXGI_FORMAT_R8_UNORM
+                },
+                fence,
+                after: 0,
+                done: 0,
+            },
+        })
+    }
+    /// Convert once the encoder has signalled `after`; signals `done`.
+    fn convert(
+        &mut self,
+        image: &GpuImage,
+        config: &Negotiated,
+        luminance: [f32; 2],
+        after: u64,
+        done: u64,
+    ) -> Result<()> {
+        let texture = self.converter.compute().open(&image.texture)?;
+        let pointer = image
+            .cursor
+            .as_ref()
+            .map(|cursor| self.converter.pointer(cursor))
+            .transpose()?;
+        self.converter.values = crate::gpu_color::constants(
+            config,
+            (image.width, image.height, image.pixel),
+            luminance,
+            image.cursor.as_ref(),
+        );
+        self.converter.values[11] = u32::from(config.yuv444);
+        self.target.after = after;
+        self.target.done = done;
+        self.converter.convert_planes(
+            &texture,
+            crate::compute::format(image.pixel),
+            pointer.as_ref(),
+            image.ready.as_ref(),
+            &self.target,
+        )
+    }
+}
 pub struct Encoder {
     api: Arc<Api>,
     device: p::pyrowave_device,
     encoder: p::pyrowave_encoder,
     d3d: Device,
     converter: Option<PlanarConverter>,
+    /// Whether to convert on the compute queue (AMD, `gpu_compute_conversion`).
+    use_compute: bool,
+    compute: Option<ComputePlanes>,
     source: Option<(u32, u32, Pixel)>,
     interop: Vec<Interop>,
     config: Negotiated,
@@ -206,8 +292,10 @@ impl Encoder {
             api,
             device: ptr::null_mut(),
             encoder: ptr::null_mut(),
+            use_compute: crate::compute::enabled(tuning) && crate::compute::copies_on(&d3d.device),
             d3d,
             converter: None,
+            compute: None,
             source: None,
             interop: vec![],
             config: config.clone(),
@@ -256,6 +344,7 @@ impl Encoder {
         let begin = Instant::now();
         let source = (image.width, image.height, image.pixel);
         if self.source != Some(source) {
+            self.compute = None;
             self.interop.clear();
             self.converter = None;
             let converter = PlanarConverter::new(&self.d3d, &self.config, source)?;
@@ -267,13 +356,22 @@ impl Encoder {
                     texture.clone(),
                 )?);
             }
+            if self.use_compute {
+                match ComputePlanes::new(
+                    &self.d3d,
+                    &self.config,
+                    &converter.textures,
+                    &self.interop[0].fence,
+                ) {
+                    Ok(planes) => self.compute = Some(planes),
+                    Err(error) => {
+                        tracing::warn!(error = %format!("{error:#}"), "PyroWave compute conversion unavailable; converting on the graphics queue")
+                    }
+                }
+            }
             self.converter = Some(converter);
             self.source = Some(source);
         }
-        self.converter
-            .as_mut()
-            .unwrap()
-            .convert(image, self.luminance)?;
         let nominal = butterpollo_core::framegen::Rate(self.config.fps_millihz()).period();
         let interval = self
             .previous
@@ -305,14 +403,28 @@ impl Encoder {
                 })
                 .collect();
             let i = &mut self.interop[0];
+            let after = i.counter;
             i.counter = i
                 .counter
                 .checked_add(1)
                 .context("PyroWave fence exhausted")?;
-            i.context.Signal(&i.fence, i.counter)?;
-            // Submit the conversion and the signal now, not whenever D3D11
-            // next flushes: the encode below waits for that signal.
-            i.context.Flush();
+            let compute = self
+                .compute
+                .as_mut()
+                .filter(|_| crate::compute::shareable(&image.texture));
+            let on_compute = compute.is_some();
+            if let Some(compute) = compute {
+                compute.convert(image, &self.config, self.luminance, after, i.counter)?;
+            } else {
+                self.converter
+                    .as_mut()
+                    .unwrap()
+                    .convert(image, self.luminance)?;
+                i.context.Signal(&i.fence, i.counter)?;
+                // Submit the conversion and the signal now, not whenever
+                // D3D11 next flushes: the encode below waits for that signal.
+                i.context.Flush();
+            }
             let acquire = p::pyrowave_gpu_sync_operation {
                 images: images.as_ptr(),
                 num_images: 3,
@@ -348,9 +460,13 @@ impl Encoder {
                     maximum_bitstream_size: budget,
                 },
             ))?;
-            self.interop[0]
-                .context
-                .Wait(&self.interop[0].fence, self.interop[0].counter)?;
+            // The compute queue waits for the release before its next
+            // conversion; D3D11 must not draw into the planes before it.
+            if !on_compute {
+                self.interop[0]
+                    .context
+                    .Wait(&self.interop[0].fence, self.interop[0].counter)?;
+            }
             let (mut raw, mut meta) = (ptr::null(), ptr::null());
             let (mut size, mut meta_size) = (0, 0);
             check((self.api.encoder_get_mapped_raw_bitstream)(
@@ -441,6 +557,7 @@ impl Drop for Encoder {
             if !self.encoder.is_null() {
                 (self.api.encoder_destroy)(self.encoder);
             }
+            self.compute = None;
             self.interop.clear();
             self.converter = None;
             if !self.device.is_null() {

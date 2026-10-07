@@ -415,7 +415,10 @@ impl PlanarConverter {
                             Quality: 0,
                         },
                         Usage: D3D11_USAGE_DEFAULT,
-                        BindFlags: (D3D11_BIND_SHADER_RESOURCE.0 | D3D11_BIND_RENDER_TARGET.0)
+                        // Unordered access for the conversion on the compute queue.
+                        BindFlags: (D3D11_BIND_SHADER_RESOURCE.0
+                            | D3D11_BIND_RENDER_TARGET.0
+                            | D3D11_BIND_UNORDERED_ACCESS.0)
                             as u32,
                         MiscFlags: (D3D11_RESOURCE_MISC_SHARED.0
                             | D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0)
@@ -865,6 +868,184 @@ mod tests {
                             "{width}x{height} hdr {hdr} pointer {:?}: value {index} is {a}, the graphics converter gives {e}",
                             cursor.map(|c| c.position)
                         );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    /// A one-plane texture's bytes, row by row without padding.
+    fn plane_bytes(gpu: &Device, texture: &ID3D11Texture2D) -> Result<Vec<u8>> {
+        unsafe {
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+            texture.GetDesc(&mut desc);
+            let pixel = if desc.Format == DXGI_FORMAT_R16_UNORM {
+                2
+            } else {
+                1
+            };
+            desc.Usage = D3D11_USAGE_STAGING;
+            desc.BindFlags = 0;
+            desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+            desc.MiscFlags = 0;
+            let mut staging = None;
+            gpu.device
+                .CreateTexture2D(&desc, None, Some(&mut staging))?;
+            let staging = staging.unwrap();
+            gpu.context.CopyResource(&staging, texture);
+            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+            gpu.context
+                .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
+            let mut bytes = Vec::new();
+            for y in 0..desc.Height as usize {
+                bytes.extend_from_slice(std::slice::from_raw_parts(
+                    (mapped.pData as *const u8).add(y * mapped.RowPitch as usize),
+                    desc.Width as usize * pixel,
+                ));
+            }
+            gpu.context.Unmap(&staging, 0);
+            Ok(bytes)
+        }
+    }
+    #[test]
+    #[ignore = "requires D3D12 compute"]
+    fn compute_planes_match_the_pyrowave_graphics_planes() -> Result<()> {
+        use windows::Win32::Graphics::Direct3D12::{D3D12_FENCE_FLAG_NONE, ID3D12Fence};
+        let _com = ComGuard::new()?;
+        let gpu = Device::new("")?;
+        let compute = crate::compute::Compute::for_device(&gpu.device)?;
+        let colors = [
+            [0., 0., 0.],
+            [1., 1., 1.],
+            [12.5, 12.5, 12.5],
+            [1.2, 0.1, 0.05],
+            [0.05, 0.8, 0.3],
+            [0.2, 0.3, 4.0],
+        ];
+        let hdr_image = GpuImage::upload(&gpu, &make_image(&colors, 16, 40))?;
+        let mut bytes = vec![0u8; 96 * 40 * 4];
+        for (index, pixel) in bytes.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let (x, y) = (index % 96, index / 96);
+            *pixel = [(x * 2) as u8, (y * 6) as u8, (255 - x * 2) as u8, 255];
+        }
+        let sdr_image = GpuImage::upload(
+            &gpu,
+            &Image {
+                width: 96,
+                height: 40,
+                stride: 96 * 4,
+                bytes,
+                pixel: Pixel::Bgra8,
+                captured: Instant::now(),
+            },
+        )?;
+        let mut pointer = crate::cursor::Cursor::new(
+            &gpu,
+            &windows::Win32::Graphics::Dxgi::DXGI_OUTDUPL_POINTER_SHAPE_INFO {
+                Type: windows::Win32::Graphics::Dxgi::DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME.0
+                    as u32,
+                Width: 4,
+                Height: 2,
+                Pitch: 1,
+                ..Default::default()
+            },
+            &[0b00110000, 0b01010000],
+        )?;
+        pointer.position = [20, 10];
+        let fence: ID3D12Fence = unsafe { compute.device.CreateFence(0, D3D12_FENCE_FLAG_NONE)? };
+        let mut value = 0;
+        for (width, height) in [(96, 40), (48, 20), (64, 64)] {
+            for yuv444 in [true, false] {
+                for (hdr, base) in [(true, &hdr_image), (false, &sdr_image)] {
+                    for cursor in [None, Some(&pointer)] {
+                        let mut image = base.clone();
+                        image.cursor = cursor.cloned();
+                        let config = butterpollo_core::rtsp::Negotiated {
+                            width,
+                            height,
+                            codec: 3,
+                            hdr,
+                            yuv444,
+                            ..Default::default()
+                        };
+                        let source = (image.width, image.height, image.pixel);
+                        let mut graphics = PlanarConverter::new(&gpu, &config, source)?;
+                        graphics.convert(&image, [100., 1.])?;
+                        let expected = graphics
+                            .textures
+                            .iter()
+                            .map(|plane| plane_bytes(&gpu, plane))
+                            .collect::<Result<Vec<_>>>()?;
+                        // Fresh planes filled with a sentinel, so nothing left
+                        // from the graphics pass can match.
+                        let outputs = PlanarConverter::new(&gpu, &config, source)?;
+                        for plane in &outputs.textures {
+                            let mut desc = D3D11_TEXTURE2D_DESC::default();
+                            unsafe { plane.GetDesc(&mut desc) };
+                            let pitch = desc.Width * if config.ten_bit() { 2 } else { 1 };
+                            let fill = vec![0xab_u8; (pitch * desc.Height) as usize];
+                            unsafe {
+                                gpu.context.UpdateSubresource(
+                                    plane.as_ref(),
+                                    0,
+                                    None,
+                                    fill.as_ptr().cast(),
+                                    pitch,
+                                    0,
+                                );
+                                gpu.context.Flush();
+                            }
+                        }
+                        let mut converter = crate::compute::Converter::new(
+                            compute.clone(),
+                            width,
+                            height,
+                            config.ten_bit(),
+                        )?;
+                        converter.values = constants(&config, source, [100., 1.], cursor);
+                        converter.values[11] = u32::from(yuv444);
+                        let shape = cursor.map(|c| converter.pointer(c)).transpose()?;
+                        let planes = crate::compute::Planes {
+                            planes: [
+                                compute.open(&outputs.textures[0])?,
+                                compute.open(&outputs.textures[1])?,
+                                compute.open(&outputs.textures[2])?,
+                            ],
+                            format: if config.ten_bit() {
+                                DXGI_FORMAT_R16_UNORM
+                            } else {
+                                DXGI_FORMAT_R8_UNORM
+                            },
+                            fence: fence.clone(),
+                            after: value,
+                            done: value + 1,
+                        };
+                        value += 1;
+                        converter.convert_planes(
+                            &compute.open(&image.texture)?,
+                            crate::compute::format(image.pixel),
+                            shape.as_ref(),
+                            None,
+                            &planes,
+                        )?;
+                        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+                        while unsafe { fence.GetCompletedValue() } < value {
+                            assert!(
+                                Instant::now() < deadline,
+                                "the compute conversion did not finish"
+                            );
+                            std::thread::yield_now();
+                        }
+                        for (plane, (texture, expected)) in
+                            outputs.textures.iter().zip(&expected).enumerate()
+                        {
+                            assert_eq!(
+                                &plane_bytes(&gpu, texture)?,
+                                expected,
+                                "{width}x{height} 4:4:4 {yuv444} hdr {hdr} pointer {}: plane {plane}",
+                                cursor.is_some()
+                            );
+                        }
                     }
                 }
             }

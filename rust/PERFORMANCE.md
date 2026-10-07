@@ -1933,6 +1933,34 @@ the probe rendered at 60-66 Hz instead of 120, as on October 4, so the
 fixture's source-rate check fails on load rows as it did then; their
 picture-age statistics are complete. One rc.2 idle run's probe exited
 with an error after the stream had ended. Artifacts: `bench-rc17\cmp-*`.
+## October 7: PyroWave conversion on the compute queue
+
+PyroWave's colour conversion (RGB to its Y, Cb and Cr planes) ran as three
+D3D11 draws on the graphics queue. Beside the game-like load
+(`gpu_load 30 1000 0 200`), `examples/performance.rs --codec pyrowave --hdr
+--yuv444 --records` at 1080p, 120 fps and 400 Mbps measured 5.6-5.8 ms per
+frame against 0.47 ms idle. PyroWave's own GPU work, from
+`pyrowave_device_report_performance_stats`, was 0.11 ms idle and 0.19 ms
+under the load; a CPU wait on the conversion's fence showed where the rest
+went: 5.1 ms under the load against 0.15 ms idle.
+
+The planes are now written by one compute shader pass on the D3D12 compute
+queue the AMF path uses (`pyro_cs`, high priority), into the same textures
+Vulkan imports, with the shared fence ordering the two queues. The planes
+are byte-identical to the graphics pass for HDR and SDR, 4:4:4 and 4:2:0,
+three output sizes and a composited pointer
+(`compute_planes_match_the_pyrowave_graphics_planes`).
+
+| Per frame, RX 7900 XT | Graphics queue | Compute queue |
+|---|---|---|
+| Idle, repeat-frame throughput | 0.47 ms | 0.47 ms |
+| Beside the load, repeat-frame throughput | 5.62, 5.75 ms | 0.57, 0.54 ms |
+| Beside the load, paced at 120 fps | 4.62 ms | 0.71 ms |
+| Paced, bytes per frame idle / beside the load | 155,780 / 155,960 | 155,802 / 155,834 |
+
+The fixture client does not decode PyroWave, so no PyroWave stream was
+played end to end; equal planes and equal frame sizes show the encoder
+reads the same pictures.
 ## Limits
 
 This machine validates AMD AMF. Native NVENC now calls the installed NVIDIA driver directly, supports reviewed API versions 11.0–13.0, reference frame invalidation, D3D11 4:2:0/8-bit 4:4:4 and GPU-only CUDA interop for ten-bit 4:4:4. Seven mock-driver tests exercise compatibility, asynchronous ownership, timeout teardown, metadata lifetime, loss recovery and bitrate changes; NVIDIA execution/performance still needs NVIDIA hardware. QSV has native D3D11 imports, and TrueHDR has a shared-device GPU path; these need Intel/NVIDIA hardware respectively. PyroWave uses shared D3D11/Vulkan planar GPU inputs and reads back only the encoded bitstream. Unsupported native formats and software encoding use CPU compatibility paths. The wired LAN checks above do not establish Wi-Fi performance, multiple concurrent 4K sessions, dynamic game content, native 4K capture or end-to-end input/display latency. The GPU texture pools and native encoder queues are bounded to eight retained frames; capacity runs may intentionally keep those queues occupied. [PARITY.md](PARITY.md) separates implemented features from native validation.

@@ -165,25 +165,60 @@ uint planar444(float4 p : SV_Position) : SV_Target {
                            : 512 + (fullRange != 0 ? 1023 : 896) * yuv[plane];
     return uint(floor(clamp(code, 0, 1023) + 0.5)) << 6;
 }
-float4 pyro_y(float4 p : SV_Position) : SV_Target {
-    float y = yuv444(p.xy - 0.5).x;
+// PyroWave's planes hold codes over their full range (code / 1023 or 255),
+// one plane each. Shared by the graphics and compute conversions.
+float pyroLuma(float3 rgb) {
+    float y = dot(rgb, weights());
     float maximum = tenBit != 0 ? 1023 : 255;
     float code = tenBit != 0 ? (fullRange != 0 ? 1023*y : 64+876*y) : (fullRange != 0 ? 255*y : 16+219*y);
-    return float4(floor(clamp(code,0,maximum)+0.5)/maximum,0,0,1);
+    return floor(clamp(code,0,maximum)+0.5)/maximum;
+}
+float2 pyroChroma(float3 rgb) {
+    float3 k = weights(); float y = dot(rgb,k);
+    float2 uv = float2((rgb.b-y)/(2*(1-k.b)),(rgb.r-y)/(2*(1-k.r)));
+    float maximum = tenBit != 0 ? 1023 : 255;
+    float2 code = tenBit != 0 ? 512+(fullRange != 0 ? 1023 : 896)*uv : 128+(fullRange != 0 ? 255 : 224)*uv;
+    return floor(clamp(code,0,maximum)+0.5)/maximum;
+}
+// 4:4:4 (padding != 0) takes each pixel's colour; 4:2:0 a 2x2 block's average.
+float2 pyroBlock(float3 c00, float3 c10, float3 c01, float3 c11) {
+    return pyroChroma((c00 + c10 + c01 + c11) * 0.25);
+}
+float4 pyro_y(float4 p : SV_Position) : SV_Target {
+    return float4(pyroLuma(nonlinear(p.xy - 0.5)),0,0,1);
 }
 float2 pyro_chroma(float2 p) {
-    float2 at = p - 0.5;
-    float3 yuv;
-    if (padding != 0) yuv = yuv444(at);
-    else {
-        at = floor(p)*2;
-        float3 rgb = (nonlinear(at)+nonlinear(at+float2(1,0))+nonlinear(at+float2(0,1))+nonlinear(at+float2(1,1)))*0.25;
-        float3 k = weights(); float y = dot(rgb,k);
-        yuv = float3(y,(rgb.b-y)/(2*(1-k.b)),(rgb.r-y)/(2*(1-k.r)));
-    }
-    float maximum = tenBit != 0 ? 1023 : 255;
-    float2 code = tenBit != 0 ? 512+(fullRange != 0 ? 1023 : 896)*yuv.yz : 128+(fullRange != 0 ? 255 : 224)*yuv.yz;
-    return floor(clamp(code,0,maximum)+0.5)/maximum;
+    if (padding != 0) return pyroChroma(nonlinear(p - 0.5));
+    float2 at = floor(p)*2;
+    return pyroBlock(nonlinear(at), nonlinear(at+float2(1,0)), nonlinear(at+float2(0,1)), nonlinear(at+float2(1,1)));
 }
 float4 pyro_u(float4 p : SV_Position) : SV_Target { return float4(pyro_chroma(p.xy).x,0,0,1); }
 float4 pyro_v(float4 p : SV_Position) : SV_Target { return float4(pyro_chroma(p.xy).y,0,0,1); }
+// PyroWave's three planes on the compute queue, in one pass over 2x2 blocks,
+// beside a game that fills the graphics queue.
+RWTexture2D<float> pyroY : register(u2);
+RWTexture2D<float> pyroU : register(u3);
+RWTexture2D<float> pyroV : register(u4);
+[numthreads(8, 8, 1)]
+void pyro_cs(uint3 id : SV_DispatchThreadID) {
+    if (any(id.xy >= targetSize / 2)) return;
+    uint2 at = id.xy * 2;
+    float3 c00 = nonlinear(float2(at));
+    float3 c10 = nonlinear(float2(at + uint2(1, 0)));
+    float3 c01 = nonlinear(float2(at + uint2(0, 1)));
+    float3 c11 = nonlinear(float2(at + uint2(1, 1)));
+    pyroY[at] = pyroLuma(c00);
+    pyroY[at + uint2(1, 0)] = pyroLuma(c10);
+    pyroY[at + uint2(0, 1)] = pyroLuma(c01);
+    pyroY[at + uint2(1, 1)] = pyroLuma(c11);
+    if (padding != 0) {
+        float2 c = pyroChroma(c00); pyroU[at] = c.x; pyroV[at] = c.y;
+        c = pyroChroma(c10); pyroU[at + uint2(1, 0)] = c.x; pyroV[at + uint2(1, 0)] = c.y;
+        c = pyroChroma(c01); pyroU[at + uint2(0, 1)] = c.x; pyroV[at + uint2(0, 1)] = c.y;
+        c = pyroChroma(c11); pyroU[at + uint2(1, 1)] = c.x; pyroV[at + uint2(1, 1)] = c.y;
+    } else {
+        float2 c = pyroBlock(c00, c10, c01, c11);
+        pyroU[id.xy] = c.x;
+        pyroV[id.xy] = c.y;
+    }
+}

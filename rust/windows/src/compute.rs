@@ -460,7 +460,92 @@ pub(crate) fn format(pixel: crate::capture::Pixel) -> DXGI_FORMAT {
 fn shader(entry: &[u8]) -> Result<&'static [u8]> {
     shader_bytecode(entry, b"cs_5_0\0").context("compute shader missing from the build")
 }
-
+/// Constants, two source views (t0, t1) and `uavs` output views from
+/// register `u{first}`.
+fn root_signature(device: &ID3D12Device, first: u32, uavs: u32) -> Result<ID3D12RootSignature> {
+    unsafe {
+        let srv = D3D12_DESCRIPTOR_RANGE {
+            RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+            NumDescriptors: 2,
+            BaseShaderRegister: 0,
+            RegisterSpace: 0,
+            OffsetInDescriptorsFromTableStart: 0,
+        };
+        let uav = D3D12_DESCRIPTOR_RANGE {
+            RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
+            NumDescriptors: uavs,
+            BaseShaderRegister: first,
+            ..srv
+        };
+        let parameters = [
+            D3D12_ROOT_PARAMETER {
+                ParameterType: D3D12_ROOT_PARAMETER_TYPE_CBV,
+                Anonymous: D3D12_ROOT_PARAMETER_0 {
+                    Descriptor: D3D12_ROOT_DESCRIPTOR {
+                        ShaderRegister: 0,
+                        RegisterSpace: 0,
+                    },
+                },
+                ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+            },
+            D3D12_ROOT_PARAMETER {
+                ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+                Anonymous: D3D12_ROOT_PARAMETER_0 {
+                    DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+                        NumDescriptorRanges: 1,
+                        pDescriptorRanges: &srv,
+                    },
+                },
+                ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+            },
+            D3D12_ROOT_PARAMETER {
+                ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+                Anonymous: D3D12_ROOT_PARAMETER_0 {
+                    DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+                        NumDescriptorRanges: 1,
+                        pDescriptorRanges: &uav,
+                    },
+                },
+                ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+            },
+        ];
+        let mut blob = None;
+        D3D12SerializeRootSignature(
+            &D3D12_ROOT_SIGNATURE_DESC {
+                NumParameters: parameters.len() as u32,
+                pParameters: parameters.as_ptr(),
+                ..Default::default()
+            },
+            D3D_ROOT_SIGNATURE_VERSION_1,
+            &mut blob,
+            None,
+        )?;
+        let blob = blob.context("no root signature")?;
+        Ok(device.CreateRootSignature(
+            0,
+            std::slice::from_raw_parts(blob.GetBufferPointer().cast::<u8>(), blob.GetBufferSize()),
+        )?)
+    }
+}
+fn pipeline(
+    device: &ID3D12Device,
+    root: &ID3D12RootSignature,
+    entry: &[u8],
+) -> Result<ID3D12PipelineState> {
+    let code = shader(entry)?;
+    unsafe {
+        Ok(
+            device.CreateComputePipelineState(&D3D12_COMPUTE_PIPELINE_STATE_DESC {
+                pRootSignature: std::mem::ManuallyDrop::new(Some(root.clone())),
+                CS: D3D12_SHADER_BYTECODE {
+                    pShaderBytecode: code.as_ptr().cast(),
+                    BytecodeLength: code.len(),
+                },
+                ..Default::default()
+            })?,
+        )
+    }
+}
 /// One converted picture, ready for the encoder once `fence` reaches `value`.
 pub struct Converted {
     pub texture: Arc<ID3D12Resource>,
@@ -508,6 +593,8 @@ pub struct Converter {
     root: ID3D12RootSignature,
     /// Luma and chroma in one pass over 2x2 blocks.
     convert: ID3D12PipelineState,
+    /// PyroWave's three planes, made when first used.
+    planar: Option<(ID3D12RootSignature, ID3D12PipelineState)>,
     heap: ID3D12DescriptorHeap,
     increment: u32,
     constants: ID3D12Resource,
@@ -525,6 +612,8 @@ pub struct Converter {
 }
 unsafe impl Send for Converter {}
 const SLOTS: usize = 4;
+/// Descriptors per slot: the source and pointer, then up to three outputs.
+const VIEWS: usize = 5;
 impl Converter {
     pub fn new(compute: Arc<Compute>, width: u32, height: u32, ten_bit: bool) -> Result<Self> {
         if width == 0 || height == 0 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
@@ -532,86 +621,12 @@ impl Converter {
         }
         unsafe {
             let device = &compute.device;
-            let srv = D3D12_DESCRIPTOR_RANGE {
-                RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-                NumDescriptors: 2,
-                BaseShaderRegister: 0,
-                RegisterSpace: 0,
-                OffsetInDescriptorsFromTableStart: 0,
-            };
-            let uav = D3D12_DESCRIPTOR_RANGE {
-                RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
-                ..srv
-            };
-            let parameters = [
-                D3D12_ROOT_PARAMETER {
-                    ParameterType: D3D12_ROOT_PARAMETER_TYPE_CBV,
-                    Anonymous: D3D12_ROOT_PARAMETER_0 {
-                        Descriptor: D3D12_ROOT_DESCRIPTOR {
-                            ShaderRegister: 0,
-                            RegisterSpace: 0,
-                        },
-                    },
-                    ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
-                },
-                D3D12_ROOT_PARAMETER {
-                    ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
-                    Anonymous: D3D12_ROOT_PARAMETER_0 {
-                        DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
-                            NumDescriptorRanges: 1,
-                            pDescriptorRanges: &srv,
-                        },
-                    },
-                    ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
-                },
-                D3D12_ROOT_PARAMETER {
-                    ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
-                    Anonymous: D3D12_ROOT_PARAMETER_0 {
-                        DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
-                            NumDescriptorRanges: 1,
-                            pDescriptorRanges: &uav,
-                        },
-                    },
-                    ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
-                },
-            ];
-            let mut blob = None;
-            D3D12SerializeRootSignature(
-                &D3D12_ROOT_SIGNATURE_DESC {
-                    NumParameters: parameters.len() as u32,
-                    pParameters: parameters.as_ptr(),
-                    ..Default::default()
-                },
-                D3D_ROOT_SIGNATURE_VERSION_1,
-                &mut blob,
-                None,
-            )?;
-            let blob = blob.context("no root signature")?;
-            let root: ID3D12RootSignature = device.CreateRootSignature(
-                0,
-                std::slice::from_raw_parts(
-                    blob.GetBufferPointer().cast::<u8>(),
-                    blob.GetBufferSize(),
-                ),
-            )?;
-            let pipeline = |entry: &[u8]| -> Result<ID3D12PipelineState> {
-                let code = shader(entry)?;
-                Ok(
-                    device.CreateComputePipelineState(&D3D12_COMPUTE_PIPELINE_STATE_DESC {
-                        pRootSignature: std::mem::ManuallyDrop::new(Some(root.clone())),
-                        CS: D3D12_SHADER_BYTECODE {
-                            pShaderBytecode: code.as_ptr().cast(),
-                            BytecodeLength: code.len(),
-                        },
-                        ..Default::default()
-                    })?,
-                )
-            };
-            let convert = pipeline(b"yuv420_cs\0")?;
+            let root = root_signature(device, 0, 2)?;
+            let convert = pipeline(device, &root, b"yuv420_cs\0")?;
             let heap: ID3D12DescriptorHeap =
                 device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
                     Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-                    NumDescriptors: (SLOTS * 4) as u32,
+                    NumDescriptors: (SLOTS * VIEWS) as u32,
                     Flags: D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
                     NodeMask: 0,
                 })?;
@@ -654,6 +669,7 @@ impl Converter {
                 compute,
                 root,
                 convert,
+                planar: None,
                 heap,
                 increment,
                 constants,
@@ -846,7 +862,7 @@ impl Converter {
             let cpu = self.heap.GetCPUDescriptorHandleForHeapStart();
             let gpu = self.heap.GetGPUDescriptorHandleForHeapStart();
             let at = |index: usize| D3D12_CPU_DESCRIPTOR_HANDLE {
-                ptr: cpu.ptr + (slot * 4 + index) * self.increment as usize,
+                ptr: cpu.ptr + (slot * VIEWS + index) * self.increment as usize,
             };
             let srv = |format| D3D12_SHADER_RESOURCE_VIEW_DESC {
                 Format: format,
@@ -920,7 +936,7 @@ impl Converter {
                 self.constants.GetGPUVirtualAddress() + (slot * 256) as u64,
             );
             let table = |index: usize| D3D12_GPU_DESCRIPTOR_HANDLE {
-                ptr: gpu.ptr + ((slot * 4 + index) * self.increment as usize) as u64,
+                ptr: gpu.ptr + ((slot * VIEWS + index) * self.increment as usize) as u64,
             };
             list.SetComputeRootDescriptorTable(1, table(0));
             list.SetComputeRootDescriptorTable(2, table(2));
@@ -963,6 +979,139 @@ impl Converter {
             value: target.value,
         })
     }
+    /// Convert `source` into PyroWave's Y, Cb and Cr planes, full size or
+    /// with chroma halved (`values[11]`), in textures the encoder shares
+    /// with Vulkan. The queue first waits for `target.fence` to reach
+    /// `target.after`, when the encoder is done with the planes, then
+    /// signals `target.done`.
+    pub fn convert_planes(
+        &mut self,
+        source: &ID3D12Resource,
+        format: DXGI_FORMAT,
+        pointer: Option<&ID3D12Resource>,
+        ready: Option<&Ready>,
+        target: &Planes,
+    ) -> Result<()> {
+        let (root, planar) = match &self.planar {
+            Some(planar) => planar.clone(),
+            None => {
+                let root = root_signature(&self.compute.device, 2, 3)?;
+                let planar = pipeline(&self.compute.device, &root, b"pyro_cs\0")?;
+                self.planar = Some((root.clone(), planar.clone()));
+                (root, planar)
+            }
+        };
+        let slot = self.slot;
+        self.slot = (self.slot + 1) % SLOTS;
+        self.compute.wait(self.slots[slot].fence)?;
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.values.as_ptr().cast::<u8>(),
+                self.mapped.add(slot * 256),
+                std::mem::size_of_val(&self.values),
+            );
+            let device = &self.compute.device;
+            let cpu = self.heap.GetCPUDescriptorHandleForHeapStart();
+            let gpu = self.heap.GetGPUDescriptorHandleForHeapStart();
+            let at = |index: usize| D3D12_CPU_DESCRIPTOR_HANDLE {
+                ptr: cpu.ptr + (slot * VIEWS + index) * self.increment as usize,
+            };
+            let srv = |format| D3D12_SHADER_RESOURCE_VIEW_DESC {
+                Format: format,
+                ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
+                Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+                Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                    Texture2D: D3D12_TEX2D_SRV {
+                        MostDetailedMip: 0,
+                        MipLevels: 1,
+                        PlaneSlice: 0,
+                        ResourceMinLODClamp: 0.,
+                    },
+                },
+            };
+            device.CreateShaderResourceView(source, Some(&srv(format)), at(0));
+            device.CreateShaderResourceView(pointer, Some(&srv(DXGI_FORMAT_R8G8B8A8_UNORM)), at(1));
+            for (index, plane) in target.planes.iter().enumerate() {
+                device.CreateUnorderedAccessView(
+                    plane,
+                    None,
+                    Some(&D3D12_UNORDERED_ACCESS_VIEW_DESC {
+                        Format: target.format,
+                        ViewDimension: D3D12_UAV_DIMENSION_TEXTURE2D,
+                        Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
+                            Texture2D: D3D12_TEX2D_UAV {
+                                MipSlice: 0,
+                                PlaneSlice: 0,
+                            },
+                        },
+                    }),
+                    at(2 + index),
+                );
+            }
+            let Slot {
+                allocator, list, ..
+            } = &self.slots[slot];
+            allocator.Reset()?;
+            list.Reset(allocator, &planar)?;
+            let mut barriers = target.planes.each_ref().map(|plane| {
+                transition(
+                    plane,
+                    D3D12_RESOURCE_STATE_COMMON,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                )
+            });
+            list.ResourceBarrier(&barriers);
+            drop_barriers(&mut barriers);
+            list.SetComputeRootSignature(&root);
+            list.SetDescriptorHeaps(&[Some(self.heap.clone())]);
+            list.SetComputeRootConstantBufferView(
+                0,
+                self.constants.GetGPUVirtualAddress() + (slot * 256) as u64,
+            );
+            let table = |index: usize| D3D12_GPU_DESCRIPTOR_HANDLE {
+                ptr: gpu.ptr + ((slot * VIEWS + index) * self.increment as usize) as u64,
+            };
+            list.SetComputeRootDescriptorTable(1, table(0));
+            list.SetComputeRootDescriptorTable(2, table(2));
+            list.Dispatch(
+                (self.width / 2).div_ceil(8),
+                (self.height / 2).div_ceil(8),
+                1,
+            );
+            let mut barriers = target.planes.each_ref().map(|plane| {
+                transition(
+                    plane,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_COMMON,
+                )
+            });
+            list.ResourceBarrier(&barriers);
+            drop_barriers(&mut barriers);
+            list.Close()?;
+            match ready {
+                Some(ready) if ready.device == self.compute.device.as_raw() as usize => {
+                    self.compute.queue.Wait(&ready.fence, ready.value)?;
+                }
+                Some(ready) => ready.wait()?,
+                None => {}
+            }
+            self.compute.queue.Wait(&target.fence, target.after)?;
+        }
+        self.slots[slot].inputs = [Some(source.clone()), pointer.cloned()];
+        self.slots[slot].fence = self.compute.execute(&self.slots[slot].list)?;
+        unsafe { self.compute.queue.Signal(&target.fence, target.done)? };
+        Ok(())
+    }
+}
+/// PyroWave's planes on the compute device and the fence the encoder's
+/// Vulkan queue shares, for [`Converter::convert_planes`].
+pub struct Planes {
+    pub planes: [ID3D12Resource; 3],
+    /// `DXGI_FORMAT_R16_UNORM` for ten-bit streams, else `R8_UNORM`.
+    pub format: DXGI_FORMAT,
+    pub fence: ID3D12Fence,
+    pub after: u64,
+    pub done: u64,
 }
 impl Drop for Converter {
     fn drop(&mut self) {
