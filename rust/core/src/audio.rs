@@ -1,6 +1,7 @@
 //! Bounded audio buffering, speaker mapping and fractional resampling.
 use anyhow::{Result, bail};
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
 /// The layouts and bitrates advertised by the retained Moonlight protocol.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -150,6 +151,73 @@ impl Resampler {
         Some(out)
     }
 }
+/// Audio the host lost before it reached the network. Windows keeps about
+/// 22 ms of loopback audio (1056 frames at 48 kHz, on five endpoints of a
+/// test PC including Steam Streaming Speakers) and drops what arrives while
+/// that is full, without an error. The sender empties it on every pass, so
+/// with 5 ms packets the backlog trim above never reaches its 30 ms: a
+/// sender that runs late loses the audio inside Windows instead. A datagram
+/// Winsock refuses is dropped too. Neither left a trace in the log, so a
+/// stalled sender could not be told from network loss.
+#[derive(Default)]
+pub struct HostLoss {
+    late_reads: u32,
+    lost: Duration,
+    longest: Duration,
+    buffer: Duration,
+    unsent: u64,
+    reported: Option<Instant>,
+}
+#[derive(Debug, PartialEq, Eq)]
+pub struct HostLossReport {
+    /// Reads that came after the capture buffer had filled.
+    pub late_reads: u32,
+    /// Audio Windows had no room for: each late wait beyond the buffer.
+    pub lost: Duration,
+    pub longest: Duration,
+    pub buffer: Duration,
+    /// Audio datagrams Winsock refused.
+    pub unsent: u64,
+}
+impl HostLoss {
+    const EVERY: Duration = Duration::from_secs(5);
+    /// A read `waited` after the previous one emptied a capture buffer that
+    /// holds `buffer`; a zero buffer is unknown and never counts.
+    pub fn read_after(&mut self, waited: Duration, buffer: Duration) {
+        if buffer.is_zero() || waited <= buffer {
+            return;
+        }
+        self.late_reads += 1;
+        self.lost += waited - buffer;
+        self.longest = self.longest.max(waited);
+        self.buffer = buffer;
+    }
+    pub fn unsent(&mut self) {
+        self.unsent += 1;
+    }
+    /// What was lost since the last report, at most every five seconds.
+    pub fn report(&mut self, now: Instant) -> Option<HostLossReport> {
+        if (self.late_reads == 0 && self.unsent == 0)
+            || self
+                .reported
+                .is_some_and(|at| now.saturating_duration_since(at) < Self::EVERY)
+        {
+            return None;
+        }
+        let report = HostLossReport {
+            late_reads: self.late_reads,
+            lost: self.lost,
+            longest: self.longest,
+            buffer: self.buffer,
+            unsent: self.unsent,
+        };
+        *self = Self {
+            reported: Some(now),
+            ..Self::default()
+        };
+        Some(report)
+    }
+}
 /// Windows speaker mask -> Moonlight's FL, FR, FC, LFE, BL, BR, SL, SR order.
 pub fn mix_matrix(
     input_channels: usize,
@@ -282,6 +350,46 @@ mod tests {
         // The newest audio is kept.
         let last = r.read(480).unwrap();
         assert_eq!(last[last.len() - 2], (48 * 50 - 1) as f32 / 1e6);
+    }
+    #[test]
+    fn host_audio_loss_counts_late_reads_and_refused_datagrams() {
+        let ms = Duration::from_millis;
+        let buffer = ms(22);
+        let start = Instant::now();
+        let mut loss = HostLoss::default();
+        // On time, or with an unknown buffer: nothing to say.
+        loss.read_after(ms(10), buffer);
+        loss.read_after(buffer, buffer);
+        loss.read_after(ms(500), Duration::ZERO);
+        assert_eq!(loss.report(start), None);
+        loss.read_after(ms(30), buffer);
+        loss.read_after(ms(52), buffer);
+        loss.unsent();
+        assert_eq!(
+            loss.report(start),
+            Some(HostLossReport {
+                late_reads: 2,
+                lost: ms(38),
+                longest: ms(52),
+                buffer,
+                unsent: 1,
+            })
+        );
+        // Further loss waits five seconds and then reports only what is new.
+        loss.unsent();
+        assert_eq!(loss.report(start + ms(4999)), None);
+        loss.unsent();
+        assert_eq!(
+            loss.report(start + ms(5000)),
+            Some(HostLossReport {
+                late_reads: 0,
+                lost: Duration::ZERO,
+                longest: Duration::ZERO,
+                buffer: Duration::ZERO,
+                unsent: 2,
+            })
+        );
+        assert_eq!(loss.report(start + ms(20000)), None);
     }
     #[test]
     fn surround_upmix_does_not_duplicate_right_channel() {

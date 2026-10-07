@@ -13,6 +13,9 @@ pub struct Loopback {
     resampler: butterpollo_core::audio::Resampler,
     matrix: Vec<Vec<f32>>,
     output_channels: usize,
+    /// Audio Windows holds for us; what arrives while it is full is lost.
+    buffer: std::time::Duration,
+    drained: Option<std::time::Instant>,
 }
 impl Loopback {
     pub fn new(output_channels: usize) -> Result<Self> {
@@ -99,6 +102,13 @@ impl Loopback {
             if !matches!(f.wBitsPerSample, 16 | 24 | 32) || (float && f.wBitsPerSample != 32) {
                 bail!("unsupported WASAPI sample format");
             }
+            // Unknown when Windows will not say; loss is then not estimated.
+            let rate = f.nSamplesPerSec.max(1);
+            let buffer = client
+                .GetBufferSize()
+                .map_or(std::time::Duration::ZERO, |frames| {
+                    std::time::Duration::from_secs_f64(f64::from(frames) / f64::from(rate))
+                });
             let capture = client.GetService()?;
             client.Start()?;
             Ok(Self {
@@ -111,6 +121,8 @@ impl Loopback {
                 resampler,
                 matrix,
                 output_channels,
+                buffer,
+                drained: None,
             })
         }
     }
@@ -130,6 +142,19 @@ impl Loopback {
     }
     pub fn event_driven(&self) -> bool {
         self.ready.is_some()
+    }
+    /// How much audio Windows holds between reads; zero when unknown.
+    pub fn buffer(&self) -> std::time::Duration {
+        self.buffer
+    }
+    /// The time since the previous call, None on the first. Call it before
+    /// reading every captured packet: Windows lost what arrived after the
+    /// buffer filled in between.
+    pub fn since_drained(&mut self) -> Option<std::time::Duration> {
+        let now = std::time::Instant::now();
+        self.drained
+            .replace(now)
+            .map(|at| now.saturating_duration_since(at))
     }
     pub fn read(&mut self, frames: usize) -> Result<Option<Vec<f32>>> {
         unsafe {

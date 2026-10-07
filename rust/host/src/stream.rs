@@ -1494,6 +1494,7 @@ impl Media {
         // When audio last arrived, and when an idle endpoint's next silence is due.
         let mut heard = Instant::now();
         let mut audio_qos = Tagged::default();
+        let mut loss = butterpollo_core::audio::HostLoss::default();
         let mut next = Instant::now();
         let timer = butterpollo_windows::timing::Timer::new()?;
         let silence = vec![0.; frames * s.config.audio_channels as usize];
@@ -1588,6 +1589,11 @@ impl Media {
             // Sunshine sends them. On a fixed tick each waited up to a packet,
             // and a tick just before a late chunk sent silence in its place.
             let mut packets = Vec::new();
+            if let Some(capturing) = capture.as_mut()
+                && let Some(waited) = capturing.since_drained()
+            {
+                loss.read_after(waited, capturing.buffer());
+            }
             while let Some(capturing) = capture.as_mut() {
                 match capturing.read(frames) {
                     Ok(Some(samples)) => packets.push(samples),
@@ -1622,11 +1628,24 @@ impl Media {
                     for packet in p.encode(&opus.encode(samples)?)? {
                         // A lost audio packet is concealed by the client; only a
                         // broken socket stops the audio.
-                        butterpollo_windows::net::send_datagram(&self.audio, &packet, peer)?;
+                        if !butterpollo_windows::net::send_datagram(&self.audio, &packet, peer)? {
+                            loss.unsent();
+                        }
                     }
                 }
             } else if start.elapsed() > crate::network::ping_timeout(&config) {
                 anyhow::bail!("client audio ping timed out");
+            }
+            if let Some(report) = loss.report(Instant::now()) {
+                let ms = |d: Duration| d.as_secs_f64() * 1000.;
+                tracing::warn!(
+                    late_reads = report.late_reads,
+                    lost_ms = ms(report.lost),
+                    longest_wait_ms = ms(report.longest),
+                    buffer_ms = ms(report.buffer),
+                    unsent_packets = report.unsent,
+                    "audio lost on the host before sending"
+                );
             }
         }
         Ok(())
