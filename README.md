@@ -10,6 +10,16 @@ Stream your gaming PC to a laptop, TV or phone. Butterpollo is a Windows game-st
 
 <sub>Follow one frame from capture to the decoded picture. 60 seconds · 1080p · 60 fps · original soundtrack. [Watch the film](docs/media/demo.mp4).</sub>
 
+## The mission
+
+AMD rarely gets any love in this space. The protocol started as NVIDIA's GameStream, and even after NVIDIA dropped GameStream in 2023, the hosts that replaced it kept NVIDIA first. Upstream Sunshine has had a native NVENC encoder since 2023, while AMD still goes through FFmpeg's generic AMF wrapper. AMD hasn't helped itself either. It shut down its own streaming app, AMD Link, in 2024, saying there are plenty of other ways to stream, and its drivers still have quirks like an RDNA4 freeze that hosts have to work around.
+
+So Radeon owners have spent years hearing their cards are just worse at streaming. That is where Butterpollo comes into play, and it is the sole reason Butterpollo exists. Most of the time the card was never the problem. Nobody had sat down with it.
+
+In practice that means a native AMF encoder instead of a generic wrapper, frame copies and colour conversion on Radeon compute queues, and someone reading AMD's driver release notes so you don't have to. When a driver freezes the stream, Butterpollo works around it. When AMD fixes it, Butterpollo removes the workaround and pretends nothing happened.
+
+There are far better Sunshine forks, like [Vibepollo](https://github.com/Nonary/Vibepollo), for anything that is not AMD work. Butterpollo's mission is to speed up development on AMD streaming, which has gotten no traction for years. Butterpollo is not here to win a big userbase. There is no growth plan and no campaign to convert the NVIDIA crowd. As long as AMD users are happy, Butterpollo is happy.
+
 ## Install. Pair Moonlight. Play.
 
 1. Run **`butterpollo-setup-2.0.0-rc.16.exe`** from the [release](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.16).
