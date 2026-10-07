@@ -401,7 +401,7 @@ fn check_recovery(profile: &std::path::Path) -> Result<Value> {
         || (record["phase"] == "installing" && record["backup"].is_string())
     {
         bail!(
-            "The previous update still needs recovery. Run setup again and keep the updates folder and its backup."
+            "An earlier update could not be rolled back. Run the Butterpollo installer to repair this installation; keep the updates folder in the profile until it has finished."
         );
     }
     Ok(record)

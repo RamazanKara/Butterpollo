@@ -136,7 +136,14 @@ fn supervise() -> Result<()> {
         match butterpollo_core::update_recovery::recover(&config, install) {
             Ok(Some(outcome)) => tracing::warn!(outcome, "interrupted update rolled back"),
             Ok(None) => {}
-            Err(error) => return Err(error.context("rolling back an interrupted update failed")),
+            // The host still starts: it serves the console that reports the
+            // failure, and the next start or setup tries again. Stopping the
+            // service here would leave no host at all, even for an unreadable
+            // record.
+            Err(error) => tracing::error!(
+                error = %format!("{error:#}"),
+                "rolling back an interrupted update failed"
+            ),
         }
     }
     let mut child: Option<crate::process::Process> = None;

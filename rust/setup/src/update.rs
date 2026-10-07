@@ -29,7 +29,7 @@ pub fn run(folder: &Path, start: bool, progress: &Progress) -> Result<()> {
     // The new backup must hold one whole version, not what an interrupted
     // update left.
     install::ensure_idle(install::probe(&profile))?;
-    recover_locked(&result).context("The update that did not finish could not be rolled back")?;
+    recover_or_supersede(&result)?;
     let work = profile.join("updates").join(format!(
         "transaction-{}-{}",
         std::process::id(),
@@ -189,7 +189,34 @@ pub fn recover(profile: &Path) -> Result<()> {
         .share_mode(0)
         .open(profile.join("update.lock"))
         .context("Cannot recover the previous update; another setup may still be running")?;
-    recover_locked(&result)
+    recover_or_supersede(&result)
+}
+/// Setup installs a complete package next, so an update that cannot be
+/// rolled back must not block it: that would leave a mix of two versions
+/// that neither setup nor the in-app updater could ever replace. The record
+/// stops naming a backup to restore, so the service never puts the old
+/// backup over the new files; the backup folder itself is kept.
+fn recover_or_supersede(result: &Path) -> Result<()> {
+    let Err(error) = recover_locked(result) else {
+        return Ok(());
+    };
+    line(format!(
+        "warning: the earlier update could not be rolled back; installing the complete package over it: {error:#}"
+    ));
+    let record: serde_json::Value = std::fs::read(result)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    let kept = record["backup"]
+        .as_str()
+        .map_or_else(String::new, |backup| {
+            format!(" Its backup is kept in {backup}.")
+        });
+    write_record(
+        result,
+        &json!({"version":record["version"],"phase":"superseded","previous_backup":record["backup"],
+                "error":format!("An earlier update could not be rolled back ({error:#}). Setup {} replaces the installed files with its complete package.{kept}", env!("CARGO_PKG_VERSION"))}),
+    )
 }
 /// With update.lock held: if the last update still says "installing" after
 /// its backup was made, its setup never finished, so the files the backup
@@ -647,6 +674,44 @@ mod tests {
         std::fs::write(&result, b"broken record")?;
         assert!(recover_locked(&result).is_err());
         assert_eq!(std::fs::read(&result)?, b"broken record");
+        Ok(())
+    }
+    #[test]
+    fn a_backup_that_cannot_be_restored_does_not_block_a_complete_reinstall() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let profile = root.path().join("config");
+        let install = root.path().join("install");
+        let backup = profile.join("updates/transaction-1-2/previous");
+        std::fs::create_dir_all(&backup)?;
+        std::fs::create_dir(&install)?;
+        std::fs::write(install.join("host.exe"), b"half")?;
+        // The backup lost a file, so every restore fails before changing any.
+        std::fs::write(backup.join("backup.json"), r#"[["host.exe",true]]"#)?;
+        let result = profile.join("update-result.json");
+        write_record(
+            &result,
+            &json!({"version":"2.0.0-rc.22","phase":"installing","backup":backup,"install":install}),
+        )?;
+        for _ in 0..2 {
+            assert!(recover_locked(&result).is_err());
+        }
+        // Setup goes on to install a complete package.
+        recover(&profile)?;
+        assert_eq!(std::fs::read(install.join("host.exe"))?, b"half");
+        assert!(backup.join("backup.json").is_file());
+        let record: serde_json::Value = serde_json::from_slice(&std::fs::read(&result)?)?;
+        assert_eq!(record["phase"], "superseded");
+        assert_eq!(record["previous_backup"], json!(backup));
+        assert!(record["backup"].is_null());
+        // Neither setup nor the service puts that backup back later.
+        std::fs::write(backup.join("host.exe"), b"older")?;
+        recover(&profile)?;
+        assert_eq!(std::fs::read(install.join("host.exe"))?, b"half");
+        // An unreadable record is replaced too.
+        std::fs::write(&result, b"broken record")?;
+        recover(&profile)?;
+        let record: serde_json::Value = serde_json::from_slice(&std::fs::read(&result)?)?;
+        assert_eq!(record["phase"], "superseded");
         Ok(())
     }
     #[test]
