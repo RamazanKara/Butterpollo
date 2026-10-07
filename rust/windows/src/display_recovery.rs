@@ -242,11 +242,54 @@ pub fn reset() -> Result<()> {
     let _guard = lock(path)?;
     recover(path)
 }
+/// What a kept entry holds for a display, which was away when a stream
+/// ended and still has what that stream applied: the original values, and
+/// for the mode also the one applied.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Pending {
+    pub hdr: Option<bool>,
+    /// (original, applied) width, height and refresh in millihertz.
+    pub mode: Option<(Mode, Mode)>,
+    pub profile: Option<Option<String>>,
+}
+/// What an earlier stream left to restore on a display. A stream that takes
+/// the display over restores these rather than the values it finds, or its
+/// release would clear the entry and leave them changed for good. A journal
+/// that cannot be read counts as nothing pending; releasing it fails alike.
+pub fn pending(id: &str) -> Pending {
+    let Some(path) = PATH.get().filter(|p| p.exists()) else {
+        return Pending::default();
+    };
+    lock(path)
+        .and_then(|_guard| pending_in(path, id))
+        .unwrap_or_else(|error| {
+            tracing::warn!(error = %format!("{error:#}"), "display recovery journal is unreadable");
+            Pending::default()
+        })
+}
+pub(crate) fn pending_in(path: &Path, id: &str) -> Result<Pending> {
+    let journal: Journal = serde_json::from_slice(&std::fs::read(path)?)?;
+    Ok(journal
+        .entries
+        .get(id)
+        .map(|entry| Pending {
+            hdr: entry.hdr.map(|(original, _)| original),
+            mode: entry.mode_rate,
+            profile: entry
+                .profile
+                .as_ref()
+                .map(|(original, ..)| original.clone()),
+        })
+        .unwrap_or_default())
+}
 pub fn release(id: &str) -> Result<()> {
     let Some(path) = PATH.get().filter(|p| p.exists()) else {
         return Ok(());
     };
     let _guard = lock(path)?;
+    release_in(path, id)
+}
+pub(crate) fn release_in(path: &Path, id: &str) -> Result<()> {
     let mut journal: Journal = serde_json::from_slice(&std::fs::read(path)?)?;
     if let Some(entry) = journal.entries.get_mut(id) {
         entry.mode = None;
@@ -505,6 +548,44 @@ pub fn wait_and_recover(pid: u32, directory: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_kept_entry_gives_its_originals_until_released() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("display-recovery.json");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "pid": 0,
+                "started": 0,
+                "entries": {"tv": {
+                    "output": r"\\.\DISPLAY2",
+                    "mode": null,
+                    "hdr": [false, true],
+                    "mode_rate": [[3840, 2160, 60000], [1920, 1080, 120000]],
+                    "profile": [null, "hdr.icm", false],
+                }},
+            }))?,
+        )?;
+        assert_eq!(
+            pending_in(&path, "tv")?,
+            Pending {
+                hdr: Some(false),
+                mode: Some(((3840, 2160, 60000), (1920, 1080, 120000))),
+                profile: Some(None),
+            }
+        );
+        assert_eq!(pending_in(&path, "monitor")?, Pending::default());
+        // Releasing the display settings keeps the colour profile's entry.
+        release_in(&path, "tv")?;
+        assert_eq!(
+            pending_in(&path, "tv")?,
+            Pending {
+                profile: Some(None),
+                ..Default::default()
+            }
+        );
+        Ok(())
+    }
     #[test]
     fn exited_process_handles_do_not_keep_recovery_journals_owned() {
         use std::os::windows::process::CommandExt;

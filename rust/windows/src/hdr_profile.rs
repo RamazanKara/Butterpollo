@@ -227,15 +227,19 @@ impl Lease {
         } else {
             let api = Api::load()?;
             let system = crate::process::is_system();
-            let previous = api.get(&monitor, system)?;
-            if !previous
+            let current = api.get(&monitor, system)?;
+            let previous = previous_profile(
+                crate::display_recovery::pending(&monitor.device_id).profile,
+                current.clone(),
+            );
+            if !current
                 .as_ref()
                 .is_some_and(|name| name.eq_ignore_ascii_case(&applied))
             {
                 crate::display_recovery::profile(
                     &monitor.device_id,
                     &monitor.display_name,
-                    previous.clone(),
+                    current,
                     &applied,
                     system,
                 )?;
@@ -261,6 +265,13 @@ impl Lease {
             identity: monitor.device_id,
         })
     }
+}
+/// The profile to put back after streaming. A display that was away when an
+/// earlier stream ended still has that stream's profile, and its journal
+/// entry holds the original: that wins, or this lease's release would clear
+/// the entry and leave the stream's profile on the display for good.
+fn previous_profile(pending: Option<Option<String>>, current: Option<String>) -> Option<String> {
+    pending.unwrap_or(current)
 }
 /// Used by the separate recovery process as well as normal lease teardown.
 pub fn restore(
@@ -338,6 +349,16 @@ mod tests {
         assert_eq!(mhc2_peak(&bytes), None);
         bytes[136..140].copy_from_slice(&u32::MAX.to_be_bytes());
         assert_eq!(mhc2_peak(&bytes), None);
+    }
+    #[test]
+    fn a_pending_original_profile_wins_over_the_one_left_on_the_display() {
+        let left = Some("hdr.icm".to_string());
+        assert_eq!(previous_profile(Some(None), left.clone()), None);
+        assert_eq!(
+            previous_profile(Some(Some("calibrated.icm".into())), left.clone()),
+            Some("calibrated.icm".into())
+        );
+        assert_eq!(previous_profile(None, left.clone()), left);
     }
     #[test]
     fn installed_profile_selection_cannot_escape_the_color_directory() {
