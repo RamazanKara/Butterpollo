@@ -2042,6 +2042,25 @@ fn hdr_action(supported: bool, current: bool, requested: Option<bool>) -> HdrAct
         _ => HdrAction::Keep,
     }
 }
+/// Undo a stream's HDR change on the display as it is connected now, if it
+/// still has the value the stream applied. Its adapter and target ids can
+/// change while streaming (a driver reset, a TV that reconnects), so the
+/// monitor recorded at stream start only names the device.
+fn restore_hdr(
+    recorded: &Monitor,
+    previous: bool,
+    applied: bool,
+    now: &[Monitor],
+    set: impl FnOnce(&Monitor, bool) -> Result<()>,
+) -> Result<()> {
+    match now
+        .iter()
+        .find(|m| m.device_id == recorded.device_id && m.hdr_enabled == applied)
+    {
+        Some(monitor) => set(monitor, previous),
+        None => Ok(()),
+    }
+}
 pub struct Guard {
     pub output: String,
     virtual_display: Option<DisplayLease>,
@@ -2421,12 +2440,9 @@ impl Drop for Guard {
             restored = false;
             tracing::info!(output = %self.output, "display is gone; its settings are restored when it returns");
         }
-        if let Some((monitor, previous, applied)) = settings.color
-            && monitors().is_ok_and(|all| {
-                all.iter()
-                    .any(|m| m.device_id == monitor.device_id && m.hdr_enabled == applied)
-            })
-            && let Err(e) = set_hdr(&monitor, previous)
+        if let Some((monitor, previous, applied)) = &settings.color
+            && let Ok(now) = monitors()
+            && let Err(e) = restore_hdr(monitor, *previous, *applied, &now, set_hdr)
         {
             restored = false;
             tracing::warn!(error=%e,"HDR restoration failed");
@@ -2635,6 +2651,53 @@ mod tests {
         assert_eq!(hdr_action(false, false, Some(false)), HdrAction::Keep);
         assert_eq!(hdr_action(true, true, Some(true)), HdrAction::Keep);
         assert_eq!(hdr_action(true, false, None), HdrAction::Keep);
+    }
+    fn monitor(id: &str, adapter: u32, hdr: bool) -> Monitor {
+        Monitor {
+            device_id: id.into(),
+            monitor_device_path: String::new(),
+            display_name: r"\\.\DISPLAY1".into(),
+            friendly_name: id.into(),
+            hdr_supported: true,
+            hdr_enabled: hdr,
+            primary: false,
+            adapter: LUID {
+                LowPart: adapter,
+                HighPart: 0,
+            },
+            target: 7,
+            source: 0,
+        }
+    }
+    #[test]
+    fn hdr_is_restored_on_the_display_as_it_is_connected_now() {
+        // Recorded at stream start; the adapter's LUID changed since.
+        let recorded = monitor("tv", 1, false);
+        let mut set = None;
+        restore_hdr(
+            &recorded,
+            false,
+            true,
+            &[monitor("tv", 2, true)],
+            |m, enabled| {
+                set = Some((m.adapter.LowPart, enabled));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(set, Some((2, false)));
+        // Changed back by the user, or gone: left alone.
+        let untouched = |_: &Monitor, _| -> Result<()> { panic!("must not change HDR") };
+        restore_hdr(
+            &recorded,
+            false,
+            true,
+            &[monitor("tv", 2, false)],
+            untouched,
+        )
+        .unwrap();
+        restore_hdr(&recorded, false, true, &[monitor("pc", 2, true)], untouched).unwrap();
+        restore_hdr(&recorded, false, true, &[], untouched).unwrap();
     }
     #[test]
     fn extending_a_cloned_desktop_assigns_distinct_sources_and_rejects_impossible_routes() {
