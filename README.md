@@ -22,30 +22,36 @@ Stream your gaming PC to a laptop, TV or phone. Butterpollo is a Windows game-st
 
 ## Why Butterpollo
 
+Butterpollo goes deep on one thing: streaming latency on AMD Radeon. It began as a fork of [Vibepollo](https://github.com/Nonary/Vibepollo), whose native AMF encoder came from the same author ([#342](https://github.com/Nonary/Vibepollo/pull/342)), and rebuilds the host in Rust around the Radeon frame path. Vibepollo stays the full-featured host for every GPU, and anything that works out here is GPL-3.0 for it to take.
+
+**On NVIDIA, use Vibepollo.** Butterpollo includes NVENC, but it has not been tested on NVIDIA hardware.
+
 | What you get | How it helps |
 | --- | --- |
 | **Radeon compute** | Frame copies and colour conversion run on D3D12 compute queues alongside the game's graphics work. Native AMF encodes the result. |
 | **A Rust host throughout** | Streaming, protocol handling, native helpers, service and setup share the Rust implementation. |
 | **HEVC and AV1 HDR** | Native capture and ten-bit BT.2020/PQ conversion preserve the HDR signal through encoding. H.264 is also available. |
 | **PyroWave HDR 4:4:4** | Full-resolution colour keeps fine coloured text and edges crisp. |
-| **Your setup, per device and per game** | Virtual displays, display layouts, RTSS limits and application profiles let each stream use its own settings. |
-| **A useful web console** | Pair devices, bring in Steam or Playnite, configure Lossless Scaling, and see frame rate, bitrate and encoder timing together. |
+| **A rebuilt web console** | Pair devices, manage your library and per-app settings, and see frame rate, bitrate and encoder timing together. |
+
+Carried over from Vibepollo, Apollo and Sunshine and rebuilt in Rust: per-device virtual displays and display layouts, RTSS frame limits, application profiles, Steam and Playnite library sync, Lossless Scaling, and Nonary's 1000 Hz VRR mode, which needs [his Moonlight client](https://github.com/Nonary/moonlight-qt).
 
 [How the frame pipeline works →](docs/architecture.md) · [Choose your settings →](docs/configuration.md)
 
-## Measured against other Sunshine hosts
+## Measured on an RX 7900 XT
 
-**56% lower average render-to-decode delay. 2.15× as many fresh pictures.**
+**Radeon compute cut average picture delay beside a game from 41.0 to 33.5 ms**, with the game holding 174 fps either way.
 
-| Controlled 1080p60 HEVC HDR test | Other Sunshine host¹ | Butterpollo rc.2 |
+| 1080p60 HEVC HDR beside a game-like load | Compute off | Compute on |
 | --- | ---: | ---: |
-| Average render-to-decode delay | 96.4 ms | **42.4 ms** |
-| 95th-percentile delay, averaged across runs | 137.0 ms | **56.5 ms** |
-| Fresh pictures per second | 23.9 | **51.4** |
+| Average render-to-decode delay | 41.0 ms | **33.5 ms** |
+| 95th-percentile delay, averaged across runs | 54.4 ms | **42.3 ms** |
+| Fresh pictures per second | 56.7 | **58.1** |
+| Host time, present to send | 16.2 ms | **11.2 ms** |
 
-<sub>¹ Measured baseline: Vibepollo 2.0. RX 7900 XT · DDX · 20 Mbps requested · controlled GPU load · means of three alternating runs per host · October 4, 2026. Render-to-decode measures picture age through independent loopback decoding. [Method and recorded runs](rust/PERFORMANCE.md#against-vibepollo-20).</sub>
+<sub>Same Butterpollo build, one setting changed · RX 7900 XT · DDX · 120 Hz virtual display · 20 Mbps requested · two runs per path · October 4, 2026. Render-to-decode measures picture age through independent loopback decoding. [Method and recorded runs](rust/PERFORMANCE.md#1080p-at-60-fps).</sub>
 
-In a separate **same-build compute off/on** comparison, average picture delay fell from **41.0 to 33.5 ms**. That test isolates the compute change. The historical whole-host comparison above measures the combined implementation.
+**Next to Vibepollo 2.0** in a matched setup, Butterpollo rc.2 averaged 42.4 ms against 96.4 ms beside the same load and delivered 51.4 fresh pictures a second against 23.9. Most of that gap is not the compute path: with compute off, Butterpollo still delivered about 57 fresh pictures a second in an earlier batch. Vibepollo handed its native AMF encoder about 24 frames a second, and the encoder logged that its output had not caught up. That encoder came from Butterpollo's author; where the frames are lost is still being traced, and the fix goes to Vibepollo. [Matched comparison →](docs/performance.md#next-to-vibepollo-20)
 
 [Benchmarks, current WGC results and HDR validation →](docs/performance.md)
 
@@ -69,7 +75,7 @@ Share your Radeon setup, games and results in [Issues](https://github.com/Ramaza
 
 ## Credits and license
 
-Butterpollo is **GPL-3.0**. Thanks to **Nonary** for Vibepollo, **ClassicOldSong** for Apollo, and **LizardByte and the Sunshine contributors**. PyroWave and Granite are by **Themaister** (MIT); the PyroWave Moonlight protocol and clients are **joemossjr16's** work.
+Butterpollo is **GPL-3.0**. Thanks to **Nonary** for Vibepollo, **ClassicOldSong** for Apollo, and **LizardByte and the Sunshine contributors**. The AMD encoder's low-latency defaults draw on **qiin2333's** work in AlkaidLab's Foundation Sunshine. PyroWave and Granite are by **Themaister** (MIT); the PyroWave Moonlight protocol and clients are **joemossjr16's** work.
 
 [License](LICENSE) · [Third-party components](rust/THIRD_PARTY.md) · [Project history](docs/butterpollo-cpp.md)
 
