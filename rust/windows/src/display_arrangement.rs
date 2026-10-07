@@ -58,6 +58,78 @@ pub fn unchanged(applied: &[Node]) -> Result<bool> {
         .collect();
     Ok(matches_connected(&current, applied, Some(&connected)))
 }
+/// Tell the layouts streams hold that a remote monitor's display was
+/// switched on (`on`) or is about to be removed. Otherwise a stream's end
+/// finds a layout it did not apply, takes it for the user's own and leaves
+/// the physical displays off, and a restore would switch the remote monitor
+/// off. `output`: its GDI name or device id.
+pub fn retain(output: &str, on: bool) -> Result<()> {
+    let arranged = state().lock().unwrap().users != 0;
+    let activated = activation_state().lock().unwrap().users != 0;
+    if !arranged && !activated {
+        return Ok(());
+    }
+    let id = crate::display::monitors()
+        .ok()
+        .and_then(|all| all.into_iter().find(|m| m.matches(output)))
+        .map_or_else(|| output.to_owned(), |m| m.device_id);
+    let current = if on {
+        Topology::query()?.nodes()?
+    } else {
+        Vec::new()
+    };
+    let mut result = Ok(());
+    {
+        let mut state = state().lock().unwrap();
+        if retain_in(&mut state, &current, &id, on)
+            && let Some(before) = &state.before
+        {
+            result =
+                crate::display_recovery::arrangement(Some((before.clone(), state.applied.clone())));
+        }
+    }
+    let mut state = activation_state().lock().unwrap();
+    if retain_in(&mut state, &current, &id, on)
+        && let Some(before) = &state.before
+    {
+        result = result.and(crate::display_recovery::activation(Some((
+            before.clone(),
+            state.applied.clone(),
+        ))));
+    }
+    result
+}
+/// Record `id` in a held layout. Switched on, it is expected active where it
+/// is now and restored active with the layout from before the stream; going
+/// away, it is only no longer kept on. Its node stays: a display that is gone
+/// does not count as a change, and one still there until its lease ends
+/// must not either. True when the recorded layout changed.
+fn retain_in(state: &mut State, current: &[Node], id: &str, on: bool) -> bool {
+    if state.users == 0 {
+        return false;
+    }
+    if !on {
+        state.retained.retain(|r| r != id);
+        return false;
+    }
+    let Some(node) = current.iter().find(|n| n.device_id == id) else {
+        return false;
+    };
+    match state.applied.iter_mut().find(|n| n.device_id == id) {
+        Some(applied) => *applied = node.clone(),
+        None => state.applied.push(node.clone()),
+    }
+    if let Some(before) = &mut state.before {
+        match before.nodes.iter_mut().find(|n| n.device_id == id) {
+            Some(original) => original.active = true,
+            None => before.nodes.push(node.clone()),
+        }
+    }
+    if !state.retained.iter().any(|r| r == id) {
+        state.retained.push(id.to_owned());
+    }
+    true
+}
 fn active_ids(nodes: &[Node]) -> std::collections::BTreeSet<String> {
     nodes
         .iter()
@@ -450,6 +522,66 @@ mod tests {
         assert!(!matches_connected(&current, &applied, Some(&with_tv)));
         assert!(!matches(&current, &applied));
         assert!(matches(&applied, &applied));
+    }
+    #[test]
+    fn a_remote_monitor_switched_on_mid_stream_keeps_the_streams_layout() {
+        let mut state = State {
+            users: 1,
+            before: Some(snapshot(vec![node("phys", true, true)])),
+            applied: vec![node("vdd", true, true), node("phys", false, false)],
+            ..Default::default()
+        };
+        let mut remote = node("remote", true, false);
+        remote.desired_position = Position { x: 1920, y: 0 };
+        let current = vec![node("vdd", true, true), remote];
+        let connected: std::collections::BTreeSet<String> =
+            ["vdd", "phys", "remote"].map(String::from).into();
+        assert!(!matches_connected(
+            &current,
+            &state.applied,
+            Some(&connected)
+        ));
+        assert!(retain_in(&mut state, &current, "remote", true));
+        assert!(matches_connected(
+            &current,
+            &state.applied,
+            Some(&connected)
+        ));
+        // The restore keeps it on beside the user's own displays.
+        let before = state.before.as_ref().unwrap();
+        assert!(
+            before
+                .nodes
+                .iter()
+                .any(|n| n.device_id == "remote" && n.active)
+        );
+        assert!(
+            before
+                .nodes
+                .iter()
+                .any(|n| n.device_id == "phys" && n.active)
+        );
+        assert_eq!(state.retained, ["remote"]);
+        // Disconnected: no longer kept on, and its removal is no change.
+        assert!(!retain_in(&mut state, &[], "remote", false));
+        assert!(state.retained.is_empty());
+        let current = vec![node("vdd", true, true)];
+        let connected: std::collections::BTreeSet<String> =
+            ["vdd", "phys"].map(String::from).into();
+        assert!(matches_connected(
+            &current,
+            &state.applied,
+            Some(&connected)
+        ));
+        // Without a stream holding a layout there is nothing to record.
+        let mut idle = State::default();
+        assert!(!retain_in(
+            &mut idle,
+            &[node("remote", true, false)],
+            "remote",
+            true
+        ));
+        assert!(idle.applied.is_empty() && idle.retained.is_empty());
     }
     #[test]
     fn the_original_layout_leaves_out_the_streams_virtual_display() {

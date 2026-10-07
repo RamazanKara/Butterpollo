@@ -5,7 +5,10 @@ use butterpollo_core::{
     session::Role,
     topology::{Kind, Layout, Node},
 };
-use butterpollo_windows::display::{self, Retained};
+use butterpollo_windows::{
+    display::{self, Retained},
+    display_arrangement,
+};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -158,6 +161,11 @@ pub fn activate(h: &Shared, client: &str, config: &Negotiated) -> Result<Arc<Ret
         disconnect(h, Some(client));
         return Err(error);
     }
+    // A stream holding a display layout must count this display as part of
+    // it, or its end leaves the physical displays off.
+    if let Err(error) = display_arrangement::retain(&lease.current_output(), true) {
+        tracing::warn!(error = %format!("{error:#}"), "remote monitor is not part of the stream's display layout");
+    }
     Ok(lease)
 }
 pub fn disconnect(h: &Shared, client: Option<&str>) {
@@ -175,6 +183,12 @@ pub fn disconnect(h: &Shared, client: Option<&str>) {
     *monitors = kept;
     let empty = monitors.is_empty();
     drop(monitors);
+    // While their displays still exist to be named.
+    for lease in removed.values() {
+        if let Err(error) = display_arrangement::retain(&lease.current_output(), false) {
+            tracing::warn!(error = %format!("{error:#}"), "remote monitor is still kept on by the stream's display layout");
+        }
+    }
     // Dropping the last lease joins its feeder, whose recovery callback takes
     // the monitors lock to lay out the displays: never drop one under it.
     drop(removed);
