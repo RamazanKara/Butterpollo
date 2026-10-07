@@ -2005,6 +2005,22 @@ static SETTINGS: std::sync::Mutex<std::collections::BTreeMap<String, Settings>> 
 pub fn leased_displays() -> Vec<String> {
     SETTINGS.lock().unwrap().keys().cloned().collect()
 }
+/// Whether a stream may change a display's mode or HDR. Only its sole user
+/// may: a second stream keeps what the first one streams, whether or not
+/// the first changed anything, and the encoder scales.
+#[derive(Debug, PartialEq)]
+enum Plan {
+    Keep,
+    Change,
+}
+/// `recorded`: the value an earlier stream applied to this display.
+fn plan<T: PartialEq>(users: usize, recorded: Option<&T>, current: &T, requested: &T) -> Plan {
+    if users > 1 || recorded.is_some() || current == requested {
+        Plan::Keep
+    } else {
+        Plan::Change
+    }
+}
 pub struct Guard {
     pub output: String,
     virtual_display: Option<DisplayLease>,
@@ -2220,62 +2236,68 @@ impl Guard {
                     );
                 }
                 let (width, height, fps) = requested;
-                if let Some((_, _, applied)) = &settings.mode {
-                    // Another stream set this display's mode; keep it and let
+                let applied = settings.mode.as_ref().map(|(_, _, applied)| applied);
+                if plan(settings.users, applied, &current, &requested) == Plan::Keep {
+                    // Another stream uses this display; keep its mode and let
                     // the encoder scale, rather than refuse the second stream.
-                    if *applied != requested {
+                    let kept = *applied.unwrap_or(&current);
+                    if kept != requested {
                         tracing::info!(
                             output = %guard.output,
-                            "another stream set this display to {}x{}; scaling this stream",
-                            applied.0,
-                            applied.1
+                            "another stream uses this display at {}x{}; scaling this stream",
+                            kept.0,
+                            kept.1
                         );
                     }
                 } else {
-                    if (previous.dmPelsWidth, previous.dmPelsHeight, previous_rate.0) != requested {
-                        crate::display_recovery::mode_rate(
-                            &guard.identity,
-                            &guard.output,
-                            (previous.dmPelsWidth, previous.dmPelsHeight, previous_rate.0),
-                            requested,
-                        )?;
-                        settings.mode = Some((previous, previous_rate, requested));
-                        let applied = Topology::set_mode_rate(
-                            &guard.output,
-                            width,
-                            height,
-                            butterpollo_core::framegen::Rate(fps),
-                        );
-                        // Record what the display has now even when the rate
-                        // was refused: a TV can take the resolution and keep
-                        // its old rate, and teardown restores only the mode
-                        // it finds recorded.
-                        let actual = mode(&guard.output)?;
-                        let actual_rate = Topology::query()?.refresh(&guard.identity)?;
-                        let actual_mode = (actual.dmPelsWidth, actual.dmPelsHeight, actual_rate.0);
-                        crate::display_recovery::mode_rate(
-                            &guard.identity,
-                            &guard.output,
-                            (previous.dmPelsWidth, previous.dmPelsHeight, previous_rate.0),
-                            actual_mode,
-                        )?;
-                        settings.mode = Some((previous, previous_rate, actual_mode));
-                        applied?;
-                    }
+                    crate::display_recovery::mode_rate(
+                        &guard.identity,
+                        &guard.output,
+                        (previous.dmPelsWidth, previous.dmPelsHeight, previous_rate.0),
+                        requested,
+                    )?;
+                    settings.mode = Some((previous, previous_rate, requested));
+                    let applied = Topology::set_mode_rate(
+                        &guard.output,
+                        width,
+                        height,
+                        butterpollo_core::framegen::Rate(fps),
+                    );
+                    // Record what the display has now even when the rate
+                    // was refused: a TV can take the resolution and keep
+                    // its old rate, and teardown restores only the mode
+                    // it finds recorded.
+                    let actual = mode(&guard.output)?;
+                    let actual_rate = Topology::query()?.refresh(&guard.identity)?;
+                    let actual_mode = (actual.dmPelsWidth, actual.dmPelsHeight, actual_rate.0);
+                    crate::display_recovery::mode_rate(
+                        &guard.identity,
+                        &guard.output,
+                        (previous.dmPelsWidth, previous.dmPelsHeight, previous_rate.0),
+                        actual_mode,
+                    )?;
+                    settings.mode = Some((previous, previous_rate, actual_mode));
+                    applied?;
                 }
             }
-            if let Some(enabled) = hdr
-                && enabled != chosen.hdr_enabled
-                && settings.color.is_none()
-            {
-                crate::display_recovery::hdr(
-                    &guard.identity,
-                    &guard.output,
-                    chosen.hdr_enabled,
-                    enabled,
-                )?;
-                settings.color = Some((chosen.clone(), chosen.hdr_enabled, enabled));
-                set_hdr(&chosen, enabled)?;
+            if let Some(enabled) = hdr {
+                let applied = settings.color.as_ref().map(|(_, _, applied)| applied);
+                if plan(settings.users, applied, &chosen.hdr_enabled, &enabled) == Plan::Change {
+                    crate::display_recovery::hdr(
+                        &guard.identity,
+                        &guard.output,
+                        chosen.hdr_enabled,
+                        enabled,
+                    )?;
+                    settings.color = Some((chosen.clone(), chosen.hdr_enabled, enabled));
+                    set_hdr(&chosen, enabled)?;
+                } else if enabled != chosen.hdr_enabled {
+                    tracing::info!(
+                        output = %guard.output,
+                        hdr = chosen.hdr_enabled,
+                        "another stream uses this display; keeping its HDR state"
+                    );
+                }
             }
             Ok(())
         })();
@@ -2563,6 +2585,17 @@ mod tests {
         assert_eq!(&request[92..96], &1500u32.to_le_bytes());
         assert_eq!(&display_label("😀")[..11], b"Butterpollo");
         assert_eq!(display_label(&"A".repeat(40))[31], 0);
+    }
+    #[test]
+    fn only_a_displays_sole_stream_changes_its_mode_or_hdr() {
+        let (current, requested) = ((3840, 2160, 60000), (1920, 1080, 120000));
+        assert_eq!(plan(1, None, &current, &requested), Plan::Change);
+        assert_eq!(plan(1, None, &current, &current), Plan::Keep);
+        // The first stream needed no change: the second keeps its mode.
+        assert_eq!(plan(2, None, &current, &requested), Plan::Keep);
+        assert_eq!(plan(2, Some(&current), &current, &requested), Plan::Keep);
+        assert_eq!(plan(2, None, &false, &true), Plan::Keep);
+        assert_eq!(plan(1, None, &false, &true), Plan::Change);
     }
     #[test]
     fn extending_a_cloned_desktop_assigns_distinct_sources_and_rejects_impossible_routes() {
