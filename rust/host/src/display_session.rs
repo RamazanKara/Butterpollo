@@ -18,6 +18,16 @@ use std::sync::{
 };
 use std::time::Duration;
 
+fn stream_mode(stream: &Negotiated) -> (u32, u32, u32, bool, bool) {
+    (
+        stream.width,
+        stream.height,
+        stream.fps_millihz(),
+        stream.hdr,
+        stream.vrr_low_latency,
+    )
+}
+
 /// Only pending and connected streams own limiter changes. The retained game
 /// display must not keep a global frame cap active after transport disconnects.
 pub struct StreamPreparation {
@@ -32,7 +42,7 @@ pub struct Ready {
     // use the published target, never the lock held over native display I/O.
     _state: Arc<Mutex<Prepared>>,
     target: CaptureTarget,
-    mode: (u32, u32, u32, bool),
+    mode: (u32, u32, u32, bool, bool),
     framegen: Policy,
     stop: Arc<AtomicBool>,
     worker: Option<std::thread::JoinHandle<()>>,
@@ -89,13 +99,7 @@ impl Ready {
         })
     }
     pub fn matches(&self, stream: &Negotiated) -> bool {
-        self.mode
-            == (
-                stream.width,
-                stream.height,
-                stream.fps_millihz(),
-                stream.hdr,
-            )
+        self.mode == stream_mode(stream)
     }
     pub fn output(&self) -> String {
         self.target.current().0
@@ -143,7 +147,7 @@ pub struct Prepared {
     _retained: Option<Arc<Retained>>,
     _vulkan: Option<vulkan::Lease>,
     _golden: Option<GoldenLease>,
-    mode: (u32, u32, u32, bool),
+    mode: (u32, u32, u32, bool, bool),
     revision: u64,
     recovery_pending: bool,
     recovery_due: std::time::Instant,
@@ -325,7 +329,7 @@ impl Prepared {
             });
         let mut framegen = Policy::resolve(
             config,
-            device_mode.map_or(Rate(stream.fps_millihz()), |(_, _, rate)| rate),
+            Rate(stream.fps_millihz()),
             virtual_mode,
             generation,
             generation_enabled,
@@ -342,8 +346,16 @@ impl Prepared {
                     .and_then(|a| a.extra.get("config-overrides"))
                     .and_then(serde_json::Value::as_object)
                     .is_some_and(|o| o.contains_key("rtss_frame_limit_type")),
-        )?
-        .with_vrr(
+        )?;
+        if let Some((_, _, rate)) = device_mode {
+            // A saved display mode must not cap a faster stream's game at its refresh rate.
+            framegen.display_rate = butterpollo_core::framegen::display_rate(
+                rate,
+                virtual_mode,
+                butterpollo_core::framegen::virtual_refresh(config),
+            );
+        }
+        framegen = framegen.with_vrr(
             config,
             virtual_mode,
             stream.vrr_low_latency || launch.vrr_requested,
@@ -602,6 +614,9 @@ impl Prepared {
             virtual_display = virtual_mode,
             output = %output,
             layout = selection,
+            requested_refresh_millihz = request.refresh.or(virtual_mode.then_some(rate.0)),
+            limiter_rate = %framegen.rate,
+            limiter_enabled = framegen.enabled,
             "stream display selection"
         );
         let recovery_profile = if stream.hdr {
@@ -630,12 +645,7 @@ impl Prepared {
                 _retained: retained,
                 _vulkan: vulkan,
                 _golden: golden,
-                mode: (
-                    stream.width,
-                    stream.height,
-                    stream.fps_millihz(),
-                    stream.hdr,
-                ),
+                mode: stream_mode(stream),
                 revision: 0,
                 recovery_pending: false,
                 recovery_due: std::time::Instant::now(),
@@ -758,6 +768,21 @@ mod tests {
     use super::*;
     use std::cell::Cell;
     use std::sync::mpsc;
+
+    #[test]
+    fn vrr_negotiated_after_launch_requires_new_display_preparation() {
+        let mut launch = Negotiated {
+            fps: 116,
+            ..Default::default()
+        };
+        let negotiated =
+            Negotiated::from_sdp(b"a=x-nv-video[0].maxFPS:116\na=x-ss-video[0].vrrLowLatency:1\n")
+                .unwrap();
+        assert_eq!(negotiated.fps_millihz(), 116_000);
+        assert_ne!(stream_mode(&launch), stream_mode(&negotiated));
+        launch.vrr_low_latency = true;
+        assert_eq!(stream_mode(&launch), stream_mode(&negotiated));
+    }
 
     #[test]
     fn the_saved_layout_is_restored_once_after_the_last_stream() {

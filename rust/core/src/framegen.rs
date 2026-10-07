@@ -135,6 +135,14 @@ pub fn virtual_refresh(config: &Config) -> VirtualRefresh {
         }
     }
 }
+pub fn display_rate(rate: Rate, virtual_display: bool, mode: VirtualRefresh) -> Rate {
+    match (virtual_display, mode) {
+        (true, VirtualRefresh::Legacy) => Rate(rate.0.saturating_mul(2)),
+        (true, VirtualRefresh::Enabled) => Rate(rate.0.saturating_mul(4)),
+        (true, VirtualRefresh::Vrr) => Rate(1_000_000),
+        _ => rate,
+    }
+}
 pub fn generation_provider(value: &str) -> &'static str {
     match normalize(value).as_str() {
         "nvidia" | "smoothmotion" | "nvidiasmoothmotion" => "nvidia-smooth-motion",
@@ -170,12 +178,6 @@ impl Policy {
         let framegen = generation_enabled || generation != "none";
         let mode = virtual_refresh(config);
         let automatic = virtual_display && mode != VirtualRefresh::Disabled;
-        let multiplier = match mode {
-            _ if !virtual_display => 1,
-            VirtualRefresh::Legacy => 2,
-            VirtualRefresh::Enabled | VirtualRefresh::Vrr => 4,
-            VirtualRefresh::Disabled => 1,
-        };
         let provider = Provider::parse(config.get("frame_limiter_provider", "auto"));
         let overridden = Rate::parse(config.get("frame_limiter_fps_limit", "0"))?;
         let rate = if overridden.0 > 0 { overridden } else { stream };
@@ -214,11 +216,7 @@ impl Policy {
         .to_owned();
         Ok(Self {
             rate,
-            display_rate: if virtual_display && mode == VirtualRefresh::Vrr {
-                Rate(1_000_000)
-            } else {
-                Rate(stream.0.saturating_mul(multiplier))
-            },
+            display_rate: display_rate(stream, virtual_display, mode),
             enabled: config.boolean("frame_limiter_enable", false)
                 || automatic
                 || (!virtual_display && framegen),
@@ -330,6 +328,53 @@ mod tests {
             .unwrap()
             .with_vrr(&c, false, true);
         assert_eq!(p.display_rate, Rate(59940));
+    }
+    #[test]
+    fn a_device_display_mode_keeps_the_streams_limiter_rate() {
+        for (setting, limit) in [("", 116_000), ("frame_limiter_fps_limit=58", 58_000)] {
+            for (mode, display) in [
+                ("legacy", 120_000),
+                ("enabled", 240_000),
+                ("fixed-1000hz", 1_000_000),
+                ("disabled", 60_000),
+            ] {
+                let c = Config::parse(&format!(
+                    "{setting}\nframe_limiter_auto_virtual_framegen={mode}"
+                ))
+                .unwrap();
+                for virtual_display in [false, true] {
+                    let mut p = Policy::resolve(
+                        &c,
+                        Rate(116_000),
+                        virtual_display,
+                        "none",
+                        false,
+                        false,
+                        true,
+                        false,
+                    )
+                    .unwrap();
+                    p.display_rate =
+                        display_rate(Rate(60_000), virtual_display, virtual_refresh(&c));
+                    assert_eq!(p.rate, Rate(limit));
+                    assert_eq!(
+                        p.display_rate,
+                        Rate(if virtual_display { display } else { 60_000 })
+                    );
+                    let p = p.with_vrr(&c, virtual_display, true);
+                    assert_eq!(p.rate, Rate(limit));
+                    assert_eq!(p.rate.rational(), (limit / 1000, 1));
+                    assert_eq!(
+                        p.display_rate,
+                        Rate(if virtual_display && mode != "disabled" {
+                            1_000_000
+                        } else {
+                            60_000
+                        })
+                    );
+                }
+            }
+        }
     }
     #[test]
     fn fractional_rate_round_trip_and_bounds() {
