@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail};
 use std::{
     fs::File,
     io::{Read, Write},
-    os::windows::io::AsRawHandle,
+    os::windows::{fs::OpenOptionsExt, io::AsRawHandle},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -15,6 +15,7 @@ use std::{
 };
 use windows::Win32::{
     Foundation::HANDLE,
+    Storage::FileSystem::SECURITY_IDENTIFICATION,
     System::{
         Pipes::{GetNamedPipeServerSessionId, PeekNamedPipe, WaitNamedPipeW},
         Registry::{HKEY_LOCAL_MACHINE, HKEY_USERS},
@@ -207,6 +208,8 @@ fn open(name: &str, wait: Duration) -> Result<File> {
         match std::fs::OpenOptions::new()
             .read(true)
             .write(true)
+            // A connector in our session must not borrow the host's token.
+            .security_qos_flags(SECURITY_IDENTIFICATION.0)
             .open(name)
         {
             Ok(file) => return Ok(file),
@@ -463,6 +466,51 @@ mod tests {
         );
         pipe.send(&serde_json::json!({"done":true})).unwrap();
         thread.join().unwrap();
+    }
+
+    #[test]
+    fn pipe_server_cannot_impersonate_the_host() {
+        use std::os::windows::io::OwnedHandle;
+        use windows::Win32::{
+            Security::{
+                GetTokenInformation, RevertToSelf, SECURITY_IMPERSONATION_LEVEL,
+                SecurityIdentification, TOKEN_QUERY, TokenImpersonationLevel,
+            },
+            System::{
+                Pipes::ImpersonateNamedPipeClient,
+                Threading::{GetCurrentThread, OpenThreadToken},
+            },
+        };
+
+        let temp = tempfile::tempdir().unwrap();
+        let name = format!(
+            r"\\.\pipe\BP-{}-{}",
+            std::process::id(),
+            temp.path().file_name().unwrap().to_string_lossy()
+        );
+        let mut server = server(&name);
+        let mut client = open(&name, Duration::from_secs(1)).unwrap();
+        check_session(&client, session(std::process::id()).unwrap()).unwrap();
+        client.write_all(&[1]).unwrap();
+        server.read_exact(&mut [0]).unwrap();
+        let mut level = SECURITY_IMPERSONATION_LEVEL::default();
+        unsafe {
+            ImpersonateNamedPipeClient(handle(&server)).unwrap();
+            let mut token = HANDLE::default();
+            let opened = OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, true, &mut token);
+            RevertToSelf().unwrap();
+            opened.unwrap();
+            let token = OwnedHandle::from_raw_handle(token.0);
+            GetTokenInformation(
+                HANDLE(token.as_raw_handle()),
+                TokenImpersonationLevel,
+                Some((&mut level as *mut SECURITY_IMPERSONATION_LEVEL).cast()),
+                size_of::<SECURITY_IMPERSONATION_LEVEL>() as u32,
+                &mut 0,
+            )
+            .unwrap();
+        }
+        assert_eq!(level, SecurityIdentification);
     }
 
     #[test]
