@@ -178,6 +178,7 @@ async fn serverinfo(
     State(h): State<Shared>,
     Extension(connection): Extension<Connection>,
 ) -> Response {
+    h.request_codec_probe();
     h.wait_for_video_codecs().await;
     let config = h.config.read().unwrap().clone();
     let ports = config.ports().unwrap();
@@ -749,6 +750,7 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
             return xml(401, &[], Some(error.to_string()));
         }
     };
+    h.request_codec_probe();
     let _transition = h.launch_transition.lock().unwrap();
     if crate::updater::installing(&h) {
         return xml(

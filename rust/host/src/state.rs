@@ -3,7 +3,7 @@ use butterpollo_core::{
     config::Config,
     crypto::Identity,
     pairing::Pairings,
-    session::Sessions,
+    session::{Sessions, Warnings},
     state::{App, Credentials, PairedState, ProfileFiles},
 };
 use serde_json::{Value, json};
@@ -15,6 +15,71 @@ use std::{
 };
 pub type Shared = Arc<Host>;
 use crate::web_sessions::{self, WebSession};
+
+const STANDARD_CODECS: u32 = 0x1 | 0x100 | 0x200 | 0x10000 | 0x20000;
+const CODEC_RETRY_MIN: Duration = Duration::from_secs(5);
+const CODEC_RETRY_MAX: Duration = Duration::from_secs(60);
+
+struct CodecRetry {
+    delay: Duration,
+    next: Option<Instant>,
+    on_demand: Instant,
+    warning: Option<Instant>,
+}
+impl CodecRetry {
+    fn new(now: Instant) -> Self {
+        Self {
+            delay: CODEC_RETRY_MIN,
+            next: None,
+            on_demand: now,
+            warning: None,
+        }
+    }
+    fn completed(
+        &mut self,
+        flags: u32,
+        error: Option<&str>,
+        warnings: &Warnings,
+        now: Instant,
+    ) -> bool {
+        if flags & !0x40000000 == 0 {
+            if self.warn(now) {
+                // Clearing makes an unchanged warning log its next reminder.
+                warnings.clear("video_encoder");
+                warnings.set(
+                    "video_encoder",
+                    format!(
+                        "No video encoder available: {}. Retrying.",
+                        error.unwrap_or("the encoder produced no packets")
+                    ),
+                );
+            }
+        } else {
+            warnings.clear("video_encoder");
+            self.warning = None;
+        }
+        if flags & STANDARD_CODECS != 0 {
+            self.next = None;
+            self.delay = CODEC_RETRY_MIN;
+            return false;
+        }
+        self.next = Some(now + self.delay);
+        self.on_demand = now + CODEC_RETRY_MIN;
+        self.delay = (self.delay * 2).min(CODEC_RETRY_MAX);
+        true
+    }
+    fn due(&self, now: Instant, requested: bool) -> bool {
+        self.next
+            .is_some_and(|next| now >= next || (requested && now >= self.on_demand))
+    }
+    fn warn(&mut self, now: Instant) -> bool {
+        if self.warning.is_some_and(|next| now < next) {
+            return false;
+        }
+        self.warning = Some(now + CODEC_RETRY_MAX);
+        true
+    }
+}
 /// A one-time PIN that lets a client pair with a passphrase, valid 180 s.
 pub struct OneTimePin {
     pub pin: String,
@@ -55,6 +120,8 @@ pub struct Host {
     pub restart: std::sync::atomic::AtomicBool,
     pub codecs: std::sync::atomic::AtomicU32,
     pub probing_codecs: std::sync::atomic::AtomicBool,
+    codec_probe_requested: std::sync::atomic::AtomicBool,
+    pub warnings: Warnings,
     video_codecs_ready: tokio::sync::watch::Sender<bool>,
     pub current_app: Mutex<Option<crate::process::RunningApp>>,
     pub live_rtx: Mutex<Option<(String, serde_json::Map<String, Value>)>>,
@@ -208,6 +275,8 @@ impl Host {
             restart: std::sync::atomic::AtomicBool::new(false),
             codecs: std::sync::atomic::AtomicU32::new(0),
             probing_codecs: std::sync::atomic::AtomicBool::new(true),
+            codec_probe_requested: std::sync::atomic::AtomicBool::new(false),
+            warnings: Warnings::default(),
             video_codecs_ready: tokio::sync::watch::channel(false).0,
             current_app: Mutex::new(None),
             live_rtx: Default::default(),
@@ -265,163 +334,198 @@ impl Host {
         let mut ready = self.video_codecs_ready.subscribe();
         let _ = ready.wait_for(|ready| *ready).await;
     }
-    pub fn probe_codecs(self: &Arc<Self>) {
-        self.probe_codecs_attempt(0);
+    pub fn request_codec_probe(&self) {
+        if self.codecs.load(std::sync::atomic::Ordering::Acquire) & STANDARD_CODECS == 0 {
+            self.codec_probe_requested
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
     }
-    fn probe_codecs_attempt(self: &Arc<Self>, attempt: u32) {
+    pub fn probe_codecs(self: &Arc<Self>) {
         let h = self.clone();
         std::thread::spawn(move || {
-            h.probing_codecs
-                .store(true, std::sync::atomic::Ordering::Release);
-            let Ok(_com) = butterpollo_windows::capture::ComGuard::new() else {
+            use std::sync::atomic::Ordering;
+            let mut retry = CodecRetry::new(Instant::now());
+            loop {
+                if h.stop.load(Ordering::Acquire) {
+                    return;
+                }
+                h.codec_probe_requested.store(false, Ordering::Release);
+                h.probing_codecs.store(true, Ordering::Release);
+                let mut config = h.config.read().unwrap().clone();
+                // Probe the driver's ability independently of the stream's opt-in.
+                config.values.insert("amd_ltr_frames".into(), "4".into());
+                let (flags, error, retry_pyrowave) = h
+                    .probe_codecs_once(&config)
+                    .unwrap_or_else(|error| (0, Some(format!("{error:#}")), false));
+                h.codecs.store(flags, Ordering::Release);
                 h.video_codecs_ready.send_replace(true);
-                h.probing_codecs
-                    .store(false, std::sync::atomic::Ordering::Release);
+                h.probing_codecs.store(false, Ordering::Release);
+                if h.stop.load(Ordering::Acquire) {
+                    return;
+                }
+                let now = Instant::now();
+                let again = retry.completed(flags, error.as_deref(), &h.warnings, now);
+                if flags & !0x40000000 != 0 {
+                    tracing::info!(codec_flags = flags, "encoder capability probe completed");
+                }
                 h.metadata.lock().unwrap().take();
-                return;
-            };
-            let mut config = h.config.read().unwrap().clone();
-            // Probe the driver's ability independently of the stream's opt-in.
-            config.values.insert("amd_ltr_frames".into(), "4".into());
-            let image = butterpollo_windows::capture::Image {
-                width: 640,
-                height: 480,
-                stride: 2560,
-                bytes: vec![128; 640 * 480 * 4],
-                captured: Instant::now(),
-                pixel: butterpollo_windows::capture::Pixel::Bgra8,
-            };
-            let mut flags = 0u32;
-            let software = config.get("encoder", "auto") == "software";
-            // Bits follow moonlight-common-c's SCM_* values; each 4:4:4 mode
-            // is probed only after its 4:2:0 mode works.
-            for (codec, hdr, yuv444, bit) in [
-                (0, false, false, 1),
-                (1, false, false, 0x100),
-                (1, true, false, 0x200),
-                (2, false, false, 0x10000),
-                (2, true, false, 0x20000),
-                (0, false, true, 0x40000),
-                (1, false, true, 0x80000),
-                (1, true, true, 0x100000),
-                (2, false, true, 0x200000),
-                (2, true, true, 0x400000),
-            ] {
-                let mode = config.integer(if codec == 1 { "hevc_mode" } else { "av1_mode" }, 0);
-                if matches!(codec, 1 | 2) && (mode == 1 || (hdr && mode == 2)) {
-                    continue;
-                }
-                let base = match (codec, hdr) {
-                    (0, _) => 1,
-                    (1, false) => 0x100,
-                    (1, true) => 0x200,
-                    (2, false) => 0x10000,
-                    _ => 0x20000,
-                };
-                if yuv444 && flags & base == 0 {
-                    continue;
-                }
-                if h.stop.load(std::sync::atomic::Ordering::Acquire) {
-                    break;
-                }
-                let negotiated = butterpollo_core::rtsp::Negotiated {
-                    width: 640,
-                    height: 480,
-                    fps: 30,
-                    bitrate_kbps: 2000,
-                    codec,
-                    hdr,
-                    yuv444,
-                    ..Default::default()
-                };
-                match butterpollo_windows::encoder::Encoder::new_options(
-                    &negotiated,
-                    config.get("encoder", "auto"),
-                    config.get("output_name", ""),
-                    &config,
-                ) {
-                    // A 4:4:4 stream must not quietly fall back to software
-                    // encoding; advertise it only from a hardware encoder.
-                    Ok(encoder) if yuv444 && !software && !encoder.hardware() => {
-                        tracing::debug!(
-                            codec,
-                            hdr,
-                            "4:4:4 needs a hardware encoder; not advertised"
-                        );
+                if !again {
+                    if retry_pyrowave {
+                        h.retry_pyrowave_probe(&config);
                     }
-                    Ok(mut encoder) => {
-                        if codec == 0 && !yuv444 {
-                            *h.probed_encoder.lock().unwrap() = encoder.backend();
-                        }
-                        for frame in 0..8 {
-                            match encoder.encode(&image, frame == 0, negotiated.bitrate_kbps) {
-                                Ok(packets) if !packets.is_empty() => {
-                                    flags |= bit;
-                                    h.codecs.store(flags, std::sync::atomic::Ordering::Release);
-                                    if encoder.supports_invalidation() {
-                                        flags |= 0x40000000;
-                                    }
-                                    break;
-                                }
-                                Err(error) => {
-                                    tracing::warn!(%error, codec, hdr, "encoder capability probe failed");
-                                    break;
-                                }
-                                _ => std::thread::sleep(Duration::from_millis(5)),
-                            }
-                        }
-                    }
-                    // Most GPUs cannot encode 4:4:4; that is not a fault.
-                    Err(error) if yuv444 => {
-                        tracing::debug!(%error, codec, hdr, "4:4:4 encoding unavailable")
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, codec, hdr, "encoder capability initialization failed")
-                    }
+                    return;
                 }
-            }
-            // Publish standard codecs together before the optional Vulkan
-            // probe. A driver/overlay failure in that child cannot kill them.
-            h.codecs.store(flags, std::sync::atomic::Ordering::Release);
-            h.video_codecs_ready.send_replace(true);
-            let mut retry_pyrowave = false;
-            if config.boolean("pyrowave", true)
-                && !h.stop.load(std::sync::atomic::Ordering::Acquire)
-            {
-                match butterpollo_windows::codec_probe::pyrowave(&config) {
-                    Ok(optional) => flags |= optional,
-                    Err(error) => {
-                        retry_pyrowave =
-                            error.is::<butterpollo_windows::codec_probe::SessionNotReady>();
-                        tracing::warn!(error = %format!("{error:#}"), retry = retry_pyrowave, "optional PyroWave probe failed; standard codecs remain available")
-                    }
+                if !h.wait_for_codec_retry(&retry) {
+                    return;
                 }
-            }
-            h.codecs.store(flags, std::sync::atomic::Ordering::Release);
-            h.video_codecs_ready.send_replace(true);
-            h.probing_codecs
-                .store(false, std::sync::atomic::Ordering::Release);
-            h.metadata.lock().unwrap().take();
-            tracing::info!(codec_flags = flags, "encoder capability probe completed");
-            // Before anyone signs in after Windows starts, the encoders can
-            // fail to open (AMF error 1), and the host then offered no video
-            // codec at all until it restarted. Probe everything again.
-            const STANDARD: u32 = 0x1 | 0x100 | 0x200 | 0x10000 | 0x20000;
-            if flags & STANDARD == 0 && attempt < 6 {
-                let delay = Duration::from_secs(5 << attempt.min(3)).min(Duration::from_secs(60));
-                if h.wait_for_session(delay) {
-                    tracing::info!(
-                        attempt = attempt + 1,
-                        "no video codec available; probing the encoders again"
-                    );
-                    h.probe_codecs_attempt(attempt + 1);
-                }
-                return;
-            }
-            if retry_pyrowave {
-                h.retry_pyrowave_probe(&config);
             }
         });
+    }
+    fn probe_codecs_once(&self, config: &Config) -> Result<(u32, Option<String>, bool)> {
+        let _com = butterpollo_windows::capture::ComGuard::new()?;
+        let mut first_error = None;
+        let image = butterpollo_windows::capture::Image {
+            width: 640,
+            height: 480,
+            stride: 2560,
+            bytes: vec![128; 640 * 480 * 4],
+            captured: Instant::now(),
+            pixel: butterpollo_windows::capture::Pixel::Bgra8,
+        };
+        let mut flags = 0u32;
+        let software = config.get("encoder", "auto") == "software";
+        // Bits follow moonlight-common-c's SCM_* values; each 4:4:4 mode
+        // is probed only after its 4:2:0 mode works.
+        for (codec, hdr, yuv444, bit) in [
+            (0, false, false, 1),
+            (1, false, false, 0x100),
+            (1, true, false, 0x200),
+            (2, false, false, 0x10000),
+            (2, true, false, 0x20000),
+            (0, false, true, 0x40000),
+            (1, false, true, 0x80000),
+            (1, true, true, 0x100000),
+            (2, false, true, 0x200000),
+            (2, true, true, 0x400000),
+        ] {
+            let mode = config.integer(if codec == 1 { "hevc_mode" } else { "av1_mode" }, 0);
+            if matches!(codec, 1 | 2) && (mode == 1 || (hdr && mode == 2)) {
+                continue;
+            }
+            let base = match (codec, hdr) {
+                (0, _) => 1,
+                (1, false) => 0x100,
+                (1, true) => 0x200,
+                (2, false) => 0x10000,
+                _ => 0x20000,
+            };
+            if yuv444 && flags & base == 0 {
+                continue;
+            }
+            if self.stop.load(std::sync::atomic::Ordering::Acquire) {
+                break;
+            }
+            let negotiated = butterpollo_core::rtsp::Negotiated {
+                width: 640,
+                height: 480,
+                fps: 30,
+                bitrate_kbps: 2000,
+                codec,
+                hdr,
+                yuv444,
+                ..Default::default()
+            };
+            match butterpollo_windows::encoder::Encoder::new_options(
+                &negotiated,
+                config.get("encoder", "auto"),
+                config.get("output_name", ""),
+                config,
+            ) {
+                // A 4:4:4 stream must not quietly fall back to software
+                // encoding; advertise it only from a hardware encoder.
+                Ok(encoder) if yuv444 && !software && !encoder.hardware() => {
+                    tracing::debug!(codec, hdr, "4:4:4 needs a hardware encoder; not advertised");
+                }
+                Ok(mut encoder) => {
+                    if codec == 0 && !yuv444 {
+                        *self.probed_encoder.lock().unwrap() = encoder.backend();
+                    }
+                    for frame in 0..8 {
+                        match encoder.encode(&image, frame == 0, negotiated.bitrate_kbps) {
+                            Ok(packets) if !packets.is_empty() => {
+                                flags |= bit;
+                                self.codecs
+                                    .store(flags, std::sync::atomic::Ordering::Release);
+                                if encoder.supports_invalidation() {
+                                    flags |= 0x40000000;
+                                }
+                                break;
+                            }
+                            Err(error) => {
+                                first_error.get_or_insert_with(|| format!("{error:#}"));
+                                tracing::debug!(%error, codec, hdr, "encoder capability probe failed");
+                                break;
+                            }
+                            _ => std::thread::sleep(Duration::from_millis(5)),
+                        }
+                    }
+                }
+                // Most GPUs cannot encode 4:4:4; that is not a fault.
+                Err(error) if yuv444 => {
+                    tracing::debug!(%error, codec, hdr, "4:4:4 encoding unavailable")
+                }
+                Err(error) => {
+                    first_error.get_or_insert_with(|| format!("{error:#}"));
+                    tracing::debug!(%error, codec, hdr, "encoder capability initialization failed");
+                }
+            }
+        }
+        // Publish standard codecs together before the optional Vulkan
+        // probe. A driver/overlay failure in that child cannot kill them.
+        self.codecs
+            .store(flags, std::sync::atomic::Ordering::Release);
+        self.video_codecs_ready.send_replace(true);
+        let mut retry_pyrowave = false;
+        if config.boolean("pyrowave", true) && !self.stop.load(std::sync::atomic::Ordering::Acquire)
+        {
+            match butterpollo_windows::codec_probe::pyrowave(config) {
+                Ok(optional) => flags |= optional,
+                Err(error) => {
+                    retry_pyrowave =
+                        error.is::<butterpollo_windows::codec_probe::SessionNotReady>();
+                    if flags & STANDARD_CODECS != 0 {
+                        tracing::warn!(error = %format!("{error:#}"), retry = retry_pyrowave, "optional PyroWave probe failed; standard codecs remain available");
+                    } else {
+                        tracing::debug!(error = %format!("{error:#}"), "optional PyroWave probe failed");
+                    }
+                }
+            }
+        }
+        Ok((flags, first_error, retry_pyrowave))
+    }
+    fn wait_for_codec_retry(&self, retry: &CodecRetry) -> bool {
+        use std::sync::atomic::Ordering;
+        let mut session_check = Instant::now();
+        loop {
+            if self.stop.load(Ordering::Acquire) {
+                return false;
+            }
+            let now = Instant::now();
+            if now >= session_check
+                && retry.due(now, self.codec_probe_requested.load(Ordering::Acquire))
+            {
+                if self.probe_session_ready() {
+                    return true;
+                }
+                session_check = now + CODEC_RETRY_MIN;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+    fn probe_session_ready(&self) -> bool {
+        !(butterpollo_windows::process::is_system()
+            && !butterpollo_windows::process::user_signed_in())
+            && self.sessions.lock().unwrap().active.is_empty()
     }
     /// Wait `delay`, then until a user is signed in and no stream runs.
     /// False when the host is stopping.
@@ -436,10 +540,7 @@ impl Host {
                 std::thread::sleep(Duration::from_millis(250));
             }
             // Wait for a sign-in, and leave the GPU to a running stream.
-            if (butterpollo_windows::process::is_system()
-                && !butterpollo_windows::process::user_signed_in())
-                || !self.sessions.lock().unwrap().active.is_empty()
-            {
+            if !self.probe_session_ready() {
                 until = Instant::now() + Duration::from_secs(5);
                 continue;
             }
@@ -633,6 +734,102 @@ fn load_library(path: &std::path::Path, default: Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn codecs_keep_retrying_with_capped_backoff_until_the_probe_recovers() {
+        let mut now = Instant::now();
+        let mut retry = CodecRetry::new(now);
+        let warnings = Warnings::default();
+        let mut attempts = 0;
+        let mut probe = || {
+            attempts += 1;
+            if attempts <= 100 {
+                (0, Some("AMF error 1"))
+            } else {
+                (0x101, None)
+            }
+        };
+        for delay in [5, 10, 20, 40]
+            .into_iter()
+            .chain(std::iter::repeat_n(60, 96))
+        {
+            let (flags, error) = probe();
+            assert!(retry.completed(flags, error, &warnings, now));
+            assert_eq!(
+                warnings.snapshot()[0].message,
+                "No video encoder available: AMF error 1. Retrying."
+            );
+            now += Duration::from_secs(delay);
+            assert!(!retry.due(now - Duration::from_millis(1), false));
+            assert!(retry.due(now, false));
+        }
+        let (flags, error) = probe();
+        assert!(!retry.completed(flags, error, &warnings, now));
+        assert!(warnings.snapshot().is_empty());
+        assert!(!retry.due(now + Duration::from_secs(600), true));
+        assert_eq!(attempts, 101);
+    }
+    #[test]
+    fn client_requests_bypass_backoff_but_never_the_minimum_interval() {
+        let mut now = Instant::now();
+        let mut retry = CodecRetry::new(now);
+        let warnings = Warnings::default();
+        let mut calls = 0;
+        let mut probe = || {
+            calls += 1;
+            0
+        };
+        for _ in 0..10 {
+            assert!(retry.completed(probe(), Some("driver unavailable"), &warnings, now));
+            for milliseconds in [0, 1, 250, 4999] {
+                assert!(!retry.due(now + Duration::from_millis(milliseconds), true));
+            }
+            now += CODEC_RETRY_MIN;
+            assert!(retry.due(now, true));
+        }
+        assert_eq!(calls, 10);
+        assert!(!retry.due(now, false));
+        assert!(retry.due(now + Duration::from_secs(55), false));
+    }
+    #[test]
+    fn codec_failure_reminders_are_limited_and_recovery_resets_the_delay() {
+        let now = Instant::now();
+        let mut retry = CodecRetry::new(now);
+        assert!(retry.warn(now));
+        for seconds in 1..60 {
+            assert!(!retry.warn(now + Duration::from_secs(seconds)));
+        }
+        assert!(retry.warn(now + Duration::from_secs(60)));
+        let warnings = Warnings::default();
+        for _ in 0..4 {
+            assert!(retry.completed(0, None, &warnings, now));
+        }
+        assert!(!retry.due(now + Duration::from_secs(39), false));
+        assert!(!retry.completed(1, None, &warnings, now));
+        assert!(retry.completed(0, Some("COM initialization failed"), &warnings, now));
+        assert_eq!(
+            warnings.snapshot()[0].message,
+            "No video encoder available: COM initialization failed. Retrying."
+        );
+        assert!(!retry.due(now + Duration::from_secs(4), false));
+        assert!(retry.due(now + Duration::from_secs(5), false));
+    }
+    #[test]
+    fn codec_modifiers_do_not_count_as_video_and_optional_codecs_keep_standard_retries() {
+        let now = Instant::now();
+        let mut retry = CodecRetry::new(now);
+        let warnings = Warnings::default();
+        assert!(retry.completed(0x40000000, None, &warnings, now));
+        assert_eq!(
+            warnings.snapshot()[0].message,
+            "No video encoder available: the encoder produced no packets. Retrying."
+        );
+        assert!(retry.completed(0x800000, None, &warnings, now));
+        assert!(warnings.snapshot().is_empty());
+        assert!(retry.completed(0, Some("AMF error 1"), &warnings, now));
+        assert_eq!(warnings.snapshot().len(), 1);
+        assert!(!retry.completed(0x10000, None, &warnings, now));
+        assert!(warnings.snapshot().is_empty());
+    }
     #[test]
     fn an_invalid_library_starts_empty_and_is_kept() {
         let dir = std::env::temp_dir().join(format!("butterpollo-apps-{}", uuid::Uuid::new_v4()));

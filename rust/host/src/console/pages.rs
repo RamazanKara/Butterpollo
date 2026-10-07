@@ -27,7 +27,14 @@ fn readiness(meta: &Value) -> String {
         !displays.is_empty()
     };
     let audio_ready = !rows(meta, "audio_sinks").is_empty();
-    let mut out = "<ul class=\"readiness\">".to_owned();
+    let mut out = String::new();
+    for warning in rows(meta, "warnings") {
+        out += &format!(
+            "<p class=\"notice\" role=\"status\">{}</p>",
+            i18n::data(text(warning, "message"))
+        );
+    }
+    out += "<ul class=\"readiness\">";
     for (ready, label, detail) in [
         (
             video,
@@ -37,7 +44,7 @@ fn readiness(meta: &Value) -> String {
             } else if checking {
                 "Checking your graphics card. Reload in a few seconds."
             } else {
-                "No working encoder found. Check that your graphics card is enabled and its driver is installed, then restart Butterpollo."
+                "No working encoder found. Retrying automatically."
             },
         ),
         (
@@ -844,4 +851,26 @@ pub(super) async fn render(
         }
         _ => return Err("Page not found".into()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn readiness_shows_escaped_encoder_warnings_until_recovery() {
+        let mut meta = json!({
+            "encoder_status":{"h264":false,"state":"failed"},
+            "warnings":[{"code":"video_encoder","message":"No video encoder available: <driver error>. Retrying."}]
+        });
+        for state in ["failed", "checking"] {
+            meta["encoder_status"]["state"] = json!(state);
+            let html = i18n::render(&readiness(&meta), "en");
+            assert!(html.contains("No video encoder available: &lt;driver error&gt;. Retrying."));
+            assert!(html.contains("role=\"status\""));
+            assert!(!html.contains("<driver error>"));
+        }
+        meta["encoder_status"] = json!({"h264":true,"state":"ready"});
+        meta["warnings"] = json!([]);
+        assert!(!readiness(&meta).contains("No video encoder available"));
+    }
 }

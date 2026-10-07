@@ -170,6 +170,7 @@ export interface Metadata {
   pc_address: string;
   pc_addresses: string[];
   paired_devices: number;
+  warnings: { code: string; message: string }[];
   encoder_status: { state: 'checking' | 'failed' | 'ready'; h264: boolean; hevc: boolean; av1: boolean; pyrowave: boolean };
   capture_status: {
     configured_backend: string;

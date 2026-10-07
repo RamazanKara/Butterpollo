@@ -126,6 +126,7 @@ async fn connection(
         )
         .await??;
         let req = rtsp::Request::parse(&raw)?;
+        h.request_codec_probe();
         let ports = h.config.read().unwrap().ports()?;
         let mut headers = vec![];
         let mut body = Vec::new();

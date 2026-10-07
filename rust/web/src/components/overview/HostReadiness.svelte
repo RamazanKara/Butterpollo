@@ -36,6 +36,10 @@
   function encoder(meta: Metadata): Check {
     const base = { title: 'Video encoder', href: '/settings/video', settings: 'Video settings' };
     const status = meta.encoder_status;
+    const warning = meta.warnings?.find((warning) => warning.code === 'video_encoder');
+    if (warning) {
+      return { ...base, tone: 'danger', state: 'Retrying', text: warning.message };
+    }
     if (status.state === 'checking') {
       return { ...base, tone: 'neutral', state: 'Checking', text: 'Testing which codecs the graphics card can encode.' };
     }
@@ -50,7 +54,7 @@
         ...base,
         tone: 'danger',
         state: 'Unavailable',
-        text: "No codec works, so devices can't stream. Update the graphics driver, then restart the host.",
+        text: 'No video encoder available. Retrying.',
       };
     }
     if (!status.h264) {
