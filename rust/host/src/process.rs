@@ -891,12 +891,6 @@ pub fn launch(
         .filter(|id| !id.is_empty() && app.cmd.trim().is_empty())
         .map(str::to_owned);
     let fullscreen = app.cmd.trim().is_empty() && playnite_fullscreen(&app);
-    if fullscreen {
-        match crate::playnite::fullscreen_command() {
-            Some(command) => app.cmd = command,
-            None => tracing::warn!("Playnite was not found; streaming the desktop"),
-        }
-    }
     let config = h.config.read().unwrap().clone();
     let lossless = if fullscreen {
         None
@@ -913,16 +907,18 @@ pub fn launch(
         .as_ref()
         .map(|_| butterpollo_windows::process::processes().unwrap_or_default());
     let mut running = RunningApp::with_environment(&app, environment)?;
-    running.playnite_fullscreen = fullscreen;
-    if let Some(id) = playnite_id
-        && config.boolean("playnite_enabled", true)
-    {
+    if fullscreen || (playnite_id.is_some() && config.boolean("playnite_enabled", true)) {
         running.playnite = Some(crate::playnite::Launch::start(
             h,
-            &id,
+            if fullscreen {
+                None
+            } else {
+                playnite_id.as_deref()
+            },
             &running.environment,
         )?);
     }
+    running.playnite_fullscreen = fullscreen;
     if let (Some(options), Some(baseline)) = (lossless, baseline) {
         let folder: Box<dyn Fn() -> Option<String> + Send> = match &running.playnite {
             Some(launch) => Box::new(launch.folder()),

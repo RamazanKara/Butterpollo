@@ -431,6 +431,9 @@ struct LaunchState {
     pipe_closed: bool,
     saw_process: bool,
     missing_since: Option<Instant>,
+    fullscreen: bool,
+    fullscreen_seen: bool,
+    game_id: String,
 }
 impl LaunchState {
     fn status(&mut self, id: &str, message: Message) {
@@ -444,10 +447,20 @@ impl LaunchState {
             return;
         };
         let game = game.trim().trim_matches(['{', '}']);
-        let ours =
-            !game.is_empty() && game.eq_ignore_ascii_case(id.trim().trim_matches(['{', '}']));
+        let ours = !game.is_empty()
+            && game.eq_ignore_ascii_case(if self.fullscreen {
+                &self.game_id
+            } else {
+                id.trim().trim_matches(['{', '}'])
+            });
         match name.as_str() {
-            "gameStarted" if ours => {
+            "gameStarted" if ours || (self.fullscreen && !game.is_empty()) => {
+                if !game.eq_ignore_ascii_case(&self.game_id) {
+                    self.saw_process = false;
+                    self.install_dir.clear();
+                    self.exe.clear();
+                }
+                self.game_id = game.to_owned();
                 self.phase = Phase::Running;
                 if !install_dir.is_empty() {
                     self.install_dir = install_dir;
@@ -478,6 +491,13 @@ impl LaunchState {
                 tracing::info!(id, "Playnite requested game cleanup and stream shutdown");
             }
             "playniteExiting" => {
+                if self.fullscreen && self.phase != Phase::Running {
+                    self.phase = Phase::Exited;
+                    tracing::info!(
+                        "Playnite fullscreen is closing with no active game; ending the stream"
+                    );
+                    return;
+                }
                 tracing::info!(id, "Playnite is closing; checking the game independently");
                 self.disconnected();
             }
@@ -491,7 +511,10 @@ impl LaunchState {
         }
     }
     fn start_timeout(&mut self, elapsed: Duration) -> bool {
-        if self.phase == Phase::Starting && elapsed >= START_TIMEOUT {
+        if self.phase == Phase::Starting
+            && !(self.fullscreen && self.fullscreen_seen)
+            && elapsed >= START_TIMEOUT
+        {
             self.phase = Phase::Untracked;
             true
         } else {
@@ -531,8 +554,24 @@ impl LaunchState {
             self.phase = Phase::Exited;
         }
     }
+    fn poll_fullscreen(&mut self, running: bool) {
+        if !self.fullscreen || !running {
+            return;
+        }
+        self.fullscreen_seen = true;
+        if self.phase == Phase::Exited {
+            tracing::info!(id = %self.game_id, "Playnite game ended; keeping the fullscreen menu open");
+            self.phase = Phase::Starting;
+            self.game_id.clear();
+            self.install_dir.clear();
+            self.exe.clear();
+            self.stopped = false;
+            self.saw_process = false;
+            self.missing_since = None;
+        }
+    }
 }
-/// A Playnite game started for a stream.
+/// A Playnite game or fullscreen menu started for a stream.
 pub struct Launch {
     state: Arc<Mutex<LaunchState>>,
     stop: Arc<AtomicBool>,
@@ -540,19 +579,30 @@ pub struct Launch {
     baseline: Vec<butterpollo_core::steam::Process>,
 }
 impl Launch {
-    /// Start Playnite if needed, then ask the plugin to start game `id` with
-    /// the stream's environment.
-    pub fn start(h: &Shared, id: &str, environment: &BTreeMap<String, String>) -> Result<Self> {
-        let id = uuid::Uuid::parse_str(id)
+    /// Start a game, or the fullscreen menu without an id, with the
+    /// stream's environment.
+    pub fn start(
+        h: &Shared,
+        id: Option<&str>,
+        environment: &BTreeMap<String, String>,
+    ) -> Result<Self> {
+        let fullscreen = id.is_none();
+        let id = id
+            .map(uuid::Uuid::parse_str)
+            .transpose()
             .context("Playnite launch failed: invalid game ID")?
-            .to_string();
+            .map(|id| id.to_string())
+            .unwrap_or_default();
         let program = butterpollo_windows::playnite::install_dir()
             .and_then(|dir| butterpollo_windows::playnite::executable(&dir))
             .context("Playnite launch failed: no Desktop or Fullscreen executable found; open Playnite once or repair its installation")?;
-        tracing::info!(id, executable = %program.display(), running = butterpollo_windows::playnite::running().is_some(), "Playnite launch prepared");
+        tracing::info!(id, fullscreen, executable = %program.display(), running = butterpollo_windows::playnite::running().is_some(), "Playnite launch prepared");
         let plugin_ready = update_plugin(h);
-        let baseline = butterpollo_windows::process::processes().unwrap_or_default();
-        let state = Arc::new(Mutex::new(LaunchState::default()));
+        let baseline = butterpollo_windows::playnite::session_processes().unwrap_or_default();
+        let state = Arc::new(Mutex::new(LaunchState {
+            fullscreen,
+            ..Default::default()
+        }));
         let stop = Arc::new(AtomicBool::new(false));
         let worker = {
             let (state, stop) = (state.clone(), stop.clone());
@@ -597,7 +647,7 @@ impl Launch {
             &state.install_dir,
             Duration::ZERO,
         );
-        if let Ok(now) = butterpollo_windows::process::processes() {
+        if let Ok(now) = butterpollo_windows::playnite::session_processes() {
             tracker.update(&now, butterpollo_windows::process::image_path);
             butterpollo_windows::process::stop_processes(&tracker.tracked, timeout);
         }
@@ -611,13 +661,22 @@ fn run(
     stop: &AtomicBool,
     plugin_ready: bool,
 ) {
+    let fullscreen = id.is_empty();
     let set = |phase: Phase| state.lock().unwrap().phase = phase;
     if !plugin_ready {
         fallback(program, id, environment, state);
         return;
     }
-    if butterpollo_windows::playnite::running().is_none()
-        && let Err(error) = butterpollo_windows::playnite::launch(program, &[], environment)
+    if (fullscreen || butterpollo_windows::playnite::running().is_none())
+        && let Err(error) = butterpollo_windows::playnite::launch(
+            program,
+            if fullscreen {
+                &["--startfullscreen"]
+            } else {
+                &[]
+            },
+            environment,
+        )
     {
         tracing::error!(id, error = %format!("{error:#}"), "Playnite startup failed");
         set(Phase::Exited);
@@ -626,7 +685,7 @@ fn run(
     let opened = Instant::now();
     let deadline = opened + START_TIMEOUT;
     let mut attempts = 0;
-    let hello = json!({"type":"hello","role":"launcher","pid":std::process::id(),"mode":"standard","gameId":id});
+    let hello = json!({"type":"hello","role":"launcher","pid":std::process::id(),"mode":if fullscreen { "fullscreen" } else { "standard" },"gameId":id});
     let pipe = loop {
         if stop.load(Ordering::Acquire) {
             return;
@@ -655,17 +714,24 @@ fn run(
             }
         }
     };
-    if let Err(error) =
-        pipe.send(&json!({"type":"command","command":"launch","id":id,"env":environment}))
-    {
+    let command = launch_command(id, environment);
+    if let Err(error) = pipe.send(&command) {
         tracing::warn!(id, error = %format!("{error:#}"), "the Playnite launch request failed; trying the CLI fallback");
         fallback(program, id, environment, state);
         return;
     }
-    tracing::info!(id, "asked Playnite to start the game");
+    if fullscreen {
+        tracing::info!(
+            "Playnite fullscreen launch requested; stream environment sent to the plugin"
+        );
+    } else {
+        tracing::info!(id, "asked Playnite to start the game");
+    }
     let requested = Instant::now();
     let mut checked = requested;
+    let mut reconnect_at = requested;
     let mut pipe = Some(pipe);
+    let shared = state;
     // The connection stays open for the stream: Playnite keeps the
     // stream's environment for the game until it closes.
     while !stop.load(Ordering::Acquire) {
@@ -698,42 +764,72 @@ fn run(
         if state.start_timeout(requested.elapsed()) {
             tracing::warn!(
                 id,
-                "Playnite did not confirm gameStarted within 120 seconds; leaving the stream open for a slow launch or a Playnite dialog"
+                fullscreen,
+                "Playnite did not confirm startup within 120 seconds; leaving the stream open for a slow launch or a Playnite dialog"
             );
         }
-        if state.verifying() && checked.elapsed() >= Duration::from_secs(1) {
+        let mut reconnect = false;
+        if (state.verifying() || fullscreen) && checked.elapsed() >= Duration::from_secs(1) {
             checked = Instant::now();
-            let alive = if state.has_process_hint() {
-                match butterpollo_windows::process::processes() {
-                    Ok(processes) => Some(processes.iter().any(|p| {
-                        butterpollo_windows::process::image_path(p.pid).is_some_and(|path| {
-                            playnite::game_process(&path, &state.install_dir, &state.exe)
+            let previous = state.phase.clone();
+            match butterpollo_windows::playnite::session_processes() {
+                Ok(processes) => {
+                    let alive = (state.verifying() && state.has_process_hint()).then(|| {
+                        processes.iter().any(|p| {
+                            butterpollo_windows::process::image_path(p.pid).is_some_and(|path| {
+                                playnite::game_process(&path, &state.install_dir, &state.exe)
+                            })
                         })
-                    })),
-                    Err(error) => {
-                        tracing::warn!(id, error = %format!("{error:#}"), "Playnite game process check failed; keeping the stream open");
-                        None
-                    }
+                    });
+                    state.poll(checked, alive);
+                    let fullscreen_running = processes
+                        .iter()
+                        .any(|p| p.name.eq_ignore_ascii_case("Playnite.FullscreenApp.exe"));
+                    state.poll_fullscreen(fullscreen_running);
+                    reconnect = fullscreen
+                        && fullscreen_running
+                        && pipe.is_none()
+                        && checked >= reconnect_at;
                 }
-            } else {
-                None
-            };
-            state.poll(checked, alive);
+                Err(error) => {
+                    tracing::warn!(id, error = %format!("{error:#}"), "Playnite game process check failed; keeping the stream open");
+                    state.poll(checked, None);
+                }
+            }
             match state.phase {
                 Phase::Exited => {
                     tracing::info!(id, "Playnite game exit confirmed; ending the stream");
                     return;
                 }
-                Phase::Untracked => tracing::warn!(
+                Phase::Untracked if previous != Phase::Untracked => tracing::warn!(
                     id,
                     "Playnite game could not be tracked; the stream stays until ended manually"
                 ),
                 _ => {}
             }
         }
-        if pipe.is_none() && state.phase == Phase::Untracked {
+        if !fullscreen && pipe.is_none() && state.phase == Phase::Untracked {
             return;
         }
+        drop(state);
+        if reconnect {
+            reconnect_at = Instant::now() + Duration::from_secs(5);
+            if let Ok(connected) = Pipe::connect(&hello)
+                && connected.send(&command).is_ok()
+            {
+                // Only restore the environment; replaying a launch could start a game twice.
+                shared.lock().unwrap().pipe_closed = false;
+                pipe = Some(connected);
+                tracing::info!("Playnite fullscreen pipe reconnected; stream environment restored");
+            }
+        }
+    }
+}
+fn launch_command(id: &str, environment: &BTreeMap<String, String>) -> Value {
+    if id.is_empty() {
+        json!({"type":"command","command":"set-environment","env":environment})
+    } else {
+        json!({"type":"command","command":"launch","id":id,"env":environment})
     }
 }
 fn fallback(
@@ -742,11 +838,20 @@ fn fallback(
     environment: &BTreeMap<String, String>,
     state: &Mutex<LaunchState>,
 ) {
-    match butterpollo_windows::playnite::launch(program, &["--start", id], environment) {
+    let game_args = ["--start", id];
+    match butterpollo_windows::playnite::launch(
+        program,
+        if id.is_empty() {
+            &["--startfullscreen"]
+        } else {
+            &game_args
+        },
+        environment,
+    ) {
         Ok(()) => {
             tracing::warn!(
                 id,
-                "Playnite CLI fallback requested; game start is unconfirmed and the stream stays until ended manually"
+                "Playnite CLI fallback requested; start is unconfirmed and the stream stays until ended manually"
             );
             state.lock().unwrap().phase = Phase::Untracked;
         }
@@ -756,15 +861,9 @@ fn fallback(
         }
     }
 }
-/// The command that opens Playnite's fullscreen mode.
-pub fn fullscreen_command() -> Option<String> {
-    let dir = butterpollo_windows::playnite::install_dir()?;
-    let program = butterpollo_windows::playnite::executable(&dir)?;
-    Some(format!("\"{}\" --startfullscreen", program.display()))
-}
 /// Close Playnite's fullscreen mode after its stream.
 pub fn close_fullscreen(timeout: Duration) {
-    let Ok(processes) = butterpollo_windows::process::processes() else {
+    let Ok(processes) = butterpollo_windows::playnite::session_processes() else {
         return;
     };
     let fullscreen: BTreeMap<u32, u64> = processes
@@ -860,6 +959,74 @@ mod tests {
         state.poll(at + EXIT_GRACE, None);
         state.poll(at + EXIT_GRACE + Duration::from_secs(1), Some(false));
         assert_eq!(state.phase, Phase::Running);
+    }
+
+    #[test]
+    fn fullscreen_waits_for_the_ui_and_ignores_the_short_lived_launcher() {
+        let mut state = LaunchState {
+            fullscreen: true,
+            ..Default::default()
+        };
+        state.poll_fullscreen(false);
+        assert!(!state.start_timeout(Duration::from_secs(8)));
+        state.poll_fullscreen(true);
+        assert!(!state.start_timeout(START_TIMEOUT + Duration::from_secs(1)));
+        assert_eq!(state.phase, Phase::Starting);
+        state.status("", status("playniteExiting", ""));
+        assert_eq!(state.phase, Phase::Exited);
+    }
+
+    #[test]
+    fn fullscreen_returns_to_the_menu_after_a_game_and_can_launch_another() {
+        let mut state = LaunchState {
+            fullscreen: true,
+            ..Default::default()
+        };
+        let at = Instant::now();
+        state.poll_fullscreen(true);
+        state.status("", status("gameStarted", "first"));
+        state.status("", status("gameStopped", "other"));
+        assert!(!state.verifying());
+        state.status("", status("gameStopped", "first"));
+        state.poll(at, Some(false));
+        state.poll(at + EXIT_GRACE, Some(false));
+        state.poll_fullscreen(true);
+        assert_eq!(state.phase, Phase::Starting);
+        assert!(state.game_id.is_empty());
+        state.status("", status("gameStarted", "second"));
+        assert_eq!(state.phase, Phase::Running);
+        assert_eq!(state.game_id, "second");
+    }
+
+    #[test]
+    fn fullscreen_hands_off_to_the_game_when_playnite_exits() {
+        let mut state = LaunchState {
+            fullscreen: true,
+            ..Default::default()
+        };
+        let at = Instant::now();
+        state.status("", status("gameStarted", "game"));
+        state.disconnected();
+        state.poll(at, Some(true));
+        state.poll_fullscreen(false);
+        assert_eq!(state.phase, Phase::Running);
+        state.poll(at + Duration::from_secs(1), Some(false));
+        state.poll(at + Duration::from_secs(1) + EXIT_GRACE, Some(false));
+        state.poll_fullscreen(false);
+        assert_eq!(state.phase, Phase::Exited);
+    }
+
+    #[test]
+    fn fullscreen_connection_sets_environment_without_starting_a_second_game() {
+        let env = BTreeMap::from([("SUNSHINE_CLIENT_WIDTH".into(), "1920".into())]);
+        let fullscreen = launch_command("", &env);
+        assert_eq!(fullscreen["command"], "set-environment");
+        assert_eq!(fullscreen["env"]["SUNSHINE_CLIENT_WIDTH"], "1920");
+        assert!(fullscreen.get("id").is_none());
+        let game = launch_command("game", &env);
+        assert_eq!(game["command"], "launch");
+        assert_eq!(game["id"], "game");
+        assert_eq!(game["env"], fullscreen["env"]);
     }
 
     #[test]

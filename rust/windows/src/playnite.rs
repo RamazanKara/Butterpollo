@@ -33,6 +33,23 @@ fn session(pid: u32) -> Option<u32> {
     unsafe { ProcessIdToSessionId(pid, &mut session).ok()? };
     Some(session)
 }
+fn in_session(
+    processes: Vec<butterpollo_core::steam::Process>,
+    current: u32,
+    mut session: impl FnMut(u32) -> Option<u32>,
+) -> Vec<butterpollo_core::steam::Process> {
+    processes
+        .into_iter()
+        .filter(|p| session(p.pid) == Some(current))
+        .collect()
+}
+/// Processes in the streaming user's session, including games handed off
+/// to a store client rather than started as Playnite children.
+pub fn session_processes() -> Result<Vec<butterpollo_core::steam::Process>> {
+    let current =
+        session(unsafe { GetCurrentProcessId() }).context("reading the host's Windows session")?;
+    Ok(in_session(crate::process::processes()?, current, session))
+}
 /// The running Playnite process (id and program), if any.
 pub fn running() -> Option<(u32, PathBuf)> {
     let current = session(unsafe { GetCurrentProcessId() })?;
@@ -46,16 +63,15 @@ pub fn running() -> Option<(u32, PathBuf)> {
 fn find_running(
     processes: Vec<butterpollo_core::steam::Process>,
     current: u32,
-    mut session: impl FnMut(u32) -> Option<u32>,
+    session: impl FnMut(u32) -> Option<u32>,
     mut image: impl FnMut(u32) -> Option<String>,
 ) -> Option<(u32, PathBuf)> {
-    processes
+    in_session(processes, current, session)
         .into_iter()
         .filter(|p| {
             PROCESSES
                 .iter()
                 .any(|name| p.name.eq_ignore_ascii_case(name))
-                && session(p.pid) == Some(current)
         })
         .find_map(|p| Some((p.pid, PathBuf::from(image(p.pid)?))))
 }
