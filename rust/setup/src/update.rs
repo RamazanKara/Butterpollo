@@ -27,6 +27,9 @@ pub fn run(folder: &Path, progress: &Progress) -> Result<()> {
         .share_mode(0)
         .open(profile.join("update.lock"))
         .context("Another update is already running")?;
+    // The new backup must hold one whole version, not what an interrupted
+    // update left.
+    recover_locked(&result).context("The update that did not finish could not be rolled back")?;
     let work = profile.join("updates").join(format!(
         "transaction-{}-{}",
         std::process::id(),
@@ -74,7 +77,17 @@ pub fn run(folder: &Path, progress: &Progress) -> Result<()> {
         },
     )?;
     // Nothing has been overwritten if the backup fails.
-    let saved = match Backup::create(&install, &backup, &paths) {
+    let saved = Backup::create(&install, &backup, &paths).and_then(|saved| {
+        // From here files change. If this setup cannot finish, setup or
+        // the service rolls back from this backup the next time it starts.
+        write_record(
+            &result,
+            &json!({"version":env!("CARGO_PKG_VERSION"),"phase":"installing","error":null,
+                    "backup":backup,"install":install}),
+        )?;
+        Ok(saved)
+    });
+    let saved = match saved {
         Ok(saved) => saved,
         Err(error) => {
             let _ = system::start_service(detect::SERVICE);
@@ -153,6 +166,65 @@ pub fn run(folder: &Path, progress: &Progress) -> Result<()> {
     }
 }
 
+/// Roll back an update that power loss or a crash interrupted, unless a
+/// setup is running (it holds update.lock). See recover_locked.
+pub fn recover(profile: &Path) -> Result<()> {
+    let result = profile.join("update-result.json");
+    if !result.is_file() {
+        return Ok(());
+    }
+    use std::os::windows::fs::OpenOptionsExt;
+    let Ok(_lock) = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .share_mode(0)
+        .open(profile.join("update.lock"))
+    else {
+        return Ok(());
+    };
+    recover_locked(&result)
+}
+/// With update.lock held: if the last update still says "installing" after
+/// its backup was made, its setup never finished, so the files the backup
+/// holds are put back. The service does the same when it starts
+/// (butterpollo_core::update_recovery); keep the two in step.
+fn recover_locked(result: &Path) -> Result<()> {
+    let record: serde_json::Value = std::fs::read(result)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    let (Some("installing"), Some(backup), Some(install)) = (
+        record["phase"].as_str(),
+        record["backup"].as_str(),
+        record["install"].as_str(),
+    ) else {
+        return Ok(());
+    };
+    line(format!(
+        "the update to {} did not finish; restoring {install} from {backup}",
+        record["version"]
+    ));
+    let restored =
+        Backup::load(Path::new(backup)).and_then(|saved| saved.restore(Path::new(install)));
+    let (phase, message) = match &restored {
+        Ok(()) => (
+            "rolled_back",
+            "The update did not finish; the previous version was restored.".to_owned(),
+        ),
+        Err(error) => (
+            "recovery_failed",
+            format!(
+                "The update did not finish, and restoring the previous version failed: {error:#}. Backup: {backup}"
+            ),
+        ),
+    };
+    write_record(
+        result,
+        &json!({"version":record["version"],"phase":phase,"error":message}),
+    )?;
+    restored
+}
 /// Stop the service before any file changes. If it does not stop in time,
 /// the update fails before changing anything, and the service is started
 /// again once it has stopped, so the host is not left stopped.
@@ -199,9 +271,18 @@ fn attempt_install(
 }
 
 fn write_result(path: &Path, phase: &str, error: Option<&str>) -> Result<()> {
-    let value = json!({"version":env!("CARGO_PKG_VERSION"),"phase":phase,"error":error});
+    write_record(
+        path,
+        &json!({"version":env!("CARGO_PKG_VERSION"),"phase":phase,"error":error}),
+    )
+}
+fn write_record(path: &Path, value: &serde_json::Value) -> Result<()> {
     let temporary = path.with_extension("tmp");
-    std::fs::write(&temporary, serde_json::to_vec_pretty(&value)?)?;
+    let mut file = std::fs::File::create(&temporary)?;
+    std::io::Write::write_all(&mut file, &serde_json::to_vec_pretty(value)?)?;
+    // A record that names a backup must survive a power loss.
+    file.sync_all()?;
+    drop(file);
     // The console may read this file during startup. Replace it atomically.
     use windows::{
         Win32::Storage::FileSystem::{
@@ -225,19 +306,44 @@ struct Backup {
 }
 impl Backup {
     fn create(install: &Path, directory: &Path, paths: &BTreeSet<String>) -> Result<Self> {
+        // On disk before any file is replaced, so that a power loss cannot
+        // leave a rollback with a backup that was never written.
+        let flush = |path: &Path| -> Result<()> {
+            Ok(std::fs::OpenOptions::new()
+                .write(true)
+                .open(path)?
+                .sync_all()?)
+        };
         let mut files = Vec::new();
         for name in paths {
             let source = payload::safe_join(install, name)?;
             let target = payload::safe_join(directory, name)?;
             if source.exists() {
                 std::fs::create_dir_all(target.parent().context("backup path has no parent")?)?;
-                std::fs::copy(source, target)?;
+                std::fs::copy(source, &target)?;
+                flush(&target)?;
                 files.push((name.clone(), true));
             } else {
                 files.push((name.clone(), false));
             }
         }
         std::fs::write(directory.join("backup.json"), serde_json::to_vec(&files)?)?;
+        flush(&directory.join("backup.json"))?;
+        Ok(Self {
+            directory: directory.to_path_buf(),
+            files,
+        })
+    }
+    fn load(directory: &Path) -> Result<Self> {
+        let files: Vec<(String, bool)> =
+            serde_json::from_slice(&std::fs::read(directory.join("backup.json"))?)
+                .context("reading the update backup")?;
+        // Every saved file is checked before any is put back.
+        for (name, existed) in &files {
+            if *existed && !payload::safe_join(directory, name)?.is_file() {
+                bail!("the update backup lacks {name}");
+            }
+        }
         Ok(Self {
             directory: directory.to_path_buf(),
             files,
@@ -348,6 +454,53 @@ mod tests {
             || Ok(()),
             || panic!("a stopped service is not started"),
         )?;
+        Ok(())
+    }
+    #[test]
+    fn an_interrupted_update_is_rolled_back_when_setup_starts() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let profile = root.path().join("config");
+        let installed = root.path().join("installed");
+        let backup = profile.join("updates/transaction-1-2/previous");
+        std::fs::create_dir_all(&backup)?;
+        std::fs::create_dir(&installed)?;
+        std::fs::write(installed.join("host.exe"), b"previous")?;
+        Backup::create(
+            &installed,
+            &backup,
+            &["host.exe".into(), "new.dll".into()].into_iter().collect(),
+        )?;
+        std::fs::write(installed.join("host.exe"), b"half")?;
+        std::fs::write(installed.join("new.dll"), b"new")?;
+        let result = profile.join("update-result.json");
+        write_record(
+            &result,
+            &json!({"version":"2.0.1","phase":"installing","error":null,
+                    "backup":backup,"install":installed}),
+        )?;
+        {
+            // A setup that holds the lock is still at work.
+            use std::os::windows::fs::OpenOptionsExt;
+            let _held = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .share_mode(0)
+                .open(profile.join("update.lock"))?;
+            recover(&profile)?;
+            assert_eq!(std::fs::read(installed.join("host.exe"))?, b"half");
+        }
+        recover(&profile)?;
+        assert_eq!(std::fs::read(installed.join("host.exe"))?, b"previous");
+        assert!(!installed.join("new.dll").exists());
+        let written: serde_json::Value = serde_json::from_slice(&std::fs::read(&result)?)?;
+        assert_eq!(written["phase"], "rolled_back");
+        assert_eq!(written["version"], "2.0.1");
+        // Before the backup was made, no file had changed.
+        std::fs::write(installed.join("host.exe"), b"later")?;
+        write_result(&result, "installing", None)?;
+        recover(&profile)?;
+        assert_eq!(std::fs::read(installed.join("host.exe"))?, b"later");
         Ok(())
     }
     #[test]

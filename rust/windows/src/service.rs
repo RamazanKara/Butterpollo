@@ -125,8 +125,23 @@ fn supervise() -> Result<()> {
     )
     .join("Butterpollo/config");
     // Interfaces come from bind_address and address_family (IPv4 by default).
-    let args = vec![OsString::from("--config-dir"), config.into_os_string()];
+    let args = vec![
+        OsString::from("--config-dir"),
+        config.clone().into_os_string(),
+    ];
     reporter.set_service_status(status(ServiceState::Running, 0))?;
+    // An update that power loss or a crash interrupted is rolled back before
+    // a host starts from a mix of two versions.
+    if let Some(install) = executable.parent() {
+        match butterpollo_core::update_recovery::recover(&config, install) {
+            Ok(Some(outcome)) => tracing::warn!(outcome, "interrupted update rolled back"),
+            Ok(None) => {}
+            Err(error) => tracing::error!(
+                error = %format!("{error:#}"),
+                "rolling back an interrupted update failed"
+            ),
+        }
+    }
     let mut child: Option<crate::process::Process> = None;
     let mut session = u32::MAX;
     let mut restart = RestartPolicy::default();

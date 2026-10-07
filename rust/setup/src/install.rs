@@ -133,6 +133,11 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
         start: system::start_service,
     };
     system::kill(&HOST_PROCESSES);
+    // An update that did not finish is rolled back first; its record would
+    // otherwise make the service put that backup over this installation.
+    if let Err(error) = crate::update::recover(&profile) {
+        line(format!("warning: {error:#}"));
+    }
 
     let previous = found.previous_root();
     if let Some(root) = &previous {
