@@ -825,7 +825,7 @@ impl Media {
                             )?
                         }
                     };
-                    stream_preparation.report_limiter(&s.launch.warnings);
+                    stream_preparation.report_limiter(&s.launch.warnings, &c);
                     let prepared = stream_preparation.display.clone();
                     if s.launch.role == Role::Stream {
                         h.app_display

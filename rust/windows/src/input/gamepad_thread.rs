@@ -90,9 +90,8 @@ impl GamepadThread {
         policy: butterpollo_core::input_policy::Policy,
         warnings: Arc<butterpollo_core::session::Warnings>,
     ) -> std::io::Result<Self> {
-        let report = warnings.clone();
         Self::spawn_reported(
-            move || Gamepads::open_options(profile, policy.clone(), &report),
+            move || Gamepads::open_options(profile, policy.clone()),
             warnings,
         )
     }

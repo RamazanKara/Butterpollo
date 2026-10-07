@@ -265,8 +265,12 @@ fn apply_preferences(directory: &Path, journal: &mut Journal, config: &Config) -
     }
     Ok(())
 }
+/// `explicit`: the user asked for a cap ("Limit every stream" or a named
+/// provider), rather than the automatic virtual-display limit, which simply
+/// stays off on a host without RTSS or an NVIDIA driver.
 fn limiter_warning(
     enabled: bool,
+    explicit: bool,
     provider: Provider,
     active: &str,
     error: &str,
@@ -276,8 +280,16 @@ fn limiter_warning(
         return None;
     }
     if active == "none" || active.is_empty() {
+        if error.is_empty() && !explicit {
+            return None;
+        }
+        let cause = if error.is_empty() {
+            String::new()
+        } else {
+            format!(" ({error})")
+        };
         Some(format!(
-            "Frame limiter not applied: no usable RTSS or driver limiter ({error}). Game frame pacing may be uneven; install RTSS or set an in-game frame limit."
+            "Frame limiter not applied: no usable RTSS or driver limiter{cause}. Game frame pacing may be uneven; install RTSS or set an in-game frame limit."
         ))
     } else if !error.is_empty() {
         Some(format!(
@@ -286,9 +298,15 @@ fn limiter_warning(
     } else if let Some(rate) = rates.1
         && rates.0 != rates.1
     {
-        Some(format!(
-            "Another stream owns the frame limiter at {rate} fps; this session did not apply its requested cap. Match the other stream or disconnect it before changing the global limit."
-        ))
+        Some(if rates.0.is_some() {
+            format!(
+                "Another stream owns the frame limiter at {rate} fps; this session did not apply its requested cap. Match the other stream or disconnect it before changing the global limit."
+            )
+        } else {
+            format!(
+                "Another stream's {rate} fps frame limit also applies to games in this session. Disconnect that stream to remove the cap."
+            )
+        })
     } else if provider == Provider::Rtss && active != "rtss" {
         Some(format!(
             "RTSS unavailable; using {active} for the frame limit. Pacing may differ; install RTSS or select the active provider."
@@ -300,10 +318,11 @@ fn limiter_warning(
 
 pub struct Lease;
 impl Lease {
-    pub fn warning(&self, policy: &Policy) -> Option<String> {
+    pub fn warning(&self, policy: &Policy, explicit: bool) -> Option<String> {
         let state = state().lock().unwrap();
         limiter_warning(
             policy.enabled,
+            explicit || matches!(policy.provider, Provider::Rtss | Provider::Nvidia),
             policy.provider,
             &state.active,
             &state.message,
@@ -459,12 +478,13 @@ mod tests {
     #[test]
     fn limiter_reports_missing_failed_and_substituted_providers() {
         assert!(
-            limiter_warning(true, Provider::Auto, "none", "", (None, None))
+            limiter_warning(true, true, Provider::Auto, "none", "", (None, None))
                 .unwrap()
                 .contains("not applied")
         );
         assert!(
             limiter_warning(
+                true,
                 true,
                 Provider::Rtss,
                 "nvidia-control-panel",
@@ -477,6 +497,7 @@ mod tests {
         assert!(
             limiter_warning(
                 true,
+                true,
                 Provider::Auto,
                 "rtss",
                 "recovery pending",
@@ -485,10 +506,30 @@ mod tests {
             .unwrap()
             .contains("recovery pending")
         );
-        assert!(limiter_warning(false, Provider::Auto, "none", "", (None, None)).is_none());
-        assert!(limiter_warning(true, Provider::Auto, "rtss", "", (None, None)).is_none());
+        assert!(limiter_warning(false, true, Provider::Auto, "none", "", (None, None)).is_none());
+        // The automatic virtual-display cap on a host without RTSS is not a fault.
+        assert!(limiter_warning(true, false, Provider::Auto, "none", "", (None, None)).is_none());
         assert!(
             limiter_warning(
+                true,
+                false,
+                Provider::Auto,
+                "none",
+                "RTSS did not confirm",
+                (None, None)
+            )
+            .unwrap()
+            .contains("(RTSS did not confirm)")
+        );
+        assert!(
+            !limiter_warning(true, true, Provider::Auto, "none", "", (None, None))
+                .unwrap()
+                .contains("()")
+        );
+        assert!(limiter_warning(true, true, Provider::Auto, "rtss", "", (None, None)).is_none());
+        assert!(
+            limiter_warning(
+                true,
                 true,
                 Provider::Auto,
                 "rtss",
@@ -501,6 +542,7 @@ mod tests {
         assert!(
             limiter_warning(
                 false,
+                true,
                 Provider::None,
                 "rtss",
                 "",
@@ -510,6 +552,7 @@ mod tests {
         );
         assert!(
             limiter_warning(
+                true,
                 true,
                 Provider::Auto,
                 "rtss",

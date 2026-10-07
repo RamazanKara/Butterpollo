@@ -35,8 +35,13 @@ pub struct StreamPreparation {
     _limiter: limiter::Lease,
 }
 impl StreamPreparation {
-    pub fn report_limiter(&self, warnings: &butterpollo_core::session::Warnings) {
-        if let Some(message) = self._limiter.warning(&self.display.framegen) {
+    pub fn report_limiter(
+        &self,
+        warnings: &butterpollo_core::session::Warnings,
+        config: &butterpollo_core::config::Config,
+    ) {
+        let explicit = config.boolean("frame_limiter_enable", false);
+        if let Some(message) = self._limiter.warning(&self.display.framegen, explicit) {
             warnings.set("display_limiter", message);
         } else {
             warnings.clear("display_limiter");
@@ -650,7 +655,10 @@ impl Prepared {
             ))
         })();
         match actual {
-            Ok(actual) => butterpollo_core::display_policy::report_mode(&launch.warnings, (request.resolution, request.refresh, request.hdr), actual, stream.fps_millihz()),
+            Ok(actual) => {
+                launch.warnings.clear("display_verify");
+                butterpollo_core::display_policy::report_mode(&launch.warnings, (request.resolution, request.refresh, request.hdr), actual, stream.fps_millihz())
+            }
             Err(error) => launch.warnings.set("display_verify", format!("Could not verify the applied display mode ({error:#}); refresh and HDR may differ from the request. Check Windows display settings and reconnect.")),
         }
         let recovery_profile = if stream.hdr {

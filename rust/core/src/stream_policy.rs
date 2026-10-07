@@ -427,6 +427,14 @@ pub fn apply(stream: &mut Negotiated, launch_millihz: u32, config: &Config) {
         stream.packet_size = packet_size as usize;
     }
 }
+/// The encoder bitrate [`apply`] would choose without `max_bitrate`.
+pub fn uncapped_bitrate_kbps(stream: &Negotiated, launch_millihz: u32, config: &Config) -> u32 {
+    let mut uncapped = stream.clone();
+    let mut config = config.clone();
+    config.values.remove("max_bitrate");
+    apply(&mut uncapped, launch_millihz, &config);
+    uncapped.bitrate_kbps
+}
 pub fn report_bitrate(
     warnings: &crate::session::Warnings,
     requested: u32,
@@ -454,6 +462,35 @@ pub fn runtime_bitrate_kbps(config: &Config, requested: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_fec_and_audio_share_of_the_client_bitrate_is_not_a_warning() {
+        let warnings = crate::session::Warnings::default();
+        let client = Negotiated {
+            configured_bitrate_kbps: 150_000,
+            bitrate_kbps: 150_000,
+            fps: 120,
+            audio_channels: 2,
+            ..Default::default()
+        };
+        for (text, warned) in [
+            ("", false),
+            (
+                "max_bitrate=50000
+",
+                true,
+            ),
+        ] {
+            let config = Config::parse(text).unwrap();
+            let mut stream = client.clone();
+            let uncapped = uncapped_bitrate_kbps(&stream, 0, &config);
+            apply(&mut stream, 0, &config);
+            // FEC and audio always take their share of the client's rate.
+            assert!(stream.bitrate_kbps < client.configured_bitrate_kbps);
+            report_bitrate(&warnings, uncapped, stream.bitrate_kbps, "max_bitrate");
+            assert_eq!(!warnings.snapshot().is_empty(), warned, "{text}");
+        }
+    }
+
     #[test]
     fn bitrate_clamps_are_reported_with_requested_and_applied_values() {
         let warnings = crate::session::Warnings::default();

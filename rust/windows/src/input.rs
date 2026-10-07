@@ -122,20 +122,10 @@ impl Gamepads {
         Self::open_options(
             profile,
             butterpollo_core::input_policy::Policy::resolve(&Default::default())?,
-            &Default::default(),
         )
     }
-    fn open_options(
-        profile: u16,
-        policy: butterpollo_core::input_policy::Policy,
-        warnings: &butterpollo_core::session::Warnings,
-    ) -> Result<Self> {
+    fn open_options(profile: u16, policy: butterpollo_core::input_policy::Policy) -> Result<Self> {
         let (backend, available) = gamepad_backend::Backend::open(profile)?;
-        if profile == 0 && backend.name() == "VHF" {
-            warnings.set("input_gamepad_backend", "ViGEmBus unavailable; using VHF gamepads. Controller compatibility and features may differ; install ViGEmBus or explicitly choose the VHF profile you want.");
-        } else {
-            warnings.clear("input_gamepad_backend");
-        }
         Ok(Self {
             backend,
             active: BTreeMap::new(),

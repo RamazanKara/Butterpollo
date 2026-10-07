@@ -19,7 +19,7 @@ impl Backend {
             if gamepad_backend(profile, client.is_ok()) == GamepadBackend::Vigem {
                 return Ok((Self::Vigem(client?), VIGEM_PROFILES));
             }
-            tracing::warn!(error = %client.err().unwrap(), "ViGEmBus unavailable; trying VHF gamepads, whose compatibility and features may differ. Install ViGEmBus or explicitly select a VHF profile");
+            tracing::debug!(error = %client.err().unwrap(), "ViGEmBus unavailable; trying VHF gamepads");
         }
         let mut backend = Self::Vhf(open_interface(GUID::from_u128(
             0x27debbf5_1d1e_4e9c_906d_d104b1418b2b,
