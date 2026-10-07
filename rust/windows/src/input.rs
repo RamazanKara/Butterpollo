@@ -484,6 +484,7 @@ pub struct Injector {
     /// including the bars around a display of another shape.
     stream: Option<(u32, u32)>,
     rect_read: std::time::Instant,
+    lookup: Option<Lookup>,
     /// When absolute input was last reported ignored for a missing display.
     display_warned: Option<std::time::Instant>,
     /// Whether the client last moved the mouse by absolute position, and a
@@ -504,6 +505,13 @@ struct Pending {
     events: Vec<(usize, Option<Press>)>,
     /// Why events of the pass failed.
     errors: Vec<anyhow::Error>,
+}
+/// A display looked up on its own thread.
+struct Lookup {
+    output: String,
+    started: std::time::Instant,
+    /// None once its result was used.
+    thread: Option<std::thread::JoinHandle<Result<RECT>>>,
 }
 /// A key or button press, recorded as held once Windows takes it.
 struct Press {
@@ -586,14 +594,11 @@ impl Injector {
         profile: &str,
         config: &butterpollo_core::config::Config,
     ) -> Result<Self> {
-        // Keyboard, relative mouse and controllers must work before the
-        // stream's display exists: a controller's arrival is sent only once.
-        let rect = display_rect(output)
-            .inspect_err(|error| tracing::debug!(%error, output, "input display unavailable"))
-            .ok();
         let profile = gamepad_profile(profile);
         let policy = butterpollo_core::input_policy::Policy::resolve(config)?;
-        Ok(Self {
+        // Keyboard, relative mouse and controllers must work before the
+        // stream's display exists: a controller's arrival is sent only once.
+        let mut injector = Self {
             keys: BTreeSet::new(),
             buttons: BTreeSet::new(),
             touches: BTreeMap::new(),
@@ -608,16 +613,19 @@ impl Injector {
             repeat: None,
             scroll: [0; 2],
             haptics: true,
-            rect,
+            rect: None,
             output: output.to_owned(),
             stream: None,
             rect_read: std::time::Instant::now(),
+            lookup: None,
             display_warned: None,
             absolute: false,
             left_release: None,
             pending: Pending::default(),
             inject,
-        })
+        };
+        injector.look_up(output);
+        Ok(injector)
     }
     /// The stream's size, so absolute input skips the bars around a display of
     /// another shape, as the encoder adds them.
@@ -654,6 +662,7 @@ impl Injector {
         if output.is_empty() {
             return;
         }
+        self.settle_lookup(false);
         let renamed = !output.eq_ignore_ascii_case(&self.output);
         if self.rect.is_none() {
             // Until the display exists, follow the session's name, and look
@@ -664,29 +673,77 @@ impl Injector {
             }
             return;
         }
-        if !renamed {
-            return;
-        }
-        match display_rect(output) {
-            Ok(rect) => {
-                self.rect = Some(rect);
-                self.output = output.to_owned();
-                self.rect_read = std::time::Instant::now();
-            }
-            Err(error) => tracing::debug!(%error, output, "input display unavailable"),
+        // The rectangle and the name change together once it is found; a
+        // name not found is looked up again every RECT_INTERVAL.
+        if renamed
+            && self.lookup.as_ref().is_none_or(|lookup| {
+                !lookup.output.eq_ignore_ascii_case(output)
+                    || lookup.started.elapsed() >= RECT_INTERVAL
+            })
+        {
+            self.look_up(output);
         }
     }
     /// Look up a display that did not exist yet.
     fn resolve_rect(&mut self) {
         self.rect_read = std::time::Instant::now();
-        if let Ok(rect) = display_rect(&self.output) {
-            tracing::debug!(output = %self.output, "input display found");
-            self.rect = Some(rect);
+        let output = self.output.clone();
+        self.look_up(&output);
+    }
+    /// Look `output` up on another thread, unless it is being looked up: the
+    /// lookup enumerates every display, which took 1.5-2.5 ms and once 18 ms
+    /// on the input thread.
+    fn look_up(&mut self, output: &str) {
+        if self.lookup.as_ref().is_some_and(|lookup| {
+            lookup.thread.is_some() && lookup.output.eq_ignore_ascii_case(output)
+        }) {
+            return;
+        }
+        let name = output.to_owned();
+        let thread = std::thread::Builder::new()
+            .name("display lookup".into())
+            .spawn(move || display_rect(&name));
+        self.lookup = Some(Lookup {
+            output: output.to_owned(),
+            started: std::time::Instant::now(),
+            thread: None,
+        });
+        match thread {
+            Ok(thread) => self.lookup.as_mut().unwrap().thread = Some(thread),
+            Err(_) => self.found(output.to_owned(), display_rect(output)),
+        }
+    }
+    /// Use the result of a lookup that finished; with `wait`, of one still
+    /// running.
+    fn settle_lookup(&mut self, wait: bool) {
+        let Some(lookup) = &mut self.lookup else {
+            return;
+        };
+        let Some(thread) = lookup.thread.take_if(|thread| wait || thread.is_finished()) else {
+            return;
+        };
+        let output = lookup.output.clone();
+        if let Ok(rect) = thread.join() {
+            self.found(output, rect);
+        }
+    }
+    fn found(&mut self, output: String, rect: Result<RECT>) {
+        match rect {
+            Ok(rect) => {
+                tracing::debug!(output, "input display found");
+                self.rect = Some(rect);
+                self.output = output;
+                self.rect_read = std::time::Instant::now();
+            }
+            Err(error) => tracing::debug!(%error, output, "input display unavailable"),
         }
     }
     /// The display's rectangle. Until the display exists, absolute mouse,
     /// touch and pen input is ignored, and that is reported now and then.
     fn display(&mut self) -> Option<RECT> {
+        // Absolute input maps onto the display a running lookup is finding,
+        // as when the lookup ran here; other input never waits for it.
+        self.settle_lookup(true);
         if self.rect.is_none()
             && self
                 .display_warned
@@ -1116,6 +1173,7 @@ impl Injector {
         let now = std::time::Instant::now();
         // A game can change its display's resolution or position mid-stream,
         // and the stream's display can appear after input began.
+        self.settle_lookup(false);
         if self.rect_read.elapsed() >= RECT_INTERVAL {
             if self.rect.is_none() {
                 self.resolve_rect();
@@ -2087,6 +2145,7 @@ mod tests {
         injector.set_output(r"\\.\DISPLAY98");
         assert!(injector.rect.is_none());
         assert_eq!(injector.output, r"\\.\DISPLAY98");
+        assert_eq!(injector.lookup.as_ref().unwrap().output, r"\\.\DISPLAY98");
     }
 
     thread_local! {
@@ -2237,6 +2296,63 @@ mod tests {
         assert!(injector.keys.is_empty() && injector.repeat.is_none());
         assert!(!HELD.lock().unwrap().contains_key(&(true, 0x45)));
         assert_eq!(calls().len(), 3);
+    }
+
+    /// An injector for the first display, if this machine has one.
+    fn on_first_display() -> Option<(Injector, String)> {
+        let name = crate::capture::displays()
+            .ok()?
+            .first()?
+            .display_name
+            .clone();
+        let mut injector = Injector::new(&name, "vhf").unwrap();
+        injector.inject = record;
+        Some((injector, name))
+    }
+
+    #[test]
+    fn absolute_input_waits_for_the_display_lookup_it_needs() {
+        let Some((mut injector, _)) = on_first_display() else {
+            return;
+        };
+        // Created at once; the display is looked up on another thread.
+        assert!(injector.rect.is_none());
+        assert!(injector.lookup.as_ref().is_some_and(|l| l.thread.is_some()));
+        let events = [Event::Absolute {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+        }];
+        assert!(injector.apply_all(&events).is_empty());
+        assert!(injector.rect.is_some());
+        assert_eq!(calls().len(), 1);
+    }
+
+    #[test]
+    fn a_renamed_display_is_looked_up_without_holding_up_the_pass() {
+        let Some((mut injector, first)) = on_first_display() else {
+            return;
+        };
+        injector.settle_lookup(true);
+        let rect = injector.rect.unwrap();
+        // The session names a display that does not exist (yet): absolute
+        // input keeps the display it has until the new one is found.
+        injector.set_output(r"\\.\DISPLAY99");
+        let lookup = injector.lookup.as_ref().unwrap();
+        assert!(lookup.thread.is_some() && lookup.output == r"\\.\DISPLAY99");
+        assert_eq!(injector.output, first);
+        let started = lookup.started;
+        injector.settle_lookup(true);
+        assert_eq!(
+            (injector.rect, injector.output.as_str()),
+            (Some(rect), &*first)
+        );
+        // A name not found is not looked up again on every pass.
+        injector.set_output(r"\\.\DISPLAY99");
+        if started.elapsed() < RECT_INTERVAL {
+            assert!(injector.lookup.as_ref().unwrap().thread.is_none());
+        }
     }
 
     #[test]

@@ -1773,6 +1773,7 @@ impl Media {
                                 ControlPeer {
                                     id: l.id.clone(),
                                     injector: None,
+                                    injector_tried: false,
                                     sequence: 0,
                                     received: Default::default(),
                                     hdr_metadata: None,
@@ -1987,7 +1988,10 @@ impl Media {
                     {
                         p.hdr_metadata = Some(metadata);
                     }
-                    if !p.inputs.is_empty() && p.injector.is_none() {
+                    // Made before input comes; after a failure, again when it
+                    // does. Making it with the first input held that input up.
+                    if p.injector.is_none() && (!p.inputs.is_empty() || !p.injector_tried) {
+                        p.injector_tried = true;
                         let c = match effective_config(&h, &s.launch) {
                             Ok(c) => c,
                             Err(e) => {
@@ -2087,6 +2091,8 @@ impl Media {
 struct ControlPeer {
     id: String,
     injector: Option<Injector>,
+    /// Whether making the injector was tried.
+    injector_tried: bool,
     sequence: u32,
     received: butterpollo_core::packet::ReplayWindow,
     hdr_metadata: Option<[u8; 27]>,
