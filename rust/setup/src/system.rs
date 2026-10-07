@@ -105,27 +105,9 @@ pub fn run_as_system(program: &str, args: &[&str], timeout: Duration) -> Result<
     );
     let log = work.join(format!("{id}.log"));
     let script = work.join(format!("{id}.cmd"));
-    let command = std::iter::once(program)
-        .chain(args.iter().copied())
-        .map(|a| {
-            if a.is_empty() || a.contains([' ', '\t']) {
-                format!("\"{a}\"")
-            } else {
-                a.to_owned()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
     let _ = std::fs::remove_file(&log);
-    std::fs::write(
-        &script,
-        format!(
-            // The redirection comes first: "...=0>> file" would redirect handle 0.
-            "@echo off\r\n{command} > \"{log}\" 2>&1\r\n>> \"{log}\" echo BUTTERPOLLO-EXIT=%ERRORLEVEL%\r\n",
-            log = log.display()
-        ),
-    )?;
-    line(format!("as SYSTEM> {command}"));
+    std::fs::write(&script, task_script(program, args, &log))?;
+    line(format!("as SYSTEM> {program} {args:?}"));
     let schtasks = system32("schtasks.exe");
     let task = format!("\"{}\"", script.display());
     let (created, _) = run(
@@ -171,6 +153,19 @@ pub fn run_as_system(program: &str, args: &[&str], timeout: Duration) -> Result<
     let _ = std::fs::remove_file(&script);
     let _ = std::fs::remove_file(&log);
     result
+}
+fn task_script(program: &str, args: &[&str], log: &Path) -> String {
+    let quote = |value: &str| format!("\"{}\"", value.replace('%', "%%"));
+    let command = std::iter::once(program)
+        .chain(args.iter().copied())
+        .map(quote)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let log = quote(&log.display().to_string());
+    // cmd otherwise reads the UTF-8 paths using the machine's ANSI code page.
+    format!(
+        "@echo off\r\nchcp 65001 > nul\r\n{command} > {log} 2>&1\r\n>> {log} echo BUTTERPOLLO-EXIT=%ERRORLEVEL%\r\n"
+    )
 }
 pub fn elevated() -> bool {
     unsafe { IsUserAnAdmin().as_bool() }
@@ -821,7 +816,45 @@ pub fn program_files() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    #[test]
+    fn driver_task_scripts_preserve_unicode_paths_and_literal_arguments() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let folder = root.path().join("Çağrı Müller & literal%TEMP%");
+        std::fs::create_dir(&folder)?;
+        let driver = folder.join("fake.ps1");
+        std::fs::write(
+            &driver,
+            "param([string]$Text)\r\nWrite-Output $Text\r\nexit 3010\r\n",
+        )?;
+        let log = folder.join("result.log");
+        let script = root.path().join("task.cmd");
+        let expected = "Çağrı Müller & literal%TEMP%";
+        std::fs::write(
+            &script,
+            task_script(
+                &system32("WindowsPowerShell\\v1.0\\powershell.exe"),
+                &[
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    &driver.display().to_string(),
+                    expected,
+                ],
+                &log,
+            ),
+        )?;
+        run(
+            &system32("cmd.exe"),
+            &["/D", "/C", &script.display().to_string()],
+            Duration::from_secs(30),
+        )?;
+        let output = std::fs::read_to_string(log)?;
+        assert!(output.contains(expected), "{output}");
+        assert!(output.contains("BUTTERPOLLO-EXIT=3010"), "{output}");
+        Ok(())
+    }
     #[test]
     fn windows_consumers_receive_drive_and_unc_paths_without_verbatim_prefixes() -> Result<()> {
         for (input, expected) in [
