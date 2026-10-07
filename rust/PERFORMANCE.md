@@ -2181,6 +2181,127 @@ and `session_command_long.rs`. Virtual runs require a test-owned SYSTEM
 scheduled task (the `bench-rc17` harness), no active stream, and task/display
 cleanup afterward. No capture wait or pool-size optimization was made here.
 
+## October 7: AMF split-frame encoding
+
+AMF's `HevcMultiHwInstanceEncode` and `Av1MultiHwInstanceEncode` let the
+driver split one frame across a GPU's video encode engines (AMD's samples
+call it "split frame encode", default on); H.264 has no such property. The
+original C++ host asked for it before Init when the caps reported more than
+one engine and the driver had it off. The Rust host never wrote it. A real
+split would show as roughly half the time per frame at large sizes;
+alternating whole frames between engines would show as more frames per
+second at the same time per frame.
+
+Method: `examples/performance.rs --synthetic 16 --paced --seconds 3` on the
+RX 7900 XT, driver and AMF runtime 32.0.31041.1004, with the defaults
+(ultra-low latency, `speed`, `vbr_latency`, input converted on the D3D12
+compute queue) at 20, 40, 80, 80 and 150 Mbps for 1920×1080, 2560×1440,
+3840×2160, 5120×1440 and 7680×2160. Each case ran with the property
+untouched (a measurement build that skipped the write), forced on and forced
+off, twice, in the order untouched, on, off, off, on, untouched. The
+settings line confirmed the value after Init. Before every run the host log
+was checked for a stream; a first batch that overlapped a client's stream was
+discarded. `--slices N` and `--intra-refresh` were added to the probe for the
+interaction runs. Every run's JSON, settings line and decision line are in
+`C:\Users\ramaz\.codex\artifacts\butterpollo-amf-split-frame-20261007`
+(`probe.jsonl` is the discarded batch).
+
+The driver reports two engines for both codecs (`HevcNumOfHwInstances=2`,
+`Av1CapNumOfHwInstances=2`) and has the property on before Init with nothing
+written, in all 630 runs, with every usage tried. On, off and untouched gave
+the same time per frame, the same frames per second and the same bytes per
+frame (within 0.2%, the difference of a frame in a three-second run) in all
+60 combinations of HEVC and AV1, the five sizes, 60, 120 and 240 fps, SDR
+and HDR. At 60 fps, SDR, mean of each run in ms:
+
+| Submission to output | Untouched | Forced on | Forced off |
+|---|---|---|---|
+| HEVC 1920×1080 | 2.21, 2.20 | 2.29, 2.29 | 2.25, 2.30 |
+| HEVC 2560×1440 | 3.29, 3.27 | 3.35, 3.27 | 3.31, 3.34 |
+| HEVC 3840×2160 | 6.19, 6.10 | 6.13, 6.13 | 6.18, 6.15 |
+| HEVC 5120×1440 | 5.59, 5.65 | 5.68, 5.60 | 5.69, 5.64 |
+| HEVC 7680×2160 | 11.34, 11.38 | 11.42, 11.44 | 11.38, 11.24 |
+| AV1 1920×1080 | 1.79, 2.02 | 1.86, 1.92 | 1.85, 1.94 |
+| AV1 2560×1440 | 3.02, 2.99 | 2.98, 2.91 | 2.96, 3.00 |
+| AV1 3840×2160 | 7.10¹, 5.08 | 5.04, 5.08 | 5.08, 5.04 |
+| AV1 5120×1440 | 4.88, 4.77 | 4.76, failed¹ | 4.74, 4.79 |
+| AV1 7680×2160 | 9.34, 9.41 | 9.44, 9.38 | 9.35, 9.47 |
+
+¹ A stall; see below. HDR and the 120 and 240 fps runs agree the same way:
+no median differs by more than 0.2 ms between the three, in no consistent
+direction.
+
+The time per frame grows with the picture as one engine's would: 11.3 ms
+at 7680×2160 against 6.1 ms at 3840×2160 for HEVC. Where one engine cannot
+keep up, a split would have helped most, and nothing changed. Frames per
+second without pacing (`--seconds 4`), two runs each:
+
+| Unpaced | Untouched | Forced on | Forced off |
+|---|---|---|---|
+| HEVC 1920×1080 | 660, 660 | 659, 660 | 660, 660 |
+| HEVC 3840×2160 | 196, 196 | 195, 196 | 196, 196 |
+| HEVC 5120×1440 | 216, 216 | 216, 216 | 216, 216 |
+| HEVC 7680×2160 | 100, 100 | 100, 100 | 100, 100 |
+| AV1 1920×1080 | 835, 835 | 836, 835 | 835, 836 |
+| AV1 3840×2160 | 248, 248 | 248, 248 | 248, 249 |
+| AV1 5120×1440 | 270, 270 | 270, 270 | 270, 269 |
+| AV1 7680×2160 | 126, 126 | 126, 126 | 126, 126 |
+
+HEVC at 7680×2160 and 120 fps settles at 100 fps with 82 ms from submission
+to output in all three. Frames do overlap in the encoder (196 frames per
+second at 3840×2160 against 164 from the time per frame), but a second
+engine would nearly double that. So on this GPU and driver one stream uses
+one engine, whatever the property says, and the rc.19 note that two frames
+in the encoder keep both of a Radeon's instances busy was wrong; its comment
+now says so.
+
+Nothing else made the driver split. At 3840×2160 and 60 fps, mean of two
+runs each in ms, untouched / on / off:
+
+| Also set | HEVC | AV1 |
+|---|---|---|
+| 2 slices (AV1: tiles) | 6.30 / 6.33 / 6.34 | 5.22 / 5.23 / 5.23 |
+| 4 slices (AV1: tiles) | 6.34 / 6.28 / 6.23 | 5.17 / 5.19 / 5.19 |
+| Intra refresh | 6.29 / 6.22 / 6.21 | 5.16 / 5.16 / 5.14 |
+| 2 LTR frames | 6.41 / 6.35 / 6.34 | 5.06 / 9.02¹ / 5.01 |
+| Quality preset balanced | 6.46 / 6.50 / 6.45 | 5.11 / 5.05 / 5.01 |
+| Quality preset quality | 7.47 / 7.46 / 7.48 | 17.48 / 17.43 / 17.44 |
+| Pre-analysis | 25.85 / 26.01 / 26.02 | 25.22 / 25.08 / 25.08 |
+| CBR | 6.39 / 6.40 / 6.33 | 5.26 / 5.21 / 5.20 |
+| Usage transcoding | 25.11 / 24.80 / 25.14 | 12.37 / 12.33 / 12.28 |
+| Usage low latency | 23.81 / 25.06 / 25.52 | 12.24 / 12.29 / 12.34 |
+| Usage high quality | 20.32 / 20.32 / 20.42 | 19.48 / 19.52 / 19.56 |
+| SmartAccess Video on | 6.48 / 6.45 / 6.41 | 5.19 / 5.23 / 5.15 |
+| D3D11 input (`gpu_compute_conversion=false`) | 6.45 / 6.42 / 6.55 | 5.35 / 5.23 / 5.24 |
+
+The usages other than ultra-low latency queue frames (p95 of 19-70 ms), so
+their means vary more. AV1 needs two tiles above 4096 pixels wide and the driver chose them by
+itself at 5120 and 7680 wide; two or four slices or tiles, SmartAccess
+Video, the transcoding usage and D3D11 input at 7680×2160 also left the
+three alike. Bytes per frame matched in every pair.
+
+Six of these 630 runs stalled once: two gave up (`AMF GPU queue failed to
+drain`), one stopped submitting for 35 seconds, and three lost up to 0.55 s
+of frames or raised the mean by 2-8 ms while the median stayed put. Four
+were forced on, two untouched, none forced off. No stream was running and
+the system log has no driver reset, but other builds and an installer ran on
+the machine during the matrix. The six cases then ran five more times each
+for eight seconds in all three variants (90 runs, twelve minutes of
+encoding): no stall, the means within 0.05 ms of each other, and the driver
+again had the property on before Init. The stalls do not follow the
+property.
+
+`amd_split_frame` now does what the original host did: `auto` (the default)
+asks for split-frame encoding only when the caps report more than one engine
+and the driver has it off, `enabled` asks whenever there is more than one
+engine, and `disabled` turns it off. With one engine, as the RX 9070 XT's
+HEVC encoder, nothing is written in any mode, and a driver that rejects the
+property keeps the stream. The host logs the setting, the engine count and
+the driver's value (`AMF split-frame encoding left to the driver` or
+`requested`), and the settings line shows the value after Init. On the RX
+7900 XT `auto` writes nothing. Whether a driver that ships with it off then
+splits frames, and whether RDNA2 cards with two engines do, was not
+measured here.
 ## Limits
 
 This machine validates AMD AMF. Native NVENC now calls the installed NVIDIA driver directly, supports reviewed API versions 11.0–13.0, reference frame invalidation, D3D11 4:2:0/8-bit 4:4:4 and GPU-only CUDA interop for ten-bit 4:4:4. Seven mock-driver tests exercise compatibility, asynchronous ownership, timeout teardown, metadata lifetime, loss recovery and bitrate changes; NVIDIA execution/performance still needs NVIDIA hardware. QSV has native D3D11 imports, and TrueHDR has a shared-device GPU path; these need Intel/NVIDIA hardware respectively. PyroWave uses shared D3D11/Vulkan planar GPU inputs and reads back only the encoded bitstream. Unsupported native formats and software encoding use CPU compatibility paths. The wired LAN checks above do not establish Wi-Fi performance, multiple concurrent 4K sessions, dynamic game content, native 4K capture or end-to-end input/display latency. The GPU texture pools and native encoder queues are bounded to eight retained frames; capacity runs may intentionally keep those queues occupied. [PARITY.md](PARITY.md) separates implemented features from native validation.

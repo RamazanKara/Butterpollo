@@ -21,10 +21,10 @@ const OUTPUT_POLL: Duration = Duration::from_micros(100);
 /// gives up: a GPU busy with a game or a driver reset costs frames, not the stream.
 const ENCODER_RECOVERY: Duration = Duration::from_secs(5);
 /// Frames the encoder may hold before the next claim waits for one to come
-/// out. Two keep both of a Radeon's encoder instances busy; more only wait
-/// in its queue, as up to eight did when one encode outlasted the claim
-/// interval (4K at 240 Hz, or one HEVC instance on an RX 9070 XT), each
-/// growing older.
+/// out. Two keep the encoder busy (a stream uses one of a Radeon's two
+/// engines, even with split-frame encoding on); more only wait in its queue,
+/// as up to eight did when one encode outlasted the claim interval (4K at
+/// 240 Hz, or one HEVC instance on an RX 9070 XT), each growing older.
 const ENCODER_BACKLOG: usize = 2;
 fn encoder_progress(
     failing: &mut Option<Instant>,
