@@ -42,7 +42,7 @@ $build = Join-Path $ArtifactDirectory 'moonlight-vrr-common-build'
 Assert-Exit 'Client transport configuration'
 & cmake --build $build
 Assert-Exit 'Client transport build'
-& gcc -O2 -Wall -Wextra -Werror (Join-Path $PSScriptRoot 'pyrowave_stream_client.c') "-I$source/src" "-I$PyrowaveRoot/include" "-I$MsysRoot/ucrt64/include" "$build/libmoonlight-common-c.a" "$build/enet/libenet.a" "-L$PyrowaveRoot/lib" "-L$MsysRoot/ucrt64/lib" -lpyrowave-shared -lopus -lcrypto -lws2_32 -lwinmm -o (Join-Path $ArtifactDirectory 'moonlight-pyrowave-client.exe')
+& gcc -O2 -Wall -Wextra -Werror -Wno-unused-parameter -Wno-misleading-indentation -DBUTTERPOLLO_PYROWAVE (Join-Path $PSScriptRoot 'moonlight_client.c') "-I$source/src" "-I$PyrowaveRoot/include" "-I$MsysRoot/ucrt64/include" "$build/libmoonlight-common-c.a" "$build/enet/libenet.a" "-L$PyrowaveRoot/lib" "-L$MsysRoot/ucrt64/lib" -lpyrowave-shared -lavcodec -lavutil -lopus -lcrypto -lws2_32 -lwinmm -o (Join-Path $ArtifactDirectory 'moonlight-pyrowave-client.exe')
 Assert-Exit 'Vendor decoding fixture build'
 Copy-Item -LiteralPath (Join-Path $PyrowaveRoot 'bin\libpyrowave-shared-0.dll') -Destination $ArtifactDirectory
 Write-Output "Independent Nonary transport/vendor decoder: $ArtifactDirectory\moonlight-pyrowave-client.exe"

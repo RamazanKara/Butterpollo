@@ -4,7 +4,7 @@ import re
 
 def evaluate(client, rc, codec, mode, vrr=False):
     def find(pattern, cast=float):
-        match = re.search(pattern, client)
+        match = re.search(pattern, client, re.MULTILINE)
         return cast(match.group(1)) if match else None
 
     fps = float(mode.split('x')[2])
@@ -28,6 +28,18 @@ def evaluate(client, rc, codec, mode, vrr=False):
         host_mean_ms=find(r'STEADY_HOST .*?mean_ms=([0-9.]+)'),
         host_p99_ms=find(r'STEADY_HOST .*?p99_ms=([0-9.]+)'),
     )
+    pyrowave = codec.startswith('pyrowave')
+    if pyrowave:
+        result.update(
+            record_frames=find(r'^PYROWAVE framing=records bitstream=186f0393 encrypted=1 record_frames=(\d+)', int),
+            partial_frames=find(r'^PYROWAVE .*?partial_frames=(\d+)', int),
+            hdr_frames=find(r'^PYROWAVE .*?hdr_frames=(\d+)', int),
+            picture_age_samples=find(r'^PICTURE_AGE samples=(\d+)', int),
+            picture_age_mean_ms=find(r'^PICTURE_AGE .*?mean_ms=([0-9.]+)'),
+            picture_age_p95_ms=find(r'^PICTURE_AGE .*?p95_ms=([0-9.]+)'),
+            picture_age_p99_ms=find(r'^PICTURE_AGE .*?p99_ms=([0-9.]+)'),
+            picture_age_max_ms=find(r'^PICTURE_AGE .*?max_ms=([0-9.]+)'),
+        )
     failures = []
     missing = [key for key, value in result.items() if value is None]
     if missing:
@@ -48,5 +60,13 @@ def evaluate(client, rc, codec, mode, vrr=False):
         if (not result['audio_packets'] or not result['audio_tone_blocks']
                 or result['audio_peak'] <= .01 or result['audio_continuous'] != 1):
             failures.append('the captured audio tone was silent or interrupted')
+        if pyrowave:
+            if (result['record_frames'] != result['frames'] or result['partial_frames']
+                    or result['hdr_frames'] != (result['frames'] if '-hdr' in codec else 0)):
+                failures.append('PyroWave records were incomplete or the HDR mode was wrong')
+            if (result['picture_age_samples'] < result['steady_frames'] * .95
+                    or not 0 <= result['picture_age_mean_ms'] <= result['picture_age_max_ms'] <= 3000
+                    or not 0 <= result['picture_age_p95_ms'] <= result['picture_age_p99_ms'] <= result['picture_age_max_ms']):
+                failures.append('PyroWave picture age was missing or invalid')
     result.update(passed=not failures, failures=failures)
     return result

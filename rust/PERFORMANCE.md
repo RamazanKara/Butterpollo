@@ -3526,6 +3526,93 @@ bit units at fractional frame rates, and invalid settings. All Cargo
 commands used the supplied environment and `--target-dir target\qa`
 where applicable.
 
+## October 7: PyroWave release picture checks
+
+On the AMD Radeon RX 7900 XT (driver 32.0.31041.1004), the release receiver
+now decodes PyroWave with SDK bitstream `186f0393` and uses the same pixel
+barcode, motion, cadence and Opus tone checks as the other codecs.
+`build-pyrowave-client.ps1` builds `moonlight_client.c` against the existing
+pinned Nonary transport. That transport negotiates records and decrypts
+video and audio; the receiver rejects codec fallback, a different bitstream,
+missing encryption, lost buffers, invalid records and incomplete SDK frames.
+Every delivered picture must decode. The former separate SDK receiver is
+folded into the common fixture, so its decoded pixels now supply the release
+measurements. NVIDIA users should use [Vibepollo](https://github.com/Nonary/Vibepollo);
+NVIDIA hardware was not measured here.
+
+The shared barcode reader now accounts for the encoder's letterbox and
+measures QPC picture age when the explicit host address is loopback. The
+PyroWave gate requires age samples for at least 95% of steady pictures and
+records their mean, p95, p99 and maximum. Age ends after SDK decode and CPU
+readback, before any client display. Existing limits remain: 97–103% of the
+requested cadence, at least 90% fresh pictures, 95% barcode coverage, no
+decode failures, bounded delivery gaps, and a continuous audible test tone.
+
+`release.ps1` adds required 1920×1080 at 60 fps runs for SDR 4:2:0 and HDR
+4:4:4, each requesting 400 Mbps for 12 seconds with a three-second warmup.
+`finalize.py` requires both results. They use the existing retry once and
+fail-release path. Only the isolated PyroWave profile enables PyroWave and
+requires LAN encryption; no installed configuration is changed. The first
+connection checks rejected the default profile because it disabled video
+encryption, despite the client's request to encrypt everything.
+
+The live checks used the installed rc.20 executable as a portable host:
+source `f06e72c73c1960665d031d27f8dad02202bca56e`, SHA-256
+`07b0487e1d9d7312da58fe3430c6d53d0e25e949632284896a94332cc99bc074`.
+Its own profile and ports were under `target/pyrowave-e2e`; the running
+service was not stopped, restarted, reinstalled or reconfigured. Before
+each run, the installed log's last stream event was `CLIENT DISCONNECTED`
+at 15:51:34 UTC. The source remained a 5120×1440 SDR desktop, with the
+fixture's 120 Hz bottom strip and virtual-speaker tone. The host letterboxed
+it into 1920×1080. HDR therefore checks conversion and HDR/4:4:4 negotiation,
+not native HDR capture. The SDK CPU output is eight-bit even for HDR;
+full-precision HDR quality remains covered by the separate GPU harness above.
+
+SDR and HDR alternated twice. All four runs passed, with 100% barcode and
+age coverage, zero repeated steady pictures, zero partial pictures, zero
+decode failures, and continuous tone:
+
+| Measurement | SDR runs | HDR 4:4:4 runs |
+|---|---:|---:|
+| Pictures decoded / delivered | 707/707, 700/700 | 711/711, 704/704 |
+| Fresh pictures/s after warmup | 59.994, 60.054 | 60.462, 60.292 |
+| Picture age mean, ms | 21.332, 26.025 | 22.787, 24.186 |
+| Picture age p95, ms | 22.192, 29.541 | 26.653, 28.707 |
+| Picture age maximum, ms | 29.648, 39.370 | 28.330, 32.674 |
+| Arrival interval p99, ms | 17.977, 18.005 | 18.650, 18.871 |
+| Arrival interval maximum, ms | 19.067, 18.534 | 19.522, 23.357 |
+
+These are two-run spreads on a shared machine, not isolated latency
+comparisons. Artifacts are `target/pyrowave-e2e/batch{2,3}/e2e-pyrowave*`;
+`batch1` retains the rejected unencrypted connections. Reproduce each case
+after loading the Rust environment and building the receiver and the two
+probes beside it:
+
+```powershell
+python rust/release/e2e.py --package 'C:\Program Files\ButterpolloRust' `
+  --work "$PWD/target/pyrowave-e2e/repeat" `
+  --client "$PWD/target/pyrowave-e2e/fixtures/moonlight-pyrowave-client.exe" `
+  --codec pyrowave --mode 1920x1080x60 --seconds 12 --bitrate 400000
+# Repeat with --codec pyrowave-hdr-444. Use the release Python environment.
+```
+
+Two additional 12-second H.264/HEVC runs at 2560×720 decoded all 874/864
+delivered pictures, with zero decode errors and 100% barcode coverage, but
+failed the unchanged audio-continuity gate: minimum tone RMS fell to
+0.000013 and 0.000003 respectively. Their cause was not established; the
+failures remain in `target/pyrowave-e2e/compatibility`. Aggregate live command time, including
+the early rejected connections and host startup/cleanup, was about 171
+seconds. AV1 and HEVC VRR were not rerun within that budget.
+
+Checks passed: 12 release-gate unit tests, both C receiver builds (warnings
+denied, except the shared fixture's unused callback parameters and compact
+indentation), Python compilation, PowerShell parsing, `cargo fmt --all`,
+clippy for core/Windows/host with all targets and warnings denied, 167 core
+tests, and 63 host tests with two existing ignored tests. The host and both
+probe examples also built. The ordinary receiver rejects `pyrowave` before
+connecting instead of silently requesting H.264. No web files changed, and
+the installer/publisher was not run.
+
 ## Limits
 
 This machine validates AMD AMF. Native NVENC now calls the installed NVIDIA driver directly, supports reviewed API versions 11.0–13.0, reference frame invalidation, D3D11 4:2:0/8-bit 4:4:4 and GPU-only CUDA interop for ten-bit 4:4:4. Seven mock-driver tests exercise compatibility, asynchronous ownership, timeout teardown, metadata lifetime, loss recovery and bitrate changes; NVIDIA execution/performance still needs NVIDIA hardware. QSV has native D3D11 imports, and TrueHDR has a shared-device GPU path; these need Intel/NVIDIA hardware respectively. PyroWave uses shared D3D11/Vulkan planar GPU inputs and reads back only the encoded bitstream. Unsupported native formats and software encoding use CPU compatibility paths. The wired LAN checks above do not establish Wi-Fi performance, multiple concurrent 4K sessions, dynamic game content, native 4K capture or end-to-end input/display latency. The GPU texture pools and native encoder queues are bounded to eight retained frames; capacity runs may intentionally keep those queues occupied. [PARITY.md](PARITY.md) separates implemented features from native validation.

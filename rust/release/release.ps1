@@ -10,7 +10,7 @@ Build, verify, install and publish a Butterpollo release in one run.
    its own target directory.
 3. Packages from the previous published release: only the rebuilt binaries,
    documentation, lock file and versions change (package.py).
-4. Streams H.264, HEVC and AV1 through the packaged host with the independent
+4. Streams H.264, HEVC, AV1 and PyroWave through the packaged host with the independent
    moonlight-common-c client, and runs the protocol checks (e2e.py, protocol.py).
 5. The display self-test as SYSTEM and a quiet install over the running host
    (elevated.ps1): run directly from an elevated shell, otherwise through the
@@ -133,6 +133,7 @@ Step 'release gate tests and current receiver fixtures'
 & $python -m unittest discover -s $tools -p test_e2e_result.py *> "$qa\release-gate.log"
 git -C $Checkout submodule update --init --recursive --depth 1 third-party/moonlight-common-c
 & "$Checkout\rust\tests\build-moonlight-client.ps1" -ArtifactDirectory "$qa\fixtures" *> "$qa\receiver-build.log"
+& "$Checkout\rust\tests\build-pyrowave-client.ps1" -ArtifactDirectory "$qa\fixtures" -PyrowaveRoot $env:BUTTERPOLLO_PYROWAVE_ROOT *> "$qa\pyrowave-receiver-build.log"
 cargo build --release --locked --manifest-path $manifest --target-dir "$target\ship" -p butterpollo-windows `
     --example audio_probe --example motion_probe *> "$qa\probe-build.log"
 Copy-Item "$target\ship\release\examples\audio_probe.exe", "$target\ship\release\examples\motion_probe.exe" "$qa\fixtures"
@@ -163,10 +164,14 @@ Step "package from $previous"
     --baseline-sums "$baseline\SHA256SUMS" --qa $qa --out $out --web "$web\dist" | Out-Null
 $package = "$out\butterpollo-rust-release"
 
-foreach ($case in 'h264', 'hevc', 'av1', 'hevc-vrr') {
+foreach ($case in 'h264', 'hevc', 'av1', 'hevc-vrr', 'pyrowave', 'pyrowave-hdr-444') {
     $codec = $case -replace '-vrr$'
     $stream = @('--package', $package, '--work', $run, '--client', $client, '--codec', $codec, '--seconds', '30')
     if ($case.EndsWith('-vrr')) { $stream += '--vrr' }
+    if ($codec.StartsWith('pyrowave')) {
+        $stream = @('--package', $package, '--work', $run, '--client', "$qa\fixtures\moonlight-pyrowave-client.exe",
+                    '--codec', $codec, '--mode', '1920x1080x60', '--seconds', '12', '--bitrate', '400000')
+    }
     Step "stream $case"
     try {
         & $python "$tools\e2e.py" @stream

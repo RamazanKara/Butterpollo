@@ -93,7 +93,7 @@ The rc.10 ordinary validation recorded **263 passing tests**, with 27 environmen
 | Ordinary tests | Wire parsing, encryption/replay, FEC, input, state, migration, ownership and recovery policy. |
 | Administration and browser | [web_api.py](tests/web_api.py), [console_browser.cjs](tests/console_browser.cjs), [session_restart.py](tests/session_restart.py), [otp_pairing.py](tests/otp_pairing.py). |
 | Independent standard-codec streams | [interop.py](tests/interop.py), [moonlight_client.c](tests/moonlight_client.c): real pairing, encrypted RTSP, transport/FEC, FFmpeg and Opus decode. |
-| Independent PyroWave streams | [build-pyrowave-client.ps1](tests/build-pyrowave-client.ps1), [pyrowave_stream_client.c](tests/pyrowave_stream_client.c), [pyrowave_transport.py](tests/pyrowave_transport.py). |
+| Independent PyroWave streams | [build-pyrowave-client.ps1](tests/build-pyrowave-client.ps1), [moonlight_client.c](tests/moonlight_client.c), [pyrowave_transport.py](tests/pyrowave_transport.py). |
 | Native GPU, driver and display tests | Explicitly selected ignored tests; requirements and commands in [PARITY.md](PARITY.md#reproducible-verification). |
 | Performance and pixel accuracy | Release probes and fixtures indexed in [PERFORMANCE.md](PERFORMANCE.md#reproduce-on-another-machine). |
 

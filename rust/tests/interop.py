@@ -78,7 +78,7 @@ key_id = '-2147483525' if os.environ.get('BUTTERPOLLO_TEST_SIGNED_KEY_ID') == '1
 launch_args={'appid':app.findtext('ID'),'rikey':bytes(range(16)).hex(),'rikeyid':key_id,'corever':'1'}
 if os.environ.get('BUTTERPOLLO_TEST_VRR')=='1': launch_args['clientVrrRequested']='1'
 if os.environ.get('BUTTERPOLLO_TEST_MATCH_DISPLAY')=='1':
-    launch_args.update(mode='x'.join(sys.argv[3:6]),hdrMode='1' if codec.endswith('-hdr') else '0')
+    launch_args.update(mode='x'.join(sys.argv[3:6]),hdrMode='1' if '-hdr' in codec else '0')
 limiter_lifecycle = None
 if os.environ.get('BUTTERPOLLO_TEST_RTSS_PROFILE'):
     from rtss_lifecycle import Lifecycle

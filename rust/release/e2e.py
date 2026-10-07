@@ -27,6 +27,10 @@ parser.add_argument('--config', action='append', default=[], metavar='KEY=VALUE'
 args = parser.parse_args()
 interop = pathlib.Path(__file__).resolve().parents[1] / 'tests' / 'interop.py'
 
+installed_log = pathlib.Path(r'C:\ProgramData\Butterpollo\config\logs\butterpollo.log')
+events = [line for line in installed_log.read_text(errors='replace').splitlines()
+          if 'CLIENT CONNECTED' in line or 'CLIENT DISCONNECTED' in line]
+assert not events or 'CLIENT DISCONNECTED' in events[-1], 'the installed host log has an active stream'
 plain = requests.Session(); plain.trust_env = False
 info = ET.fromstring(plain.get('http://127.0.0.1:47989/serverinfo', timeout=3).text)
 assert info.findtext('state') == 'SUNSHINE_SERVER_FREE', 'the installed host is streaming'
@@ -48,7 +52,11 @@ if args.mode is None:
     args.mode = f"{round(display['width'] * 720 / display['height'] / 2) * 2}x720x60"
 width, height, fps = args.mode.split('x')
 scale = min(int(width) / display['width'], int(height) / display['height'])
-assert abs(int(width) - display['width'] * scale) <= 2 and abs(int(height) - display['height'] * scale) <= 2, 'the motion test needs the desktop aspect ratio'
+# Match the encoder's centred letterbox without changing the desktop mode.
+content_width = min(int(width), max(2, int(display['width'] * scale + .5) & ~1))
+content_height = min(int(height), max(2, int(display['height'] * scale + .5) & ~1))
+left = ((int(width) - content_width) // 2) & ~1
+bottom = int(height) - content_height - (((int(height) - content_height) // 2) & ~1)
 audio_probe = args.client.parent / 'audio_probe.exe'
 motion_probe = args.client.parent / 'motion_probe.exe'
 assert audio_probe.is_file() and motion_probe.is_file(), 'build the audio and motion probes beside the receiver'
@@ -63,7 +71,9 @@ defaults = [
     'frame_limiter_enable = false', 'install_steam_audio_drivers = false', 'stream_audio = true',
     'audio_sink_capture_only = true', 'auto_capture_sink = false', f"audio_sink = {sink['id']}",
     'keep_sink_default = false', 'upnp = false', 'enable_discovery = false', 'vulkan_hdr_layer = false',
-    'system_tray = false', 'update_check_interval = 0', 'pyrowave = false']
+    'system_tray = false', 'update_check_interval = 0', f'pyrowave = {str(args.codec.startswith("pyrowave")).lower()}']
+if args.codec.startswith('pyrowave'):
+    defaults.append('lan_encryption_mode = 2')
 # A --config line replaces the default line of the same key.
 key = lambda line: line.split('=', 1)[0].strip()
 overrides = [f'{key(line)} = {line.split("=", 1)[1].strip()}' for line in args.config]
@@ -103,6 +113,7 @@ try:
                       BUTTERPOLLO_TEST_REQUIRE_PICTURE='1', BUTTERPOLLO_TEST_WARMUP_SECONDS='3',
                       BUTTERPOLLO_TEST_MIN_FPS=str(float(fps) * .97), BUTTERPOLLO_TEST_AUDIO_TONE='1',
                       BUTTERPOLLO_TEST_REQUIRE_MOTION='1', BUTTERPOLLO_TEST_BARCODE_BOTTOM='1',
+                      BUTTERPOLLO_TEST_BARCODE_LEFT=str(left), BUTTERPOLLO_TEST_BARCODE_BOTTOM_MARGIN=str(bottom),
                       BUTTERPOLLO_TEST_BARCODE_SCALE=str(scale), BUTTERPOLLO_TEST_VRR='1' if args.vrr else '0')
     (case / 'receiver').mkdir()
     receiver = spawn([sys.executable, str(interop), str(case / 'receiver'), args.codec, width, height, fps, args.seconds, args.bitrate, '4'], 'client.log', env=client_env)

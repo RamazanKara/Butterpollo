@@ -17,6 +17,16 @@
 #include <libavutil/pixdesc.h>
 #include <libavutil/hwcontext.h>
 #include <opus/opus_multistream.h>
+#ifdef BUTTERPOLLO_PYROWAVE
+#include <vulkan/vulkan.h>
+#include <pyrowave/pyrowave.h>
+static pyrowave_device pyro_device;
+static pyrowave_decoder pyro_decoder;
+static unsigned record_frames, partial_frames, hdr_frames;
+/* The pinned transport owns these negotiated flags; requesting ENCFLG_ALL alone
+ * would still permit a host to silently omit video encryption. */
+extern uint32_t EncryptionFeaturesEnabled;
+#endif
 static atomic_int frames, decoded_frames, audio_packets, ended, failures, detailed_frames;
 static AVCodecContext *decoder;
 static enum AVPixelFormat hardware_format=AV_PIX_FMT_NONE;
@@ -44,6 +54,7 @@ static double warmup_seconds=2.0;
 static int barcode_bottom;
 /* The host may scale the source; the barcode is drawn at source pixels. */
 static double barcode_scale=1.0;
+static double barcode_left,barcode_bottom_margin;
 #ifdef _WIN32
 static double clock_ms(void){LARGE_INTEGER n,f;QueryPerformanceCounter(&n);QueryPerformanceFrequency(&f);return (double)n.QuadPart*1000.0/(double)f.QuadPart;}
 static void wait_ms(unsigned milliseconds){Sleep(milliseconds);}
@@ -70,11 +81,11 @@ static int picture_timestamp(const AVFrame *frame,uint32_t *sequence,uint64_t *t
     if(frame->width<640*s||frame->height<128*s)return 0;
     uint32_t words[4]={0};
     for(int row=0;row<4;row++){
-        int y=barcode_bottom?frame->height-(int)((128-20-row*24)*s):(int)((20+row*24)*s);
-        unsigned black=luma_sample(frame,(int)(12*s),y),white=luma_sample(frame,(int)(36*s),y);
+        int y=barcode_bottom?frame->height-(int)(barcode_bottom_margin+(128-20-row*24)*s):(int)((20+row*24)*s);
+        unsigned black=luma_sample(frame,(int)(barcode_left+12*s),y),white=luma_sample(frame,(int)(barcode_left+36*s),y);
         if(white<=black+32)return 0;
         unsigned threshold=(black+white)/2;
-        for(int bit=0;bit<32;bit++)if(luma_sample(frame,(int)((72+bit*16)*s),y)>threshold)words[row]|=1u<<bit;
+        for(int bit=0;bit<32;bit++)if(luma_sample(frame,(int)(barcode_left+(72+bit*16)*s),y)>threshold)words[row]|=1u<<bit;
     }
     if(words[3]!=0xB17E2212||words[0]==0)return 0;
     *sequence=words[0];*ticks=((uint64_t)words[2]<<32)|words[1];return 1;
@@ -85,9 +96,57 @@ static void distribution(const char *name,double *values,unsigned count){
     qsort(values,count,sizeof(double),compare_double);
     printf("%s samples=%u mean_ms=%.3f p50_ms=%.3f p95_ms=%.3f p99_ms=%.3f max_ms=%.3f\n",name,count,sum/count,values[(count-1)/2],values[(count-1)*95/100],values[(count-1)*99/100],values[count-1]);
 }
+#ifdef BUTTERPOLLO_PYROWAVE
+static uint32_t record_word(const unsigned char *p){return (uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);}
+static int decode_pyrowave(const AVPacket *packet,PDECODE_UNIT unit,AVFrame *frame){
+    const unsigned char *data=packet->data;size_t length=packet->size;
+    if(length<8||length%4)return -1;
+    uint32_t first=record_word(data),second=record_word(data+4);
+    int chroma=(requested_format&VIDEO_FORMAT_MASK_YUV444)!=0;
+    if(first==UINT32_MAX||!(first&0x80000000)||((second>>24)&3)||
+       (int)(first&0x3fff)+1!=requested_width||(int)((first>>14)&0x3fff)+1!=requested_height||
+       ((second>>26)&1)!=(unsigned)chroma||unit->hdrActive!=requested_hdr)return -1;
+    pyrowave_decoder_clear(pyro_decoder);
+    unsigned records=0;size_t offset=0;
+    while(offset<length){
+        if(length-offset<8)return -1;
+        uint32_t header=record_word(data+offset);
+        size_t size=header==UINT32_MAX?8+(size_t)record_word(data+offset+4)*4:offset==0?8:((header>>16)&0xfff)*4;
+        if(size<8||size>length-offset)return -1;
+        if(header!=UINT32_MAX){
+            if(offset&&((header&0x80000000)||((header>>28)&7)!=((first>>28)&7)))return -1;
+            if(pyrowave_decoder_push_packet(pyro_decoder,data+offset,size))return -1;
+            if(offset)records++;
+        }
+        offset+=size;
+    }
+    if(records!=(second&0xffffff)||!pyrowave_decoder_decode_is_ready(pyro_decoder,false))return -1;
+    frame->width=requested_width;frame->height=requested_height;
+    frame->format=chroma?AV_PIX_FMT_YUV444P:AV_PIX_FMT_YUV420P;
+    if(av_frame_get_buffer(frame,32)<0)return -1;
+    pyrowave_cpu_buffer output={.width=frame->width,.height=frame->height,
+        .format=chroma?PYROWAVE_CPU_BUFFER_FORMAT_YUV444P:PYROWAVE_CPU_BUFFER_FORMAT_YUV420P};
+    for(int plane=0;plane<3;plane++){
+        output.data[plane]=frame->data[plane];output.row_stride_in_bytes[plane]=frame->linesize[plane];
+        output.plane_size_in_bytes[plane]=(size_t)frame->linesize[plane]*(frame->height/(plane&&!chroma?2:1));
+    }
+    if(pyrowave_decoder_decode_cpu_buffer_synchronous(pyro_decoder,&output))return -1;
+    record_frames++;if(unit->hdrActive)hdr_frames++;
+    return 0;
+}
+#endif
 static int video_setup(int format,int width,int height,int rate,void*context,int flags){
     printf("VIDEO format=%d %dx%d@%d\n",format,width,height,rate);
     if(format != requested_format){fprintf(stderr,"Codec fallback: requested=%d negotiated=%d\n",requested_format,format);return -1;}
+#ifdef BUTTERPOLLO_PYROWAVE
+    if(format&VIDEO_FORMAT_MASK_PYROWAVE){
+        if(width!=requested_width||height!=requested_height||pyrowave_create_device_by_compat(0,0,NULL,NULL,NULL,&pyro_device))return -1;
+        pyrowave_decoder_create_info info={.device=pyro_device,.width=width,.height=height,
+            .chroma=(format&VIDEO_FORMAT_MASK_YUV444)!=0,.fragment_path=false};
+        printf("DECODER codec=pyrowave bitstream=%s readback_bits=8\n",PYROWAVE_BITSTREAM_ID);
+        return pyrowave_decoder_create(&info,&pyro_decoder);
+    }
+#endif
     enum AVCodecID id=(format&VIDEO_FORMAT_MASK_H264)?AV_CODEC_ID_H264:(format&VIDEO_FORMAT_MASK_H265)?AV_CODEC_ID_HEVC:AV_CODEC_ID_AV1;
     const AVCodec *codec=avcodec_find_decoder(id);if(!codec){fprintf(stderr,"Independent decoder unavailable for codec %d\n",id);return -1;}
     decoder=avcodec_alloc_context3(codec);if(!decoder)return -1;
@@ -116,20 +175,42 @@ static int video_setup(int format,int width,int height,int rate,void*context,int
 static int video_frame(PDECODE_UNIT unit){
     double decode_started=clock_ms();
     uint32_t picture_sequence=0;uint64_t picture_ticks=0;double age_ms=-1;
-    AVPacket *packet=av_packet_alloc();AVFrame *frame=av_frame_alloc(),*decoded=av_frame_alloc();av_new_packet(packet,unit->fullLength);
-    int offset=0;for(PLENTRY entry=unit->bufferList;entry;entry=entry->next){memcpy(packet->data+offset,entry->data,entry->length);offset+=entry->length;}
+    if(unit->fullLength<1||unit->fullLength>32*1024*1024){atomic_fetch_add(&frames,1);atomic_fetch_add(&failures,1);return DR_OK;}
+    AVPacket *packet=av_packet_alloc();AVFrame *frame=av_frame_alloc(),*decoded=av_frame_alloc();
+    if(!packet||!frame||!decoded||av_new_packet(packet,unit->fullLength)<0){
+        av_packet_free(&packet);av_frame_free(&frame);av_frame_free(&decoded);
+        atomic_fetch_add(&frames,1);atomic_fetch_add(&failures,1);return DR_OK;
+    }
+    int offset=0,complete=1;for(PLENTRY entry=unit->bufferList;entry;entry=entry->next){
+#ifdef BUTTERPOLLO_PYROWAVE
+        if(entry->bufferType==BUFFER_TYPE_LOST){partial_frames++;complete=0;break;}
+#endif
+        if(entry->length<=0||entry->length>unit->fullLength-offset){complete=0;break;}
+        memcpy(packet->data+offset,entry->data,entry->length);offset+=entry->length;
+    }
+    if(offset!=unit->fullLength)complete=0;
     // Optional first access-unit dump runs before the steady measurement window.
     // It allows an independent bitstream parser to diagnose driver geometry.
     const char *dump=getenv("BUTTERPOLLO_TEST_FIRST_FRAME");
     if(dump&&atomic_load(&frames)==0){FILE *file=fopen(dump,"wb");if(!file||fwrite(packet->data,1,packet->size,file)!=(size_t)packet->size)atomic_fetch_add(&failures,1);if(file)fclose(file);}
-    if(avcodec_send_packet(decoder,packet)<0)atomic_fetch_add(&failures,1);
-    int received;
-    while((received=avcodec_receive_frame(decoder,decoded))==0){
+    int received=AVERROR(EAGAIN);
+#ifdef BUTTERPOLLO_PYROWAVE
+    if(pyro_decoder){
+        if(!complete||decode_pyrowave(packet,unit,decoded)<0)atomic_fetch_add(&failures,1);
+        else received=0;
+    }else
+#endif
+    {
+        if(!complete||avcodec_send_packet(decoder,packet)<0)atomic_fetch_add(&failures,1);
+        received=avcodec_receive_frame(decoder,decoded);
+    }
+    while(received==0){
         // Read hardware surfaces back before validating pixels, geometry and
         // HDR. Decoder timing includes this readback, but excludes scanout.
         if(hardware_format!=AV_PIX_FMT_NONE){
             if(decoded->format!=hardware_format||av_hwframe_transfer_data(frame,decoded,0)<0||av_frame_copy_props(frame,decoded)<0){
-                atomic_fetch_add(&failures,1);av_frame_unref(decoded);av_frame_unref(frame);continue;
+                atomic_fetch_add(&failures,1);av_frame_unref(decoded);av_frame_unref(frame);
+                received=avcodec_receive_frame(decoder,decoded);continue;
             }
             av_frame_unref(decoded);
         }else av_frame_move_ref(frame,decoded);
@@ -141,6 +222,11 @@ static int video_frame(PDECODE_UNIT unit){
         const AVPixFmtDescriptor *pixel=av_pix_fmt_desc_get(frame->format);
         if(pixel&&high>low+(16u<<(pixel->comp[0].depth>8?pixel->comp[0].depth-8:0)))atomic_fetch_add(&detailed_frames,1);
         if(frame->width!=requested_width||frame->height!=requested_height)atomic_fetch_add(&failures,1);
+        /* The SDK's CPU readback is eight-bit even for HDR. Its stream mode is
+         * checked above; full-precision HDR quality has a separate GPU test. */
+#ifdef BUTTERPOLLO_PYROWAVE
+        if(!pyro_decoder)
+#endif
         if(requested_hdr){const AVPixFmtDescriptor *desc=av_pix_fmt_desc_get(frame->format);if(!desc||desc->comp[0].depth<10||frame->color_primaries!=AVCOL_PRI_BT2020||frame->color_trc!=AVCOL_TRC_SMPTE2084)atomic_fetch_add(&failures,1);}
         atomic_fetch_add(&decoded_frames,1);if(atomic_load(&decoded_frames)==1)printf("DECODED %dx%d pixel_format=%d primaries=%d transfer=%d\n",frame->width,frame->height,frame->format,frame->color_primaries,frame->color_trc);
         // Optional decoded picture for colour comparisons between hosts:
@@ -166,7 +252,8 @@ static int video_frame(PDECODE_UNIT unit){
             // Absolute picture age needs the renderer's clock: only compare
             // QPC timestamps on the same Windows machine.
 #ifdef _WIN32
-            if(!getenv("BUTTERPOLLO_TEST_HOST")){
+            const char *host=getenv("BUTTERPOLLO_TEST_HOST");
+            if(!host||strcmp(host,"127.0.0.1")==0||strcmp(host,"::1")==0){
             LARGE_INTEGER frequency;QueryPerformanceFrequency(&frequency);
             age_ms=clock_ms()-(double)picture_ticks*1000.0/(double)frequency.QuadPart;
             // A signature alone must not turn unrelated desktop content into a
@@ -176,6 +263,10 @@ static int video_frame(PDECODE_UNIT unit){
 #endif
         }
         av_frame_unref(frame);
+#ifdef BUTTERPOLLO_PYROWAVE
+        if(pyro_decoder)received=AVERROR(EAGAIN);else
+#endif
+        received=avcodec_receive_frame(decoder,decoded);
     }
     if(received!=AVERROR(EAGAIN)&&received!=AVERROR_EOF)atomic_fetch_add(&failures,1);
     av_packet_free(&packet);av_frame_free(&frame);av_frame_free(&decoded);
@@ -258,7 +349,20 @@ int main(int argc,char**argv){
     server.address=getenv("BUTTERPOLLO_TEST_HOST")?getenv("BUTTERPOLLO_TEST_HOST"):"127.0.0.1";server.serverInfoAppVersion="7.1.431.-1";server.serverInfoGfeVersion="3.23.0.74";server.rtspSessionUrl=argv[1];server.serverCodecModeSupport=0x30301;
     STREAM_CONFIGURATION config;LiInitializeStreamConfiguration(&config);config.width=640;config.height=480;config.fps=30;config.bitrate=2000;config.packetSize=1024;config.streamingRemotely=STREAM_CFG_LOCAL;config.audioConfiguration=AUDIO_CONFIGURATION_STEREO;config.supportedVideoFormats=VIDEO_FORMAT_H264;config.encryptionFlags=ENCFLG_ALL;
     if(argc>2){if(strcmp(argv[2],"hevc")==0)config.supportedVideoFormats=VIDEO_FORMAT_H265;else if(strcmp(argv[2],"hevc-hdr")==0)config.supportedVideoFormats=VIDEO_FORMAT_H265_MAIN10;else if(strcmp(argv[2],"av1")==0)config.supportedVideoFormats=VIDEO_FORMAT_AV1_MAIN8;else if(strcmp(argv[2],"av1-hdr")==0)config.supportedVideoFormats=VIDEO_FORMAT_AV1_MAIN10;}
+#ifdef BUTTERPOLLO_PYROWAVE
+    if(argc>2){
+        if(strcmp(argv[2],"pyrowave")==0)config.supportedVideoFormats=VIDEO_FORMAT_PYROWAVE;
+        else if(strcmp(argv[2],"pyrowave-444")==0)config.supportedVideoFormats=VIDEO_FORMAT_PYROWAVE_444;
+        else if(strcmp(argv[2],"pyrowave-hdr")==0)config.supportedVideoFormats=VIDEO_FORMAT_PYROWAVE_HDR10;
+        else if(strcmp(argv[2],"pyrowave-hdr-444")==0)config.supportedVideoFormats=VIDEO_FORMAT_PYROWAVE_HDR10_444;
+    }
+    server.serverCodecModeSupport|=SCM_MASK_PYROWAVE;config.packetSize=1392;
+#endif
+    if(argc>2&&strcmp(argv[2],"h264")!=0&&config.supportedVideoFormats==VIDEO_FORMAT_H264){fprintf(stderr,"Unknown codec: %s\n",argv[2]);return 2;}
     requested_format=config.supportedVideoFormats;requested_hdr=(requested_format&(VIDEO_FORMAT_H265_MAIN10|VIDEO_FORMAT_AV1_MAIN10))!=0;
+#ifdef BUTTERPOLLO_PYROWAVE
+    if(requested_format&VIDEO_FORMAT_MASK_PYROWAVE)requested_hdr=(requested_format&VIDEO_FORMAT_MASK_10BIT)!=0;
+#endif
     const char *hdr_expectation=getenv("BUTTERPOLLO_TEST_EXPECT_HDR_CONTROL");
     if(hdr_expectation){
         if(strcmp(hdr_expectation,"auto")==0)expected_hdr_control=requested_hdr;
@@ -270,6 +374,8 @@ int main(int argc,char**argv){
     if(getenv("BUTTERPOLLO_TEST_WARMUP_SECONDS"))warmup_seconds=atof(getenv("BUTTERPOLLO_TEST_WARMUP_SECONDS"));
     barcode_bottom=getenv("BUTTERPOLLO_TEST_BARCODE_BOTTOM")&&strcmp(getenv("BUTTERPOLLO_TEST_BARCODE_BOTTOM"),"1")==0;
     if(getenv("BUTTERPOLLO_TEST_BARCODE_SCALE"))barcode_scale=atof(getenv("BUTTERPOLLO_TEST_BARCODE_SCALE"));
+    if(getenv("BUTTERPOLLO_TEST_BARCODE_LEFT"))barcode_left=atof(getenv("BUTTERPOLLO_TEST_BARCODE_LEFT"));
+    if(getenv("BUTTERPOLLO_TEST_BARCODE_BOTTOM_MARGIN"))barcode_bottom_margin=atof(getenv("BUTTERPOLLO_TEST_BARCODE_BOTTOM_MARGIN"));
     if(!(barcode_scale>0.0&&barcode_scale<=1.0))barcode_scale=1.0;
     if(warmup_seconds<0||warmup_seconds>60)return 2;
     if(getenv("BUTTERPOLLO_TEST_TIMING_CSV")){
@@ -286,16 +392,28 @@ int main(int argc,char**argv){
     if(getenv("BUTTERPOLLO_TEST_SIGNED_KEY_ID")&&strcmp(getenv("BUTTERPOLLO_TEST_SIGNED_KEY_ID"),"1")==0)config.remoteInputAesIv[0]=(char)0x80;
     CONNECTION_LISTENER_CALLBACKS listener;LiInitializeConnectionCallbacks(&listener);listener.stageStarting=stage_start;listener.stageFailed=stage_failed;listener.connectionTerminated=terminated;listener.logMessage=log_message;listener.setHdrMode=hdr_mode;
     DECODER_RENDERER_CALLBACKS video;LiInitializeVideoCallbacks(&video);video.setup=video_setup;video.submitDecodeUnit=video_frame;video.capabilities=CAPABILITY_DIRECT_SUBMIT;
+#ifdef BUTTERPOLLO_PYROWAVE
+    /* SDK decoding waits for GPU readback; keep the UDP receive thread free. */
+    if(requested_format&VIDEO_FORMAT_MASK_PYROWAVE)video.capabilities=0;
+#endif
     /* Declare reference frame invalidation like Moonlight's hardware decoders, so a lost frame is recovered without a keyframe when the host supports it. */
     if(getenv("BUTTERPOLLO_TEST_RFI")&&strcmp(getenv("BUTTERPOLLO_TEST_RFI"),"1")==0)video.capabilities|=CAPABILITY_REFERENCE_FRAME_INVALIDATION_AVC|CAPABILITY_REFERENCE_FRAME_INVALIDATION_HEVC|CAPABILITY_REFERENCE_FRAME_INVALIDATION_AV1;
     AUDIO_RENDERER_CALLBACKS audio;LiInitializeAudioCallbacks(&audio);audio.init=audio_init;audio.decodeAndPlaySample=audio_frame;audio.capabilities=CAPABILITY_DIRECT_SUBMIT;
     int result=LiStartConnection(&server,&config,&listener,&video,&audio,NULL,0,NULL,0);
     if(result){printf("CONNECT FAILED %d\n",result);return 1;}
+#ifdef BUTTERPOLLO_PYROWAVE
+    if(pyro_decoder&&(strcmp(LiGetHostPyroWaveBitstreamId(),PYROWAVE_BITSTREAM_ID)||(EncryptionFeaturesEnabled&6)!=6)){
+        fprintf(stderr,"PyroWave requires bitstream=%s and encrypted video/audio: bitstream=%s encryption=%u\n",PYROWAVE_BITSTREAM_ID,LiGetHostPyroWaveBitstreamId(),EncryptionFeaturesEnabled);LiStopConnection();return 1;
+    }
+#endif
     double started=clock_ms();
     for(int i=0;i<(duration?duration*10:100)&&!atomic_load(&ended)&&(duration||atomic_load(&frames)<30);i++)wait_ms(100);
     double seconds=(clock_ms()-started)/1000.0;
     int premature=atomic_load(&ended)||(duration&&seconds<duration*0.98);
     LiStopConnection();
+#ifdef BUTTERPOLLO_PYROWAVE
+    if(pyro_decoder)printf("PYROWAVE framing=records bitstream=%s encrypted=1 record_frames=%u partial_frames=%u hdr_frames=%u\n",PYROWAVE_BITSTREAM_ID,record_frames,partial_frames,hdr_frames);
+#endif
     int hdr_control_valid=expected_hdr_control<0||(atomic_load(&hdr_notifications)>0&&atomic_load(&hdr_control_mismatches)==0&&atomic_load(&hdr_invalid_metadata)==0);
     printf("HDR_CONTROL_RESULT {\"checked\":%s,\"expected_enabled\":%d,\"notifications\":%d,\"enabled_notifications\":%d,\"disabled_notifications\":%d,\"mismatches\":%d,\"invalid_metadata\":%d,\"passed\":%s}\n",
            expected_hdr_control>=0?"true":"false",expected_hdr_control,atomic_load(&hdr_notifications),
@@ -346,6 +464,10 @@ int main(int argc,char**argv){
     }
     if(!motion_valid)fprintf(stderr,"Motion measurement failed: missing timestamps or static test content\n");
     if(!rate_valid)fprintf(stderr,"Stream did not sustain the required %.3f FPS after warmup\n",minimum_fps);
+#ifdef BUTTERPOLLO_PYROWAVE
+    if(pyro_decoder)pyrowave_decoder_destroy(pyro_decoder);
+    if(pyro_device)pyrowave_device_destroy(pyro_device);
+#endif
     avcodec_free_context(&decoder);if(opus_decoder)opus_multistream_decoder_destroy(opus_decoder);
     return !premature&&motion_valid&&rate_valid&&atomic_load(&decoded_frames)>=30&&atomic_load(&audio_packets)>0&&atomic_load(&failures)==0&&(!getenv("BUTTERPOLLO_TEST_AUDIO_TONE")||audio_peak>0.01)&&(!getenv("BUTTERPOLLO_TEST_REQUIRE_PICTURE")||atomic_load(&detailed_frames)>0)?0:1;
 }
