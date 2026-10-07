@@ -266,7 +266,7 @@ impl Gamepads {
                 if !self.motion_supported(u16::from(*id)) {
                     return Ok(());
                 }
-                let mut b = request(28, Some(u32::from(self.active[&u16::from(*id)])));
+                let mut b = request(28, Some(self.slot(u16::from(*id))?));
                 b.extend_from_slice(&[*kind, 0, 0, 0]);
                 for f in xyz {
                     b.extend_from_slice(
@@ -289,15 +289,13 @@ impl Gamepads {
                     }
                     return Ok(());
                 }
-                if !self.active.contains_key(&u16::from(*id)) {
+                let (Some(profile), Some(global)) = (
+                    self.profiles.get(&u16::from(*id)).copied(),
+                    self.active.get(&u16::from(*id)).copied(),
+                ) else {
                     return Ok(());
-                }
-                if let Some(b) = gamepad_touch_request(
-                    &self.pointers,
-                    self.profiles[&u16::from(*id)],
-                    self.active[&u16::from(*id)],
-                    event,
-                ) {
+                };
+                if let Some(b) = gamepad_touch_request(&self.pointers, profile, global, event) {
                     self.ioctl(0x805, &b.packet, 0)?;
                     b.submitted(&mut self.pointers);
                 }
@@ -307,7 +305,7 @@ impl Gamepads {
                 if !self.motion_supported(u16::from(*id)) {
                     return Ok(());
                 }
-                let mut b = request(16, Some(u32::from(self.active[&u16::from(*id)])));
+                let mut b = request(16, Some(self.slot(u16::from(*id))?));
                 b.extend_from_slice(&[*percent, *state, 0, 0]);
                 self.ioctl(0x807, &b, 0)?;
             }
@@ -348,7 +346,7 @@ impl Gamepads {
         right: u8,
         sticks: &[i16; 4],
     ) -> Result<()> {
-        let mut b = request(28, Some(u32::from(self.active[&id])));
+        let mut b = request(28, Some(self.slot(id)?));
         b.extend_from_slice(&buttons.to_le_bytes());
         for stick in sticks {
             b.extend_from_slice(&stick.to_le_bytes());
@@ -357,9 +355,20 @@ impl Gamepads {
         self.ioctl(0x803, &b, 0)?;
         Ok(())
     }
+    /// The driver slot of a plugged-in pad. A pad whose re-plug failed has a
+    /// state but no slot, and must not take the host down (panic = abort).
+    fn slot(&self, id: u16) -> Result<u32> {
+        self.active
+            .get(&id)
+            .map(|global| u32::from(*global))
+            .ok_or_else(|| anyhow::anyhow!("controller {id} is not plugged in"))
+    }
     fn refresh(&mut self) -> Result<()> {
         let mut updates = Vec::new();
         for (id, (event, back)) in &mut self.states {
+            if !self.active.contains_key(id) {
+                continue;
+            }
             if let Some(buttons) =
                 back.poll(self.started.elapsed(), self.policy.back_button_timeout)
                 && let Event::Controller {

@@ -99,6 +99,15 @@ impl SignIns {
         }
     }
 }
+/// The app of a cover request: /api/apps/ID/cover or /api/covers/ID. Not by
+/// slicing: "/api/apps/cover" both starts and ends right, and a panic aborts
+/// the host.
+fn cover_id(path: &str) -> Option<&str> {
+    path.strip_prefix("/api/apps/")
+        .and_then(|rest| rest.strip_suffix("/cover"))
+        .or_else(|| path.strip_prefix("/api/covers/"))
+        .filter(|id| !id.is_empty())
+}
 /// Whether the request is signed in: a browser session, or Basic
 /// credentials from `peer`, which count against its sign-in attempts.
 pub(crate) fn authenticated(
@@ -880,10 +889,8 @@ pub(crate) async fn api(
         && ((path.starts_with("/api/apps/") && path.ends_with("/cover"))
             || path.starts_with("/api/covers/"))
     {
-        let id = if path.starts_with("/api/apps/") {
-            &path[10..path.len() - 6]
-        } else {
-            &path[12..]
+        let Some(id) = cover_id(path) else {
+            return StatusCode::NOT_FOUND.into_response();
         };
         let app = h
             .apps
@@ -1577,6 +1584,14 @@ fn delete_app(h: &Shared, id: &str) -> anyhow::Result<()> {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cover_requests_name_their_app_and_short_paths_do_not_panic() {
+        assert_eq!(super::cover_id("/api/apps/42/cover"), Some("42"));
+        assert_eq!(super::cover_id("/api/covers/7"), Some("7"));
+        assert_eq!(super::cover_id("/api/apps/cover"), None);
+        assert_eq!(super::cover_id("/api/apps//cover"), None);
+        assert_eq!(super::cover_id("/api/covers/"), None);
+    }
     #[test]
     fn sign_ins_are_limited_per_address_but_never_on_this_pc() {
         use std::net::IpAddr;
