@@ -91,6 +91,8 @@ struct Args {
     wgc_parent: Option<u32>,
     #[arg(long, hide = true, num_args = 2, value_names = ["SOURCE", "TARGET"])]
     playnite_install: Option<Vec<PathBuf>>,
+    #[arg(long, hide = true, value_name = "TARGET")]
+    playnite_uninstall: Option<PathBuf>,
 }
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -100,7 +102,14 @@ async fn main() -> Result<()> {
         return butterpollo_windows::crash::reporter();
     }
     if let Some(paths) = &args.playnite_install {
-        return playnite::install_worker(&paths[0], &paths[1]);
+        std::process::exit(playnite::helper_exit_code(&playnite::install_worker(
+            &paths[0], &paths[1],
+        )));
+    }
+    if let Some(target) = &args.playnite_uninstall {
+        std::process::exit(playnite::helper_exit_code(&playnite::uninstall_worker(
+            target,
+        )));
     }
     if let Some(pipe) = &args.codec_probe_worker {
         return butterpollo_windows::codec_probe::worker(pipe, args.codec_probe_parent.unwrap());

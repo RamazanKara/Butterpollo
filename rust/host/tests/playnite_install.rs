@@ -1,15 +1,12 @@
 use butterpollo_windows::process::{Process, Target};
-use std::{collections::BTreeMap, path::Path, time::Duration};
+use std::{collections::BTreeMap, ffi::OsStr, path::Path, time::Duration};
 
-fn install(source: &Path, target: &Path) -> u32 {
+fn helper(args: &[&OsStr]) -> u32 {
     let program = Path::new(env!("CARGO_BIN_EXE_butterpollo"));
+    let args: Vec<_> = args.iter().map(|&arg| arg.to_owned()).collect();
     Process::spawn(
         program,
-        &[
-            "--playnite-install".into(),
-            source.as_os_str().to_owned(),
-            target.as_os_str().to_owned(),
-        ],
+        &args,
         program.parent(),
         Target::User { elevated: false },
         &BTreeMap::new(),
@@ -18,6 +15,18 @@ fn install(source: &Path, target: &Path) -> u32 {
     .unwrap()
     .wait(Duration::from_secs(30))
     .unwrap()
+}
+
+fn install(source: &Path, target: &Path) -> u32 {
+    helper(&[
+        "--playnite-install".as_ref(),
+        source.as_os_str(),
+        target.as_os_str(),
+    ])
+}
+
+fn uninstall(target: &Path) -> u32 {
+    helper(&["--playnite-uninstall".as_ref(), target.as_os_str()])
 }
 
 #[test]
@@ -42,7 +51,8 @@ fn user_session_helper_copies_unicode_paths_and_reports_partial_installs() {
     std::fs::write(source.join("extension.yaml"), "Version: 0.4.15").unwrap();
     std::fs::remove_file(target.join("SunshinePlaynite.psm1")).unwrap();
     std::fs::create_dir(target.join("SunshinePlaynite.psm1")).unwrap();
-    assert_ne!(install(&source, &target), 0);
+    // A failed file operation reports its Windows error to the service.
+    assert_eq!(install(&source, &target), 5);
     assert_eq!(
         std::fs::read_to_string(target.join("extension.yaml")).unwrap(),
         "Version: 0.4.14"
@@ -53,6 +63,10 @@ fn user_session_helper_copies_unicode_paths_and_reports_partial_installs() {
         std::fs::read_to_string(target.join("extension.yaml")).unwrap(),
         "Version: 0.4.15"
     );
-    assert_ne!(install(&root.join("missing"), &target), 0);
+    assert_eq!(install(&root.join("missing"), &target), 1);
+
+    assert_eq!(uninstall(&target), 0);
+    assert!(!target.exists());
+    assert_eq!(uninstall(&target), 0);
     std::fs::remove_dir_all(root).unwrap();
 }

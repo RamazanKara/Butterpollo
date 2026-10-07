@@ -58,31 +58,55 @@ pub fn install_plugin(h: &Shared) -> Result<PathBuf> {
     Ok(target)
 }
 fn copy_plugin_as_user(source: &Path, target: &Path) -> Result<()> {
+    // Reading the packaged copy is safe here and keeps this error readable.
+    if !plugin_present(source) {
+        bail!(
+            "the packaged Playnite plugin is missing or incomplete at {}",
+            source.display()
+        );
+    }
+    run_as_user(
+        "--playnite-install",
+        &[std::path::absolute(source)?, std::path::absolute(target)?],
+    )
+    .with_context(|| format!("installing the Playnite plugin into {}", target.display()))?;
+    tracing::info!(folder = %target.display(), "installed the Playnite plugin");
+    Ok(())
+}
+/// Both paths can come from user-writable locations. Resolve junctions and
+/// perform every write with the user's token, never the service's.
+fn run_as_user(mode: &str, paths: &[PathBuf]) -> Result<()> {
     use butterpollo_windows::process::{Process, Target};
     let program = std::env::current_exe()?;
-    // Both paths can come from user-writable locations. Resolve junctions
-    // and perform every write with the user's token, never the service's.
+    let args: Vec<std::ffi::OsString> = std::iter::once(mode.into())
+        .chain(paths.iter().map(|path| path.as_os_str().to_owned()))
+        .collect();
     let worker = Process::spawn(
         &program,
-        &[
-            "--playnite-install".into(),
-            std::path::absolute(source)?.into_os_string(),
-            std::path::absolute(target)?.into_os_string(),
-        ],
+        &args,
         program.parent(),
         Target::User { elevated: false },
         &BTreeMap::new(),
         true,
     )
-    .context("starting the Playnite plugin installer as the signed-in user")?;
-    let code = worker.wait(Duration::from_secs(30))?;
-    ensure!(
-        code == 0,
-        "Playnite plugin installer failed (0x{code:08x}) for {}",
-        target.display()
-    );
-    tracing::info!(folder = %target.display(), "installed the Playnite plugin");
-    Ok(())
+    .context("starting the Playnite plugin helper as the signed-in user")?;
+    match worker.wait(Duration::from_secs(30))? {
+        0 => Ok(()),
+        1 => bail!("the Playnite plugin helper failed"),
+        code @ 2..0x8000_0000 => Err(std::io::Error::from_raw_os_error(code as i32))
+            .context("the Playnite plugin helper failed"),
+        code => bail!("the Playnite plugin helper ended with 0x{code:08x}"),
+    }
+}
+/// The helper's exit code: a failed file operation's Windows error, which
+/// the service reports, or 1 for any other failure.
+pub fn helper_exit_code(result: &Result<()>) -> i32 {
+    let Err(error) = result else { return 0 };
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<std::io::Error>()?.raw_os_error())
+        .filter(|&code| code > 1)
+        .unwrap_or(1)
 }
 pub fn install_worker(source: &Path, target: &Path) -> Result<()> {
     ensure!(
@@ -434,9 +458,24 @@ pub fn uninstall_plugin() -> Result<()> {
     if let Some(target) = installed_plugin()
         && target.is_dir()
     {
-        std::fs::remove_dir_all(&target)?;
+        run_as_user("--playnite-uninstall", &[std::path::absolute(&target)?])
+            .with_context(|| format!("removing the Playnite plugin from {}", target.display()))?;
     }
     Ok(())
+}
+/// Remove the plugin folder with the signed-in user's token: its path comes
+/// from the user's registry and profile, as for installs.
+pub fn uninstall_worker(target: &Path) -> Result<()> {
+    ensure!(
+        !butterpollo_windows::process::is_system(),
+        "the Playnite plugin helper must run as the signed-in user"
+    );
+    match std::fs::remove_dir_all(target) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => {
+            result.with_context(|| format!("removing Playnite plugin folder {}", target.display()))
+        }
+    }
 }
 
 /// How a game started through Playnite is going.
