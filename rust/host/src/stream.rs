@@ -836,7 +836,8 @@ impl Media {
                         || butterpollo_core::stream_policy::Pacing::from_config(&c) == butterpollo_core::stream_policy::Pacing::Arrival;
                     let mut pacer = butterpollo_core::stream_policy::Pacer::new(Instant::now(), period)
                         .with_prediction(!vrr && c.boolean("frame_pacing_predictive", true))
-                        .with_source_phase(!vrr && c.boolean("frame_pacing_source_phase", prepared.capture() == "wgc"));
+                        .with_source_phase(!vrr && c.boolean("frame_pacing_source_phase", prepared.capture() == "wgc"))
+                        .with_spacing(if vrr { 0.5 } else { 0.75 });
                     let due = cadence.deadline();
                     let mut last_stamp = start;
                     let mut live_at = due;
@@ -1319,7 +1320,13 @@ impl Media {
                             // does not extend the interval between static frames.
                             encoded_at = begin;
                             if arrival_pacing {
-                                pacer.claimed(begin);
+                                // Only a new picture spends pacing credit. A picture
+                                // encoded again (a keyframe the client asked for, a
+                                // static repeat) must not hold back the next game
+                                // frame, as the C++ host never does.
+                                if fresh {
+                                    pacer.claimed(begin);
+                                }
                                 latest.grid.lock().unwrap().anchor = pacer.allowed_at(begin);
                             } else {
                                 cadence.submitted(begin);

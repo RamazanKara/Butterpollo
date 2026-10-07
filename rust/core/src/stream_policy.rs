@@ -198,6 +198,8 @@ pub struct Pacer {
     last_claim: Option<Instant>,
     prediction: bool,
     source_phase: Option<SourcePhase>,
+    /// The least time between two claims, in periods.
+    spacing: f64,
 }
 impl Pacer {
     /// Credit above one frame absorbs arrival jitter of a source at the stream rate.
@@ -210,7 +212,16 @@ impl Pacer {
             last_claim: None,
             prediction: true,
             source_phase: None,
+            spacing: 0.75,
         }
+    }
+    /// VRR: the display follows each frame, so a game's uneven frame times
+    /// should reach it as they are. The average stays capped at the stream
+    /// rate; 3/4 of a period between claims distorted that cadence by up to
+    /// 3 ms, half a period by about 1 ms.
+    pub fn with_spacing(mut self, periods: f64) -> Self {
+        self.spacing = periods;
+        self
     }
     /// Diagnostic comparison: keep the same rate and burst limits, but claim
     /// at the earliest allowed slot instead of waiting for a predicted frame.
@@ -261,7 +272,7 @@ impl Pacer {
     pub fn allowed_at(&self, now: Instant) -> Instant {
         let spaced = self
             .last_claim
-            .map_or(now, |claim| claim + self.period.mul_f64(0.75));
+            .map_or(now, |claim| claim + self.period.mul_f64(self.spacing));
         let credit = self.credit(now);
         let funded = if credit >= Self::CLAIM_CREDIT {
             now
@@ -518,7 +529,12 @@ mod tests {
     #[test]
     fn a_vrr_stream_claims_on_arrival_but_never_faster_than_the_stream_rate() {
         // VRR: no predictive waits, as the host configures it.
-        let vrr = |pacer: Pacer| pacer.with_prediction(false).with_source_phase(false);
+        let vrr = |pacer: Pacer| {
+            pacer
+                .with_prediction(false)
+                .with_source_phase(false)
+                .with_spacing(0.5)
+        };
         // A game uncapped on the 1000 Hz virtual display: the encoder still
         // gets the stream rate, each frame claimed within a source interval.
         let claims = simulate_with(PERIOD, &source(1., 2., |_| 0.), |_| 0.2, vrr);
