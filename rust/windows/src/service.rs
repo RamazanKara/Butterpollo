@@ -136,10 +136,7 @@ fn supervise() -> Result<()> {
         match butterpollo_core::update_recovery::recover(&config, install) {
             Ok(Some(outcome)) => tracing::warn!(outcome, "interrupted update rolled back"),
             Ok(None) => {}
-            Err(error) => tracing::error!(
-                error = %format!("{error:#}"),
-                "rolling back an interrupted update failed"
-            ),
+            Err(error) => return Err(error.context("rolling back an interrupted update failed")),
         }
     }
     let mut child: Option<crate::process::Process> = None;

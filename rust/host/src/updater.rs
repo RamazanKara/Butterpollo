@@ -160,11 +160,8 @@ pub fn queue(h: &Shared, automatic: bool) -> Result<()> {
         bail!("This version is already installed");
     }
     let candidate = installer(release)?;
+    let last = check_recovery(&h.directory)?;
     if automatic {
-        let last = butterpollo_core::state::load_json(
-            &h.directory.join("update-result.json"),
-            json!(null),
-        )?;
         // Never loop on a bad release after a rollback or interrupted installer.
         if last["version"]
             .as_str()
@@ -313,6 +310,7 @@ pub fn poll(h: &Shared) {
                 .context("installation folder missing")?
                 .to_path_buf();
             // A persistent attempt record also prevents automatic retry loops.
+            check_recovery(&h.directory)?;
             butterpollo_core::state::write_json(
                 &h.directory.join("update-result.json"),
                 &json!({"version":candidate.version,"phase":"installing","started_at":now()}),
@@ -363,6 +361,7 @@ fn verify(size: u64, digest: &str, candidate: &Installer) -> Result<()> {
 }
 
 async fn download(h: &Shared, id: &str, candidate: &Installer) -> Result<PathBuf> {
+    check_recovery(&h.directory)?;
     let directory = h.directory.join("updates");
     std::fs::create_dir_all(&directory)?;
     butterpollo_windows::process::restrict_to_administrators(&directory)?;
@@ -393,6 +392,19 @@ async fn download(h: &Shared, id: &str, candidate: &Installer) -> Result<PathBuf
         let _ = std::fs::remove_dir_all(directory);
     }
     result
+}
+
+fn check_recovery(profile: &std::path::Path) -> Result<Value> {
+    let record =
+        butterpollo_core::state::load_json(&profile.join("update-result.json"), Value::Null)?;
+    if record["phase"] == "recovery_failed"
+        || (record["phase"] == "installing" && record["backup"].is_string())
+    {
+        bail!(
+            "The previous update still needs recovery. Run setup again and keep the updates folder and its backup."
+        );
+    }
+    Ok(record)
 }
 
 /// Setup's update folders (transaction-<process id>-<nanoseconds>, kept
@@ -600,6 +612,26 @@ mod tests {
     }
     fn release() -> Value {
         json!({"tag_name":"2.0.0-rc.7","assets":[{"name":"butterpollo-setup-2.0.0-rc.7.exe","browser_download_url":"https://github.com/RamazanKara/Butterpollo/releases/download/2.0.0-rc.7/butterpollo-setup-2.0.0-rc.7.exe","size":32,"digest":format!("sha256:{}", "ab".repeat(32))}]})
+    }
+    #[test]
+    fn an_unresolved_rollback_cannot_be_overwritten_by_another_update() -> Result<()> {
+        let f = Fixture::new();
+        let path = f.directory.join("update-result.json");
+        for phase in ["installing", "recovery_failed"] {
+            let record = json!({"version":"2.0.0-rc.22","phase":phase,
+                "backup":f.directory.join("updates/transaction-1-2/previous")});
+            butterpollo_core::state::write_json(&path, &record)?;
+            assert!(check_recovery(&f.directory).is_err());
+            assert_eq!(
+                butterpollo_core::state::load_json(&path, Value::Null)?,
+                record
+            );
+        }
+        for phase in ["installed", "rolled_back", "failed"] {
+            butterpollo_core::state::write_json(&path, &json!({"phase":phase}))?;
+            assert!(check_recovery(&f.directory).is_ok());
+        }
+        Ok(())
     }
     #[tokio::test]
     async fn busy_host_defers_download_before_contacting_the_network() {

@@ -152,14 +152,15 @@ pub fn run(folder: &Path, progress: &Progress) -> Result<()> {
                     backup.display()
                 ),
             };
-            write_result(
+            let phase = if rollback.is_ok() {
+                "rolled_back"
+            } else {
+                "recovery_failed"
+            };
+            write_record(
                 &result,
-                if rollback.is_ok() {
-                    "rolled_back"
-                } else {
-                    "recovery_failed"
-                },
-                Some(&message),
+                &json!({"version":env!("CARGO_PKG_VERSION"),"phase":phase,"error":message,
+                        "backup":backup,"install":install}),
             )?;
             bail!("{message}")
         }
@@ -174,15 +175,13 @@ pub fn recover(profile: &Path) -> Result<()> {
         return Ok(());
     }
     use std::os::windows::fs::OpenOptionsExt;
-    let Ok(_lock) = std::fs::OpenOptions::new()
+    let _lock = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
         .share_mode(0)
         .open(profile.join("update.lock"))
-    else {
-        return Ok(());
-    };
+        .context("Cannot recover the previous update; another setup may still be running")?;
     recover_locked(&result)
 }
 /// With update.lock held: if the last update still says "installing" after
@@ -190,11 +189,15 @@ pub fn recover(profile: &Path) -> Result<()> {
 /// holds are put back. The service does the same when it starts
 /// (butterpollo_core::update_recovery); keep the two in step.
 fn recover_locked(result: &Path) -> Result<()> {
-    let record: serde_json::Value = std::fs::read(result)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default();
-    let (Some("installing"), Some(backup), Some(install)) = (
+    let bytes = match std::fs::read(result) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut record: serde_json::Value = serde_json::from_slice(&bytes).context(
+        "The update recovery record cannot be read; keep the updates folder for recovery",
+    )?;
+    let (Some("installing" | "recovery_failed"), Some(backup), Some(install)) = (
         record["phase"].as_str(),
         record["backup"].as_str(),
         record["install"].as_str(),
@@ -219,10 +222,9 @@ fn recover_locked(result: &Path) -> Result<()> {
             ),
         ),
     };
-    write_record(
-        result,
-        &json!({"version":record["version"],"phase":phase,"error":message}),
-    )?;
+    record["phase"] = json!(phase);
+    record["error"] = json!(message);
+    write_record(result, &record)?;
     restored
 }
 /// Stop the service before any file changes. If it does not stop in time,
@@ -340,7 +342,8 @@ impl Backup {
                 .context("reading the update backup")?;
         // Every saved file is checked before any is put back.
         for (name, existed) in &files {
-            if *existed && !payload::safe_join(directory, name)?.is_file() {
+            let path = payload::safe_join(directory, name)?;
+            if *existed && !path.is_file() {
                 bail!("the update backup lacks {name}");
             }
         }
@@ -487,7 +490,7 @@ mod tests {
                 .write(true)
                 .share_mode(0)
                 .open(profile.join("update.lock"))?;
-            recover(&profile)?;
+            assert!(recover(&profile).is_err());
             assert_eq!(std::fs::read(installed.join("host.exe"))?, b"half");
         }
         recover(&profile)?;
@@ -501,6 +504,34 @@ mod tests {
         write_result(&result, "installing", None)?;
         recover(&profile)?;
         assert_eq!(std::fs::read(installed.join("host.exe"))?, b"later");
+        Ok(())
+    }
+    #[test]
+    fn failed_recovery_keeps_the_backup_and_retries() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let install = root.path().join("install");
+        let backup = root.path().join("backup");
+        std::fs::create_dir(&install)?;
+        std::fs::create_dir(&backup)?;
+        std::fs::write(install.join("host.exe"), b"half")?;
+        std::fs::write(backup.join("backup.json"), r#"[["host.exe",true]]"#)?;
+        let result = root.path().join("update-result.json");
+        write_record(
+            &result,
+            &json!({"version":"2.0.0-rc.22","phase":"installing",
+            "backup":backup,"install":install}),
+        )?;
+        assert!(recover_locked(&result).is_err());
+        let record: serde_json::Value = serde_json::from_slice(&std::fs::read(&result)?)?;
+        assert_eq!(record["phase"], "recovery_failed");
+        assert_eq!(record["backup"], json!(backup));
+        assert_eq!(record["install"], json!(install));
+        std::fs::write(backup.join("host.exe"), b"previous")?;
+        recover_locked(&result)?;
+        assert_eq!(std::fs::read(install.join("host.exe"))?, b"previous");
+        std::fs::write(&result, b"broken record")?;
+        assert!(recover_locked(&result).is_err());
+        assert_eq!(std::fs::read(&result)?, b"broken record");
         Ok(())
     }
     #[test]

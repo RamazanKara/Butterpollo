@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::path::{Component, Path, PathBuf};
 
-/// If the last update of `install` still says "installing" in the
+/// If the last update of `install` says "installing" or "recovery_failed" in the
 /// profile's update-result.json after setup backed up the files, and no
 /// setup holds update.lock, that setup never finished: put back the files
 /// the backup holds. Returns what it recorded, if it did anything.
@@ -39,15 +39,17 @@ pub fn recover(profile: &Path, install: &Path) -> Result<Option<String>> {
             ),
         ),
     };
-    state::write_json(
-        &path,
-        &json!({"version":record["version"],"phase":phase,"error":message}),
-    )?;
+    let mut record = record;
+    record["phase"] = json!(phase);
+    record["error"] = json!(message);
+    state::write_json(&path, &record)?;
     restored.map(|()| Some(message))
 }
 fn interrupted(record: &Value, install: &Path) -> bool {
-    record["phase"] == "installing"
-        && record["backup"].is_string()
+    matches!(
+        record["phase"].as_str(),
+        Some("installing" | "recovery_failed")
+    ) && record["backup"].is_string()
         && record["install"].as_str().is_some_and(|recorded| {
             std::fs::canonicalize(recorded)
                 .ok()
@@ -90,7 +92,8 @@ fn restore(backup: &Path, install: &Path) -> Result<()> {
         Ok(path)
     };
     for (name, existed) in &files {
-        if *existed && !backup.join(relative(name)?).is_file() {
+        let path = relative(name)?;
+        if *existed && !backup.join(path).is_file() {
             bail!("the update backup lacks {name}");
         }
     }
@@ -189,6 +192,28 @@ mod tests {
         assert_eq!(std::fs::read(install.join("butterpollo.exe"))?, b"half");
         let record = state::load_json(&profile.join("update-result.json"), Value::Null)?;
         assert_eq!(record["phase"], "recovery_failed");
+        assert_eq!(record["backup"], json!(backup));
+        assert_eq!(record["install"], json!(install));
+        std::fs::write(backup.join("assets/web.js"), "previous web")?;
+        assert!(recover(&profile, &install)?.is_some());
+        assert_eq!(std::fs::read(install.join("butterpollo.exe"))?, b"previous");
+        Ok(())
+    }
+    #[test]
+    fn every_backup_path_is_validated_before_any_file_is_restored() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let backup = root.path().join("backup");
+        let install = root.path().join("install");
+        std::fs::create_dir(&backup)?;
+        std::fs::create_dir(&install)?;
+        std::fs::write(backup.join("host.exe"), b"previous")?;
+        std::fs::write(install.join("host.exe"), b"current")?;
+        std::fs::write(
+            backup.join("backup.json"),
+            r#"[["host.exe",true],["../outside",false]]"#,
+        )?;
+        assert!(restore(&backup, &install).is_err());
+        assert_eq!(std::fs::read(install.join("host.exe"))?, b"current");
         Ok(())
     }
 }
