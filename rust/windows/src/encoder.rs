@@ -778,6 +778,14 @@ impl Encoder {
             _ => false,
         }
     }
+    /// Frames the GPU encoder has accepted and not yet finished.
+    pub fn backlog(&self) -> usize {
+        match self {
+            Self::Amf(e) => e.backlog(),
+            Self::Nvenc(e) => e.backlog(),
+            _ => 0,
+        }
+    }
     /// A GPU encoder, rather than FFmpeg's software codecs.
     pub fn hardware(&self) -> bool {
         match self {

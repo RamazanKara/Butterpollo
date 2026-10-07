@@ -705,6 +705,10 @@ impl Encoder {
     pub fn pending(&self) -> bool {
         !self.in_flight.is_empty()
     }
+    /// Frames submitted and not yet returned.
+    pub fn backlog(&self) -> usize {
+        self.in_flight.len()
+    }
     pub fn set_next_frame(&mut self, frame: u64) {
         debug_assert!(self.in_flight.is_empty());
         self.index = frame.saturating_sub(1).min(i64::MAX as u64) as i64;

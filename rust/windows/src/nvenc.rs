@@ -1207,6 +1207,10 @@ impl Encoder {
     pub fn pending(&self) -> bool {
         !self.session.pending.is_empty() || !self.session.ready.is_empty()
     }
+    /// Frames submitted and not yet encoded.
+    pub fn backlog(&self) -> usize {
+        self.session.pending.len()
+    }
     pub fn poll(&mut self) -> Result<Vec<Encoded>> {
         self.session.poll()
     }

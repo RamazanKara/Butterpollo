@@ -20,6 +20,12 @@ const OUTPUT_POLL: Duration = Duration::from_micros(100);
 /// How long an encoder that fails mid-stream is recreated before the session
 /// gives up: a GPU busy with a game or a driver reset costs frames, not the stream.
 const ENCODER_RECOVERY: Duration = Duration::from_secs(5);
+/// Frames the encoder may hold before the next claim waits for one to come
+/// out. Two keep both of a Radeon's encoder instances busy; more only wait
+/// in its queue, as up to eight did when one encode outlasted the claim
+/// interval (4K at 240 Hz, or one HEVC instance on an RX 9070 XT), each
+/// growing older.
+const ENCODER_BACKLOG: usize = 2;
 fn encoder_progress(
     failing: &mut Option<Instant>,
     produced_frame: bool,
@@ -914,6 +920,8 @@ impl Media {
                     // The first pacing decision for the newest fresh frame, kept
                     // for the per-claim trace.
                     let mut first_seen: Option<(usize, Instant, Option<Duration>, Option<Instant>)> = None;
+                    // Since when a full encoder has returned nothing.
+                    let mut backlog_since: Option<Instant> = None;
                     let mut video_qos = Tagged::default();
                     let mut batch = butterpollo_windows::net::Batch::default();
                     let mut network_pacer = butterpollo_core::network_pacing::Pacer::new(Instant::now());
@@ -1185,6 +1193,28 @@ impl Media {
                                 latest.wait_if_current(&timer, &capture_wake, &image, Instant::now() + wait.min(repeat_due.saturating_duration_since(Instant::now())))?;
                                 continue;
                             }
+                            // A picture claimed while the encoder is behind only
+                            // waits in its queue: take its output first, then
+                            // claim the newest picture.
+                            if !rebuild_encoder
+                                && encoder.as_ref().is_some_and(|e| e.backlog() >= ENCODER_BACKLOG)
+                            {
+                                // An encoder that returns nothing for 100 ms is
+                                // recreated, as a queue that never drained was.
+                                if backlog_since.get_or_insert_with(Instant::now).elapsed() >= Duration::from_millis(100) {
+                                    backlog_since = None;
+                                    let since = *encoder_failing.get_or_insert_with(Instant::now);
+                                    if since.elapsed() >= ENCODER_RECOVERY {
+                                        anyhow::bail!("the encoder stopped returning frames");
+                                    }
+                                    tracing::warn!("the encoder returned no frame for 100 ms; recreating it");
+                                    encoder = None;
+                                    continue;
+                                }
+                                send_frames(collect(&mut encoder, &mut encoder_failing)?, peer, Duration::ZERO)?;
+                                continue;
+                            }
+                            backlog_since = None;
                             if use_truehdr && Instant::now() >= profile_due {
                                 profile_due = Instant::now() + Duration::from_millis(250);
                                 let (active, owned) = {
