@@ -864,6 +864,38 @@ impl Topology {
             })
             .collect()
     }
+    /// Whether a path still leads to this monitor, as `monitors` would list
+    /// it: the lease heartbeat's check each second, without the DXGI and
+    /// colour queries that take nearly all of the half millisecond.
+    fn shows(&self, monitor: &Monitor) -> bool {
+        self.paths.iter().any(|p| unsafe {
+            if p.targetInfo.adapterId != monitor.adapter || p.targetInfo.id != monitor.target {
+                return false;
+            }
+            let mut source = DISPLAYCONFIG_SOURCE_DEVICE_NAME {
+                header: header(
+                    DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+                    size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>(),
+                    p.sourceInfo.adapterId,
+                    p.sourceInfo.id,
+                ),
+                ..Default::default()
+            };
+            let mut target = DISPLAYCONFIG_TARGET_DEVICE_NAME {
+                header: header(
+                    DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
+                    size_of::<DISPLAYCONFIG_TARGET_DEVICE_NAME>(),
+                    p.targetInfo.adapterId,
+                    p.targetInfo.id,
+                ),
+                ..Default::default()
+            };
+            DisplayConfigGetDeviceInfo(&mut source.header) == 0
+                && DisplayConfigGetDeviceInfo(&mut target.header) == 0
+                && wide(&target.monitorDevicePath)
+                    .eq_ignore_ascii_case(&monitor.monitor_device_path)
+        })
+    }
 }
 pub fn monitors() -> Result<Vec<Monitor>> {
     Ok(Topology::query()?.monitors())
@@ -1946,7 +1978,11 @@ impl VirtualDisplay {
         if self.last_feed.elapsed() >= Duration::from_secs(1) {
             self.last_feed = Instant::now();
             let renewed = self.renew();
-            let present = monitors().map(|m| m.iter().any(|m| self.owns_monitor(m)));
+            let present = Topology::query().map(|topology| {
+                self.resolved_target
+                    .as_ref()
+                    .is_some_and(|owned| topology.shows(owned))
+            });
             if renewed.is_ok() && present? {
                 return Ok(());
             }
@@ -2710,6 +2746,24 @@ mod tests {
         assert_eq!(&request[92..96], &1500u32.to_le_bytes());
         assert_eq!(&display_label("😀")[..11], b"Butterpollo");
         assert_eq!(display_label(&"A".repeat(40))[31], 0);
+    }
+    #[test]
+    fn heartbeat_check_finds_the_monitors_that_monitors_lists() -> Result<()> {
+        let topology = Topology::query()?;
+        for monitor in monitors()? {
+            assert!(topology.shows(&monitor), "{}", monitor.monitor_device_path);
+            let other = Monitor {
+                monitor_device_path: format!("{}#other", monitor.monitor_device_path),
+                ..monitor.clone()
+            };
+            assert!(!topology.shows(&other));
+            let moved = Monitor {
+                target: monitor.target ^ 0x8000_0000,
+                ..monitor
+            };
+            assert!(!topology.shows(&moved));
+        }
+        Ok(())
     }
     #[test]
     fn only_a_displays_sole_stream_changes_its_mode_or_hdr() {
