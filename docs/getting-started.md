@@ -38,7 +38,7 @@ Opening the launcher again returns to the running profile's console. When launch
 
 ## Upgrading
 
-- Disconnect streams and remote monitors, then quit host-launched apps. Stop Vibepollo, Apollo or Sunshine before migrating; older hosts cannot tell setup whether they are idle.
+- Disconnect streams and remote monitors, then quit host-launched apps. Setup refuses to stop a Butterpollo host that reports an active stream or app. Vibepollo, Apollo and Sunshine cannot report this, so setup stops them without checking.
 - Back up the whole profile folder from the table above (or the previous host's `config` folder). Include `sunshine.conf`, `apps.json`, covers, both identity files in `credentials`, `sunshine_state.json`, `sunshine_credentials.json` if present, and `vibeshine_state.json`. Also back up files named by custom paths in the configuration. Keep this backup private: it contains credentials and device certificates.
 - Run the new installer in the existing installation folder, or use **Maintenance → Updates → Install when idle**. Settings, unknown configuration keys, paired devices, credentials, apps, device/display settings and saved session data stay in the profile. Active streams do not survive a restart. The service and web console use the new package; installed drivers remain available. Legacy AMD encoder names such as `amdvce_experimental` still select AMF.
 - For a portable update, close the portable host and extract the complete new ZIP into a separate folder. The launcher reuses `%LOCALAPPDATA%\ButterpolloRust\config`; keep the old ZIP and your profile backup until the new version works. Portable mode does not install a service or drivers. Avoid opening an older ZIP against a newer profile.

@@ -644,27 +644,36 @@ pub(crate) fn register(install: &Path, entries: &[payload::Entry]) -> Result<()>
         ],
     )
 }
+/// Refuse to stop a host that reports a stream, a queued launch or a running
+/// app. A host that cannot say is stopped as before: none is running (Windows
+/// refuses a closed loopback port only after about two seconds), it is
+/// Vibepollo, Apollo or Sunshine, or it was asked on a LAN bind_address,
+/// where a Rust host leaves its counts blank.
 pub(crate) fn ensure_idle(address: SocketAddr) -> Result<()> {
+    match serverinfo(address) {
+        Ok(response) => check_idle(&response),
+        Err(error) => {
+            line(format!("no host status at {address} ({error}); continuing"));
+            Ok(())
+        }
+    }
+}
+fn serverinfo(address: SocketAddr) -> std::io::Result<String> {
     use std::io::{Read, Write};
-    let mut socket =
-        match std::net::TcpStream::connect_timeout(&address, Duration::from_millis(500)) {
-            Ok(socket) => socket,
-            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => return Ok(()),
-            Err(error) => {
-                return Err(error).context(
-                    "Cannot check whether the streaming host is idle; stop it before running setup",
-                );
-            }
-        };
+    let mut socket = std::net::TcpStream::connect_timeout(&address, Duration::from_millis(500))?;
     socket.set_read_timeout(Some(Duration::from_secs(3)))?;
     socket.set_write_timeout(Some(Duration::from_secs(3)))?;
     write!(
         socket,
         "GET /serverinfo HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
     )?;
-    let mut response = String::new();
-    socket.take(65536).read_to_string(&mut response)?;
-    check_idle(&response)
+    // A reset or timeout after the answer arrived still leaves the counts.
+    let mut response = Vec::new();
+    let read = socket.take(65536).read_to_end(&mut response);
+    if response.is_empty() {
+        read?;
+    }
+    Ok(String::from_utf8_lossy(&response).into_owned())
 }
 
 fn check_idle(response: &str) -> Result<()> {
@@ -673,13 +682,13 @@ fn check_idle(response: &str) -> Result<()> {
         "RustHostPendingSessionCount",
         "RustHostApplicationActive",
     ] {
-        let count = response.split_once(&format!("<{field}>"))
+        let count = response
+            .split_once(&format!("<{field}>"))
             .and_then(|(_, value)| value.split_once(&format!("</{field}>")))
-            .and_then(|(value, _)| value.trim().parse::<u32>().ok())
-            .context("The running host does not report whether it is idle. Stop it before running setup; settings have not been changed")?;
-        if count != 0 {
+            .and_then(|(value, _)| value.trim().parse::<u32>().ok());
+        if count.is_some_and(|count| count != 0) {
             bail!(
-                "Disconnect all streams and remote monitors and close host-launched games before installing. The running host has not been stopped."
+                "Disconnect all streams and close games started from Moonlight before installing, then run setup again. Nothing has been changed."
             );
         }
     }
@@ -737,7 +746,7 @@ mod tests {
         assert_eq!(notes.len(), 2);
     }
     #[test]
-    fn setup_refuses_streams_pending_connections_apps_and_unknown_status() {
+    fn setup_refuses_streams_pending_connections_and_apps() {
         for counts in [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]] {
             let response = format!(
                 "<RustHostSessionCount>{}</RustHostSessionCount><RustHostPendingSessionCount>{}</RustHostPendingSessionCount><RustHostApplicationActive>{}</RustHostApplicationActive>",
@@ -745,8 +754,36 @@ mod tests {
             );
             assert_eq!(check_idle(&response).is_ok(), counts == [0, 0, 0]);
         }
-        assert!(check_idle("<state>SUNSHINE_SERVER_FREE</state>").is_err());
-        assert!(check_idle("").is_err());
+        // Older hosts, and a Rust host asked on its LAN bind_address, cannot
+        // say; they are stopped as before rather than blocking setup forever.
+        assert!(check_idle("<state>SUNSHINE_SERVER_FREE</state>").is_ok());
+        assert!(check_idle("<RustHostVersion>2.0.0-rc.21</RustHostVersion><RustHostSessionCount></RustHostSessionCount><RustHostPendingSessionCount></RustHostPendingSessionCount><RustHostApplicationActive></RustHostApplicationActive>").is_ok());
+        assert!(check_idle("").is_ok());
+    }
+    #[test]
+    fn a_stopped_or_unresponsive_host_does_not_block_setup() -> Result<()> {
+        // Windows refuses a closed loopback port only after about two seconds.
+        let closed = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
+        ensure_idle(closed)?;
+        let silent = std::net::TcpListener::bind("127.0.0.1:0")?;
+        ensure_idle(silent.local_addr()?)?;
+        // A busy host is still refused over a real connection.
+        let busy = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let address = busy.local_addr()?;
+        let server = std::thread::spawn(move || -> std::io::Result<()> {
+            use std::io::{Read, Write};
+            let (mut socket, _) = busy.accept()?;
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                socket.read_exact(&mut byte)?;
+                request.push(byte[0]);
+            }
+            socket.write_all(b"HTTP/1.1 200 OK\r\n\r\n<root><RustHostSessionCount>1</RustHostSessionCount></root>")
+        });
+        assert!(ensure_idle(address).is_err());
+        server.join().unwrap()?;
+        Ok(())
     }
     #[test]
     fn a_previous_host_is_removed_only_after_its_profile_can_be_imported() -> Result<()> {
