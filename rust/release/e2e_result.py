@@ -1,5 +1,19 @@
 """Acceptance checks for the independent receiver's release-test measurements."""
 import re
+from collections import Counter
+
+
+def active_clients(log):
+    active = Counter()
+    for line in log.splitlines():
+        event = re.search(r'CLIENT (CONNECTED|DISCONNECTED)\b.*?\bclient=(.*)', line)
+        if event:
+            action, client = event.groups()
+            if action == 'CONNECTED':
+                active[client] += 1
+            elif active[client]:
+                active[client] -= 1
+    return sorted(client for client, count in active.items() if count)
 
 
 def evaluate(client, rc, codec, mode, vrr=False, tone_log=''):

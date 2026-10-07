@@ -12,7 +12,7 @@ Writes WORK/e2e-CODEC/result.json.
 import argparse, hashlib, json, os, pathlib, subprocess, sys, time
 import xml.etree.ElementTree as ET
 import requests
-from e2e_result import evaluate
+from e2e_result import active_clients, evaluate
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--package', required=True, type=pathlib.Path)
@@ -28,9 +28,7 @@ args = parser.parse_args()
 interop = pathlib.Path(__file__).resolve().parents[1] / 'tests' / 'interop.py'
 
 installed_log = pathlib.Path(r'C:\ProgramData\Butterpollo\config\logs\butterpollo.log')
-events = [line for line in installed_log.read_text(errors='replace').splitlines()
-          if 'CLIENT CONNECTED' in line or 'CLIENT DISCONNECTED' in line]
-assert not events or 'CLIENT DISCONNECTED' in events[-1], 'the installed host log has an active stream'
+assert not active_clients(installed_log.read_text(errors='replace')), 'the installed host log has an active stream'
 plain = requests.Session(); plain.trust_env = False
 info = ET.fromstring(plain.get('http://127.0.0.1:47989/serverinfo', timeout=3).text)
 assert info.findtext('state') == 'SUNSHINE_SERVER_FREE', 'the installed host is streaming'

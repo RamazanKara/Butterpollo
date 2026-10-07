@@ -1,5 +1,5 @@
 import json, pathlib, subprocess, sys, tempfile, unittest
-from e2e_result import evaluate
+from e2e_result import active_clients, evaluate
 
 
 GOOD = '''RESULT frames=1800 decoded_frames=1800 audio_packets=6000 failures=0
@@ -17,6 +17,20 @@ PICTURE_AGE samples=1621 mean_ms=12.000 p50_ms=11.000 p95_ms=18.000 p99_ms=22.00
 
 
 class ReleaseMeasurements(unittest.TestCase):
+    def test_one_disconnect_does_not_hide_another_active_client(self):
+        log = ('INFO CLIENT CONNECTED client=phone\n'
+               'INFO CLIENT CONNECTED client="living room"\n'
+               'INFO CLIENT DISCONNECTED client="living room"\n')
+        self.assertEqual(active_clients(log), ['phone'])
+        self.assertEqual(active_clients(log + 'INFO CLIENT DISCONNECTED client=phone\n'), [])
+
+    def test_repeated_names_and_log_rotation_do_not_hide_a_stream(self):
+        log = ('INFO CLIENT DISCONNECTED client=phone\n'
+               'INFO CLIENT CONNECTED client=phone\n'
+               'INFO CLIENT CONNECTED client=phone\n'
+               'INFO CLIENT DISCONNECTED client=phone\n')
+        self.assertEqual(active_clients(log), ['phone'])
+
     def test_finalizer_requires_1080p60_for_both_pyrowave_modes(self):
         with tempfile.TemporaryDirectory() as folder:
             root = pathlib.Path(folder)
