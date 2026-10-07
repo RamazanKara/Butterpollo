@@ -81,13 +81,17 @@ fn switch_on() -> Result<(Value, String)> {
     );
     let kept_timings = activate_target(target.adapter, target.target)?;
     let on = monitors()?.iter().any(ours);
-    let unchanged = timings(ours)? == before;
-    let check = json!({
+    let after = timings(ours)?;
+    let unchanged = after == before;
+    let mut check = json!({
         "passed": on && unchanged,
         "switched_on": on,
         "kept_timings": kept_timings,
         "other_displays_unchanged": unchanged,
     });
+    if !unchanged {
+        check["timings"] = json!({"before": before, "after": after});
+    }
     Ok((check, target.device_id))
 }
 
@@ -146,7 +150,7 @@ fn wait_gone(id: &str) -> Result<()> {
 fn beside_duplicated_tvs(a: &str, b: &str) -> Result<(Value, String)> {
     let others = |m: &Monitor| m.device_id == a || m.device_id == b;
     let before = timings(others)?;
-    let display = VirtualDisplay::create("butterpollo-self-test-b", 1280, 720, 60)?;
+    let mut display = VirtualDisplay::create("butterpollo-self-test-b", 1280, 720, 60)?;
     let target = display
         .resolved_target
         .clone()
@@ -155,19 +159,31 @@ fn beside_duplicated_tvs(a: &str, b: &str) -> Result<(Value, String)> {
         .iter()
         .any(|m| m.adapter == target.adapter && m.target == target.target);
     // The TVs may move to make room; everything else keeps its timing.
-    let unchanged =
-        timings(|m| others(m) || (m.adapter == target.adapter && m.target == target.target))?
-            == before;
+    let after =
+        timings(|m| others(m) || (m.adapter == target.adapter && m.target == target.target))?;
+    let unchanged = after == before;
     // Windows lays out the displays again when one arrives and may break up
     // the duplicate; that is reported, not failed.
     let still_cloned = cloned(a, b)?;
-    let check = json!({
-        "passed": on && unchanged,
+    // A stream's heartbeat finds the display it owns and keeps it, rather
+    // than recreating it each second.
+    let generation = display.generation;
+    if let Some(due) = Instant::now().checked_sub(Duration::from_secs(1)) {
+        display.last_feed = due;
+    }
+    display.feed()?;
+    let kept = display.generation == generation;
+    let mut check = json!({
+        "passed": on && unchanged && kept,
         "stream_display_on": on,
         "switched_on_by_host": display.switched_on,
         "tvs_still_duplicated": still_cloned,
         "other_displays_unchanged": unchanged,
+        "heartbeat_kept_display": kept,
     });
+    if !unchanged {
+        check["timings"] = json!({"before": before, "after": after});
+    }
     Ok((check, target.device_id))
 }
 
@@ -214,6 +230,9 @@ pub fn run(report: &std::path::Path) -> Result<bool> {
     let result = (|| -> Result<()> {
         let (check, test_display) = switch_on()?;
         checks.insert("switch_on".into(), check);
+        // It leaves asynchronously; going during the next check, it would
+        // count as another display that changed.
+        wait_gone(&test_display)?;
         let mut before = before.clone();
         before.insert(test_display);
         let (a, b) = stand_in_tvs(permanent, &before)?;
