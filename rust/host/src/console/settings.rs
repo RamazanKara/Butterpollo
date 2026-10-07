@@ -84,8 +84,8 @@ pub const GLOBAL: &[Setting] = settings! {
         "amd_enforce_hrd", "Enforce decoder buffer limits", Bool;
         "amd_coder", "H.264 entropy coder", Choice(&["auto","cabac","cavlc"]);
         "amd_high_motion_quality_boost", "High motion quality boost", Bool;
-        "amd_low_latency_internal", "AMF internal low latency", Bool;
-        "amd_query_timeout", "AMF query timeout (milliseconds)", Number;
+        "amd_lowlatency_mode", "Low-latency mode (H.264 and HEVC)", Bool;
+        "amd_av1_latency_mode", "AV1 latency mode", Choice(&["none","power_saving","realtime","lowest"]);
         "amd_input_queue_size", "AMF input queue size", Number;
         "amd_ltr_frames", "Long-term reference frames", Number;
     ]
@@ -306,4 +306,23 @@ pub fn apply(
         }
     }
     Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn encoder_settings_save_keys_the_encoders_read() {
+        for setting in GLOBAL {
+            if ["amd_", "nvenc_", "qsv_", "sw_"]
+                .iter()
+                .any(|prefix| setting.key.starts_with(prefix))
+            {
+                assert!(
+                    butterpollo_core::config::override_allowed(setting.key),
+                    "{} is not an encoder setting",
+                    setting.key
+                );
+            }
+        }
+    }
 }

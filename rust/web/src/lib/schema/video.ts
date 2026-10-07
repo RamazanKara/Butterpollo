@@ -730,7 +730,8 @@ const amd: Setting[] = [
   {
     key: 'amd_lowlatency_mode',
     label: 'Low-latency mode',
-    description: "Turns the encoder's internal low-latency mode on or off for H.264 and HEVC.",
+    description:
+      "Turns the encoder's internal low-latency mode on or off for H.264 and HEVC. The driver already turns it on for the Ultra low latency usage (the default) and Low latency, high quality; On changes only the other usages.",
     category: 'encoders',
     group: 'AMD AMF',
     control: { kind: 'select', options: tristate },
@@ -761,7 +762,8 @@ const amd: Setting[] = [
   {
     key: 'amd_av1_latency_mode',
     label: 'AV1 latency mode',
-    description: 'How quickly each AV1 frame is finished. Lower latency uses more power.',
+    description:
+      'How quickly each AV1 frame is finished. Lower latency uses more power. The driver already picks the lowest latency for the Ultra low latency usage (the default) and Low latency, high quality.',
     category: 'encoders',
     group: 'AMD AMF',
     control: {
