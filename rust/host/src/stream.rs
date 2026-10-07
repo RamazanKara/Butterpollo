@@ -391,15 +391,54 @@ impl CaptureKey {
 /// (WSAENETRESET) or an oversized datagram (WSAEMSGSIZE) left every later
 /// session without input or control. These lose one datagram; ENet resends
 /// what was reliable.
-struct ControlSocket(UdpSocket);
+struct ControlSocket {
+    socket: UdpSocket,
+    /// Whether datagrams are held back, and those held, in order: ENet
+    /// sends a packet's acknowledgement before it returns the packet, and
+    /// that sendto delayed every input by its cost.
+    holding: bool,
+    held: Vec<(SocketAddr, Vec<u8>)>,
+}
+impl ControlSocket {
+    fn new(socket: UdpSocket) -> Self {
+        Self {
+            socket,
+            holding: false,
+            held: Vec::new(),
+        }
+    }
+    /// Hold back what ENet sends until release().
+    fn hold(&mut self) {
+        self.holding = true;
+    }
+    /// Send what was held, in order, and stop holding. A datagram that is
+    /// lost is logged; any other error ends the worker, as it would have
+    /// inside service().
+    fn release(&mut self) -> std::io::Result<()> {
+        self.holding = false;
+        for (address, buffer) in self.held.drain(..) {
+            if let Err(error) = rusty_enet::Socket::send(&mut self.socket, address, &buffer) {
+                if !butterpollo_windows::net::datagram_lost(&error) {
+                    return Err(error);
+                }
+                tracing::debug!(%error, %address, "control datagram dropped");
+            }
+        }
+        Ok(())
+    }
+}
 impl rusty_enet::Socket for ControlSocket {
     type Address = SocketAddr;
     type Error = std::io::Error;
     fn init(&mut self, options: rusty_enet::SocketOptions) -> std::io::Result<()> {
-        rusty_enet::Socket::init(&mut self.0, options)
+        rusty_enet::Socket::init(&mut self.socket, options)
     }
     fn send(&mut self, address: SocketAddr, buffer: &[u8]) -> std::io::Result<usize> {
-        match rusty_enet::Socket::send(&mut self.0, address, buffer) {
+        if self.holding {
+            self.held.push((address, buffer.to_vec()));
+            return Ok(buffer.len());
+        }
+        match rusty_enet::Socket::send(&mut self.socket, address, buffer) {
             Err(error) if butterpollo_windows::net::datagram_lost(&error) => Ok(0),
             result => result,
         }
@@ -408,7 +447,7 @@ impl rusty_enet::Socket for ControlSocket {
         &mut self,
         buffer: &mut [u8; rusty_enet::MTU_MAX],
     ) -> std::io::Result<Option<(SocketAddr, rusty_enet::PacketReceived)>> {
-        match rusty_enet::Socket::receive(&mut self.0, buffer) {
+        match rusty_enet::Socket::receive(&mut self.socket, buffer) {
             Err(error) if butterpollo_windows::net::datagram_lost(&error) => Ok(None),
             result => result,
         }
@@ -1675,7 +1714,7 @@ impl Media {
         butterpollo_windows::net::configure_udp(&socket)?;
         let raw_socket = std::os::windows::io::AsRawSocket::as_raw_socket(&socket);
         let mut host = Host::new(
-            ControlSocket(socket),
+            ControlSocket::new(socket),
             HostSettings {
                 peer_limit: 32,
                 // Moonlight opens 48 channels (gamepads from 0x10, motion
@@ -1693,6 +1732,9 @@ impl Media {
         let mut feedback_at = Instant::now();
         while !h.stop.load(Ordering::Acquire) {
             let ping_timeout = crate::network::ping_timeout(&h.config.read().unwrap());
+            // Acknowledgements and anything else ENet sends wait until this
+            // pass's input is applied.
+            host.socket_mut().hold();
             // Bound each pass so a busy input peer cannot starve cleanup or feedback.
             for _ in 0..512 {
                 let Some(event) = host.service()? else { break };
@@ -1746,7 +1788,13 @@ impl Media {
                         }
                     }
                     Event::Disconnect { peer, .. } => {
-                        if let Some(p) = peers.remove(&peer.id()) {
+                        let id = peer.id();
+                        if peers.contains_key(&id) {
+                            // Dropping the peer waits for its gamepad thread
+                            // to unplug its pads: send what is held first.
+                            host.socket_mut().release()?;
+                        }
+                        if let Some(p) = peers.remove(&id) {
                             let session = h.sessions.lock().unwrap().active.get(&p.id).cloned();
                             h.sessions.lock().unwrap().request_stop(Some(&p.id));
                             if let Some(session) = session
@@ -2017,6 +2065,7 @@ impl Media {
                     remove.push(*peer_id);
                 }
             }
+            host.socket_mut().release()?;
             for peer in remove {
                 peers.remove(&peer);
             }
@@ -2234,6 +2283,38 @@ mod tests {
         expected.extend(1..=20);
         assert_eq!(trigger, &expected);
         assert!(packets.iter().any(|(kind, _)| *kind == 0x010b));
+    }
+    #[test]
+    fn held_control_datagrams_go_out_in_order_once_released() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let address = receiver.local_addr().unwrap();
+        let mut socket = ControlSocket::new(UdpSocket::bind("127.0.0.1:0").unwrap());
+        let mut buffer = [0u8; 64];
+        socket.hold();
+        // The middle one is too large for UDP: it is lost, the rest go out.
+        for datagram in [&b"one"[..], &[0; 70_000], b"two"] {
+            assert_eq!(
+                rusty_enet::Socket::send(&mut socket, address, datagram).unwrap(),
+                datagram.len()
+            );
+        }
+        receiver.set_nonblocking(true).unwrap();
+        assert!(receiver.recv_from(&mut buffer).is_err());
+        socket.release().unwrap();
+        receiver.set_nonblocking(false).unwrap();
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut received = Vec::new();
+        for _ in 0..2 {
+            let (length, _) = receiver.recv_from(&mut buffer).unwrap();
+            received.push(buffer[..length].to_vec());
+        }
+        assert_eq!(received, [b"one".to_vec(), b"two".to_vec()]);
+        // Released: sent at once again.
+        rusty_enet::Socket::send(&mut socket, address, b"three").unwrap();
+        let (length, _) = receiver.recv_from(&mut buffer).unwrap();
+        assert_eq!(&buffer[..length], b"three");
     }
     #[test]
     fn an_arrived_pad_is_asked_for_the_sensors_it_has() {
