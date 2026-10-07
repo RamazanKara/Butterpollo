@@ -307,6 +307,30 @@ impl std::ops::Deref for Source {
         &self.latest
     }
 }
+/// A session's QoS tag on a shared socket, moved along when the client's
+/// address changes.
+#[derive(Default)]
+struct Tagged(Option<(SocketAddr, Option<butterpollo_windows::net::QosFlow>)>);
+impl Tagged {
+    fn follow(&mut self, socket: &UdpSocket, peer: SocketAddr, voice: bool) {
+        if self.0.as_ref().is_some_and(|(tagged, _)| *tagged == peer) {
+            return;
+        }
+        let class = if voice { "voice" } else { "video" };
+        let flow = match butterpollo_windows::net::QosFlow::new(socket, peer, voice) {
+            Ok(Some(flow)) => {
+                tracing::info!(%peer, class, "stream traffic tagged for QoS");
+                Some(flow)
+            }
+            Ok(None) => None,
+            Err(error) => {
+                tracing::warn!(%peer, class, error = %format!("{error:#}"), "could not tag stream traffic for QoS");
+                None
+            }
+        };
+        self.0 = Some((peer, flow));
+    }
+}
 pub struct Media {
     video: Arc<UdpSocket>,
     audio: Arc<UdpSocket>,
@@ -890,6 +914,7 @@ impl Media {
                     // The first pacing decision for the newest fresh frame, kept
                     // for the per-claim trace.
                     let mut first_seen: Option<(usize, Instant, Option<Duration>, Option<Instant>)> = None;
+                    let mut video_qos = Tagged::default();
                     let mut batch = butterpollo_windows::net::Batch::default();
                     let mut network_pacer = butterpollo_core::network_pacing::Pacer::new(Instant::now());
                     let mut link = 0;
@@ -1061,6 +1086,9 @@ impl Media {
                                 timer.until(Instant::now() + Duration::from_millis(1));
                                 continue;
                             };
+                            if s.config.video_qos {
+                                video_qos.follow(&m.video, peer, false);
+                            }
                             let now = Instant::now();
                             let due = cadence.deadline();
                             if !arrival_pacing && now < due {
@@ -1431,6 +1459,7 @@ impl Media {
         let interval = Duration::from_millis(u64::from(s.config.audio_packet_ms));
         // When audio last arrived, and when an idle endpoint's next silence is due.
         let mut heard = Instant::now();
+        let mut audio_qos = Tagged::default();
         let mut next = Instant::now();
         let timer = butterpollo_windows::timing::Timer::new()?;
         let silence = vec![0.; frames * s.config.audio_channels as usize];
@@ -1552,6 +1581,9 @@ impl Media {
                 }
             }
             if let Some(peer) = peer {
+                if s.config.audio_qos {
+                    audio_qos.follow(&self.audio, peer, true);
+                }
                 for samples in &packets {
                     for packet in p.encode(&opus.encode(samples)?)? {
                         // A lost audio packet is concealed by the client; only a

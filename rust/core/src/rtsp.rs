@@ -130,6 +130,12 @@ pub struct Negotiated {
     pub audio_quality: bool,
     pub encryption: u32,
     pub reliable_control: u32,
+    /// Moonlight asks for QoS tags on a local network and not over the
+    /// internet, where routers may drop tagged packets.
+    #[serde(default)]
+    pub video_qos: bool,
+    #[serde(default)]
+    pub audio_qos: bool,
 }
 impl Default for Negotiated {
     fn default() -> Self {
@@ -157,6 +163,8 @@ impl Default for Negotiated {
             audio_quality: false,
             encryption: 1,
             reliable_control: 13,
+            video_qos: true,
+            audio_qos: true,
         }
     }
 }
@@ -245,6 +253,9 @@ impl Negotiated {
             n.encryption |= 4;
         }
         n.reliable_control = get("x-nv-general.useReliableUdp", 13)?;
+        // Tagged unless the client says not to, as in Vibepollo.
+        n.video_qos = get("x-nv-vqos[0].qosTrafficType", 5)? != 0;
+        n.audio_qos = get("x-nv-aqos.qosTrafficType", 4)? != 0;
         n.validate()?;
         Ok(n)
     }
@@ -347,6 +358,21 @@ mod tests {
         assert!(
             describe(0, 0, true, true, true).contains("a=x-ss-pyrowave.bitstream:186f0393\r\n")
         );
+    }
+    #[test]
+    fn qos_tags_follow_the_client() {
+        let local = Negotiated::from_sdp(
+            b"a=x-nv-vqos[0].qosTrafficType:5\na=x-nv-aqos.qosTrafficType:4\n",
+        )
+        .unwrap();
+        assert!(local.video_qos && local.audio_qos);
+        let remote = Negotiated::from_sdp(
+            b"a=x-nv-vqos[0].qosTrafficType:0\na=x-nv-aqos.qosTrafficType:0\n",
+        )
+        .unwrap();
+        assert!(!remote.video_qos && !remote.audio_qos);
+        let silent = Negotiated::from_sdp(b"").unwrap();
+        assert!(silent.video_qos && silent.audio_qos);
     }
     #[test]
     fn fractional_negotiation_does_not_use_stale_display_refresh() {

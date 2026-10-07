@@ -321,6 +321,121 @@ pub fn routed_link_bps(peer: SocketAddr) -> u64 {
         row.TransmitLinkSpeed
     }
 }
+/// qWAVE, loaded at run time as Vibepollo does: Windows Server has
+/// qwave.dll only with its Quality Windows Audio Video Experience feature.
+struct Qwave {
+    handle: usize,
+    add: QosAdd,
+    remove: QosRemove,
+}
+type QosAdd = unsafe extern "system" fn(
+    windows::Win32::Foundation::HANDLE,
+    SOCKET,
+    *const SOCKADDR,
+    i32,
+    u32,
+    *mut u32,
+) -> windows::core::BOOL;
+type QosRemove = unsafe extern "system" fn(
+    windows::Win32::Foundation::HANDLE,
+    SOCKET,
+    u32,
+    u32,
+) -> windows::core::BOOL;
+fn qwave() -> Option<&'static Qwave> {
+    use windows::Win32::{Foundation::HANDLE, System::LibraryLoader::*};
+    #[repr(C)]
+    struct Version {
+        major: u16,
+        minor: u16,
+    }
+    type Create = unsafe extern "system" fn(*const Version, *mut HANDLE) -> windows::core::BOOL;
+    static QWAVE: std::sync::OnceLock<Option<Qwave>> = std::sync::OnceLock::new();
+    QWAVE
+        .get_or_init(|| unsafe {
+            let module = LoadLibraryExW(
+                windows::core::w!("qwave.dll"),
+                None,
+                LOAD_LIBRARY_SEARCH_SYSTEM32,
+            )
+            .ok()?;
+            let create: Create =
+                std::mem::transmute(GetProcAddress(module, windows::core::s!("QOSCreateHandle"))?);
+            let add: QosAdd = std::mem::transmute(GetProcAddress(
+                module,
+                windows::core::s!("QOSAddSocketToFlow"),
+            )?);
+            let remove: QosRemove = std::mem::transmute(GetProcAddress(
+                module,
+                windows::core::s!("QOSRemoveSocketFromFlow"),
+            )?);
+            let mut handle = HANDLE::default();
+            if !create(&Version { major: 1, minor: 0 }, &mut handle).as_bool() {
+                tracing::warn!(error = %windows::core::Error::from_thread(), "QoS tagging is unavailable");
+                return None;
+            }
+            Some(Qwave {
+                handle: handle.0 as usize,
+                add,
+                remove,
+            })
+        })
+        .as_ref()
+}
+/// Tags a socket's datagrams to one client for priority, as Vibepollo does
+/// when Moonlight asks (it does on a local network): video as audio-video
+/// traffic (DSCP 40, 802.1p 5), audio as voice (DSCP 56, 802.1p 7). Wi-Fi
+/// sends those from WMM's video and voice queues, ahead of other traffic,
+/// and switches that honour the marks do the same. The tag lasts until the
+/// flow is dropped.
+pub struct QosFlow(u32);
+impl QosFlow {
+    /// `None` where there is nothing to tag: no qWAVE, a client on this PC,
+    /// or an IPv4 client of a dual-stack socket, which qWAVE cannot tag
+    /// without connecting the socket that other sessions share.
+    pub fn new(socket: &UdpSocket, peer: SocketAddr, voice: bool) -> Result<Option<Self>> {
+        const AUDIO_VIDEO: i32 = 3;
+        const VOICE: i32 = 4;
+        const NON_ADAPTIVE_FLOW: u32 = 2;
+        let mapped = matches!(peer.ip(), std::net::IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some());
+        if peer.ip().to_canonical().is_loopback() || mapped {
+            return Ok(None);
+        }
+        let Some(qwave) = qwave() else {
+            return Ok(None);
+        };
+        let address = socket2::SockAddr::from(peer);
+        let mut flow = 0;
+        let added = unsafe {
+            (qwave.add)(
+                windows::Win32::Foundation::HANDLE(qwave.handle as *mut _),
+                SOCKET(socket.as_raw_socket() as usize),
+                address.as_ptr().cast(),
+                if voice { VOICE } else { AUDIO_VIDEO },
+                NON_ADAPTIVE_FLOW,
+                &mut flow,
+            )
+        };
+        if !added.as_bool() {
+            return Err(windows::core::Error::from_thread().into());
+        }
+        Ok(Some(Self(flow)))
+    }
+}
+impl Drop for QosFlow {
+    fn drop(&mut self) {
+        if let Some(qwave) = qwave() {
+            unsafe {
+                let _ = (qwave.remove)(
+                    windows::Win32::Foundation::HANDLE(qwave.handle as *mut _),
+                    SOCKET(0),
+                    self.0,
+                    0,
+                );
+            }
+        }
+    }
+}
 /// Per-message segmentation leaves the shared socket's options untouched.
 pub struct Batch {
     offload: bool,
@@ -556,6 +671,28 @@ mod tests {
                 let mut buffer = [0u8; 512];
                 let n = receiver.recv(&mut buffer)?;
                 assert_eq!(&buffer[..n], expected);
+            }
+        }
+        Ok(())
+    }
+    #[test]
+    fn qos_leaves_clients_it_cannot_tag_alone() -> Result<()> {
+        let socket = UdpSocket::bind("127.0.0.1:0")?;
+        assert!(QosFlow::new(&socket, "127.0.0.1:9".parse()?, false)?.is_none());
+        let dual = UdpSocket::bind("[::]:0")?;
+        assert!(QosFlow::new(&dual, "[::ffff:192.0.2.10]:9".parse()?, true)?.is_none());
+        Ok(())
+    }
+    #[test]
+    #[ignore = "sends to a documentation address; run under a packet capture to see the marks"]
+    fn qos_flows_tag_a_network_client() -> Result<()> {
+        let socket = UdpSocket::bind("0.0.0.0:0")?;
+        for (port, voice) in [(9, false), (10, true)] {
+            let peer: SocketAddr = format!("192.0.2.10:{port}").parse()?;
+            let flow = QosFlow::new(&socket, peer, voice)?;
+            assert!(flow.is_some());
+            for _ in 0..5 {
+                send_datagram(&socket, b"qos", peer)?;
             }
         }
         Ok(())
