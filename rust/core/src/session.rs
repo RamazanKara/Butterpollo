@@ -77,6 +77,33 @@ mod tests {
         assert_eq!(failed.termination_reason(), 0x8000_4005);
     }
     #[test]
+    fn only_pyrowave_sessions_report_quality_bitrates() {
+        for codec in 0..=3 {
+            let config = Negotiated {
+                codec,
+                rate_millihz: 59_940,
+                ..Default::default()
+            };
+            let session = Session::new(launch("quality", Role::Stream), config.clone());
+            let info = session.info();
+            if codec == 3 {
+                assert_eq!(
+                    info["pyrowave_minimum_kbps"],
+                    crate::pyrowave::minimum_kbps(config.width, config.height, 59_940)
+                );
+                assert_eq!(
+                    info["pyrowave_recommended_kbps"],
+                    crate::pyrowave::recommended_kbps(config.width, config.height, 59_940)
+                );
+            } else {
+                assert!(info["pyrowave_minimum_kbps"].is_null());
+                assert!(info["pyrowave_recommended_kbps"].is_null());
+            }
+            session.bitrate.store(100_000, Ordering::Relaxed);
+            assert_eq!(session.info()["encoder_bitrate_kbps"], 100_000);
+        }
+    }
+    #[test]
     fn pyrowave_feedback_cannot_force_frames_or_turn_invalidation_into_idr() {
         let session = Session::new(
             launch("pyrowave", Role::Stream),
@@ -298,7 +325,7 @@ impl Session {
         *pending = Some(pending.map_or((first, last), |(a, b)| (a.min(first), b.max(last))));
     }
     pub fn info(&self) -> serde_json::Value {
-        serde_json::json!({"uuid":self.launch.client.uuid,"device_name":self.launch.client.name,"width":self.config.width,"height":self.config.height,"fps":self.config.fps,"video_format":self.config.codec,"hdr":self.config.hdr,"vrr":self.config.vrr_low_latency,"encoder_bitrate_kbps":self.bitrate.load(Ordering::Relaxed),"pyrowave_minimum_kbps":(self.config.codec == 3).then(|| crate::pyrowave::minimum_kbps(self.config.width, self.config.height, self.config.fps_millihz())),"audio_channels":self.config.audio_channels,"state":if self.stopping(){"STOPPING"}else{"RUNNING"},"frames_sent":self.stats.frames.load(Ordering::Relaxed),"frames_replaced":self.stats.frames_replaced.load(Ordering::Relaxed),"packets_sent":self.stats.packets.load(Ordering::Relaxed),"bytes_sent":self.stats.bytes.load(Ordering::Relaxed),"idr_requests":self.stats.idr_requests.load(Ordering::Relaxed),"reference_invalidations":self.stats.reference_invalidations.load(Ordering::Relaxed),"encode_latency_ms":self.stats.latency_us.load(Ordering::Relaxed) as f64/1000.,"performance":self.stats.performance.lock().unwrap().snapshot(Instant::now()),"uptime_seconds":self.started.elapsed().as_secs_f64(),"role":self.launch.role})
+        serde_json::json!({"uuid":self.launch.client.uuid,"device_name":self.launch.client.name,"width":self.config.width,"height":self.config.height,"fps":self.config.fps,"video_format":self.config.codec,"hdr":self.config.hdr,"vrr":self.config.vrr_low_latency,"encoder_bitrate_kbps":self.bitrate.load(Ordering::Relaxed),"pyrowave_minimum_kbps":(self.config.codec == 3).then(|| crate::pyrowave::minimum_kbps(self.config.width, self.config.height, self.config.fps_millihz())),"pyrowave_recommended_kbps":(self.config.codec == 3).then(|| crate::pyrowave::recommended_kbps(self.config.width, self.config.height, self.config.fps_millihz())),"audio_channels":self.config.audio_channels,"state":if self.stopping(){"STOPPING"}else{"RUNNING"},"frames_sent":self.stats.frames.load(Ordering::Relaxed),"frames_replaced":self.stats.frames_replaced.load(Ordering::Relaxed),"packets_sent":self.stats.packets.load(Ordering::Relaxed),"bytes_sent":self.stats.bytes.load(Ordering::Relaxed),"idr_requests":self.stats.idr_requests.load(Ordering::Relaxed),"reference_invalidations":self.stats.reference_invalidations.load(Ordering::Relaxed),"encode_latency_ms":self.stats.latency_us.load(Ordering::Relaxed) as f64/1000.,"performance":self.stats.performance.lock().unwrap().snapshot(Instant::now()),"uptime_seconds":self.started.elapsed().as_secs_f64(),"role":self.launch.role})
     }
 }
 #[derive(Default)]

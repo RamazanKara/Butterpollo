@@ -316,8 +316,10 @@ export interface StreamSession {
   hdr: boolean;
   vrr: boolean;
   encoder_bitrate_kbps: number;
-  /** PyroWave streams: the bitrate below which the picture loses detail. */
+  /** PyroWave streams: severe detail loss is likely below this bitrate. */
   pyrowave_minimum_kbps: number | null;
+  /** A clean-picture target from synthetic scenes, not a quality guarantee. */
+  pyrowave_recommended_kbps: number | null;
   audio_channels: number;
   state: 'RUNNING' | 'STOPPING';
   frames_sent: number;

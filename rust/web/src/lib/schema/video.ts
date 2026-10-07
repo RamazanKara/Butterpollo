@@ -185,7 +185,7 @@ const video: Setting[] = [
     key: 'pyrowave',
     label: 'PyroWave',
     description:
-      'Lets compatible clients request PyroWave, a GPU codec that encodes each frame on its own with very low latency. It needs a wired network and far more bitrate than HEVC or AV1: set Moonlight to at least about 55 Mbps for 720p60, 125 Mbps for 1080p60 or 500 Mbps for 4K60. At the 10-50 Mbps usual for HEVC, the picture turns into blurred grey blocks.',
+      'Lets compatible clients request PyroWave, a GPU codec that encodes each frame on its own with very low latency. Synthetic desktop and game tests suggest 277 Mbps for 720p60, 399 Mbps for 1080p60 or 1593 Mbps for 4K60 for clean pictures. Severe detail loss is likely below 139, 187 or 747 Mbps respectively. Quality depends on the picture. Use a fast wired network with headroom for packet overhead and recovery data; 4K60 needs more than gigabit Ethernet. If the client or network cannot carry the rate, use HEVC or AV1.',
     category: 'video',
     group: 'Codecs',
     control: { kind: 'toggle' },

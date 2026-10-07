@@ -43,7 +43,17 @@ H.264, HEVC and AV1 depend on the encoder and client. For `hevc_mode` and `av1_m
 
 For **native HDR**, enable HDR in the client and use an HDR-capable display and encoder path. Leave **Display HDR** on Automatic so Butterpollo can set the source display appropriately. **10-bit SDR instead of HDR** (`prefer_sdr_10bit`, default `false`) deliberately keeps the stream in SDR; leave it off when you want HDR. RTX HDR is a separate SDR-to-HDR conversion feature, with its own hardware requirements.
 
-**PyroWave needs a compatible client** and much more bandwidth than conventional codecs. Set the client's bitrate to at least about 55 Mbps for 720p60, 125 Mbps for 1080p60 or 500 Mbps for 4K60 (one bit per pixel per frame); PyroWave itself targets 200 Mbps and more on a wired LAN. At the 10–50 Mbps usual for HEVC, the picture turns into blurred grey blocks, and the console's stream card and the log warn about it. Enabling PyroWave does not force ordinary Moonlight clients to use it. Start with HEVC or AV1 for constrained networks.
+**PyroWave needs a compatible client** and much more bandwidth than conventional codecs. Synthetic desktop and game measurements on AMD give two warning levels. The floor warns about severe detail loss; the recommendation targets clean pictures in those tests. Passing the floor alone does not mean a clean picture.
+
+| Stream | Severe-loss floor | Recommended |
+| --- | ---: | ---: |
+| 720p60 | 139 Mbps | 277 Mbps |
+| 1080p60 | 187 Mbps | 399 Mbps |
+| 4K60 | 747 Mbps | 1593 Mbps |
+
+These values are rounded up to whole Mbps. Below 1080p the floor/recommendation are 2.5/5 bits per pixel per frame; at 1080p and above they are 1.5/3.2. The smaller desktop's one-pixel text needed more bits per pixel. Rates scale with pixel count and frame rate within each band: halve them at 30 fps, double them at 120 fps. Other sizes are estimates; actual quality depends on text size, textures and the picture. The console stream card uses red below the floor and amber below the recommendation, and the log distinguishes both. [Method, criteria and measurements](../rust/PERFORMANCE.md#october-7-pyrowave-bitrate-from-representative-pictures).
+
+Set the bitrate in Moonlight and leave network headroom for packet overhead and recovery data. The 4K60 recommendation needs more than gigabit Ethernet. Client and host limits still apply: stream setup allows up to 2 Gbps, while the client's runtime `/bitrate` endpoint caps changes at 500 Mbps. If the client or network cannot carry the recommended rate, use HEVC or AV1. Enabling PyroWave does not force ordinary Moonlight clients to use it. NVIDIA users should use [Vibepollo](https://github.com/Nonary/Vibepollo).
 
 **VRR is client-negotiated.** A VRR request can use a 1000 Hz virtual display when automatic virtual refresh is enabled. That is the host's virtual display rate, not a claim that your TV or monitor refreshes at 1000 Hz. Client and display support still matter.
 

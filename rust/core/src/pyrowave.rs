@@ -18,13 +18,32 @@ pub fn aligned_payload(packet_size: usize) -> usize {
         0
     }
 }
-/// The bitrate below which a PyroWave picture visibly loses detail and
-/// colour: one bit per pixel per frame. Unlimited at 1080p60, the encoder
-/// used 1.8-2.4 bits per pixel for a desktop and 5-7 for a moving test
-/// picture; a reported stream at 0.18 showed only grey blobs.
+/// Severe detail loss warning: 2.5 bpp below 1080p, otherwise 1.5 bpp.
+/// One-pixel text in the 720p desktop needed more bits per pixel.
+/// These synthetic-scene floors are not clean-picture targets; see rust/PERFORMANCE.md.
 pub fn minimum_kbps(width: u32, height: u32, fps_millihz: u32) -> u32 {
-    (u64::from(width) * u64::from(height) * u64::from(fps_millihz) / 1_000_000)
-        .min(u64::from(u32::MAX)) as u32
+    bitrate_kbps(
+        width,
+        height,
+        fps_millihz,
+        if height < 1080 { 25 } else { 15 },
+    )
+}
+/// Clean-picture target: 5 bpp below 1080p, otherwise 3.2 bpp.
+/// A conservative SDR/HDR, 4:2:0/4:4:4 target for the measured scenes,
+/// not a guarantee for every picture or a sustained network rate.
+pub fn recommended_kbps(width: u32, height: u32, fps_millihz: u32) -> u32 {
+    bitrate_kbps(
+        width,
+        height,
+        fps_millihz,
+        if height < 1080 { 50 } else { 32 },
+    )
+}
+fn bitrate_kbps(width: u32, height: u32, fps_millihz: u32, bpp_tenths: u32) -> u32 {
+    (u128::from(width) * u128::from(height) * u128::from(fps_millihz) * u128::from(bpp_tenths))
+        .div_ceil(10_000_000)
+        .min(u128::from(u32::MAX)) as u32
 }
 pub fn max_frame_bytes(packet_size: usize, critical_fec: bool) -> usize {
     (packet_size.saturating_sub(16) * if critical_fec { 3000 } else { 4000 }).saturating_sub(8)
@@ -508,11 +527,29 @@ mod tests {
         out
     }
     #[test]
-    fn minimum_bitrate_is_one_bit_per_pixel_per_frame() {
-        assert_eq!(minimum_kbps(1280, 720, 60_000), 55_296);
-        assert_eq!(minimum_kbps(1920, 1080, 60_000), 124_416);
-        assert_eq!(minimum_kbps(3840, 2160, 59_940), 497_166);
-        assert_eq!(minimum_kbps(8192, 8192, 240_000), 16_106_127);
+    fn quality_bitrates_scale_with_pixels_and_frame_rate() {
+        assert_eq!(minimum_kbps(1280, 720, 60_000), 138_240);
+        assert_eq!(minimum_kbps(1920, 1080, 60_000), 186_624);
+        assert_eq!(minimum_kbps(3840, 2160, 60_000), 746_496);
+        assert_eq!(recommended_kbps(1280, 720, 60_000), 276_480);
+        assert_eq!(recommended_kbps(1920, 1080, 60_000), 398_132);
+        assert_eq!(recommended_kbps(3840, 2160, 60_000), 1_592_525);
+        assert_eq!(minimum_kbps(1920, 1080, 30_000), 93_312);
+        assert_eq!(minimum_kbps(1280, 720, 120_000), 276_480);
+        assert_eq!(recommended_kbps(1280, 720, 30_000), 138_240);
+        assert_eq!(recommended_kbps(1920, 1080, 120_000), 796_263);
+        assert_eq!(minimum_kbps(3840, 2160, 59_940), 745_750);
+        assert_eq!(recommended_kbps(3840, 2160, 59_940), 1_590_933);
+    }
+    #[test]
+    fn quality_bitrates_round_up_and_saturate() {
+        for calculate in [minimum_kbps, recommended_kbps] {
+            assert_eq!(calculate(1, 1, 1), 1);
+            assert_eq!(calculate(1920, 1080, 0), 0);
+            assert_eq!(calculate(0, 720, 60_000), 0);
+            assert_eq!(calculate(1920, 0, 60_000), 0);
+            assert_eq!(calculate(u32::MAX, u32::MAX, u32::MAX), u32::MAX);
+        }
     }
     #[test]
     fn record_hash_ignores_only_the_sequence_bits() {

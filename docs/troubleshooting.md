@@ -59,7 +59,11 @@ Compare Moonlight's loss statistics and the host log before and after. `referenc
 
 ## PyroWave shows blurred grey blocks
 
-The bitrate is far too low for PyroWave. Unlike HEVC or AV1 it spends its bits on speed, not compression: below about one bit per pixel per frame only its coarsest brightness layers fit, without colour or fine detail. Moonlight's default for 720p60, 10 Mbps, gives it a fifth of a bit. Raise the bitrate in the client to at least about 55 Mbps for 720p60, 125 Mbps for 1080p60 or 500 Mbps for 4K60, on a wired network, or use HEVC or AV1. The console's stream card and the log (`PyroWave has too little bitrate`) say when a stream is below that.
+A very low bitrate can leave PyroWave with only coarse brightness and little colour or fine detail. The old one-bit-per-pixel warning was too low for the measured desktop pictures. The stream card and log now distinguish `PyroWave bitrate is too low` (red, below the severe-loss floor) from `PyroWave bitrate is below recommended` (amber, text and textures may lose detail).
+
+At 60 fps the floor/recommendation are **139/277 Mbps for 720p**, **187/399 Mbps for 1080p** and **747/1593 Mbps for 4K**, rounded up. These come from synthetic desktop and game tests on AMD, including SDR/HDR and 4:2:0/4:4:4; they are not a guarantee for every picture. The one-pixel text at 720p needed more bits per pixel than the larger text at higher resolutions. [Criteria, rates and limits](configuration.md#capture-and-video) explain the two levels.
+
+Raise the bitrate in Moonlight on a fast wired network with headroom for packet overhead and recovery data. 4K60 at the recommended rate needs more than gigabit Ethernet. If the client or network cannot carry it, use HEVC or AV1. Compare the same scene after changing the rate; the warning does not diagnose packet loss or HDR rendering. NVIDIA users should use [Vibepollo](https://github.com/Nonary/Vibepollo).
 
 ## Low latency is reported, but motion still stutters
 

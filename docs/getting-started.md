@@ -61,9 +61,11 @@ If pairing succeeds but launching is denied, check the device's enabled state an
 | H.264 | Establishing an SDR baseline or using a client without newer hardware decoders. |
 | HEVC | The client supports HEVC; its ten-bit profile supports HDR. |
 | AV1 | Both the host encoder and client decoder support AV1; its ten-bit profile also supports HDR. |
-| PyroWave | You want full-resolution chroma, including 10-bit HDR 4:4:4, with [Nonary's compatible Moonlight client](https://github.com/Nonary/moonlight-qt) and a fast wired LAN. Raise the client's bitrate to at least 125 Mbps for 1080p60. |
+| PyroWave | You want full-resolution chroma, including 10-bit HDR 4:4:4, with [Nonary's compatible Moonlight client](https://github.com/Nonary/moonlight-qt) and a fast wired LAN. Start around 399 Mbps for 1080p60, with network headroom. |
 
 Standard Moonlight supports H.264, HEVC and AV1. The exact Moonlight PC 6.2.0 application has recorded codec, reconnect and AMD AV1 crop checks; the [compatibility matrix](../rust/PARITY.md) gives their scope. PyroWave uses a separate codec path and needs substantially more bandwidth; its client can calibrate the connection before streaming.
+
+PyroWave's recommended rates from synthetic desktop and game tests on AMD are **277 Mbps at 720p60, 399 Mbps at 1080p60 and 1593 Mbps at 4K60**. Quality depends on the picture. The stream card warns below those rates and uses a stronger warning below the severe-loss floors of **139, 187 and 747 Mbps** respectively. A rate above the floor alone is not a clean-picture target. Leave headroom for packet overhead and recovery data; 4K60 needs more than gigabit Ethernet. Use HEVC or AV1 when the client or network cannot carry the rate. [Measurements and limits](configuration.md#capture-and-video). NVIDIA users should use [Vibepollo](https://github.com/Nonary/Vibepollo).
 
 Moonlight's **YUV 4:4:4** option needs an encoder that produces 4:4:4. AMD Radeon GPUs encode H.264, HEVC and AV1 in 4:2:0 only, the RX 9000 series included, so with an AMD host Moonlight streams 4:2:0; Moonlight PC warns that the host doesn't support YUV 4:4:4. On AMD, PyroWave is the way to get full-resolution chroma, in SDR and in 10-bit HDR. Native NVENC streams 4:4:4 on NVIDIA GPUs that support it.
 
