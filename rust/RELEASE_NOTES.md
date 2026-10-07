@@ -1,10 +1,56 @@
-# Butterpollo 2.0.0-rc.16 release candidate for Windows
+# Butterpollo 2.0.0-rc.17 release candidate for Windows
 
 [Documentation](../docs/README.md) · [Install and migrate](../docs/getting-started.md) · [Configuration](../docs/configuration.md) · [Compatibility](PARITY.md)
 
-**Release history:** [rc.16](#new-in-rc16) · [rc.15](#new-in-rc15) · [rc.14](#new-in-rc14) · [rc.13](#new-in-rc13) · [rc.12](#new-in-rc12) · [rc.11](#new-in-rc11) · [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
+**Release history:** [rc.17](#new-in-rc17) · [rc.16](#new-in-rc16) · [rc.15](#new-in-rc15) · [rc.14](#new-in-rc14) · [rc.13](#new-in-rc13) · [rc.12](#new-in-rc12) · [rc.11](#new-in-rc11) · [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
 
-Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.16 installer is named `butterpollo-setup-2.0.0-rc.16.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.17 installer is named `butterpollo-setup-2.0.0-rc.17.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+
+## New in rc.17
+
+- **Steam Deck and other controllers with motion sensors get a virtual DualSense, as in Vibepollo.** An Xbox-type controller with a gyro or touchpad, such as the Steam Deck, stayed an Xbox pad: it lost its gyro and touchpad, and Moonlight's quit combo opened Game Bar and Steam's keyboard on the host. With `motion_as_ds4` and `touchpad_as_ds4` both off it stays an Xbox pad. A controller that connected while the stream's display was still being set up also lost its motion sensors, because input was dropped until then; keyboard and controllers now work from the start.
+- **The first launch no longer fails when an app's prep commands take a while.** A launch expired 30 s after Moonlight asked for it, even while its prep commands were still running, so Moonlight then found no launch to connect to ("no authorized RTSP launch") although the game was running, and only a retry worked. The host also keeps answering while prep commands run, instead of showing as offline to every client.
+- **Lower latency:**
+  - With the default install, the host learns of a captured frame the moment the capture helper has it instead of polling for it: about 0.7 ms less from the game's present to the packet.
+  - Captured audio is sent as soon as Windows delivers it (event mode, as in the C++ host), and the encoder's frame deadlines are met more precisely.
+  - Colour conversion on the compute queue runs in one pass instead of two.
+  - Taps and clicks with touch or a pen are released on time; they were 4 ms late on average, and key repeat had up to 8 ms of jitter.
+  - On a local network, video and audio are tagged for priority as Moonlight asks (DSCP 40 and 56), as Vibepollo does: Wi-Fi sends them ahead of other traffic. Moonlight does not ask for this over the internet.
+- **Smoother pacing:**
+  - A keyframe the client asks for after packet loss, or a repeat of a still picture, no longer holds back or skips the game's next frame.
+  - With Desktop Duplication, mouse-look in a game (a hidden pointer that moves) no longer costs frames.
+  - VRR follows a game's uneven frame times more closely.
+  - The capture helper now gets its first frame on a still desktop, where it could fall back to Desktop Duplication for the whole session (seen on a Legion Go).
+  - The check that keeps a stream's virtual display alive costs 27 µs a second instead of up to 31 ms.
+- **One encoder hiccup no longer slows the rest of the session.** Since rc.14 any encoder failure moved colour conversion to the graphics queue, which waits behind the game: 7.2 ms instead of 0.9 ms per frame beside a GPU-bound game. That now happens only after a second failure. An encoder that keeps failing no longer leaks memory, and a recovery that produces no frames ends after 5 s instead of continuing.
+- **Several clients on one PC:**
+  - A second stream no longer changes the resolution, refresh rate or HDR of a display another stream is using.
+  - The saved display layout is restored when the last stream ends, not under a stream still running.
+  - The layout is also restored when a remote monitor joined during the stream; the physical monitors had stayed off.
+  - Clients sharing the virtual speakers with different speaker setups (a stereo phone and a 5.1 PC) no longer keep losing each other's audio.
+  - Quitting an app closes only the game the launching client's store client started, and never a program someone opened on the PC.
+- **Displays and HDR:**
+  - An HDR client on a display without HDR streams in SDR instead of failing to launch.
+  - HDR is switched back on the display as it is connected at the stream's end, also after a driver reset or a TV that reconnected.
+  - A TV that was in standby when a stream ended gets its original HDR, mode and colour profile back even when the next stream uses it first.
+- **Your speakers come back after a stream.** If they could not be set when a stream ended (a Bluetooth headset turned off, a TV's audio not back yet), every later stream restored Steam Streaming Speakers instead. The host now keeps the original devices and restores them once possible.
+- **Settings import from Sunshine, Apollo, Vibeshine and Vibepollo:**
+  - It reads files those hosts write and load: sunshine.conf in UTF-16 or the ANSI code page, state files with a byte order mark or left empty, paired devices stored with `""` lists, and device commands in Apollo's format.
+  - A profile naming files that no longer exist, or holding large logs, links or oversized files, imports with warnings instead of failing.
+  - The imported profile is checked with the host's own loaders, so setup no longer reports success for a profile the host then refuses to start with.
+  - When an import fails, setup shows why and restarts the previous host's service, including Sunshine and Vibeshine.
+  - A previous host whose installer recorded no install folder is found anyway.
+  - One unusable device or app override is skipped with a warning instead of failing every stream of that device or app.
+- **Updates:**
+  - A host set to a specific `bind_address` is no longer rolled back as "did not start".
+  - If the service cannot be stopped, it is started again and the update is reported as failed.
+  - An update cut off by a power loss or crash is rolled back at the next start.
+  - Only the newest two folders of unfinished updates are kept.
+- **Pairing:** a second device asking to pair no longer takes over the PIN of the first, and nobody on the network can keep others from pairing.
+- **The web console's "Remember this device" keeps you signed in for 7 days.** It signed you out after two hours. Releases now ship the console built from their own source; before, it was carried over from an earlier package.
+- **Games:** a game that restarts itself through Steam (after an update or a settings change) no longer ends the stream, and a browser or store client that a game opens is no longer closed with it.
+- **Touch and pen:** held touches and a resting pen are no longer cancelled while the other is in use, Shift held during key repeat is no longer released, pen pressure and buttons are sent as the C++ host sends them, and contacts are lifted when a stream ends.
+- PyroWave follows `pacing_max_bitrate_kbps` when it is set.
 
 ## New in rc.16
 
@@ -186,8 +232,8 @@ Current automated validation: 263 ordinary tests passed, with 27 environment-dep
 
 ## Install
 
-- `butterpollo-setup-2.0.0-rc.16.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
-- For a portable copy, extract `butterpollo-rust-2.0.0-rc.16-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
+- `butterpollo-setup-2.0.0-rc.17.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
+- For a portable copy, extract `butterpollo-rust-2.0.0-rc.17-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
 - These are unsigned test builds. Keep a copy of your configuration and the previous installer for rollback.
 
 ## Lower latency
