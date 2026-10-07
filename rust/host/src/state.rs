@@ -4,7 +4,7 @@ use butterpollo_core::{
     crypto::Identity,
     pairing::Pairings,
     session::Sessions,
-    state::{App, Credentials, PairedState},
+    state::{App, Credentials, PairedState, ProfileFiles},
 };
 use serde_json::{Value, json};
 use std::{
@@ -119,15 +119,14 @@ impl Host {
             config.values.insert("port".into(), port.to_string());
         }
         config.ports()?;
-        let paired_path = config.path("file_state", &directory, "sunshine_state.json");
-        let credential_default = if directory.join("sunshine_credentials.json").exists() {
-            "sunshine_credentials.json"
-        } else {
-            "sunshine_state.json"
-        };
-        let credentials_path = config.path("credentials_file", &directory, credential_default);
-        let apps_path = config.path("file_apps", &directory, "apps.json");
-        let aliases_path = config.path("vibeshine_file_state", &directory, "vibeshine_state.json");
+        let ProfileFiles {
+            paired: paired_path,
+            credentials: credentials_path,
+            apps: apps_path,
+            aliases: aliases_path,
+            certificate,
+            key,
+        } = ProfileFiles::new(&config, &directory);
         let mut aliases = butterpollo_core::state::load_json(&aliases_path, json!({"root":{}}))?;
         let mut paired = PairedState::load(&paired_path)?;
         // Vibepollo keeps the shared virtual display's GUID in
@@ -143,15 +142,8 @@ impl Host {
             paired.document["root"]["shared_virtual_display_guid"] = id.into();
         }
         paired.save(&paired_path)?;
-        let certificate = config.path("cert", &directory, "credentials/cacert.pem");
-        let key = config.path("pkey", &directory, "credentials/cakey.pem");
         let identity = Identity::load(&certificate, &key)?;
-        let credential_doc = butterpollo_core::state::load_json(&credentials_path, json!({}))?;
-        let credentials: Option<Credentials> = if credential_doc.get("username").is_some() {
-            Some(serde_json::from_value(credential_doc).context("invalid web credentials")?)
-        } else {
-            None
-        };
+        let credentials = Credentials::load(&credentials_path)?;
         let app_document = load_library(
             &apps_path,
             // Vibepollo's default library.

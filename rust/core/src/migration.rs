@@ -1,6 +1,7 @@
 //! Copy an existing Windows profile into an empty, independent Rust profile.
-use crate::{config::Config, state};
+use crate::{catalog, config::Config, crypto, state};
 use anyhow::{Context, Result, bail};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 fn linked(metadata: &std::fs::Metadata) -> bool {
@@ -262,6 +263,7 @@ pub fn import(source: &Path, destination: &Path) -> Result<()> {
                 .insert("log_path".into(), "butterpollo.log".into());
         }
         state::atomic_write(&stage.join("sunshine.conf"), rewritten.text().as_bytes())?;
+        check(&stage).context("the imported settings would keep Butterpollo from starting")?;
         if destination.exists() {
             std::fs::remove_dir(&destination)?;
         }
@@ -272,6 +274,37 @@ pub fn import(source: &Path, destination: &Path) -> Result<()> {
         let _ = std::fs::remove_dir_all(&stage);
     }
     result
+}
+/// Read a profile as the host does when it starts, without writing to it,
+/// so that a file the host would refuse fails the import instead.
+fn check(directory: &Path) -> Result<()> {
+    let config = Config::load(&directory.join("sunshine.conf"))?;
+    let files = state::ProfileFiles::new(&config, directory);
+    state::PairedState::load(&files.paired)?;
+    crypto::Identity::read(&files.certificate, &files.key)?;
+    state::Credentials::load(&files.credentials)?;
+    let mut aliases = state::load_json(&files.aliases, json!({"root":{}}))?;
+    // The host sets aside an app library it cannot read and starts without
+    // it, and gives an app without a UUID one, before it checks the app IDs
+    // kept with the aliases.
+    let mut apps: Vec<state::App> = state::load_json(&files.apps, json!({}))
+        .ok()
+        .and_then(|library| {
+            serde_json::from_value(library.get("apps").cloned().unwrap_or(json!([]))).ok()
+        })
+        .unwrap_or_default();
+    for app in &mut apps {
+        if app
+            .extra
+            .get("uuid")
+            .and_then(Value::as_str)
+            .is_none_or(|uuid| uuid.trim().is_empty())
+        {
+            app.extra
+                .insert("uuid".into(), json!(uuid::Uuid::new_v4().to_string()));
+        }
+    }
+    catalog::assign(&mut apps, &mut aliases, directory)
 }
 pub fn default_directory() -> Result<PathBuf> {
     Ok(
@@ -378,6 +411,93 @@ mod tests {
                 .get("sunshine_name", ""),
             "PC"
         );
+    }
+    #[test]
+    fn a_profile_the_host_would_refuse_fails_the_import() {
+        let temp = tempfile::tempdir().unwrap();
+        let cases: [&[(&str, &str)]; 4] = [
+            &[("vibeshine_state.json", r#"{"root":[]}"#)],
+            &[(
+                "vibeshine_state.json",
+                r#"{"root":{"app_id_aliases":{"a":{"aliases":7}}}}"#,
+            )],
+            &[("sunshine_credentials.json", r#"{"username":"admin"}"#)],
+            &[
+                ("credentials/cacert.pem", "not a certificate"),
+                ("credentials/cakey.pem", "not a key"),
+            ],
+        ];
+        for (number, files) in cases.into_iter().enumerate() {
+            let old = temp.path().join(format!("old{number}"));
+            std::fs::create_dir_all(old.join("credentials")).unwrap();
+            std::fs::write(old.join("sunshine.conf"), "sunshine_name = PC\n").unwrap();
+            for (file, text) in files {
+                std::fs::write(old.join(file), text).unwrap();
+            }
+            let next = temp.path().join(format!("next{number}"));
+            let error = format!("{:#}", import(&old, &next).unwrap_err());
+            assert!(error.contains("from starting"), "{error}");
+            assert!(!next.exists());
+        }
+        assert!(!std::fs::read_dir(temp.path()).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".butterpollo-import-")
+        }));
+    }
+    #[test]
+    fn a_vibeshine_profile_imports_and_loads() {
+        let temp = tempfile::tempdir().unwrap();
+        let old = temp.path().join("config");
+        std::fs::create_dir_all(old.join("logs")).unwrap();
+        let library = temp.path().join("library");
+        std::fs::create_dir(&library).unwrap();
+        let cover = library.join("game.png");
+        std::fs::write(&cover, b"\x89PNG\r\n\x1a\ncover").unwrap();
+        let bom = |text: &str| [b"\xef\xbb\xbf".as_slice(), text.as_bytes()].concat();
+        let uuid = "9b7c0b6e-1c1a-4f0e-9a43-1f5d2f9e8a10";
+        let apps = json!({"env":{},"apps":[{
+            "name":"Game","uuid":uuid,"cmd":"game.exe","image-path":cover,
+            "detached":["steam://rungameid/1"],
+            "prep-cmd":[
+                {"do":"before.cmd","undo":"after.cmd","elevated":"true"},
+                {"do":"","undo":"","elevated":"false"}
+            ]
+        }]});
+        std::fs::write(library.join("apps.json"), bom(&apps.to_string())).unwrap();
+        let host = "5a2f6a4e-3b1d-4c55-9a77-0d0c6a3c2b11";
+        let state = json!({"root":{"uniqueid":host,"named_devices":""}});
+        std::fs::write(old.join("sunshine_state.json"), bom(&state.to_string())).unwrap();
+        let conf = format!(
+            "# Vibeshine\r\nsunshine_name = \"Living room # TV\"\r\nfile_apps = {}\r\ncredentials_file = {}\r\n",
+            library.join("apps.json").display(),
+            temp.path().join("gone").join("credentials.json").display()
+        );
+        std::fs::write(old.join("sunshine.conf"), bom(&conf)).unwrap();
+        std::fs::File::create(old.join("logs/sunshine.log"))
+            .unwrap()
+            .set_len(70 * 1024 * 1024)
+            .unwrap();
+        let next = temp.path().join("butterpollo");
+        import(&old, &next).unwrap();
+        check(&next).unwrap();
+        assert!(!next.join("logs").exists());
+        let config = Config::load(&next.join("sunshine.conf")).unwrap();
+        assert_eq!(config.get("sunshine_name", ""), "\"Living room # TV\"");
+        assert_eq!(config.get("file_apps", ""), "apps.json");
+        assert!(!config.values.contains_key("credentials_file"));
+        let paired = state::PairedState::load(&next.join("sunshine_state.json")).unwrap();
+        assert_eq!(paired.unique_id, host);
+        assert!(paired.clients.is_empty());
+        let imported = state::load_json(&next.join("apps.json"), json!({})).unwrap();
+        let apps: Vec<state::App> = serde_json::from_value(imported["apps"].clone()).unwrap();
+        assert!(apps[0].prep[0].elevated && !apps[0].prep[1].elevated);
+        assert_eq!(apps[0].extra["uuid"], uuid);
+        assert_eq!(apps[0].extra["detached"], json!(["steam://rungameid/1"]));
+        let image = PathBuf::from(apps[0].extra["image-path"].as_str().unwrap());
+        assert!(image.starts_with(next.canonicalize().unwrap()));
     }
     #[test]
     fn covers_survive_original_profile_removal_and_a_failed_import_rolls_back() {

@@ -1,4 +1,4 @@
-use crate::crypto;
+use crate::{config::Config, crypto};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -6,7 +6,7 @@ use std::{
     collections::{BTreeMap, HashSet},
     fs::OpenOptions,
     io::Write,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 /// The JSON in a state file, as Vibepollo reads it: a UTF-8 byte order mark
@@ -307,6 +307,32 @@ impl PairedState {
         Ok(())
     }
 }
+/// Where a profile keeps its files, as its sunshine.conf names them.
+pub struct ProfileFiles {
+    pub paired: PathBuf,
+    pub credentials: PathBuf,
+    pub apps: PathBuf,
+    pub aliases: PathBuf,
+    pub certificate: PathBuf,
+    pub key: PathBuf,
+}
+impl ProfileFiles {
+    pub fn new(config: &Config, directory: &Path) -> Self {
+        let credentials = if directory.join("sunshine_credentials.json").exists() {
+            "sunshine_credentials.json"
+        } else {
+            "sunshine_state.json"
+        };
+        Self {
+            paired: config.path("file_state", directory, "sunshine_state.json"),
+            credentials: config.path("credentials_file", directory, credentials),
+            apps: config.path("file_apps", directory, "apps.json"),
+            aliases: config.path("vibeshine_file_state", directory, "vibeshine_state.json"),
+            certificate: config.path("cert", directory, "credentials/cacert.pem"),
+            key: config.path("pkey", directory, "credentials/cakey.pem"),
+        }
+    }
+}
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Credentials {
     pub username: String,
@@ -314,6 +340,16 @@ pub struct Credentials {
     pub salt: String,
 }
 impl Credentials {
+    /// The web console's credentials in `path`; None until they are set.
+    pub fn load(path: &Path) -> Result<Option<Self>> {
+        let document = load_json(path, json!({}))?;
+        if document.get("username").is_none() {
+            return Ok(None);
+        }
+        Ok(Some(
+            serde_json::from_value(document).context("invalid web credentials")?,
+        ))
+    }
     pub fn new(username: String, password: &str) -> Result<Self> {
         if username.is_empty() || username.len() > 128 || password.len() < 8 {
             bail!("username required; password must have at least 8 characters");

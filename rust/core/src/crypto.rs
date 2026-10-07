@@ -133,16 +133,23 @@ pub struct Identity {
 }
 impl Identity {
     pub fn load(cert: &Path, key: &Path) -> Result<Self> {
+        if let Some(id) = Self::read(cert, key)? {
+            return Ok(id);
+        }
+        let id = Self::generate()?;
+        crate::state::atomic_write(key, id.private_pem.as_bytes())?;
+        crate::state::atomic_write(cert, id.certificate.as_bytes())?;
+        Ok(id)
+    }
+    /// The identity in `cert` and `key`; None when neither exists yet.
+    pub fn read(cert: &Path, key: &Path) -> Result<Option<Self>> {
         match (std::fs::read_to_string(cert), std::fs::read_to_string(key)) {
-            (Ok(c), Ok(k)) => Self::from_pem(c, k),
+            (Ok(c), Ok(k)) => Self::from_pem(c, k).map(Some),
             (Err(c), Err(k))
                 if c.kind() == std::io::ErrorKind::NotFound
                     && k.kind() == std::io::ErrorKind::NotFound =>
             {
-                let id = Self::generate()?;
-                crate::state::atomic_write(key, id.private_pem.as_bytes())?;
-                crate::state::atomic_write(cert, id.certificate.as_bytes())?;
-                Ok(id)
+                Ok(None)
             }
             _ => bail!(
                 "certificate and key must both exist and be readable; refusing to replace identity"
