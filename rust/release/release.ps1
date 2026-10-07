@@ -172,7 +172,12 @@ if (-not $NoInstall) {
         '-Version', $version, '-Work', "`"$run`""
     if ($admin) {
         Step 'display self-test as SYSTEM and install'
-        Start-Process powershell -WindowStyle Hidden -ArgumentList $arguments
+        # Started from here, Windows PowerShell inherits PowerShell 7's module
+        # path and cannot load Get-FileHash; give it its own.
+        $modulePath = $env:PSModulePath
+        $env:PSModulePath = [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
+        try { Start-Process powershell -WindowStyle Hidden -ArgumentList $arguments }
+        finally { $env:PSModulePath = $modulePath }
     } elseif ($current) {
         Step 'display self-test as SYSTEM and install'
         @{ version = $version } | ConvertTo-Json | Set-Content (Join-Path $Work 'request.json')
