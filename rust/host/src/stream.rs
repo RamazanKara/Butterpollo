@@ -20,6 +20,18 @@ const OUTPUT_POLL: Duration = Duration::from_micros(100);
 /// How long an encoder that fails mid-stream is recreated before the session
 /// gives up: a GPU busy with a game or a driver reset costs frames, not the stream.
 const ENCODER_RECOVERY: Duration = Duration::from_secs(5);
+fn encoder_progress(
+    failing: &mut Option<Instant>,
+    produced_frame: bool,
+    now: Instant,
+) -> Result<()> {
+    if produced_frame {
+        *failing = None;
+    } else if failing.is_some_and(|since| now.duration_since(since) >= ENCODER_RECOVERY) {
+        anyhow::bail!("the encoder did not produce a frame during recovery");
+    }
+    Ok(())
+}
 /// Output the encoder has finished. An encoder that fails to deliver it is
 /// dropped, so the next frame recreates it and asks for a keyframe, as after
 /// a failed submission; only failures lasting [`ENCODER_RECOVERY`] end the stream.
@@ -31,7 +43,10 @@ fn collect(
         return Ok(vec![]);
     };
     match active.poll() {
-        Ok(output) => Ok(output),
+        Ok(output) => {
+            encoder_progress(failing, !output.is_empty(), Instant::now())?;
+            Ok(output)
+        }
         Err(error) => {
             let since = *failing.get_or_insert_with(Instant::now);
             if since.elapsed() >= ENCODER_RECOVERY {
@@ -1271,7 +1286,7 @@ impl Media {
                             })();
                             let output = match encoded {
                                 Ok(output) => {
-                                    encoder_failing = None;
+                                    encoder_progress(&mut encoder_failing, !output.is_empty(), Instant::now())?;
                                     output
                                 }
                                 Err(error) => {
@@ -1943,6 +1958,27 @@ mod tests {
         apply_overrides(&mut config, overrides.as_object().unwrap()).unwrap();
         assert_eq!(config.get("fec_percentage", ""), "30");
         assert!(!config.values.contains_key("frame_limiter_fps_limit"));
+    }
+    #[test]
+    fn accepting_input_without_output_cannot_extend_encoder_recovery() {
+        let start = Instant::now();
+        let mut failing = Some(start);
+        for seconds in 0..5 {
+            encoder_progress(&mut failing, false, start + Duration::from_secs(seconds)).unwrap();
+            assert_eq!(failing, Some(start));
+        }
+        assert!(encoder_progress(&mut failing, false, start + ENCODER_RECOVERY).is_err());
+    }
+    #[test]
+    fn completed_output_ends_recovery_and_allows_a_later_independent_failure() {
+        let start = Instant::now();
+        let mut failing = Some(start);
+        encoder_progress(&mut failing, true, start + Duration::from_secs(4)).unwrap();
+        assert_eq!(failing, None);
+        encoder_progress(&mut failing, false, start + ENCODER_RECOVERY).unwrap();
+        failing = Some(start + Duration::from_secs(6));
+        encoder_progress(&mut failing, false, start + Duration::from_secs(7)).unwrap();
+        assert!(encoder_progress(&mut failing, false, start + Duration::from_secs(11)).is_err());
     }
     #[test]
     fn wgc_interval_is_unrestricted_by_default_and_preserves_overrides() {
