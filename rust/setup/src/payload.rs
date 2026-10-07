@@ -135,7 +135,7 @@ pub fn write_stub(destination: &Path) -> Result<()> {
     )
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 pub struct Entry {
     pub path: String,
     pub sha256: String,
@@ -143,6 +143,19 @@ pub struct Entry {
 /// The package's file list, checked against the files in `root`.
 pub fn verify(root: &Path) -> Result<Vec<Entry>> {
     let entries = manifest(root)?;
+    for required in [
+        "butterpollo.exe",
+        "butterpollo-service.exe",
+        "Start Butterpollo.exe",
+        "assets/web/index.html",
+    ] {
+        if !entries
+            .iter()
+            .any(|entry| entry.path.replace('\\', "/").eq_ignore_ascii_case(required))
+        {
+            bail!("The package is missing {required}");
+        }
+    }
     for entry in &entries {
         let path = safe_join(root, &entry.path)?;
         let mut hasher = Sha256::new();
@@ -166,9 +179,10 @@ pub fn manifest(root: &Path) -> Result<Vec<Entry>> {
 }
 pub fn safe_join(root: &Path, relative: &str) -> Result<PathBuf> {
     let relative = Path::new(relative);
-    if relative
-        .components()
-        .any(|c| !matches!(c, Component::Normal(_)))
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|c| !matches!(c, Component::Normal(_)))
     {
         bail!("unsafe path in the package manifest");
     }
@@ -182,11 +196,49 @@ fn hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     #[test]
+    fn an_incomplete_or_changed_package_is_rejected_before_installation() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path();
+        std::fs::create_dir_all(root.join("assets/web"))?;
+        let paths = [
+            "butterpollo.exe",
+            "butterpollo-service.exe",
+            "Start Butterpollo.exe",
+            "assets/web/index.html",
+        ];
+        let entries: Vec<_> = paths
+            .iter()
+            .map(|path| {
+                std::fs::write(root.join(path), path).unwrap();
+                serde_json::json!({"path":path, "sha256":hex(&Sha256::digest(path.as_bytes()))})
+            })
+            .collect();
+        std::fs::write(root.join("manifest.json"), serde_json::to_vec(&entries)?)?;
+        assert_eq!(verify(root)?.len(), paths.len());
+        for (missing, path) in paths.iter().enumerate() {
+            let incomplete: Vec<_> = entries
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != missing)
+                .map(|(_, entry)| entry)
+                .collect();
+            std::fs::write(root.join("manifest.json"), serde_json::to_vec(&incomplete)?)?;
+            assert!(verify(root).unwrap_err().to_string().contains(path));
+        }
+        std::fs::write(root.join("manifest.json"), serde_json::to_vec(&entries)?)?;
+        std::fs::write(root.join("assets/web/index.html"), b"partial")?;
+        assert!(verify(root).is_err());
+        std::fs::remove_file(root.join("assets/web/index.html"))?;
+        assert!(verify(root).is_err());
+        Ok(())
+    }
+    #[test]
     fn manifest_paths_cannot_escape_the_package() {
         let root = Path::new("C:\\package");
         assert!(safe_join(root, "drivers\\gamepad\\install.ps1").is_ok());
         assert!(safe_join(root, "..\\Windows\\evil.dll").is_err());
         assert!(safe_join(root, "C:\\Windows\\evil.dll").is_err());
+        assert!(safe_join(root, "").is_err());
     }
     #[test]
     fn payload_footer_locates_the_archive() {

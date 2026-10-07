@@ -47,15 +47,6 @@ pub fn run(folder: &Path, progress: &Progress) -> Result<()> {
         .context("The update installer has no package")?
         .extract(&staged)?;
     let entries = payload::verify(&staged)?;
-    for required in [
-        "butterpollo.exe",
-        "butterpollo-service.exe",
-        "Start Butterpollo.exe",
-    ] {
-        if !entries.iter().any(|e| e.path == required) {
-            bail!("The update is missing {required}");
-        }
-    }
     let previous = payload::manifest(&install)
         .context("The installed package has no manifest; run the installer manually")?;
     let paths = previous
