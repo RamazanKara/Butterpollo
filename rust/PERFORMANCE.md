@@ -2056,6 +2056,43 @@ card. That is about 55 Mbps at 720p60, 125 Mbps at 1080p60 and 500 Mbps at
 4K60 (`pyrowave::minimum_kbps`). The setting's description and the
 configuration guide give the same numbers. The host does not raise the
 bitrate itself: the client's choice may reflect its network.
+## October 7: 4:4:4 from AMF
+
+Whether the native AMF encoder could offer HDR 4:4:4 HEVC or AV1 was
+checked on the RX 7900 XT, driver 32.0.31041.1004, AMF runtime 1.5.2.0, with
+a standalone probe outside Butterpollo. It cannot; the hardware encodes 4:2:0
+only.
+
+- The encoder caps report `HevcMaxProfile` 2 (Main10) and `Av1MaxProfile` 1
+  (Main). Input formats are YUV420P, YV12, BGRA, RGBA, ARGB, NV12 and P010;
+  output formats NV12 and P010. The runtime's own property table lists
+  `HevcProfile` as {Main, Main10} and `Av1Profile` as {Main}, and has no
+  chroma-format property. H.264 stops at High.
+- `Init` with AYUV, Y410 or Y416 input returns `AMF_INVALID_FORMAT` for both
+  codecs. Setting `HevcProfile` to 3, 4, 5 or 16, or `Av1Profile` to 2 or
+  higher, returns `AMF_INVALID_ARG` and the profile stays Main10 or Main.
+- RGBA, BGRA and R10G10B10A2 input is accepted, and FFprobe reads the output
+  as `yuv420p` or `yuv420p10le`: the encoder converts RGB to 4:2:0 itself.
+- The driver's D3D12 video encoding API, queried separately on the same GPU,
+  supports HEVC Main and Main10 only (not Main12, the 4:2:2 profiles or any of
+  the four 4:4:4 profiles) and AV1 Main only (not High or Professional), with
+  NV12 and P010 input.
+- The AMF SDK on GitHub, 1.5.3 of September 29, has the same profile enums.
+  Its 4:4:4 note (1.5.0) is about the video converter, not the encoders.
+  AMD's AMF maintainer answered requests for it with "4:4:4 and 4:2:2 codecs
+  are currently not supported by hardware" (AMF issue 483, September 2025)
+  and said RX 9000 encodes HEVC "4:2:0, 8 and 10 bit" (issue 539). The AMF
+  wiki's hardware table says "All codecs are 4:2:0" through VCN 5.0. RDNA 4
+  could not be tested here.
+
+Packing 4:4:4 into a larger 4:2:0 picture, or into two 4:2:0 streams as RDP's
+AVC444 does, needs a client that reassembles the planes. Moonlight decodes a
+single stream at the negotiated size and shows it as is, so a stock client
+would display the packed layout. The native AMF encoder keeps refusing 4:4:4,
+which the startup probe already treats as unavailable, so an AMD host never
+offers it; Moonlight PC then warns "Your host PC doesn't support YUV 4:4:4
+streaming" and uses 4:2:0. PyroWave remains the full-chroma path on AMD,
+including 10-bit HDR 4:4:4.
 ## Limits
 
 This machine validates AMD AMF. Native NVENC now calls the installed NVIDIA driver directly, supports reviewed API versions 11.0–13.0, reference frame invalidation, D3D11 4:2:0/8-bit 4:4:4 and GPU-only CUDA interop for ten-bit 4:4:4. Seven mock-driver tests exercise compatibility, asynchronous ownership, timeout teardown, metadata lifetime, loss recovery and bitrate changes; NVIDIA execution/performance still needs NVIDIA hardware. QSV has native D3D11 imports, and TrueHDR has a shared-device GPU path; these need Intel/NVIDIA hardware respectively. PyroWave uses shared D3D11/Vulkan planar GPU inputs and reads back only the encoded bitstream. Unsupported native formats and software encoding use CPU compatibility paths. The wired LAN checks above do not establish Wi-Fi performance, multiple concurrent 4K sessions, dynamic game content, native 4K capture or end-to-end input/display latency. The GPU texture pools and native encoder queues are bounded to eight retained frames; capacity runs may intentionally keep those queues occupied. [PARITY.md](PARITY.md) separates implemented features from native validation.
