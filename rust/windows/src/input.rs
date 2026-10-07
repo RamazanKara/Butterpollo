@@ -841,6 +841,32 @@ impl Injector {
         }
         Ok(())
     }
+    /// Cancel every touch contact, as a client's cancel-all does.
+    fn cancel_touches(&mut self) -> Result<()> {
+        for p in self.touches.values_mut() {
+            pointer_event(&mut p.pointerInfo, 4, POINT::default());
+        }
+        let result = self.inject_touches();
+        self.touches.clear();
+        result
+    }
+    /// Lift the pen if it is active.
+    fn cancel_pen(&mut self) -> Result<()> {
+        let (Some(device), Some(frame)) = (self.pen_device, pen_cancel(self.pen)) else {
+            return Ok(());
+        };
+        let result = unsafe {
+            inject_pointer(
+                device,
+                &[POINTER_TYPE_INFO {
+                    r#type: PT_PEN,
+                    Anonymous: POINTER_TYPE_INFO_0 { penInfo: frame },
+                }],
+            )
+        };
+        self.pen = pen_after(frame, 7, result.is_err());
+        result
+    }
     #[allow(clippy::too_many_arguments)]
     fn touch(
         &mut self,
@@ -867,12 +893,7 @@ impl Injector {
                 )?);
             }
             if event == 7 {
-                for p in self.touches.values_mut() {
-                    pointer_event(&mut p.pointerInfo, 4, POINT::default());
-                }
-                let result = self.inject_touches();
-                self.touches.clear();
-                return result;
+                return self.cancel_touches();
             }
             let mut p = if let Some(existing) = self.touches.get(&id) {
                 *existing
@@ -1537,6 +1558,10 @@ impl Drop for Injector {
                 Self::button(*button, false),
             );
         }
+        // Lift contacts that are still down before their devices go away,
+        // as a client's cancel would. Best effort.
+        let _ = self.cancel_touches();
+        let _ = self.cancel_pen();
         unsafe {
             if let Some(device) = self.touch_device.take() {
                 DestroySyntheticPointerDevice(device);
@@ -1632,6 +1657,13 @@ fn pen_frame(
         }
     }
     Some(pen)
+}
+/// The frame that lifts an active pen, as a client's cancel-all does.
+fn pen_cancel(pen: POINTER_PEN_INFO) -> Option<POINTER_PEN_INFO> {
+    if pen.pointerInfo.pointerFlags == POINTER_FLAG_NONE {
+        return None;
+    }
+    pen_frame(pen, 7, 0, 0, POINT::default(), 0., u16::MAX, u8::MAX)
 }
 /// The pen after a frame: edge flags last one frame. A pen that ended, or
 /// that Windows refused to put down and so never saw, is inactive whether or
@@ -2102,6 +2134,28 @@ mod tests {
         assert_eq!(
             pen_after(moved, 3, true).pointerInfo.pointerFlags,
             in_contact
+        );
+    }
+
+    #[test]
+    fn an_active_pen_is_lifted_before_its_device_goes_away() {
+        let idle = POINTER_PEN_INFO::default();
+        assert!(pen_cancel(idle).is_none());
+        let held = pen_after(pen_event(idle, 1, 0.5).unwrap(), 1, false);
+        let lifted = pen_cancel(held).unwrap();
+        assert_eq!(
+            lifted.pointerInfo.pointerFlags,
+            POINTER_FLAG_UP | POINTER_FLAG_CANCELED
+        );
+        assert_eq!((lifted.penMask, lifted.pressure), (PEN_MASK_NONE, 0));
+        assert_eq!(
+            pen_after(lifted, 7, true).pointerInfo.pointerFlags,
+            POINTER_FLAG_NONE
+        );
+        let hovering = pen_after(pen_event(idle, 0, 0.).unwrap(), 0, false);
+        assert_eq!(
+            pen_cancel(hovering).unwrap().pointerInfo.pointerFlags,
+            POINTER_FLAG_UPDATE | POINTER_FLAG_CANCELED
         );
     }
 
