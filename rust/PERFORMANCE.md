@@ -2802,6 +2802,140 @@ pre-existing ignored tests; and the release host/examples build passed.
 No web files changed. The installed service and display configuration
 were not changed.
 
+## October 7: input on the control thread
+
+Every client's input passes through one control thread: ENet receives the
+datagram, the host decrypts and decodes it, and the injector hands it to
+Windows or the virtual gamepad driver. Five things on that thread made
+input wait; each is now changed and measured against the code before it
+(`72b8b0cc`).
+
+Ryzen 7 5800X3D (16 threads), Windows 11 26200, release builds of
+`rust/windows/examples/input_path_probe.rs` and
+`rust/host/examples/enet_input_probe.rs`, with the stream's process setup
+(HIGH priority class, 1 ms timer resolution, power throttling off). Load is
+a child process of normal priority class spinning one thread per logical
+CPU at the named thread priority, standing in for a CPU-bound game. Mouse
+input is always a zero-distance relative move. The pad sections plug one
+neutral VHF pad and remove it, and ran while no client streamed. Network
+rows are loopback: they include the host's socket calls and scheduling,
+but no NIC, interrupt moderation or wire.
+
+### Virtual gamepad calls
+
+Each pad call is a blocking DeviceIoControl into the VHF driver, which
+runs in WUDFHost at normal priority. The raw calls (`vhf`, 1,000 states per
+round at 1 kHz, 500 feedback polls):
+
+| Load | State p50 | State max | Feedback poll max |
+|---|---|---|---|
+| None | 136 µs | 0.25, 0.28 ms | 0.12 ms |
+| Normal | 53-55 µs | 6.8, 21.9 ms | 11.1 ms |
+| Highest | 54-56 µs | 279, 229 ms | 0.34 ms |
+
+They ran on the control thread: every controller state, the feedback poll
+every 8 ms and the driver's first open (2.9-6.2 ms) and plug. A pad now
+has its own thread; the control thread queues its events and collects
+feedback. `pad-contention` sends one controller state and one mouse move
+per millisecond through the injector for 6 s, with the 8 ms refresh, and
+records when the mouse move is done after its pass began:
+
+| Load | Before p50 / p99 / max | After p50 / p99 / max |
+|---|---|---|
+| None | 230 µs / 1.37 ms / 6.2 ms | 45 µs / 0.39 ms / 1.8 ms |
+| Normal | 107 µs / 2.11 ms / 27.6 ms | 41 µs / 0.12 ms / 2.1 ms |
+| Highest | 92 µs / 2.12 ms / 287 ms | 39 µs / 0.13 ms / 2.0 ms |
+
+Queueing a state takes 3-6 µs (max 125 µs); the rest is SendInput itself
+(p50 35-39 µs, max 1.8-2.1 ms). A rerun with `--trace` showed the pad
+plugged and no driver call failing on its thread. The driver's own
+stalls remain and now delay only that pad's input. Raising WUDFHost's
+priority would shorten them but changes another process; it is left as
+it is. One earlier run of the new code, before the probe timed controller
+and mouse separately, recorded a single 344 ms pass with no load; four
+later runs without load did not repeat it, and its cause was not found.
+
+### Input thread priority
+
+The control thread registered with MMCSS and then set its own thread
+priority, which cancels the boost. `priority` reads the thread's effective
+priority (13 without either); `contention` sends loopback datagrams to a
+thread waiting as the control loop does, with TIME_CRITICAL spinners on
+every CPU, 1,500 each:
+
+| Thread setup | Priority | p50 | p99 | max |
+|---|---|---|---|---|
+| `Priority::new` (control thread before) | 14 | 3,541 µs | 20,138 µs | 26,062 µs |
+| `Priority::input` (control thread now) | 18 | 17 µs | 30 µs | 287 µs |
+
+The run before the change gave 3,535 / 23,274 / 26,983 µs for
+`Priority::new`. The gamepad thread uses `Priority::input` too. Capture,
+encode, audio and pacing threads still use `Priority::new`; whether they
+should keep their boost needs its own measurement beside a game.
+
+### ENet acknowledgement
+
+rusty_enet's `service()` sends a packet's acknowledgement (one sendto,
+22-24 µs here) before it returns the packet. The control socket now holds
+what ENet sends until the pass has applied its input, then sends it in
+order before `host.flush()`. `enet_input_probe`, 3,000 reliable 36-byte
+packets on loopback, two alternating runs per mode, median:
+
+| | Acknowledged inside `service()` | Held until after apply |
+|---|---|---|
+| Client send to server apply step | 69, 71 µs | 46, 46 µs |
+| Server wake to first event | 31, 33 µs | 9, 9 µs |
+
+On a real network the sendto goes through the NIC driver instead of
+loopback; that cost was not measured.
+
+### SendInput per pass
+
+A SendInput call costs about the same for one input as for eight. The
+injector now sends a pass's keyboard and mouse input in one call, in
+order; touch, pen, and a key or button whose handling depends on an
+unsent press of its kind, split the pass. `batch`, zero-distance moves,
+600 passes per row, alternating:
+
+| Events per pass | One call each, p50 / p99 | One call per pass, p50 / p99 |
+|---|---|---|
+| 1 | 37 / 157 µs | 36 / 121 µs |
+| 2 | 62 / 339 µs | 33 / 198 µs |
+| 4 | 98 / 347 µs | 31 / 212 µs |
+| 8 | 180 / 577 µs | 38 / 270 µs |
+
+Mouse moves within a pass were already merged, so this helps a move with
+a click or scroll, key combinations and text, which was one call per
+character.
+
+### One-off calls
+
+Finding the display for absolute input enumerates every display
+(`display_rect`: p50 1.6 ms, max 2.6 ms; `display::monitors` once 21 ms).
+It ran when the injector was made with the first input, every 500 ms while
+the stream's display did not exist, and on every pass after a rename until
+the new name was found. Lookups now run on their own thread; absolute
+mouse, touch and pen wait for one still running, other input never does.
+The injector is made when the session is first seen.
+
+| `injector` | Before | After |
+|---|---|---|
+| `Injector::new_options`, existing display, p50 | 3,419 µs | 69 µs |
+| `Injector::new_options`, missing display, p50 | 4,069 µs | 68 µs |
+| `set_output` + `refresh` per 1 ms pass, display missing, 3 s, max | 18,333 µs | 65 µs |
+| Passes over 200 µs | 5 | 0 |
+
+Synthetic touch and pen devices (2.0-3.0 ms to create) are still made on
+the first touch or pen event. While a synthetic touch device exists,
+Windows reports touch to every application: `SM_MAXIMUMTOUCHES` went from
+0 to 32 and `SM_DIGITIZER` from 0 to 193 (integrated multi-touch, ready),
+and back after it was destroyed. Making one ahead of time would change
+what a game sees in sessions that never touch.
+
+Not measured here: a Moonlight client on a real network, a physical
+controller, and the release end-to-end check, which needs the installed
+host.
+
 ## Limits
 
 This machine validates AMD AMF. Native NVENC now calls the installed NVIDIA driver directly, supports reviewed API versions 11.0–13.0, reference frame invalidation, D3D11 4:2:0/8-bit 4:4:4 and GPU-only CUDA interop for ten-bit 4:4:4. Seven mock-driver tests exercise compatibility, asynchronous ownership, timeout teardown, metadata lifetime, loss recovery and bitrate changes; NVIDIA execution/performance still needs NVIDIA hardware. QSV has native D3D11 imports, and TrueHDR has a shared-device GPU path; these need Intel/NVIDIA hardware respectively. PyroWave uses shared D3D11/Vulkan planar GPU inputs and reads back only the encoded bitstream. Unsupported native formats and software encoding use CPU compatibility paths. The wired LAN checks above do not establish Wi-Fi performance, multiple concurrent 4K sessions, dynamic game content, native 4K capture or end-to-end input/display latency. The GPU texture pools and native encoder queues are bounded to eight retained frames; capacity runs may intentionally keep those queues occupied. [PARITY.md](PARITY.md) separates implemented features from native validation.

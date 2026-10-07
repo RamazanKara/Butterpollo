@@ -97,6 +97,19 @@ PyroWave's colour conversion now runs on the Radeon compute queue instead of wai
 
 **AMF's low-latency switches were checked too.** With the default ultra-low-latency usage, the driver already applies its internal low-latency mode and AV1's lowest latency; forcing them changed neither encode time nor output size, so they stay on Driver default. [When forcing them helps →](configuration.md#capture-and-video)
 
+## Input under load
+
+Every client's input passes through one host thread. Changes after rc.19 give virtual controllers a thread of their own, let the input thread keep its multimedia priority boost, and send the keyboard and mouse input of one network pass to Windows in one call. Ryzen 7 5800X3D, October 7, 2026:
+
+| | Before | After |
+| --- | ---: | ---: |
+| Mouse move behind a controller update, CPU-bound load on every core, worst case | 287 ms | **2.0 ms** |
+| Input packet to the input thread beside time-critical threads on every core, median | 3.5 ms | **17 µs** |
+
+Smaller changes take a few tens of microseconds off every input packet (the network acknowledgement now goes out after the input is applied) and remove 2–18 ms pauses at a stream's first input and while its display is created or renamed. These are host-side measurements on loopback; the network and the client's decoding come on top.
+
+[Method and all runs →](../rust/PERFORMANCE.md#october-7-input-on-the-control-thread)
+
 ## WGC capture and pacing
 
 Since rc.9, Automatic capture prefers WGC and supported Radeon streams use compute by default. Guarded source-phase pacing waits for a predicted fresh update when the capture history supports it.
