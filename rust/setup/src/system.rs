@@ -105,16 +105,21 @@ pub fn run_as_system(program: &str, args: &[&str], timeout: Duration) -> Result<
     );
     let log = work.join(format!("{id}.log"));
     let script = work.join(format!("{id}.cmd"));
+    let definition = work.join(format!("{id}.xml"));
     let _ = std::fs::remove_file(&log);
     std::fs::write(&script, task_script(program, args, &log))?;
+    std::fs::write(&definition, task_definition(&script))?;
     line(format!("as SYSTEM> {program} {args:?}"));
     let schtasks = system32("schtasks.exe");
-    let task = format!("\"{}\"", script.display());
     let (created, _) = run(
         &schtasks,
         &[
-            "/Create", "/TN", &id, "/TR", &task, "/SC", "ONCE", "/ST", "23:59", "/RU", "SYSTEM",
-            "/RL", "HIGHEST", "/F",
+            "/Create",
+            "/TN",
+            &id,
+            "/XML",
+            &definition.display().to_string(),
+            "/F",
         ],
         Duration::from_secs(60),
     )?;
@@ -151,8 +156,30 @@ pub fn run_as_system(program: &str, args: &[&str], timeout: Duration) -> Result<
         Duration::from_secs(60),
     );
     let _ = std::fs::remove_file(&script);
+    let _ = std::fs::remove_file(&definition);
     let _ = std::fs::remove_file(&log);
     result
+}
+fn task_definition(script: &Path) -> String {
+    let escape = |value: &str| {
+        value
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    };
+    let command = escape(&system32("cmd.exe"));
+    let arguments = escape(&format!("/D /S /C \"\"{}\"\"", script.display()));
+    // With no timer, a task left by interrupted setup cannot install drivers later.
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers />
+  <Principals><Principal id="System"><UserId>S-1-5-18</UserId><RunLevel>HighestAvailable</RunLevel></Principal></Principals>
+  <Settings><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT0S</ExecutionTimeLimit></Settings>
+  <Actions Context="System"><Exec><Command>{command}</Command><Arguments>{arguments}</Arguments></Exec></Actions>
+</Task>"#
+    )
 }
 fn task_script(program: &str, args: &[&str], log: &Path) -> String {
     let quote = |value: &str| format!("\"{}\"", value.replace('%', "%%"));
@@ -855,6 +882,44 @@ mod tests {
         assert!(output.contains("BUTTERPOLLO-EXIT=3010"), "{output}");
         Ok(())
     }
+    #[test]
+    fn setup_tasks_have_no_timer_and_xml_paths_round_trip() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let script = root.path().join("Çağrı & Müller/task.cmd");
+        let definition = root.path().join("task.xml");
+        std::fs::write(&definition, task_definition(&script))?;
+        let check = root.path().join("check.ps1");
+        std::fs::write(
+            &check,
+            r#"param([string]$Definition)
+[xml]$task = Get-Content -LiteralPath $Definition -Raw -Encoding UTF8
+if ($task.Task.Triggers.HasChildNodes) { exit 1 }
+if ($task.Task.Principals.Principal.UserId -ne 'S-1-5-18') { exit 2 }
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+Write-Output $task.Task.Actions.Exec.Arguments
+"#,
+        )?;
+        let (code, output) = run(
+            &system32("WindowsPowerShell\\v1.0\\powershell.exe"),
+            &[
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                &check.display().to_string(),
+                &definition.display().to_string(),
+            ],
+            Duration::from_secs(30),
+        )?;
+        assert_eq!(code, 0, "{output}");
+        assert!(
+            output.contains(&format!("/D /S /C \"\"{}\"\"", script.display())),
+            "{output}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn windows_consumers_receive_drive_and_unc_paths_without_verbatim_prefixes() -> Result<()> {
         for (input, expected) in [
