@@ -2000,6 +2000,11 @@ struct Settings {
 }
 static SETTINGS: std::sync::Mutex<std::collections::BTreeMap<String, Settings>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
+/// The displays streams, paused game displays, launches being prepared and
+/// remote monitors hold now, by device id.
+pub fn leased_displays() -> Vec<String> {
+    SETTINGS.lock().unwrap().keys().cloned().collect()
+}
 pub struct Guard {
     pub output: String,
     virtual_display: Option<DisplayLease>,

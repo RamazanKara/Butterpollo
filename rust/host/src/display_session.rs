@@ -658,9 +658,43 @@ impl Drop for Prepared {
     }
 }
 
+/// Streams share the saved layout's restoration, like the arrangement and
+/// display settings leases: the first records it for crash recovery and the
+/// last restores it. One client's end must not switch off another client's
+/// display or reset its mode and HDR, nor clear the journal under it.
+struct Baseline<T> {
+    users: usize,
+    held: Option<T>,
+}
+impl<T> Baseline<T> {
+    const fn new() -> Self {
+        Self {
+            users: 0,
+            held: None,
+        }
+    }
+    /// The first user records the layout; later users join it.
+    fn acquire(&mut self, record: impl FnOnce() -> Result<T>) -> Result<()> {
+        if self.users == 0 {
+            self.held = Some(record()?);
+        }
+        self.users += 1;
+        Ok(())
+    }
+    /// Only the last user restores the layout.
+    fn release(&mut self, restore: impl FnOnce(T)) {
+        self.users -= 1;
+        if self.users == 0
+            && let Some(held) = self.held.take()
+        {
+            restore(held);
+        }
+    }
+}
+type SavedLayout = (butterpollo_windows::display::Snapshot, Vec<String>);
+static BASELINE: Mutex<Baseline<SavedLayout>> = Mutex::new(Baseline::new());
+
 struct GoldenLease {
-    snapshot: butterpollo_windows::display::Snapshot,
-    excluded: Vec<String>,
     host: std::sync::Weak<crate::state::Host>,
 }
 impl GoldenLease {
@@ -670,49 +704,91 @@ impl GoldenLease {
         config: &Config,
     ) -> Result<Self> {
         let excluded = crate::maintenance::display_exclusions(config)?;
-        butterpollo_windows::display_recovery::baseline(Some((
-            snapshot.clone(),
-            excluded.clone(),
-        )))?;
+        BASELINE.lock().unwrap().acquire(|| {
+            butterpollo_windows::display_recovery::baseline(Some((
+                snapshot.clone(),
+                excluded.clone(),
+            )))?;
+            Ok((snapshot, excluded))
+        })?;
         Ok(Self {
-            snapshot,
-            excluded,
             host: Arc::downgrade(h),
         })
     }
 }
 impl Drop for GoldenLease {
     fn drop(&mut self) {
-        let mut excluded = self.excluded.clone();
-        if let Some(host) = self.host.upgrade() {
-            let outputs: Vec<_> = host
-                .monitors
-                .lock()
-                .unwrap()
-                .values()
-                .map(|m| m.current_output())
-                .collect();
-            if let Ok(monitors) = butterpollo_windows::display::monitors() {
-                excluded.extend(
-                    monitors
-                        .iter()
-                        .filter(|m| outputs.contains(&m.display_name))
-                        .map(|m| m.device_id.clone()),
-                );
-            }
-        }
-        if let Err(error) = self.snapshot.restore_excluding(&excluded) {
-            tracing::warn!(%error,"saved display baseline restoration remains pending");
-        } else {
-            let _ = butterpollo_windows::display_recovery::baseline(None);
-        }
+        // Held through the restore, so a stream starting meanwhile records
+        // its journal entry after this one is cleared, not before.
+        BASELINE
+            .lock()
+            .unwrap()
+            .release(|(snapshot, mut excluded)| {
+                if let Some(host) = self.host.upgrade() {
+                    let outputs: Vec<_> = host
+                        .monitors
+                        .lock()
+                        .unwrap()
+                        .values()
+                        .map(|m| m.current_output())
+                        .collect();
+                    if let Ok(monitors) = butterpollo_windows::display::monitors() {
+                        excluded.extend(
+                            monitors
+                                .iter()
+                                .filter(|m| outputs.contains(&m.display_name))
+                                .map(|m| m.device_id.clone()),
+                        );
+                    }
+                }
+                // Displays still in use stay as they are: a stream without
+                // this lease, a paused game display or a launch being prepared.
+                excluded.extend(butterpollo_windows::display::leased_displays());
+                if let Err(error) = snapshot.restore_excluding(&excluded) {
+                    tracing::warn!(%error,"saved display baseline restoration remains pending");
+                } else {
+                    let _ = butterpollo_windows::display_recovery::baseline(None);
+                }
+            });
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use std::sync::mpsc;
+
+    #[test]
+    fn the_saved_layout_is_restored_once_after_the_last_stream() {
+        let mut baseline = Baseline::new();
+        let journal = Cell::new(false);
+        let restores = Cell::new(0);
+        baseline
+            .acquire(|| {
+                journal.set(true);
+                Ok("layout")
+            })
+            .unwrap();
+        baseline
+            .acquire(|| panic!("a second stream must join the recorded layout"))
+            .unwrap();
+        let restore = |layout: &str| {
+            assert_eq!(layout, "layout");
+            restores.set(restores.get() + 1);
+            journal.set(false);
+        };
+        baseline.release(restore);
+        assert_eq!(restores.get(), 0);
+        assert!(journal.get(), "the crash journal must stay pending");
+        baseline.release(restore);
+        assert_eq!(restores.get(), 1);
+        assert!(!journal.get());
+        // A failed record leaves no user behind; the next stream records again.
+        assert!(baseline.acquire(|| anyhow::bail!("journal busy")).is_err());
+        baseline.acquire(|| Ok("next")).unwrap();
+        baseline.release(|layout| assert_eq!(layout, "next"));
+    }
 
     #[test]
     fn capture_target_stays_readable_during_refresh_and_publishes_identity_together() {
