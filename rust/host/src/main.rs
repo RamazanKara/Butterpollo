@@ -191,7 +191,9 @@ async fn main() -> Result<()> {
         butterpollo_windows::process::StopSignal::new(args.service_stop_source.as_deref())?;
     let directory = args.config_dir.unwrap_or_else(default_directory);
     let h = state::Host::load(directory, assets, args.port)?;
-    butterpollo_windows::crash::initialize(&h.directory)?;
+    // Crash reporting must not keep the host from starting, e.g. when the
+    // reporter process is blocked.
+    let crash_reporting = butterpollo_windows::crash::initialize(&h.directory).err();
     let display_recovery = butterpollo_windows::display_recovery::initialize(&h.directory)?;
     let log_path = h
         .config
@@ -230,6 +232,12 @@ async fn main() -> Result<()> {
             path = %path.display(),
             error = format!("{error:#}"),
             "log_path cannot be used; logging to the default file"
+        );
+    }
+    if let Some(error) = crash_reporting {
+        tracing::warn!(
+            error = format!("{error:#}"),
+            "crash reporting unavailable; the host runs without crash reports"
         );
     }
     if let Some(error) = display_recovery {
