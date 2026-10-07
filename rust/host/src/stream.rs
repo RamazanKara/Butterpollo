@@ -221,7 +221,26 @@ fn apply_overrides(
         })
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    config.update(&overrides)?;
+    // One at a time: an override the host cannot use (an imported frame
+    // limit of -1) is skipped, as in the C++ host, instead of failing every
+    // stream of the device or app, or the running stream when it is edited.
+    let mut overrides = overrides;
+    overrides.retain(|key, value| {
+        let single = serde_json::Map::from_iter([(key.clone(), value.clone())]);
+        match config.update(&single) {
+            Ok(()) => true,
+            Err(error) => {
+                static WARNED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+                let warning = format!("{key}={value}");
+                let mut warned = WARNED.lock().unwrap();
+                if !warned.contains(&warning) && warned.len() < 64 {
+                    warned.push(warning);
+                    tracing::warn!(key, %value, error = format!("{error:#}"), "override ignored");
+                }
+                false
+            }
+        }
+    });
     for (key, value) in overrides {
         if RTX_KEYS.contains(&key.as_str()) {
             let marker = butterpollo_core::rtx_policy::marker(&key);
@@ -1916,6 +1935,15 @@ fn feedback_packets(id: u16, kind: u16, data: &[u8]) -> Vec<(u16, Vec<u8>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn an_override_the_host_cannot_use_is_skipped_and_the_rest_apply() {
+        let mut config = Config::default();
+        let overrides =
+            serde_json::json!({"frame_limiter_fps_limit": "-1", "fec_percentage": "30"});
+        apply_overrides(&mut config, overrides.as_object().unwrap()).unwrap();
+        assert_eq!(config.get("fec_percentage", ""), "30");
+        assert!(!config.values.contains_key("frame_limiter_fps_limit"));
+    }
     #[test]
     fn wgc_interval_is_unrestricted_by_default_and_preserves_overrides() {
         let default = Config::default();
