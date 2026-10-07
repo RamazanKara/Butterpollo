@@ -96,6 +96,14 @@ Up to rc.10, a launch failed with this error when Windows left the new virtual d
 
 `video sender stopped: A non-blocking socket operation could not be completed immediately. (os error 10035)` comes from rc.1, which ended the stream when the Windows send buffer was momentarily full. Since rc.2 the host waits briefly, drops only those packets and keeps streaming, as Vibepollo does; the log then shows `UDP send failed; packets dropped` at most every five seconds. Install the current release. Frequent drop warnings mean the network cannot carry the bitrate: lower it, or use a standard codec rather than PyroWave over Wi-Fi.
 
+## Steam shows two controllers
+
+Some Steam builds can list one VHF Xbox controller twice. Steam's SDL controller discovery races its XInput and GameInput backends for the same device. Start+Select may then open both Xbox Game Bar and Steam's keyboard. SDL has an [upstream fix](https://github.com/libsdl-org/SDL/commit/c4cfb739), but a Steam build may not include it yet.
+
+Install [ViGEmBus from nefarius](https://github.com/nefarius/ViGEmBus/releases) separately and keep **Settings → Input → Controller type** on **Automatic**. Butterpollo prefers ViGEmBus when available. Its USB-style Xbox 360 pad avoids that duplicate discovery path. ViGEmBus is retired but widely used; Butterpollo does not bundle its installer.
+
+Automatic can choose DS4 for a client with motion sensors or a touchpad, including Steam Deck. Select **Xbox 360 (ViGEmBus)** (`gamepad = x360`) explicitly if you need the Xbox 360 path and do not need motion or touchpad input. Disconnect and reconnect after changing the setting. Check Butterpollo's logs for `backend="ViGEmBus"` and `profile="x360"`, and Steam's `logs/controller.txt` for the new arrival. An explicit VHF choice continues to use VHF even when ViGEmBus is installed.
+
 ## An update stays queued
 
 In **Maintenance → Updates**, read the current phase and any error. Installation needs the installed Windows service and one minute without streams, pending connections, remote monitors or host apps. Quit a retained Desktop/game session as well as disconnecting its video. A new connection defers the update.

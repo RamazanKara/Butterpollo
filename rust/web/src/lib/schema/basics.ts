@@ -530,18 +530,20 @@ const input: Setting[] = [
     key: 'gamepad',
     label: 'Controller type',
     description:
-      'Which controller games see. Automatic presents a DualSense for PlayStation controllers, a Switch Pro for Nintendo controllers and an Xbox Series controller otherwise; games that support only XInput see just the Xbox types.',
+      'Automatic prefers ViGEmBus when installed: DualShock 4 for PlayStation controllers or enabled motion/touchpad input, Xbox 360 otherwise. This Xbox 360 avoids Steam detecting one VHF Xbox pad twice. Without ViGEmBus, Automatic uses VHF: DualSense for PlayStation, Switch Pro for Nintendo, and Xbox Series otherwise, with motion/touchpad preferences for other types. Explicit choices use the named driver.',
     category: 'input',
     group: 'Controllers',
     control: {
       kind: 'select',
       options: [
         { value: 'auto', label: 'Automatic' },
-        { value: 'vhf_xbox', label: 'Xbox Series' },
-        { value: 'vhf_xbox_one', label: 'Xbox One' },
-        { value: 'vhf_ds4', label: 'DualShock 4' },
-        { value: 'vhf_ds5', label: 'DualSense' },
-        { value: 'vhf_switch', label: 'Switch Pro' },
+        { value: 'x360', label: 'Xbox 360 (ViGEmBus)' },
+        { value: 'ds4', label: 'DualShock 4 (ViGEmBus)' },
+        { value: 'vhf_xbox', label: 'Xbox Series (VHF)' },
+        { value: 'vhf_xbox_one', label: 'Xbox One (VHF)' },
+        { value: 'vhf_ds4', label: 'DualShock 4 (VHF)' },
+        { value: 'vhf_ds5', label: 'DualSense (VHF)' },
+        { value: 'vhf_switch', label: 'Switch Pro (VHF)' },
       ],
     },
     default: 'auto',
@@ -549,9 +551,9 @@ const input: Setting[] = [
   },
   {
     key: 'motion_as_ds4',
-    label: 'DualSense for motion controls',
+    label: 'PlayStation controller for motion controls',
     description:
-      "With the automatic controller type, present a DualSense when the client's controller has motion sensors, so games receive motion. Turn it off to ignore motion sensors when choosing.",
+      "With Automatic, motion sensors select DualShock 4 through ViGEmBus or DualSense through VHF, including Xbox-type clients such as Steam Deck. VHF keeps Nintendo clients as Switch Pro. Turn it off to ignore motion sensors when choosing.",
     category: 'input',
     group: 'Controllers',
     control: { kind: 'toggle' },
@@ -560,9 +562,9 @@ const input: Setting[] = [
   },
   {
     key: 'touchpad_as_ds4',
-    label: 'DualSense for touchpads',
+    label: 'PlayStation controller for touchpads',
     description:
-      "With the automatic controller type, present a DualSense when the client's controller has a touchpad. Turn it off to ignore the touchpad when choosing.",
+      "With Automatic, a touchpad selects DualShock 4 through ViGEmBus or DualSense through VHF. VHF keeps Nintendo clients as Switch Pro. Turn it off to ignore the touchpad when choosing.",
     category: 'input',
     group: 'Controllers',
     control: { kind: 'toggle' },

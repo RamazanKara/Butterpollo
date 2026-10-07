@@ -24,11 +24,13 @@
 
   const GAMEPADS: Choice[] = [
     { value: 'auto', label: 'Automatic' },
-    { value: 'vhf_xbox_one', label: 'Xbox One' },
-    { value: 'vhf_xbox', label: 'Xbox Series' },
-    { value: 'vhf_ds4', label: 'DualShock 4' },
-    { value: 'vhf_ds5', label: 'DualSense' },
-    { value: 'vhf_switch', label: 'Switch Pro' },
+    { value: 'x360', label: 'Xbox 360 (ViGEmBus)' },
+    { value: 'ds4', label: 'DualShock 4 (ViGEmBus)' },
+    { value: 'vhf_xbox_one', label: 'Xbox One (VHF)' },
+    { value: 'vhf_xbox', label: 'Xbox Series (VHF)' },
+    { value: 'vhf_ds4', label: 'DualShock 4 (VHF)' },
+    { value: 'vhf_ds5', label: 'DualSense (VHF)' },
+    { value: 'vhf_switch', label: 'Switch Pro (VHF)' },
   ];
 </script>
 
@@ -61,7 +63,7 @@
       {draft}
       key="gamepad"
       label="Controller type"
-      hint="The controller this PC sees for each device."
+      hint="Automatic prefers installed ViGEmBus, then VHF. ViGEmBus Xbox 360 avoids Steam's duplicate-controller issue; motion or touchpad input can select DS4."
       options={GAMEPADS}
     />
   </div>
