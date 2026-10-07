@@ -286,7 +286,7 @@ pub(crate) async fn page(
         return StatusCode::NOT_FOUND.into_response();
     };
     let configured = h.credentials.read().unwrap().is_some();
-    let signed_in = web::authenticated(&h, &headers);
+    let signed_in = web::authenticated(&h, &headers, Some(connection.peer.ip()));
     if !configured && path != "/setup" {
         return redirect("/setup");
     }

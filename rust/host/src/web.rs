@@ -42,7 +42,70 @@ pub(crate) fn access(headers: &HeaderMap) -> Option<String> {
         .map(str::to_owned)
         .or_else(|| cookie(headers, "__Host-apollo_session"))
 }
-pub(crate) fn authenticated(h: &Shared, headers: &HeaderMap) -> bool {
+/// Sign-in attempts per address over the last minute. The login form and
+/// Basic credentials share it, so neither lets a peer guess the password at
+/// full speed. This PC is never throttled, and IPv6 counts per /64, the
+/// block one LAN host can take addresses from.
+struct SignIns {
+    attempts: std::collections::HashMap<std::net::IpAddr, (Instant, u32)>,
+}
+static SIGN_INS: std::sync::LazyLock<std::sync::Mutex<SignIns>> = std::sync::LazyLock::new(|| {
+    std::sync::Mutex::new(SignIns {
+        attempts: Default::default(),
+    })
+});
+impl SignIns {
+    const LIMIT: u32 = 10;
+    const WINDOW: Duration = Duration::from_secs(60);
+    const TRACKED: usize = 1024;
+    fn key(peer: std::net::IpAddr) -> Option<std::net::IpAddr> {
+        let peer = peer.to_canonical();
+        if peer.is_loopback() {
+            return None;
+        }
+        Some(match peer {
+            std::net::IpAddr::V6(address) => {
+                std::net::Ipv6Addr::from(u128::from(address) & (u128::MAX << 64)).into()
+            }
+            v4 => v4,
+        })
+    }
+    /// Count an attempt; false when the address has to wait.
+    fn attempt(&mut self, peer: std::net::IpAddr, now: Instant) -> bool {
+        let Some(key) = Self::key(peer) else {
+            return true;
+        };
+        self.attempts
+            .retain(|_, (since, _)| now.saturating_duration_since(*since) < Self::WINDOW);
+        // Full: forget the oldest address instead of refusing every new
+        // one, which would let a flood of addresses lock everyone out.
+        if self.attempts.len() >= Self::TRACKED
+            && !self.attempts.contains_key(&key)
+            && let Some(oldest) = self
+                .attempts
+                .iter()
+                .min_by_key(|(_, (since, _))| *since)
+                .map(|(address, _)| *address)
+        {
+            self.attempts.remove(&oldest);
+        }
+        let (_, count) = self.attempts.entry(key).or_insert((now, 0));
+        *count += 1;
+        *count <= Self::LIMIT
+    }
+    fn succeeded(&mut self, peer: std::net::IpAddr) {
+        if let Some(key) = Self::key(peer) {
+            self.attempts.remove(&key);
+        }
+    }
+}
+/// Whether the request is signed in: a browser session, or Basic
+/// credentials from `peer`, which count against its sign-in attempts.
+pub(crate) fn authenticated(
+    h: &Shared,
+    headers: &HeaderMap,
+    peer: Option<std::net::IpAddr>,
+) -> bool {
     if let Some(token) = access(headers) {
         let mut sessions = h.web_sessions.lock().unwrap();
         let Some(key) = crate::web_sessions::resolve_hash(&sessions, &token) else {
@@ -73,12 +136,20 @@ pub(crate) fn authenticated(h: &Shared, headers: &HeaderMap) -> bool {
         && let Ok(text) = std::str::from_utf8(&decoded)
         && let Some((user, pass)) = text.split_once(':')
     {
-        return h
+        let peer = peer.unwrap_or(std::net::Ipv4Addr::UNSPECIFIED.into());
+        if !SIGN_INS.lock().unwrap().attempt(peer, Instant::now()) {
+            return false;
+        }
+        let verified = h
             .credentials
             .read()
             .unwrap()
             .as_ref()
             .is_some_and(|c| c.verifies(user, pass));
+        if verified {
+            SIGN_INS.lock().unwrap().succeeded(peer);
+        }
+        return verified;
     }
     false
 }
@@ -323,7 +394,14 @@ async fn guard(State(h): State<Shared>, mut request: Request, next: Next) -> Res
         && !public
         && !fresh_password
         && !api_token
-        && !authenticated(&h, request.headers())
+        && !authenticated(
+            &h,
+            request.headers(),
+            request
+                .extensions()
+                .get::<Connection>()
+                .map(|c| c.peer.ip()),
+        )
     {
         return error(StatusCode::UNAUTHORIZED, "authentication required");
     }
@@ -831,30 +909,19 @@ pub(crate) async fn api(
     }
     if path == "/api/auth/status" {
         let configured = h.credentials.read().unwrap().is_some();
-        let authenticated = authenticated(&h, &headers);
+        let authenticated = authenticated(&h, &headers, Some(connection.peer.ip()));
         return Json(json!({"authenticated":authenticated,"credentials_configured":configured,"login_required":configured&&!authenticated,"status":true})).into_response();
     }
     if path == "/api/auth/login" {
         if method != Method::POST {
             return error(StatusCode::METHOD_NOT_ALLOWED, "POST required");
         }
-        type Attempts = std::collections::HashMap<std::net::IpAddr, (Instant, u32)>;
-        static ATTEMPTS: std::sync::LazyLock<std::sync::Mutex<Attempts>> =
-            std::sync::LazyLock::new(|| std::sync::Mutex::new(Attempts::new()));
+        if !SIGN_INS
+            .lock()
+            .unwrap()
+            .attempt(connection.peer.ip(), Instant::now())
         {
-            let mut attempts = ATTEMPTS.lock().unwrap();
-            attempts
-                .retain(|_, (created, _)| created.elapsed() < std::time::Duration::from_secs(60));
-            if attempts.len() >= 1024 && !attempts.contains_key(&connection.peer.ip()) {
-                return error(StatusCode::TOO_MANY_REQUESTS, "try again in one minute");
-            }
-            let (_, count) = attempts
-                .entry(connection.peer.ip())
-                .or_insert((Instant::now(), 0));
-            *count += 1;
-            if *count > 10 {
-                return error(StatusCode::TOO_MANY_REQUESTS, "try again in one minute");
-            }
+            return error(StatusCode::TOO_MANY_REQUESTS, "try again in one minute");
         }
         let username = text("username");
         if h.credentials
@@ -863,7 +930,7 @@ pub(crate) async fn api(
             .as_ref()
             .is_some_and(|c| c.verifies(username, text("password")))
         {
-            ATTEMPTS.lock().unwrap().remove(&connection.peer.ip());
+            SIGN_INS.lock().unwrap().succeeded(connection.peer.ip());
             let remember = data.get("remember_me").is_some_and(|v| {
                 v.as_bool()
                     .unwrap_or_else(|| matches!(v.as_str(), Some("true" | "1" | "on")))
@@ -1510,6 +1577,52 @@ fn delete_app(h: &Shared, id: &str) -> anyhow::Result<()> {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sign_ins_are_limited_per_address_but_never_on_this_pc() {
+        use std::net::IpAddr;
+        let fresh = || super::SignIns {
+            attempts: Default::default(),
+        };
+        let now = Instant::now();
+        let lan: IpAddr = "192.168.1.20".parse().unwrap();
+        let mut sign_ins = fresh();
+        for _ in 0..10 {
+            assert!(sign_ins.attempt(lan, now));
+        }
+        assert!(!sign_ins.attempt(lan, now), "the 11th attempt in a minute");
+        assert!(sign_ins.attempt("192.168.1.21".parse().unwrap(), now));
+        assert!(
+            sign_ins.attempt(lan, now + Duration::from_secs(61)),
+            "a minute later"
+        );
+        sign_ins.succeeded(lan);
+        assert!(!sign_ins.attempts.contains_key(&lan));
+        for local in ["127.0.0.1", "::1", "::ffff:127.0.0.1"] {
+            let local: IpAddr = local.parse().unwrap();
+            assert!((0..50).all(|_| sign_ins.attempt(local, now)), "{local}");
+        }
+        // One LAN host can take any address in its /64.
+        let mut sign_ins = fresh();
+        for host in 0..10 {
+            assert!(sign_ins.attempt(format!("fe80::{host:x}").parse().unwrap(), now));
+        }
+        assert!(!sign_ins.attempt("fe80::abcd".parse().unwrap(), now));
+        assert!(sign_ins.attempt("fd00:1:2:3::1".parse().unwrap(), now));
+        // A full table forgets the oldest address instead of refusing new ones.
+        let mut sign_ins = fresh();
+        for host in 0..super::SignIns::TRACKED as u32 {
+            let address = IpAddr::from(std::net::Ipv4Addr::from(0x0a00_0000 + host));
+            assert!(sign_ins.attempt(address, now + Duration::from_millis(u64::from(host))));
+        }
+        let newcomer: IpAddr = "172.16.0.1".parse().unwrap();
+        assert!(sign_ins.attempt(newcomer, now + Duration::from_secs(2)));
+        assert_eq!(sign_ins.attempts.len(), super::SignIns::TRACKED);
+        assert!(
+            !sign_ins
+                .attempts
+                .contains_key(&"10.0.0.0".parse::<IpAddr>().unwrap())
+        );
+    }
     use super::*;
 
     #[test]
