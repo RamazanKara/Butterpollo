@@ -164,14 +164,22 @@ impl Sender {
                         } else {
                             bitrate
                         };
-                        let (detail_percentage, wire_budget) =
-                            if current.config.pyrowave_records && critical_percentage > 0 {
-                                controller.observe(&frame.bytes, now, kbps)?
-                            } else {
-                                (0, 0)
-                            };
                         // Every PyroWave frame stands alone: drop one Moonlight
                         // cannot carry, not the session.
+                        let Some((detail_percentage, wire_budget)) =
+                            (if current.config.pyrowave_records && critical_percentage > 0 {
+                                dropped.prepared(
+                                    controller.observe(&frame.bytes, now, kbps),
+                                    frame.bytes.len(),
+                                    Instant::now(),
+                                    &current.launch.warnings,
+                                )
+                            } else {
+                                Some((0, 0))
+                            })
+                        else {
+                            continue;
+                        };
                         let prepared = packetizer.pyrowave_blocks(
                             &frame.bytes,
                             timestamp,
@@ -412,6 +420,40 @@ mod tests {
             assert_eq!(packetizer.iv_counter, 100 + (sent + packets.len()) as u64);
             assert_eq!(packetizer.frame, frame.wrapping_add(1));
         }
+    }
+
+    #[test]
+    fn malformed_frame_after_a_late_interval_is_dropped_by_detail_planning() {
+        // Detail planning parses records only after a late frame. That parse
+        // used to end the session through `?` before block preparation ran.
+        let mut controller = DetailFec::new(60_000);
+        let mut dropped = DroppedFrames::default();
+        let warnings = Warnings::default();
+        let now = Instant::now();
+        let malformed = [0; 64];
+        assert_eq!(
+            dropped.prepared(
+                controller.observe(&malformed, now, 100_000),
+                64,
+                now,
+                &warnings
+            ),
+            Some((0, 0))
+        );
+        assert!(warnings.snapshot().is_empty());
+        let late = now + Duration::from_millis(50);
+        assert!(
+            dropped
+                .prepared(
+                    controller.observe(&malformed, late, 100_000),
+                    64,
+                    late,
+                    &warnings
+                )
+                .is_none()
+        );
+        assert_eq!(dropped.reported, Some(late));
+        assert_eq!(warnings.snapshot()[0].code, "pyrowave_frame");
     }
 
     #[test]
