@@ -4053,6 +4053,261 @@ verified that the first failure is retained and a second failure stops
 the release. The deliberate source-pause e2e failed as expected. The
 installer and publisher were not run.
 
+## October 7: 116 FPS VRR capture, WGC and DDX
+
+This checks the report of an RX 9070 XT alternating between about 116 and
+60–95 FPS in five-second stream windows. The available machine is an AMD
+Radeon RX 7900 XT, driver `32.0.31041.1004`, Windows `26200.9550`, with the
+Sunshine virtual display driver `1.6.3.0`. It is not a reproduction on the
+reporter's GPU or game.
+
+Both WGC and DDX delivered every distinct picture in capture-only runs
+whose VRR source held 116 or 120 FPS, including 4K HDR. The 1080p stream
+comparisons also sustained about 116 FPS with front-edge and async RTSS
+pacing. Sustained halving was not reproduced with those fixed-rate
+sources. Simultaneous-work runs and the local receiver had substantial
+slowdowns, described separately below.
+
+The release host was built from `dac86ada` in this worktree. The stream
+tests use an isolated SYSTEM host on localhost port 48923, a private
+configuration, per-client virtual displays, HEVC HDR, compute conversion
+and the normal AMF defaults. The initial runs use an exclusive layout;
+the later RTSS and receive-only runs use an extended layout so another
+task's physical-display soak can continue. WGC uses the signed-in user's
+helper. The source is `motion_probe`, a borderless full-display D3D11
+window with a frame number and QPC timestamp in its pixels. Its successful
+`Present(1)` calls are recorded independently of capture. A receiver built from
+`tests/moonlight_client.c` uses D3D11VA and reads those numbers after decode.
+Receiver work therefore shares this GPU; this is not a remote-client or
+physical VRR scanout test.
+
+The capture, frame-generation policy, display-session, display and limiter
+sources match rc.20 (`f06e72c7`); the intervening `stream.rs` changes do not
+alter capture or VRR policy. This is not a comparison between two host
+versions with different capture defaults.
+
+The stream fixture sets `clientVrrRequested=1`; RTSP carries that launch
+request into `vrr_low_latency`, and the host log confirms `vrr=true`.
+With the default `frame_limiter_auto_virtual_framegen=legacy`, the policy
+requests 1000 Hz when VRR is requested and twice the stream rate otherwise
+(232 or 240 Hz here). Turning virtual display refresh off bypasses that
+automatic 1000 Hz policy. A manual display refresh or device display-mode
+override also needs to be checked when diagnosing a different machine.
+`kept_timings=true` in the activation message means the *other displays*
+kept their timings while Windows switched on the new target. It is not a
+measurement of the new display's refresh.
+
+RTSS `SyncLimiter=1` is front-edge sync, `0` is async and `2` is back-edge
+sync. The installed RTSS help at
+`Help/Properties/General/SYNC_LIMITER` describes front-edge sync as pacing
+the start of the presentation call against the system clock. Scanline sync
+is a separate setting; front-edge sync does not itself request half rate.
+The virtual-display policy normally selects front-edge sync on AMD even
+when the configured RTSS mode is async. To test async, enable **Use this
+mode on virtual displays** (`rtss_allow_virtual_display_override=true`)
+as well as choosing **RTSS limit mode → Async**. Game-provided frame
+generation has its own override policy in `core/src/framegen.rs`.
+
+RTSS was copied to the private artifact directory, with global hooking
+disabled and only the uniquely named `vrr_rtss_source.exe` opted in. The
+source runs as the signed-in user without its own rate cap; its module
+list confirms the private `RTSSHooks64.dll` is loaded. An initial run with
+only global RTSS settings presented 239.30 FPS despite the host verifying
+`Limit=116`. A later run with the private application profile set to 116
+gave 115.99 source FPS and all 2,320 measured pictures through WGC in
+20 seconds. This is why the host's verified global limit is insufficient
+evidence of the game's effective limit: check its application profile and
+actual presentation rate too. Subsequent limiter comparisons set both
+the global lease and that private application profile to the same rate
+and mode. No installed RTSS profile is edited.
+
+An additional attempt to force 60 FPS through that private application's
+profile did not establish a 60 FPS source: it presented 140.93 FPS in the
+WGC run and 136.06 FPS in the DDX run. The hook was absent from the WGC
+module snapshot and present in the DDX snapshot. Both failed the motion
+gate under simultaneous work. These are failed limiter controls, not
+evidence that an application profile caused the reported 60 FPS problem.
+
+The rc.20 source already sets WGC's `MinUpdateInterval` to zero, uses a
+two-frame pool, and disables slot-aligned publication for VRR streams.
+The legacy diagnostic `wgc_high_rate_capture=true` requests 1 ms instead.
+Those settings should not be described as a new fix for this report.
+
+Capture-only measurements use `capture_phase_probe`: ten seconds per
+run, excluding the first second and last 250 ms, in WGC-helper / DDX /
+DDX / WGC-helper order. The eight-pixel source changes a sequence number
+at the requested rate; capture reads it only after the full desktop copy
+finishes. This counts distinct captured pictures, without an encoder or
+receiver. The temporary `vrr_hdr_probe` variant uses the production
+display guard to enable HDR on its own virtual display and restores that
+lease afterwards. Its capture textures were float16 (DXGI format 10),
+versus BGRA8 (87) in the original probe. Its source and preparation script
+remain with the raw artifacts, not in the shipped examples.
+
+In the main capture-only matrix, 38 of 48 runs held their requested rate
+within 0.1 FPS. Those runs captured all 39,202 presented pictures. The
+table combines WGC and DDX counts; each rate normally has two runs per
+backend. Runs whose source slowed are included in the denominator, and
+described below, rather than being counted as successful fixed-rate tests.
+
+| Desktop | Format | Measured refresh | Requested source FPS | Runs holding target / total | Pictures captured / presented in those runs |
+| --- | --- | --- | --- | --- | --- |
+| 1080p | SDR | 1000 Hz | 116 and 120 | 8 / 8 | 8260 / 8260 |
+| 4K | SDR | 1000 Hz | 116 and 120 | 8 / 8 | 8261 / 8261 |
+| 1080p | SDR | 232 Hz | 116 | 1 / 4 | 1015 / 1015 |
+| 1080p | SDR | 240 Hz | 120 | 0 / 4 | no fixed-rate result |
+| 4K | SDR | 232 Hz | 116 | 4 / 4 | 4061 / 4061 |
+| 4K | SDR | 240 Hz | 120 | 4 / 4 | 4200 / 4200 |
+| 1080p | HDR | 1000 Hz | 116 and 120 | 7 / 8 | 7245 / 7245 |
+| 4K | HDR | 1000 Hz | 116 and 120 | 6 / 8 | 6160 / 6160 |
+
+Repeating the incomplete controls in the same alternating order gave
+four successful runs each at 1080p SDR / 232 Hz / 116 FPS, 1080p SDR /
+240 Hz / 120 FPS, and 4K HDR / 1000 Hz / 120 FPS. All 12 held the target
+and captured all 12,460 presented pictures. Across the main matrix and
+these repeats, the 50 runs that held their rate captured 51,662 of
+51,662 pictures; the ten earlier source-slowdown runs remain recorded.
+
+The initial 1080p HEVC HDR streams below use the source's own cap and no
+host limiter. Each row is one run. Source and distinct decoded pictures
+are counted over the same 20-second source window; host FPS is the
+fixture's steady send counter and can include repeated pictures.
+
+| Requested FPS | VRR / measured Hz | Capture | Source FPS | Host FPS | Distinct decoded FPS |
+| --- | --- | --- | --- | --- | --- |
+| 116 | on / 1000 | WGC helper | 116.00 | 116.83 | 115.25 |
+| 116 | on / 1000 | DDX | 116.00 | 116.88 | 114.75 |
+| 116 | off / 232 | WGC helper | 115.42 | 116.71 | 113.00 |
+| 116 | off / 232 | DDX | 115.33 | 116.74 | 111.25 |
+| 120 | on / 1000 | WGC helper | 119.40 | 120.76 | 118.40 |
+| 120 | on / 1000 | DDX | 120.00 | 120.90 | 118.80 |
+| 120 | off / 240 | WGC helper | 120.00 | 120.81 | 118.40 |
+| 120 | off / 240 | DDX | 118.80 | 117.61 | 112.55 |
+
+All eight passed the fixture's interoperability and motion checks.
+Distinct-picture coverage was 94.74–99.35%, so these are not claims of
+lossless end-to-end delivery. Neither backend fell to a sustained half
+rate. In the 116 FPS VRR pair, four steady five-second windows were
+116.80–117.02 FPS with WGC and 116.79–116.95 FPS with DDX; send-interval
+p95 was 9.08–9.13 ms and 9.09–9.17 ms respectively. With RTSS pacing the
+uncapped 1080p source at 116 FPS and VRR on, both modes delivered every
+picture in the common 20-second window:
+
+| RTSS mode | Capture | Source FPS | Distinct decoded FPS | Source pictures received |
+| --- | --- | --- | --- | --- |
+| Front-edge | WGC helper | 116.00 | 116.00 | 2320 / 2320 |
+| Front-edge | DDX | 115.65 | 115.65 | 2313 / 2313 |
+| Async | DDX | 115.56 | 115.60 | 2312 / 2312 |
+| Async | WGC helper | 115.85 | 115.85 | 2317 / 2317 |
+
+The small difference between an interval-derived source FPS and pictures
+divided by 20 seconds is rounding and the window boundary. These runs do
+not support replacing front-edge sync with async as a general fix.
+
+At 4K with VRR and front-edge sync, WGC had 116.00 source FPS and 116.05
+assembled frames per second; DDX had 114.40 and 114.50. These use the
+receive-only client described below and the common 20-second window.
+The 4K async DDX run slowed to 92.84 source FPS and received 95.25 frames
+per second; the async WGC case hit the outer launcher timeout. The 4K
+async comparison is therefore inconclusive.
+
+Several simultaneous-work runs failed to maintain the requested source
+rate. For example, the last two 4K HDR / 120 FPS runs presented 76.03 and
+59.54 FPS, while DDX captured 72.04 and WGC captured 51.98 respectively.
+The first 1080p HDR / 116 run presented 80.83 and captured 77.74 with WGC.
+The 1080p SDR / 240 Hz batch fell as low as 38.92 source FPS and 29.68
+captured FPS. These are retained observations, not clean comparisons of
+the backends. The soak suite and other builds were active during this
+part of the study; their individual contributions were not isolated.
+They do not establish a fixed 116 FPS source being halved by WGC. A small
+capture age or a lower game resolution alone would not distinguish this
+situation from source-side pacing or scheduling problems.
+
+The first full 4K receiver comparison was also unsuitable for measuring
+capture losses. Its hardware-decoder callback includes GPU-to-CPU
+readback and took 33.70 ms on average in the WGC run and 14.32 ms in the
+DDX run. Received rates were 28.35 and 67.98 FPS, while the host's steady
+send counters were 106.71 and 116.75. The WGC case failed the motion gate
+and had repeated keyframe requests; the DDX case passed interoperability
+but did not sustain the requested rate. Neither is a valid end-to-end
+4K/116 performance pass. Subsequent 4K stream runs use a private receiver
+that counts assembled frames without decoding; those measurements must
+not be labelled decoded or fresh-picture FPS.
+
+The original fixture also waited for a fixed number of 100 ms sleeps.
+Under simultaneous work, a nominal 32-second receiver run lasted 54.36
+seconds, outliving the 36-second source. Its 69.86 host FPS average is
+misleading: the common 20-second window had 109.05 source FPS and 108.50
+assembled frames per second. The later private receiver uses a wall-clock
+deadline. Two early cases exceeded the SYSTEM launcher's 120-second
+deadline, and another receiver timed out; their partial logs remain in
+the artifacts. Later launches use the existing `session_command_long`
+example with a 300-second outer deadline.
+
+The final 4K matrix reduced `motion_probe` to a 128-pixel-high window to
+reduce its drawing work. The desktop, capture and encoded output remain
+3840×2160 HDR. This uses the source's own cap, no host limiter, the
+wall-clock receiver and the same 20-second source/receive window:
+
+| Requested FPS | VRR / measured Hz | Capture | Source FPS | Assembled frames per second |
+| --- | --- | --- | --- | --- |
+| 116 | on / 1000 | WGC helper | 96.34 | 98.65 |
+| 116 | on / 1000 | DDX | 95.53 | 98.20 |
+| 116 | off / 232 | WGC helper | 104.91 | 104.70 |
+| 116 | off / 232 | DDX | 105.20 | 104.70 |
+| 120 | on / 1000 | WGC helper | 119.24 | 119.25 |
+| 120 | on / 1000 | DDX | 120.00 | 120.00 |
+| 120 | off / 240 | WGC helper | 119.95 | 119.60 |
+| 120 | off / 240 | DDX | 100.27 | 100.55 |
+
+All eight completed the receive-only interoperability check. The source
+still failed to hold its cap in several rows, so this is not a clean
+ranking of the capture backends. Assembled-frame counts can include
+repeats and other desktop updates; they cannot establish fresh-picture
+coverage. The capture-only sequence-number measurements above answer
+that narrower question. A quiet-machine 4K encode/decode comparison and
+the original RX 9070 XT/game reproduction remain outstanding.
+
+No capture or limiter policy change is justified by these measurements.
+In particular, they do not support automatically preferring DDX for VRR,
+changing the WGC frame pool or dirty-region handling, or changing the
+default RTSS sync mode. The RX 9070 XT report still needs the game's
+actual presentation rate measured alongside the low-rate host windows.
+
+For that report, try **Capture method → Desktop Duplication** as a single
+comparison, with the same game scene, client settings and verified source
+rate. Check the in-game FPS overlay both before streaming and during the
+slow stream windows. If the game itself is near 60, inspect its VSync and
+frame-cap settings, the selected virtual display's actual refresh, and
+its RTSS application profile. A useful limiter control is **Limiter →
+None** under Frame limiter, with RTSS disabled for that application and an
+in-game 116 FPS cap. Alternatively, test Async with the virtual-display
+override described above. Async is a diagnostic comparison, not a
+demonstrated fix.
+
+Raw commands, isolated profiles, source timestamps, received picture IDs,
+host five-second windows and connection checks are in
+`target/vrr-capture`; `measurements.json` and `phase-measurements.json`
+collect the counts. The SYSTEM launcher uses `session_command.exe` from
+the supplied `bench-rc17` harness and, for later batches, the existing
+`session_command_long` example built in this worktree. It does not change
+the installed service's files, settings or lifetime. Stream cases check the installed log
+and public session counts before starting and watch them during the run;
+capture-only batches record the latest connection event and process list.
+The installed service stayed idle, with its last connection event the
+15:51:34 UTC disconnect. The other RX 9070 investigation overlapped the
+initial capture pilot; the soak task and other builds overlapped later
+batches. Process snapshots are retained beside the measurements.
+Test-owned processes exited and their scheduled tasks were removed after
+the runs. The installed RTSS global-profile SHA-256 is unchanged.
+
+Validation passed: `cargo fmt --all`; clippy for `butterpollo-core`,
+`butterpollo-windows` and `butterpollo`, with all targets and warnings
+denied; 171 core tests; and 63 host tests, with two existing ignores.
+The release host and capture probes built successfully. This section is
+the only tracked change; the experimental harness and receiver remain
+under `target/vrr-capture`.
+
 ## Limits
 
 This machine validates AMD AMF. Native NVENC now calls the installed NVIDIA driver directly, supports reviewed API versions 11.0–13.0, reference frame invalidation, D3D11 4:2:0/8-bit 4:4:4 and GPU-only CUDA interop for ten-bit 4:4:4. Seven mock-driver tests exercise compatibility, asynchronous ownership, timeout teardown, metadata lifetime, loss recovery and bitrate changes; NVIDIA execution/performance still needs NVIDIA hardware. QSV has native D3D11 imports, and TrueHDR has a shared-device GPU path; these need Intel/NVIDIA hardware respectively. PyroWave uses shared D3D11/Vulkan planar GPU inputs and reads back only the encoded bitstream. Unsupported native formats and software encoding use CPU compatibility paths. The wired LAN checks above do not establish Wi-Fi performance, multiple concurrent 4K sessions, dynamic game content, native 4K capture or end-to-end input/display latency. The GPU texture pools and native encoder queues are bounded to eight retained frames; capacity runs may intentionally keep those queues occupied. [PARITY.md](PARITY.md) separates implemented features from native validation.
