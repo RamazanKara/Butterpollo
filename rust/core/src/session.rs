@@ -21,6 +21,20 @@ pub enum Role {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_launch_still_being_prepared_does_not_expire() {
+        let mut sessions = Sessions::default();
+        let mut slow = launch("slow", Role::Stream);
+        slow.created = Instant::now() - Duration::from_secs(90);
+        slow.preparing.store(true, Ordering::Release);
+        sessions.pending.insert(slow.id.clone(), slow.clone());
+        sessions.expire();
+        assert!(sessions.pending.contains_key("slow"));
+        // Prepared: the client's 30 s count from then.
+        slow.preparing.store(false, Ordering::Release);
+        sessions.expire();
+        assert!(!sessions.pending.contains_key("slow"));
+    }
     fn launch(id: &str, role: Role) -> Launch {
         Launch {
             id: id.into(),
@@ -49,6 +63,7 @@ mod tests {
             requested_rate: 0,
             options: Default::default(),
             audio_preparation: Default::default(),
+            preparing: Default::default(),
         }
     }
     #[test]
@@ -137,6 +152,10 @@ pub struct Launch {
     pub requested_rate: u32,
     pub options: BTreeMap<String, String>,
     pub audio_preparation: Arc<std::sync::Mutex<Option<Box<dyn std::any::Any + Send + Sync>>>>,
+    /// While the host still prepares the launch (displays, audio, the app's
+    /// own commands, which can take minutes), it does not expire: the client
+    /// connects only after the launch reply.
+    pub preparing: Arc<AtomicBool>,
 }
 #[derive(Default)]
 pub struct Stats {
@@ -227,8 +246,9 @@ pub struct Sessions {
 }
 impl Sessions {
     pub fn expire(&mut self) {
-        self.pending
-            .retain(|_, p| p.created.elapsed() < Duration::from_secs(30));
+        self.pending.retain(|_, p| {
+            p.preparing.load(Ordering::Acquire) || p.created.elapsed() < Duration::from_secs(30)
+        });
     }
     /// Withdraw a client's launches and streams in one role. Moonlight starts a
     /// stream only after abandoning its previous one, which may never have

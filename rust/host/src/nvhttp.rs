@@ -860,6 +860,7 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
                 .map_or(0, |rate| rate.0),
             audio_preparation: Default::default(),
             options: args.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            preparing: Default::default(),
         };
         let rtsp_port = h.config.read().unwrap().ports()?.rtsp;
         if !launch.rtsp_encrypted
@@ -946,6 +947,18 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
         // seconds; serverinfo and the app list read current_app meanwhile.
         // Launches and stops stay serialized by launch_transition.
         drop(current);
+        // Preparing can outlast the pending launch's 30 s (prep commands may
+        // run for minutes); it expires only from the reply on, on every path.
+        struct Preparing(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for Preparing {
+            fn drop(&mut self) {
+                self.0.store(false, std::sync::atomic::Ordering::Release);
+            }
+        }
+        launch
+            .preparing
+            .store(true, std::sync::atomic::Ordering::Release);
+        let preparing = Preparing(launch.preparing.clone());
         h.sessions.lock().unwrap().queue(launch.clone())?;
         if role != Role::InputOnly {
             let prepared = (|| -> Result<crate::display_session::StreamPreparation> {
@@ -1083,6 +1096,12 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
                     .insert(launch.client.uuid.clone(), (lease, None));
             }
         }
+        // The client has 30 s to connect from now on.
+        match h.sessions.lock().unwrap().pending.get_mut(&id) {
+            Some(pending) => pending.created = Instant::now(),
+            None => bail!("the launch was replaced by a newer one from this device"),
+        }
+        drop(preparing);
         tracing::info!(
             client = %launch.client.name,
             app_id,

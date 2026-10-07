@@ -488,6 +488,7 @@ mod tests {
             requested_rate: 0,
             options: Default::default(),
             audio_preparation: Default::default(),
+            preparing: Default::default(),
         }
     }
     #[test]
