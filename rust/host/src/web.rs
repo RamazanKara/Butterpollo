@@ -1321,11 +1321,20 @@ pub(crate) async fn api(
                     .find(|a| a.extra.get("uuid").and_then(Value::as_str) == Some(uuid))
                     .cloned()
                     .ok_or_else(|| anyhow::anyhow!("application not found"))?;
-                let mut current = h.current_app.lock().unwrap();
-                if current.is_some() {
+                if h.current_app.lock().unwrap().is_some() {
                     anyhow::bail!("application already running");
                 }
-                *current = Some(crate::process::launch(&h, &app, &Default::default())?);
+                // Started without the lock every serverinfo request takes: its
+                // prep commands can run for minutes. launch_transition keeps
+                // another app from being installed meanwhile.
+                let running = crate::process::launch(&h, &app, &Default::default())?;
+                let mut current = h.current_app.lock().unwrap();
+                if current.is_some() {
+                    drop(current);
+                    drop(running);
+                    anyhow::bail!("application already running");
+                }
+                *current = Some(running);
                 json!({"status":true})
             }
             ("GET", "/api/clients/list") => {

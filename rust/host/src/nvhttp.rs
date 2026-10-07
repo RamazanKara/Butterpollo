@@ -695,19 +695,27 @@ async fn applist(
     s.push_str("</root>");
     ([(header::CONTENT_TYPE, "application/xml")], s).into_response()
 }
+// Launching prepares displays and audio and runs prep commands, for seconds
+// to minutes: on the blocking pool, not on the workers that serve every
+// other request.
 async fn launch(
     State(h): State<Shared>,
     Extension(connection): Extension<Connection>,
     Query(args): Query<Args>,
 ) -> Response {
-    start(h, connection, args, false)
+    blocking(move || start(h, connection, args, false)).await
 }
 async fn resume(
     State(h): State<Shared>,
     Extension(connection): Extension<Connection>,
     Query(args): Query<Args>,
 ) -> Response {
-    start(h, connection, args, true)
+    blocking(move || start(h, connection, args, true)).await
+}
+async fn blocking(work: impl FnOnce() -> Response + Send + 'static) -> Response {
+    tokio::task::spawn_blocking(work)
+        .await
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Response {
     use butterpollo_core::remote::{self, Control};
@@ -1113,8 +1121,11 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
                 }
             }
         }
-        let mut current = h.current_app.lock().unwrap();
-        if role == Role::Stream && current.is_none() {
+        // Prep commands can run for minutes: the app starts without the lock
+        // that every serverinfo, app list and asset request takes. Launches
+        // and stops stay serialized by launch_transition, so no other app is
+        // installed meanwhile.
+        if role == Role::Stream && h.current_app.lock().unwrap().is_none() {
             let mut process_args = args.clone();
             process_args.insert("clientName".into(), launch.client.name.clone());
             process_args.insert("clientUuid".into(), launch.client.uuid.clone());
@@ -1123,7 +1134,18 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
                 app.as_ref().context("application not found")?,
                 &process_args,
             ) {
-                Ok(running) => *current = Some(running),
+                Ok(running) => {
+                    let mut current = h.current_app.lock().unwrap();
+                    if current.is_none() {
+                        *current = Some(running);
+                    } else {
+                        drop(current);
+                        tracing::warn!(
+                            "another application started meanwhile; this launch's app is stopped"
+                        );
+                        drop(running);
+                    }
+                }
                 Err(e) => {
                     h.sessions.lock().unwrap().pending.remove(&id);
                     return Err(e);
@@ -1206,6 +1228,10 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
     }
 }
 async fn cancel(State(h): State<Shared>, Extension(connection): Extension<Connection>) -> Response {
+    // Stopping waits for the app to exit and runs its undo commands.
+    blocking(move || cancel_app(h, connection)).await
+}
+fn cancel_app(h: Shared, connection: Connection) -> Response {
     let client = match authenticated(&h, &connection, 1 << 26) {
         Ok(client) => client,
         Err(e) => return xml(401, &[], Some(e.to_string())),
