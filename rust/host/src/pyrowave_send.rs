@@ -200,12 +200,14 @@ impl Sender {
                         current.stats.latency_us.store(latency, Ordering::Relaxed);
                         current.stats.frames.fetch_add(1, Ordering::Relaxed);
                         let micros = |d: Duration| d.as_micros().min(u128::from(u64::MAX)) as u64;
+                        let sent_at = Instant::now();
                         current.stats.performance.lock().unwrap().record_timing(
-                            Instant::now(),
+                            sent_at,
                             butterpollo_core::performance::Timing {
                                 encode: latency,
                                 host: micros(processing),
                                 age: micros(age),
+                                sent: micros(sent_at.saturating_duration_since(claimed)),
                             },
                             sent as u64,
                         );

@@ -948,7 +948,8 @@ impl Media {
                                 s.stats.bytes.fetch_add(bytes as u64, Ordering::Relaxed);
                             }
                             s.stats.frames.fetch_add(1, Ordering::Relaxed);
-                            s.stats.performance.lock().unwrap().record_timing(Instant::now(),butterpollo_core::performance::Timing{encode:latency,host:processing,age},frame_bytes);
+                            let sent = Instant::now();
+                            s.stats.performance.lock().unwrap().record_timing(sent,butterpollo_core::performance::Timing{encode:latency,host:processing,age,sent:micros(sent.saturating_duration_since(claimed))},frame_bytes);
                             // The interface lookup takes a moment: refresh the
                             // link speed after the frame is out, for the next one.
                             if Instant::now() >= link_due {

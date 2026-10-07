@@ -9,6 +9,7 @@ struct Frame {
     latency: u64,
     processing: u64,
     age: u64,
+    sent: u64,
     interval: Option<u64>,
     bytes: u64,
 }
@@ -23,6 +24,8 @@ pub struct Timing {
     /// Windows presentation through the claim. Moonlight never sees this, so
     /// it is recorded separately to keep waiting before the claim visible.
     pub age: u64,
+    /// Claim through sending the final packet, including packetization and pacing.
+    pub sent: u64,
 }
 #[derive(Default)]
 pub struct Performance {
@@ -45,6 +48,7 @@ impl Performance {
                 encode: latency,
                 host: latency,
                 age: 0,
+                sent: latency,
             },
             bytes,
         );
@@ -54,6 +58,7 @@ impl Performance {
             encode: latency,
             host: processing,
             age,
+            sent,
         } = timing;
         if let Some(start) = self.bucket
             && now.duration_since(start) >= Duration::from_secs(1)
@@ -91,6 +96,7 @@ impl Performance {
             latency,
             processing,
             age,
+            sent,
             interval,
             bytes,
         });
@@ -120,7 +126,7 @@ impl Performance {
         let latencies = sorted(|f| f.latency);
         let processing = sorted(|f| f.processing);
         let ages = sorted(|f| f.age);
-        let present_to_send = sorted(|f| f.age + f.processing);
+        let present_to_send = sorted(|f| f.age.saturating_add(f.sent));
         let mut intervals: Vec<_> = frames.iter().filter_map(|f| f.interval).collect();
         intervals.sort_unstable();
         let fps = if seconds > 0. {
@@ -167,7 +173,33 @@ impl Performance {
 mod tests {
     use super::*;
     fn timing(encode: u64, host: u64, age: u64) -> Timing {
-        Timing { encode, host, age }
+        Timing {
+            encode,
+            host,
+            age,
+            sent: host,
+        }
+    }
+    #[test]
+    fn present_to_send_includes_packetization_and_pacing_without_changing_wire_latency() {
+        let now = Instant::now();
+        let mut p = Performance::default();
+        p.record_timing(
+            now,
+            Timing {
+                encode: 2000,
+                host: 2500,
+                age: 4000,
+                sent: 12500,
+            },
+            1000,
+        );
+        let snapshot = p.snapshot(now);
+        assert_eq!(snapshot["host_processing_mean_ms"], 2.5);
+        assert_eq!(snapshot["encode_mean_ms"], 2.);
+        assert_eq!(snapshot["frame_age_mean_ms"], 4.);
+        assert_eq!(snapshot["present_to_send_mean_ms"], 16.5);
+        assert_eq!(snapshot["present_to_send_p99_ms"], 16.5);
     }
     #[test]
     fn frame_age_stays_visible_beside_the_reported_host_latency() {
