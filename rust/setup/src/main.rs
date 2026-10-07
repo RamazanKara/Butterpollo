@@ -200,13 +200,8 @@ fn run_install(args: &Arguments) -> i32 {
             }
             if outcome.restart_needed { 3010 } else { 0 }
         }
-        Err(error) => {
-            // Never leave the streaming host stopped because setup failed.
-            if let Err(start) = system::start_service(detect::SERVICE) {
-                log::line(format!("the service could not be restarted: {start:#}"));
-            }
-            failed(args.quiet, "Butterpollo could not be installed", &error)
-        }
+        // install() has started again what it stopped.
+        Err(error) => failed(args.quiet, "Butterpollo could not be installed", &error),
     }
 }
 fn run_uninstall(args: &Arguments) -> i32 {

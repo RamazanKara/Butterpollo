@@ -86,11 +86,12 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
     let entries = payload::verify(&staging)?;
 
     progress.set("Stopping the streaming host…");
-    for service in OLD_SERVICES {
-        if let Err(error) = system::stop_service(service) {
-            line(format!("warning: {error:#}"));
-        }
-    }
+    // Until the previous host is removed, a failure starts again exactly the
+    // services that were running.
+    let mut restart = Restart {
+        services: stop_running(&OLD_SERVICES, system::service_running, system::stop_service),
+        start: system::start_service,
+    };
     system::kill(&HOST_PROCESSES);
 
     let previous = found.previous_root();
@@ -132,7 +133,7 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
         } else {
             root.clone()
         };
-        let code = system::run(
+        let (code, output) = system::run(
             &install.join("butterpollo.exe").display().to_string(),
             &[
                 "--config-dir",
@@ -143,10 +144,13 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
             Duration::from_secs(300),
         )?;
         if code != 0 {
-            // Nothing has been removed yet; the previous host stays usable.
+            // Nothing has been removed yet: the services that were running
+            // start again when this error returns.
             bail!(
-                "importing the settings from {} failed; see the log",
-                source.display()
+                "importing the settings from {} failed:\n\n{}",
+                source.display(),
+                import_error(&output)
+                    .unwrap_or_else(|| format!("butterpollo.exe exited with code {code}"))
             );
         }
         notes.push(format!(
@@ -155,13 +159,16 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
         ));
     }
 
+    // The previous host is removed from here on, so a failure now starts
+    // the service Butterpollo runs as instead.
+    restart.services = vec![SERVICE];
     for package in &found.packages {
         let Some(code) = package.product_code() else {
             continue;
         };
         progress.set(&format!("Removing {} {}…", package.name, package.version));
         let log = std::env::temp_dir().join("butterpollo-setup-previous-uninstall.log");
-        let result = system::run(
+        let (result, _) = system::run(
             "msiexec.exe",
             &[
                 "/x",
@@ -278,6 +285,7 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
         system::start_service(SERVICE)?;
         wait_ready(web_port - 1, Some(env!("CARGO_PKG_VERSION")))?;
     }
+    restart.services.clear();
     let _ = std::fs::remove_dir_all(&staging);
     Ok(Outcome {
         install,
@@ -289,6 +297,48 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
 
 fn profile_is_empty(profile: &Path) -> bool {
     std::fs::read_dir(profile).map_or(true, |mut entries| entries.next().is_none())
+}
+/// Stop `services` and return those that were running before.
+fn stop_running(
+    services: &[&'static str],
+    running: impl Fn(&str) -> bool,
+    mut stop: impl FnMut(&str) -> Result<()>,
+) -> Vec<&'static str> {
+    let mut stopped = Vec::new();
+    for &service in services {
+        if running(service) {
+            stopped.push(service);
+        }
+        if let Err(error) = stop(service) {
+            line(format!("warning: {error:#}"));
+        }
+    }
+    stopped
+}
+/// Starts `services` when dropped, so that setup returning early with an
+/// error never leaves the streaming host stopped; cleared on success.
+struct Restart<F: FnMut(&str) -> Result<()>> {
+    services: Vec<&'static str>,
+    start: F,
+}
+impl<F: FnMut(&str) -> Result<()>> Drop for Restart<F> {
+    fn drop(&mut self) {
+        for service in &self.services {
+            if let Err(error) = (self.start)(service) {
+                line(format!(
+                    "the {service} service could not be restarted: {error:#}"
+                ));
+            }
+        }
+    }
+}
+/// What butterpollo.exe printed when it failed: anyhow's "Error: ..." and
+/// its "Caused by:" chain, which follow any warnings.
+fn import_error(output: &str) -> Option<String> {
+    let lines: Vec<&str> = output.lines().collect();
+    let start = lines.iter().rposition(|line| line.starts_with("Error: "))?;
+    let error = lines[start..].join("\n");
+    Some(error["Error: ".len()..].trim().to_owned())
 }
 /// SYSTEM and Administrators control the service profile, users may read
 /// it (the launcher reads the port); credentials are not readable by users.
@@ -407,7 +457,7 @@ fn remove_legacy(product: &crate::detect::Product) -> Result<()> {
         .clone()
         .or_else(|| product.uninstall.clone().map(|u| format!("{u} /S")))
         .context("no uninstall command")?;
-    let code = system::run(
+    let (code, _) = system::run(
         &system::system32("cmd.exe"),
         &["/D", "/S", "/C", &format!("\"{command}\"")],
         Duration::from_secs(300),
@@ -484,4 +534,74 @@ pub(crate) fn wait_ready(port: u16, version: Option<&str>) -> Result<()> {
         std::thread::sleep(Duration::from_millis(500));
     }
     bail!("Butterpollo did not start within 90 seconds; see logs\\service.log in the profile")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn the_import_error_and_its_causes_are_shown() {
+        let output = "2026-10-07T10:00:00Z  WARN butterpollo_core::migration: profile file not imported file=C:\\old\\dump.bin reason=\"it is larger than 64 MiB\"\n\
+Error: the settings imported from C:\\old would keep Butterpollo from starting\n\
+\n\
+Caused by:\n    0: invalid JSON in C:\\ProgramData\\Butterpollo\\.butterpollo-import-1\\vibeshine_state.json\n    1: expected value at line 1 column 1\n";
+        assert_eq!(
+            import_error(output).unwrap(),
+            "the settings imported from C:\\old would keep Butterpollo from starting\n\n\
+Caused by:\n    0: invalid JSON in C:\\ProgramData\\Butterpollo\\.butterpollo-import-1\\vibeshine_state.json\n    1: expected value at line 1 column 1"
+        );
+        assert_eq!(
+            import_error("Error: no sunshine.conf\n").unwrap(),
+            "no sunshine.conf"
+        );
+        assert!(import_error("thread 'main' panicked\n").is_none());
+        assert!(import_error("").is_none());
+    }
+    #[test]
+    fn every_service_that_was_running_starts_again() {
+        let mut stopped = Vec::new();
+        let running = stop_running(
+            &OLD_SERVICES,
+            |service| service != "ApolloService" && service != "ApolloSvc",
+            |service| {
+                stopped.push(service.to_owned());
+                if service == "SunshineService" {
+                    bail!("the {service} service did not stop");
+                }
+                Ok(())
+            },
+        );
+        // Every old service is still asked to stop, as before.
+        assert_eq!(stopped, OLD_SERVICES);
+        assert_eq!(
+            running,
+            ["SunshineService", "VibeshineService", "sunshinesvc"]
+        );
+        let mut started = Vec::new();
+        drop(Restart {
+            services: running,
+            start: |service: &str| {
+                started.push(service.to_owned());
+                if service == "SunshineService" {
+                    bail!("still stopping");
+                }
+                Ok(())
+            },
+        });
+        assert_eq!(
+            started,
+            ["SunshineService", "VibeshineService", "sunshinesvc"]
+        );
+        let mut started = Vec::new();
+        let mut restart = Restart {
+            services: vec!["SunshineService"],
+            start: |service: &str| {
+                started.push(service.to_owned());
+                Ok(())
+            },
+        };
+        restart.services.clear();
+        drop(restart);
+        assert!(started.is_empty());
+    }
 }

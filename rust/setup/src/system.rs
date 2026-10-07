@@ -25,8 +25,9 @@ pub fn wide(text: &str) -> Vec<u16> {
 }
 
 /// Run a program without a window, logging its command line and output.
-/// Returns the exit code; a program still running at `timeout` is killed.
-pub fn run(program: &str, args: &[&str], timeout: Duration) -> Result<i32> {
+/// Returns the exit code and the output (stdout, then stderr); a program
+/// still running at `timeout` is killed.
+pub fn run(program: &str, args: &[&str], timeout: Duration) -> Result<(i32, String)> {
     line(format!("> {program} {}", args.join(" ")));
     let mut child = Command::new(program)
         .args(args)
@@ -72,11 +73,14 @@ pub fn run(program: &str, args: &[&str], timeout: Duration) -> Result<i32> {
         }
         std::thread::sleep(Duration::from_millis(100));
     };
+    let mut text = String::new();
     for reader in readers {
         if let Ok(output) = reader.join()
             && !output.trim().is_empty()
         {
             line(output.trim_end());
+            text.push_str(output.trim_end());
+            text.push('\n');
         }
     }
     let Some(status) = status else {
@@ -84,7 +88,7 @@ pub fn run(program: &str, args: &[&str], timeout: Duration) -> Result<i32> {
     };
     let code = status.code().unwrap_or(-1);
     line(format!("  exit code {code}"));
-    Ok(code)
+    Ok((code, text))
 }
 /// Run a program as LocalSystem through a one-time scheduled task and return
 /// its exit code and output. Vibepollo's driver scripts run as SYSTEM under
@@ -124,7 +128,7 @@ pub fn run_as_system(program: &str, args: &[&str], timeout: Duration) -> Result<
     line(format!("as SYSTEM> {command}"));
     let schtasks = system32("schtasks.exe");
     let task = format!("\"{}\"", script.display());
-    let created = run(
+    let (created, _) = run(
         &schtasks,
         &[
             "/Create", "/TN", &id, "/TR", &task, "/SC", "ONCE", "/ST", "23:59", "/RU", "SYSTEM",
@@ -136,7 +140,7 @@ pub fn run_as_system(program: &str, args: &[&str], timeout: Duration) -> Result<
         bail!("creating the setup task failed ({created})");
     }
     let result = (|| -> Result<(i32, String)> {
-        if run(&schtasks, &["/Run", "/TN", &id], Duration::from_secs(60))? != 0 {
+        if run(&schtasks, &["/Run", "/TN", &id], Duration::from_secs(60))?.0 != 0 {
             bail!("starting the setup task failed");
         }
         let deadline = Instant::now() + timeout;
@@ -259,6 +263,12 @@ fn service_state(service: &ServiceHandle) -> Option<SERVICE_STATUS_CURRENT_STATE
     unsafe { QueryServiceStatus(service.0, &mut status) }
         .ok()
         .map(|_| status.dwCurrentState)
+}
+/// Whether the service is installed and running or starting.
+pub fn service_running(name: &str) -> bool {
+    open_service(name)
+        .and_then(|service| service_state(&service))
+        .is_some_and(|state| state != SERVICE_STOPPED && state != SERVICE_STOP_PENDING)
 }
 /// Stop the service if it is running and wait for it (35 s, then fail).
 pub fn stop_service(name: &str) -> Result<()> {
@@ -649,7 +659,7 @@ pub fn win32_path(path: &Path) -> Result<PathBuf> {
 /// A rejected replacement must leave any existing allowance intact.
 pub fn firewall_allow(rule: &str, program: &Path) -> Result<()> {
     firewall_allow_with(rule, program, |args| {
-        run(&system32("netsh.exe"), args, Duration::from_secs(60))
+        run(&system32("netsh.exe"), args, Duration::from_secs(60)).map(|(code, _)| code)
     })
 }
 fn firewall_allow_with(
@@ -729,7 +739,7 @@ pub fn restrict(folder: &Path, users_read: bool) -> Result<()> {
         args.extend(["/grant:r", "*S-1-5-32-545:(OI)(CI)(RX)"]);
     }
     args.push("/Q");
-    let code = run(&system32("icacls.exe"), &args, Duration::from_secs(120))?;
+    let (code, _) = run(&system32("icacls.exe"), &args, Duration::from_secs(120))?;
     if code != 0 {
         bail!("setting permissions on {path} failed ({code})");
     }
