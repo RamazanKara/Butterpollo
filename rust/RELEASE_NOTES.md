@@ -2,9 +2,14 @@
 
 [Documentation](../docs/README.md) · [Install and migrate](../docs/getting-started.md) · [Configuration](../docs/configuration.md) · [Compatibility](PARITY.md)
 
-**Release history:** [rc.23](#new-in-rc23) · [rc.22](#new-in-rc22) · [rc.21](#new-in-rc21) · [rc.20](#new-in-rc20) · [rc.19](#new-in-rc19) · [rc.18](#new-in-rc18) · [rc.17](#new-in-rc17) · [rc.16](#new-in-rc16) · [rc.15](#new-in-rc15) · [rc.14](#new-in-rc14) · [rc.13](#new-in-rc13) · [rc.12](#new-in-rc12) · [rc.11](#new-in-rc11) · [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
+**Release history:** [rc.24](#new-in-rc24) · [rc.23](#new-in-rc23) · [rc.22](#new-in-rc22) · [rc.21](#new-in-rc21) · [rc.20](#new-in-rc20) · [rc.19](#new-in-rc19) · [rc.18](#new-in-rc18) · [rc.17](#new-in-rc17) · [rc.16](#new-in-rc16) · [rc.15](#new-in-rc15) · [rc.14](#new-in-rc14) · [rc.13](#new-in-rc13) · [rc.12](#new-in-rc12) · [rc.11](#new-in-rc11) · [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
 
 Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.23 installer is named `butterpollo-setup-2.0.0-rc.23.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+
+## New in rc.24
+
+- **Controllers work with an Xbox 360 or DualShock 4 choice and no ViGEmBus.** Choosing Xbox 360 (ViGEmBus) or DualShock 4 (ViGEmBus) as the controller type, or bringing `gamepad = x360` or `ds4` over from Sunshine, Apollo or Vibepollo, needs ViGEmBus, which the installer doesn't include. Without it, every controller did nothing, for example from an Android phone. These choices now use the bundled VHF Xbox One or DualShock 4 pad instead and the stream card says so; install ViGEmBus or choose Automatic to remove the warning. With ViGEmBus installed nothing changes. Checked with tests only, not yet with a real Android client.
+- **Input a device isn't allowed to send is no longer dropped silently.** Devices paired after the first start view-only, as in Apollo and Vibepollo, so their controller, touch, pen, mouse and keyboard input was ignored without a word. The stream card now names the permission to turn on under **Devices**.
 
 ## New in rc.23
 

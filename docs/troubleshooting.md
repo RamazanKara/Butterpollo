@@ -207,6 +207,14 @@ Up to rc.10, a launch failed with this error when Windows left the new virtual d
 
 `video sender stopped: A non-blocking socket operation could not be completed immediately. (os error 10035)` comes from rc.1, which ended the stream when the Windows send buffer was momentarily full. Since rc.2 the host waits briefly, drops only those packets and keeps streaming, as Vibepollo does; the log then shows `UDP send failed; packets dropped` at most every five seconds. Install the current release. Frequent drop warnings mean the network cannot carry the bitrate: lower it, or use a standard codec rather than PyroWave over Wi-Fi.
 
+## A controller or other input does nothing
+
+Check the stream card in the console first.
+
+- **"…its device permissions do not allow it"**: the device lacks that input permission. Every device paired after the first starts view-only, as in Apollo and Vibepollo. Turn on **Controllers** (or Touch, Pen, Mouse, Keyboard) for it under **Devices**, then reconnect.
+- **"Virtual gamepad driver unavailable"**: neither ViGEmBus nor the VHF gamepad driver could be opened. Run the installer again with the gamepad driver selected.
+- **"…controllers use Xbox One (VHF) in place of Xbox 360 (ViGEmBus)"**: the controller works, on the VHF pad; see below.
+
 ## Steam shows two controllers
 
 Some Steam builds can list one VHF Xbox controller twice. Steam's SDL controller discovery races its XInput and GameInput backends for the same device. Start+Select may then open both Xbox Game Bar and Steam's keyboard. SDL has an [upstream fix](https://github.com/libsdl-org/SDL/commit/c4cfb739), but a Steam build may not include it yet.

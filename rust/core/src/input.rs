@@ -463,10 +463,64 @@ impl Input {
             _ => 1 << 8,
         }
     }
+    /// The stream-card warning for input this device may not send, naming
+    /// the permission as the console's device page does.
+    pub fn denied_warning(&self, device: &str) -> (String, String) {
+        let (code, name) = match self.required_permission() {
+            0x1000 => ("keyboard", "Keyboard"),
+            0x200 => ("touch", "Touch"),
+            0x400 => ("pen", "Pen"),
+            0x800 => ("mouse", "Mouse"),
+            _ => ("controller", "Controllers"),
+        };
+        (
+            format!("input_permission_{code}"),
+            format!(
+                "{device} sends {code} input, but its device permissions do not allow it, so the host ignores it. Turn on {name} for this device under Devices in the console, then reconnect."
+            ),
+        )
+    }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn denied_input_names_the_device_permission_to_turn_on() {
+        let pad = Input::Controller {
+            id: 0,
+            active: 1,
+            buttons: 0,
+            left_trigger: 0,
+            right_trigger: 0,
+            sticks: [0; 4],
+        };
+        let (code, message) = pad.denied_warning("Pixel 8");
+        assert_eq!(code, "input_permission_controller");
+        assert!(message.starts_with("Pixel 8 sends controller input"));
+        assert!(message.contains("Turn on Controllers"));
+        // Arrivals, motion and haptics share the controller permission and warning.
+        for event in [
+            Input::Arrival {
+                id: 0,
+                kind: 1,
+                capabilities: 0,
+                buttons: 0,
+            },
+            Input::Haptics(true),
+        ] {
+            assert_eq!(event.required_permission(), 1 << 8);
+            assert_eq!(
+                event.denied_warning("Pixel 8"),
+                (code.clone(), message.clone())
+            );
+        }
+        let (code, message) = Input::Text("a".into()).denied_warning("Tablet");
+        assert_eq!(code, "input_permission_keyboard");
+        assert!(message.contains("sends keyboard input") && message.contains("Turn on Keyboard"));
+        let (code, message) = Input::Relative { x: 1, y: 1 }.denied_warning("Tablet");
+        assert_eq!(code, "input_permission_mouse");
+        assert!(message.contains("Turn on Mouse"));
+    }
     #[test]
     fn overflow_leaves_both_axes_untouched() {
         let mut a = Input::Relative {

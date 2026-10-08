@@ -1940,6 +1940,7 @@ impl Media {
                                     seen: Instant::now(),
                                     session: None,
                                     inputs: vec![],
+                                    denied: 0,
                                     command_at: None,
                                 },
                             );
@@ -2075,9 +2076,21 @@ impl Media {
                                 };
                                 let event = raw.and_then(|raw| input::decode(&raw));
                                 match event {
+                                    // Say once per kind that the device may not
+                                    // send it: dropped silently, a phone's
+                                    // controller looked undetected.
                                     Ok(event)
-                                        if s.launch.client.allows(event.required_permission()) =>
+                                        if !s.launch.client.allows(event.required_permission()) =>
                                     {
+                                        let permission = event.required_permission();
+                                        if p.denied & permission == 0 {
+                                            p.denied |= permission;
+                                            let (code, message) =
+                                                event.denied_warning(&s.launch.client.name);
+                                            s.launch.warnings.set(&code, message);
+                                        }
+                                    }
+                                    Ok(event) => {
                                         if p.inputs.last_mut().is_some_and(|last| {
                                             last.merge(&event) == input::Batch::Merged
                                         }) {
@@ -2090,7 +2103,6 @@ impl Media {
                                         }
                                     }
                                     Err(e) => tracing::debug!(error=%e,"invalid input packet"),
-                                    _ => {}
                                 }
                             }
                             _ => {}
@@ -2283,6 +2295,8 @@ struct ControlPeer {
     seen: Instant,
     session: Option<Arc<Session>>,
     inputs: Vec<input::Input>,
+    /// Input permissions this device lacked and was warned about.
+    denied: u32,
     command_at: Option<Instant>,
 }
 impl ControlPeer {
