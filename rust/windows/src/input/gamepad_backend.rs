@@ -1,4 +1,5 @@
-use super::{GamepadTouchRequest, open_interface, request};
+use super::gamepads::{GamepadTouchRequest, request};
+use super::open_interface;
 use anyhow::{Result, bail};
 use butterpollo_core::input_policy::VHF_AUTO;
 use windows::{
