@@ -94,17 +94,7 @@ pub fn run(folder: &Path, start: bool, progress: &Progress) -> Result<()> {
         &install,
         || -> Result<()> {
             progress.set("Installing the update…");
-            for entry in &entries {
-                install::replace_file(
-                    &payload::safe_join(&staged, &entry.path)?,
-                    &payload::safe_join(&install, &entry.path)?,
-                )?;
-            }
-            install::replace_file(
-                &staged.join("manifest.json"),
-                &install.join("manifest.json"),
-            )?;
-            payload::write_stub(&install.join("uninstall.exe"))?;
+            replace_package(&staged, &install, &entries)?;
             progress.set("Checking that Butterpollo starts…");
             if start {
                 system::start_service(detect::SERVICE)?;
@@ -123,20 +113,7 @@ pub fn run(folder: &Path, start: bool, progress: &Progress) -> Result<()> {
         },
     );
     match update {
-        Ok(()) => {
-            write_result(&result, "installed", None)?;
-            for old in &previous {
-                if !entries
-                    .iter()
-                    .any(|e| e.path.eq_ignore_ascii_case(&old.path))
-                {
-                    let path = payload::safe_join(&install, &old.path)?;
-                    let _ = std::fs::remove_file(path);
-                }
-            }
-            let _ = std::fs::remove_dir_all(&work);
-            Ok(())
-        }
+        Ok(()) => finish_update(&install, &work, &result, &previous, &entries),
         Err(InstallFailure {
             error,
             recovery: rollback,
@@ -161,6 +138,41 @@ pub fn run(folder: &Path, start: bool, progress: &Progress) -> Result<()> {
             bail!("{message}")
         }
     }
+}
+
+fn replace_package(staged: &Path, install: &Path, entries: &[payload::Entry]) -> Result<()> {
+    for entry in entries {
+        install::replace_file(
+            &payload::safe_join(staged, &entry.path)?,
+            &payload::safe_join(install, &entry.path)?,
+        )?;
+    }
+    install::replace_file(
+        &staged.join("manifest.json"),
+        &install.join("manifest.json"),
+    )?;
+    payload::write_stub(&install.join("uninstall.exe"))
+}
+
+fn finish_update(
+    install: &Path,
+    work: &Path,
+    result: &Path,
+    previous: &[payload::Entry],
+    entries: &[payload::Entry],
+) -> Result<()> {
+    write_result(result, "installed", None)?;
+    for old in previous {
+        if !entries
+            .iter()
+            .any(|e| e.path.eq_ignore_ascii_case(&old.path))
+        {
+            let path = payload::safe_join(install, &old.path)?;
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    let _ = std::fs::remove_dir_all(work);
+    Ok(())
 }
 
 fn check_service_folder(service: &Path, install: &Path) -> Result<()> {
@@ -392,6 +404,7 @@ impl Backup {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::profile_tests::{assert_usable, package, rc23_profile, snapshot};
     #[test]
     fn a_missing_service_executable_does_not_prevent_recovery() -> Result<()> {
         let root = tempfile::tempdir()?;
@@ -420,84 +433,125 @@ mod tests {
         Ok(())
     }
     #[test]
-    fn rc_upgrades_and_reinstalls_keep_profiles_and_recover_each_interrupted_copy() -> Result<()> {
+    fn rc23_upgrade_keeps_the_entire_profile_and_only_replaces_package_files() -> Result<()> {
         let root = tempfile::tempdir()?;
         let install = root.path().join("Çağrı Müller/installed");
         let profile = root.path().join("Çağrı Müller/config");
-        let staged = root.path().join("staged");
-        std::fs::create_dir_all(install.join("assets/web"))?;
-        std::fs::create_dir_all(staged.join("assets/web"))?;
-        std::fs::create_dir_all(profile.join("credentials"))?;
-        let profile_files = [
-            "sunshine.conf",
-            "sunshine_state.json",
-            "sunshine_credentials.json",
-            "apps.json",
-            "vibeshine_state.json",
-            "credentials/cacert.pem",
-            "credentials/cakey.pem",
-            "display-state.json",
-            "cover.png",
-        ];
-        for name in profile_files {
-            std::fs::write(profile.join(name), format!("user-owned {name}"))?;
-        }
-        let files = [
-            "butterpollo.exe",
-            "butterpollo-service.exe",
-            "assets/web/index.html",
-        ];
-        let paths = files
+        rc23_profile(&profile)?;
+        let mut expected_profile = snapshot(&profile)?;
+        let previous = package(&install, "2.0.0-rc.23", "obsolete.dll")?;
+        std::fs::write(install.join("uninstall.exe"), b"rc.23 setup")?;
+        std::fs::write(install.join("user-owned.txt"), b"outside the manifest")?;
+        let work = profile.join("updates/transaction-test");
+        let staged = work.join("package");
+        let entries = package(&staged, env!("CARGO_PKG_VERSION"), "new.dll")?;
+        let mut expected_install = snapshot(&staged)?;
+        expected_install.insert("user-owned.txt".into(), b"outside the manifest".to_vec());
+        expected_install.insert(
+            "uninstall.exe".into(),
+            std::fs::read(std::env::current_exe()?)?,
+        );
+        let paths = previous
             .iter()
-            .map(|name| (*name).into())
-            .chain(["new.dll".into()])
+            .chain(&entries)
+            .map(|entry| entry.path.clone())
+            .chain(["manifest.json".into(), "uninstall.exe".into()])
             .collect();
-        for version in ["2.0.0-rc.20", "2.0.0-rc.21"] {
-            for copied in 0..=files.len() {
-                for name in files {
-                    std::fs::write(install.join(name), "2.0.0-rc.20")?;
-                    std::fs::write(staged.join(name), version)?;
-                }
-                let backup = root.path().join(format!("previous-{version}-{copied}"));
-                let saved = Backup::create(&install, &backup, &paths)?;
-                let result = profile.join("update-result.json");
-                write_record(
-                    &result,
-                    &json!({"version":version,"phase":"installing","backup":backup,"install":install}),
-                )?;
-                for name in files.iter().take(copied) {
-                    install::replace_file(&staged.join(name), &install.join(name))?;
-                }
-                std::fs::write(install.join("new.dll"), b"new")?;
-                recover_locked(&result)?;
-                for name in files {
-                    assert_eq!(std::fs::read(install.join(name))?, b"2.0.0-rc.20");
-                }
-                assert!(!install.join("new.dll").exists());
-                attempt_install(
-                    &saved,
-                    &install,
-                    || {
-                        for name in files {
-                            install::replace_file(&staged.join(name), &install.join(name))?;
-                        }
-                        Ok(())
-                    },
-                    || panic!("successful update must not roll back"),
-                    || panic!(),
-                )
-                .map_err(|failure| failure.error)?;
-                for name in files {
-                    assert_eq!(std::fs::read(install.join(name))?, version.as_bytes());
-                }
-                for name in profile_files {
-                    assert_eq!(
-                        std::fs::read(profile.join(name))?,
-                        format!("user-owned {name}").as_bytes()
-                    );
-                }
+        let saved = Backup::create(&install, &work.join("previous"), &paths)?;
+        let result = profile.join("update-result.json");
+        write_result(&result, "installing", None)?;
+        attempt_install(
+            &saved,
+            &install,
+            || replace_package(&staged, &install, &entries),
+            || panic!("successful update must not roll back"),
+            || panic!("successful update must not restart the previous host"),
+        )
+        .map_err(|failure| failure.error)?;
+        assert!(
+            work.canonicalize()?
+                .starts_with(root.path().canonicalize()?)
+        );
+        finish_update(&install, &work, &result, &previous, &entries)?;
+        expected_profile.insert(
+            "update-result.json".into(),
+            serde_json::to_vec_pretty(
+                &json!({"version":env!("CARGO_PKG_VERSION"),"phase":"installed","error":null}),
+            )?,
+        );
+        assert_eq!(snapshot(&install)?, expected_install);
+        assert_eq!(snapshot(&profile)?, expected_profile);
+        assert!(!work.exists());
+        assert_usable(&profile)?;
+        // A completed update must never restore its old binaries later.
+        recover(&profile)?;
+        assert_eq!(snapshot(&install)?, expected_install);
+        assert_eq!(snapshot(&profile)?, expected_profile);
+        Ok(())
+    }
+    #[test]
+    fn rc23_profile_survives_rollback_after_each_interrupted_package_file() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let install = root.path().join("Çağrı Müller/installed");
+        let profile = root.path().join("Çağrı Müller/config");
+        rc23_profile(&profile)?;
+        let previous = package(&install, "2.0.0-rc.23", "obsolete.dll")?;
+        std::fs::write(install.join("uninstall.exe"), b"rc.23 setup")?;
+        std::fs::write(install.join("user-owned.txt"), b"outside the manifest")?;
+        let expected_install = snapshot(&install)?;
+        let work = profile.join("updates/transaction-interrupted");
+        let staged = work.join("package");
+        let entries = package(&staged, env!("CARGO_PKG_VERSION"), "new.dll")?;
+        std::fs::write(staged.join("uninstall.exe"), b"new setup stub")?;
+        let paths = previous
+            .iter()
+            .chain(&entries)
+            .map(|entry| entry.path.clone())
+            .chain(["manifest.json".into(), "uninstall.exe".into()])
+            .collect();
+        let backup = work.join("previous");
+        Backup::create(&install, &backup, &paths)?;
+        let changed: Vec<_> = entries
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .chain(["manifest.json", "uninstall.exe"])
+            .collect();
+        let result = profile.join("update-result.json");
+        let mut expected_profile = snapshot(&profile)?;
+        expected_profile.remove(Path::new("update-result.json"));
+        for copied in 0..=changed.len() {
+            write_record(
+                &result,
+                &json!({"version":env!("CARGO_PKG_VERSION"),"phase":"installing",
+                "error":null,"backup":backup,"install":install}),
+            )?;
+            for name in changed.iter().take(copied) {
+                install::replace_file(&staged.join(name), &install.join(name))?;
             }
+            recover(&profile)?;
+            assert_eq!(
+                snapshot(&install)?,
+                expected_install,
+                "interrupted after {copied} files"
+            );
+            let mut recovered = snapshot(&profile)?;
+            let record: serde_json::Value = serde_json::from_slice(
+                &recovered.remove(Path::new("update-result.json")).unwrap(),
+            )?;
+            assert_eq!(record["phase"], "rolled_back");
+            assert_eq!(record["version"], env!("CARGO_PKG_VERSION"));
+            assert_eq!(record["backup"], json!(backup));
+            assert_eq!(record["install"], json!(install));
+            assert_eq!(
+                recovered, expected_profile,
+                "interrupted after {copied} files"
+            );
+            let complete = snapshot(&profile)?;
+            recover(&profile)?;
+            assert_eq!(snapshot(&profile)?, complete);
+            assert_eq!(snapshot(&install)?, expected_install);
         }
+        assert_usable(&profile)?;
         Ok(())
     }
     #[test]

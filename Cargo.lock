@@ -378,6 +378,7 @@ name = "butterpollo-setup"
 version = "2.0.0-rc.24"
 dependencies = [
  "anyhow",
+ "butterpollo-core",
  "embed-resource",
  "serde",
  "serde_json",

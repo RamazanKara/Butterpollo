@@ -959,6 +959,136 @@ mod tests {
         Ok(())
     }
     #[test]
+    fn legacy_migrations_keep_complete_profiles_and_own_configured_files_and_covers() -> Result<()>
+    {
+        use crate::profile_tests::{assert_usable, package, rc23_profile, snapshot};
+        use butterpollo_core::{config::Config, migration, state};
+        use serde_json::{Value, json};
+        use sha2::{Digest, Sha256};
+
+        let temp = tempfile::tempdir()?;
+        let template = temp.path().join("rc.23/config");
+        rc23_profile(&template)?;
+        let staged = temp.path().join("staged");
+        let entries = package(&staged, env!("CARGO_PKG_VERSION"), "new.dll")?;
+        for family in ["Vibepollo", "Apollo", "Sunshine"] {
+            for external in [false, true] {
+                let case = temp.path().join(format!("{family}-{external}"));
+                let old = case.join(family);
+                let source = if family == "Sunshine" {
+                    old.clone()
+                } else {
+                    old.join("config")
+                };
+                let profile = case.join("Butterpollo/config");
+                let install = case.join("programs/Butterpollo");
+                copy_tree(&template, &source)?;
+                let mut apps = state::load_json(&source.join("apps.json"), Value::Null)?;
+                apps["apps"][1]["image-path"] = json!(source.join("covers/custom/Épopée.png"));
+                state::write_json(&source.join("apps.json"), &apps)?;
+                let mut config = Config::load(&source.join("sunshine.conf"))?;
+                config.values.insert(
+                    "log_path".into(),
+                    source.join("butterpollo.log").display().to_string(),
+                );
+                let configured = [
+                    ("file_state", "sunshine_state.json"),
+                    ("file_apps", "apps.json"),
+                    ("vibeshine_file_state", "vibeshine_state.json"),
+                    ("credentials_file", "sunshine_credentials.json"),
+                    ("cert", "credentials/cacert.pem"),
+                    ("pkey", "credentials/cakey.pem"),
+                ];
+                if external {
+                    let shared = old.join("shared files");
+                    for (key, name) in configured {
+                        let target = shared.join(name);
+                        replace_file(&source.join(name), &target)?;
+                        config
+                            .values
+                            .insert(key.into(), target.display().to_string());
+                    }
+                    let cover = shared.join("Épopée.png");
+                    replace_file(&source.join("covers/custom/Épopée.png"), &cover)?;
+                    apps["apps"][1]["image-path"] = json!(cover);
+                    state::write_json(&shared.join("apps.json"), &apps)?;
+                } else if family == "Sunshine" {
+                    // Sunshine can keep the web password in the paired-state document.
+                    std::fs::remove_file(source.join("sunshine_credentials.json"))?;
+                }
+                std::fs::write(source.join("sunshine.conf"), config.text())?;
+                let source_before = snapshot(&old)?;
+                let mut expected = snapshot(&source)?;
+                expected.retain(|name, _| !name.starts_with("logs"));
+                for (key, name) in configured {
+                    if external {
+                        expected
+                            .insert(name.into(), std::fs::read(config.path(key, &source, name))?);
+                        config.values.insert(key.into(), name.into());
+                    }
+                }
+                config
+                    .values
+                    .insert("log_path".into(), "butterpollo.log".into());
+                expected.insert("sunshine.conf".into(), config.text().into_bytes());
+                let product = detect::Product {
+                    key: family.into(),
+                    name: family.into(),
+                    version: "2.0.0".into(),
+                    location: Some(old.clone()),
+                    uninstall: None,
+                    quiet_uninstall: None,
+                    msi: false,
+                    root: HKEY_LOCAL_MACHINE,
+                };
+                let found = detect::Found {
+                    legacy: vec![product],
+                    ..Default::default()
+                };
+                let selected = migration_source(&found, &profile, &install)?.unwrap();
+                assert_eq!(selected, system::win32_path(&old.canonicalize()?)?);
+                let selected_profile = if selected.join("config/sunshine.conf").is_file() {
+                    selected.join("config")
+                } else {
+                    selected
+                };
+                // --import-config in the staged host calls this exact importer.
+                migration::import(&selected_profile, &profile)?;
+                copy_package(&staged, &install, &entries)?;
+                for app in apps["apps"].as_array_mut().unwrap() {
+                    let original = source.join(app["image-path"].as_str().unwrap());
+                    let bytes = std::fs::read(original)?;
+                    let name =
+                        PathBuf::from("covers").join(format!("{:x}.png", Sha256::digest(&bytes)));
+                    app["image-path"] = json!(profile.canonicalize()?.join(&name));
+                    expected.insert(name, bytes);
+                }
+                expected.insert("apps.json".into(), serde_json::to_vec_pretty(&apps)?);
+                assert_eq!(
+                    snapshot(&profile)?,
+                    expected,
+                    "{family}, external={external}"
+                );
+                assert_eq!(snapshot(&old)?, source_before);
+                assert_usable(&profile)?;
+                assert!(migration_source(&found, &profile, &install).is_err());
+                assert!(migration::import(&source, &profile).is_err());
+                assert_eq!(snapshot(&profile)?, expected);
+                assert_eq!(snapshot(&old)?, source_before);
+                assert!(old.canonicalize()?.starts_with(temp.path().canonicalize()?));
+                std::fs::remove_dir_all(&old)?;
+                assert_usable(&profile)?;
+                for app in apps["apps"].as_array().unwrap() {
+                    let cover = PathBuf::from(app["image-path"].as_str().unwrap());
+                    let relative = cover.strip_prefix(profile.canonicalize()?)?;
+                    assert_eq!(std::fs::read(&cover)?, expected[relative]);
+                }
+                assert_eq!(snapshot(&profile)?, expected);
+            }
+        }
+        Ok(())
+    }
+    #[test]
     fn the_health_check_asks_the_configured_bind_address() {
         let local = IpAddr::from([127, 0, 0, 1]);
         for (conf, expected) in [

@@ -12,6 +12,8 @@ mod detect;
 mod install;
 mod log;
 mod payload;
+#[cfg(test)]
+mod profile_tests;
 mod system;
 mod ui;
 mod uninstall;
