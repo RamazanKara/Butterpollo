@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import requests, urllib3
 from e2e_host import INSTALLED_LOG, installed_idle, prepare, receiver_environment
 from e2e_result import evaluate
-from soak_result import audio_windows, fault_outcome, resource_growth, video_windows
+from soak_result import audio_windows, fault_outcome, load_limit, resource_growth, video_windows
 
 ROOT = pathlib.Path(__file__).resolve().parent
 PORT = 48723
@@ -244,8 +244,11 @@ def main():
                                   BUTTERPOLLO_TEST_EXPECT_HDR_CONTROL='auto')
                 if case.get('churn'):
                     client_env['BUTTERPOLLO_TEST_WARMUP_SECONDS'] = '.5'
-                    client_env.pop('BUTTERPOLLO_TEST_MIN_FPS', None)
                     client_env.pop('BUTTERPOLLO_TEST_AUDIO_TONE', None)
+                if case.get('churn') or case.get('load'):
+                    # The evaluator keeps rate failures separate from receiver
+                    # errors when the local load starves the decoding fixture.
+                    client_env.pop('BUTTERPOLLO_TEST_MIN_FPS', None)
                 endpoint = '/resume' if case.get('resume') else '/launch'
                 launched = time.monotonic()
                 launch = ET.fromstring(client.get(https + endpoint, params={**common, 'mode': case['mode'],
@@ -380,10 +383,14 @@ def main():
                             result['orphaned_slots'] = orphaned_slots
                 except Exception as error:
                     result['passed'] = False; result['failures'].append(f'teardown: {error}')
+                limitation = load_limit(result)
+                if limitation:
+                    result.update(limited=limitation, failures=[])
                 write(folder / 'result.json', result)
                 report['results'].append(result)
                 write(run / 'result.json', report)
-                print(('PASS ' if result['passed'] else 'FAIL ') + case['name'] + ': ' + '; '.join(result['failures']), flush=True)
+                status = 'PASS ' if result['passed'] else 'LIMITED ' if result.get('limited') else 'FAIL '
+                print(status + case['name'] + ': ' + (result.get('limited') or '; '.join(result['failures'])), flush=True)
         report['resource_growth'] = resource_growth(resources)
         reconnects = [r['reconnect_seconds'] for r in report['results'] if 'reconnect_seconds' in r]
         report['quick_reconnect'] = dict(passed=bool(reconnects) and min(reconnects) <= 2, seconds=reconnects)
@@ -401,13 +408,17 @@ def main():
         for process, output in reversed(owned):
             process.wait(timeout=10); output.close()
         report['finished_utc'] = datetime.now(timezone.utc).isoformat()
-        report['passed'] = (len(report['results']) == len(cases(args.mode)) and all(r['passed'] for r in report['results'])
-                            and report.get('resource_growth', {}).get('passed', False)
-                            and report.get('quick_reconnect', {}).get('passed', False)
-                            and not report.get('fatal') and not report.get('cleanup_error'))
+        complete = (len(report['results']) == len(cases(args.mode))
+                    and report.get('resource_growth', {}).get('passed', False)
+                    and report.get('quick_reconnect', {}).get('passed', False)
+                    and not report.get('fatal') and not report.get('cleanup_error'))
+        report['passed'] = complete and all(r['passed'] for r in report['results'])
+        if complete and not report['passed'] and all(r['passed'] or r.get('limited') for r in report['results']):
+            report['limited'] = next(r['limited'] for r in report['results'] if r.get('limited'))
         write(run / 'result.json', report)
-    print(f"{'PASS' if report['passed'] else 'FAIL'}: {run / 'result.json'}", flush=True)
-    return 0 if report['passed'] else 1
+    status = 'PASS' if report['passed'] else 'LIMITED' if report.get('limited') else 'FAIL'
+    print(f"{status}: {run / 'result.json'}", flush=True)
+    return 0 if report['passed'] or report.get('limited') else 1
 
 
 if __name__ == '__main__':

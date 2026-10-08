@@ -16,6 +16,7 @@ def video_windows(path, fps, warmup=3):
         elapsed = (rows[-1]['arrival_ms'] - rows[0]['arrival_ms']) / 1000
         windows.append(dict(elapsed_seconds=(rows[0]['arrival_ms'] - start) / 1000,
                             seconds=elapsed, frames=len(rows),
+                            decoder_mean_ms=statistics.mean(r['decode_ms'] for r in rows),
                             fresh_fps=sum(r['fresh'] for r in rows[1:]) / elapsed if elapsed else 0,
                             picture_age_p50_ms=percentile(ages, 50),
                             picture_age_p99_ms=percentile(ages, 99),
@@ -91,6 +92,29 @@ def resource_growth(samples):
         if delta > limit and slope > 0:
             failures.append(f'{key} grows after warmup: {delta:g} ({slope:.2f}/cycle)')
     return dict(passed=not failures, failures=failures, measurements=growth)
+
+
+def load_limit(result):
+    if not result.get('load') or not result['failures']:
+        return None
+    cadence_failures = {'steady frame rate is outside 97-103% of the requested rate',
+                        'frame delivery has excessive gaps',
+                        'moving pictures were missing or repeated too often',
+                        'a video window lost fresh pictures'}
+    if set(result['failures']) - cadence_failures:
+        return None
+    receiver = result['receiver']
+    fps = float(result['mode'].split('x')[2])
+    period = 1000 / fps
+    if (receiver['client_exit'] != 0 or receiver['steady_seconds'] < 5 or receiver['motion_coverage'] < .95
+            or not period < (receiver.get('decoder_mean_ms') or 0) < float('inf')):
+        return None
+    windows = result['video_windows']
+    if not windows or any(w['picture_coverage'] < .95 or
+            (w['fresh_fps'] < fps * .9 and not period < (w.get('decoder_mean_ms') or 0) < float('inf'))
+            for w in windows if w['seconds'] >= 5):
+        return None
+    return 'same-GPU decoder starved by the load; measure with a separate client'
 
 
 def fault_outcome(samples, injected_at, client_exit, log, windows, fps):

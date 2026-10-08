@@ -1,5 +1,5 @@
-import csv, pathlib, tempfile, unittest
-from soak_result import audio_windows, fault_outcome, resource_growth, video_windows
+import copy, csv, pathlib, tempfile, unittest
+from soak_result import audio_windows, fault_outcome, load_limit, resource_growth, video_windows
 from soak import cases
 
 
@@ -18,23 +18,53 @@ class SoakMeasurements(unittest.TestCase):
             path = pathlib.Path(directory) / 'frames.csv'
             with path.open('w', newline='') as stream:
                 writer = csv.writer(stream)
-                writer.writerow(['arrival_ms', 'assembled_us', 'picture_age_ms', 'render_frame', 'frame_type'])
+                writer.writerow(['arrival_ms', 'assembled_us', 'picture_age_ms', 'render_frame', 'frame_type', 'decode_ms'])
                 for i in range(108001):
                     writer.writerow([i * 1000 / 60, i * 1e6 / 60, 12 if i < 107000 else 200,
-                                     min(i + 1, 107000), 1 if i == 0 else 2])
+                                     min(i + 1, 107000), 1 if i == 0 else 2, 4])
             windows = video_windows(path, 60)
             self.assertGreater(windows[-1]['elapsed_seconds'], 1700)
             self.assertLess(windows[-1]['fresh_fps'], 1)
             self.assertEqual(windows[-1]['picture_age_p99_ms'], 200)
+            self.assertEqual(windows[-1]['decoder_mean_ms'], 4)
 
     def test_two_period_arrival_gaps_are_counted_without_calling_them_send_gaps(self):
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / 'frames.csv'
-            path.write_text('arrival_ms,assembled_us,picture_age_ms,render_frame,frame_type\n'
-                            '0,0,10,1,1\n20,20000,12,2,2\n60,60000,14,3,2\n')
+            path.write_text('arrival_ms,assembled_us,picture_age_ms,render_frame,frame_type,decode_ms\n'
+                            '0,0,10,1,1,4\n20,20000,12,2,2,6\n60,60000,14,3,2,5\n')
             window = video_windows(path, 60, 0)[0]
             self.assertEqual(window['arrival_stutters'], 1)
             self.assertEqual(window['idr_frames'], 1)
+            self.assertEqual(window['decoder_mean_ms'], 5)
+
+    def test_only_decoder_starvation_limits_same_gpu_load(self):
+        result = dict(load=True, mode='1920x1080x60', passed=False,
+                      failures=['steady frame rate is outside 97-103% of the requested rate',
+                                'moving pictures were missing or repeated too often',
+                                'a video window lost fresh pictures'],
+                      receiver=dict(client_exit=0, steady_seconds=21.6, motion_coverage=1,
+                                    decoder_mean_ms=20),
+                      video_windows=[dict(elapsed_seconds=3, seconds=10, picture_coverage=1,
+                                          fresh_fps=49, decoder_mean_ms=20)])
+        self.assertEqual(load_limit(result), 'same-GPU decoder starved by the load; measure with a separate client')
+        for failure in ('receiver interoperability failed', 'video was not fully decoded',
+                        'the captured audio tone was silent or interrupted', 'missing measurements: decoder_mean_ms',
+                        'host logged an error', 'devices or capture helpers remained after teardown', 'cancel: failed'):
+            with self.subTest(failure=failure):
+                self.assertIsNone(load_limit(result | dict(failures=result['failures'] + [failure])))
+        self.assertIsNone(load_limit(result | dict(load=False)))
+        self.assertIsNone(load_limit(result | dict(passed=True, failures=[])))
+        for change in (dict(client_exit=1), dict(steady_seconds=2), dict(motion_coverage=.9),
+                       dict(decoder_mean_ms=None), dict(decoder_mean_ms=1000 / 60),
+                       dict(decoder_mean_ms=6.942), dict(decoder_mean_ms=float('inf'))):
+            with self.subTest(change=change):
+                self.assertIsNone(load_limit(result | dict(receiver=result['receiver'] | change)))
+        for change in (dict(picture_coverage=.9), dict(decoder_mean_ms=4), dict(decoder_mean_ms=None)):
+            with self.subTest(window=change):
+                mixed = copy.deepcopy(result)
+                mixed['video_windows'].append(mixed['video_windows'][0] | change)
+                self.assertIsNone(load_limit(mixed))
 
     def test_audio_silence_is_not_hidden_by_later_good_blocks(self):
         with tempfile.TemporaryDirectory() as directory:

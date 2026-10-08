@@ -56,6 +56,7 @@ def evaluate(client, rc, codec, mode, vrr=False, tone_log='', host_frames=None):
         audio_continuous=find(r'AUDIO_TONE .*?continuous=(\d+)', int),
         host_mean_ms=find(r'STEADY_HOST .*?mean_ms=([0-9.]+)'),
         host_p99_ms=find(r'STEADY_HOST .*?p99_ms=([0-9.]+)'),
+        decoder_mean_ms=find(r'PERFORMANCE .*?decoder_mean_ms=([0-9.]+)'),
     )
     pyrowave = codec.startswith('pyrowave')
     if pyrowave:

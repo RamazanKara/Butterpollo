@@ -9,6 +9,7 @@ STEADY warmup_seconds=3.000 seconds=27.000 frames=1621 fps=60.000 intervals_over
 STEADY_HOST samples=1621 mean_ms=1.500 p50_ms=1.500 p95_ms=1.700 p99_ms=2.000 max_ms=2.500
 ARRIVAL_INTERVAL samples=1621 mean_ms=16.667 p50_ms=16.667 p95_ms=17.000 p99_ms=18.000 max_ms=20.000
 VISUAL frames=1621 unique=1621 repeats=0 skipped_render_frames=1620 unique_fps=60.000 coverage=1.000000
+PERFORMANCE seconds=30.000 received_fps=60.00 decoded_fps=60.00 host_mean_ms=1.500 decoder_mean_ms=4.000
 INTEROPERABILITY PASS
 '''
 PYROWAVE = GOOD + '''PYROWAVE framing=records bitstream=186f0393 encrypted=1 record_frames=1800 partial_frames=0 hdr_frames=0
@@ -97,6 +98,11 @@ class ReleaseMeasurements(unittest.TestCase):
     def test_missing_measurements_and_unreadable_motion_fail(self):
         for text in ('INTEROPERABILITY PASS', GOOD.replace('coverage=1.000000', 'coverage=0.500000')):
             self.assertFalse(evaluate(text, 0, 'hevc', '1280x720x60')['passed'])
+
+    def test_decoder_time_is_reported_and_required(self):
+        self.assertEqual(evaluate(GOOD, 0, 'hevc', '1920x1080x60')['decoder_mean_ms'], 4)
+        result = evaluate(GOOD.replace('decoder_mean_ms=4.000', ''), 0, 'hevc', '1920x1080x60')
+        self.assertIn('missing measurements: decoder_mean_ms', result['failures'])
 
     def test_silence_and_audio_gaps_fail(self):
         for text in (GOOD.replace('peak=0.050000', 'peak=0.000000'), GOOD.replace('continuous=1', 'continuous=0')):
