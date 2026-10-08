@@ -165,6 +165,29 @@ Render-to-decode delay over the network is not measured yet: the
 independent client must launch from the laptop's own paired identity, since
 the host ties a session to the address that launched it.
 
+### AV1 at 1968×2184: padding, and why the render-size rewrite is not shipped
+
+The RX 7900 XT (driver 32.0.31041.1004) encodes a 1968×2184 AV1 stream as
+1984×2186 even with `AlignmentMode` set to no restrictions, and the frame
+header says `render_and_frame_size_different = 0` (FFmpeg `trace_headers` on
+a native rc.22 keyframe). Every client therefore receives the padding unless
+it crops to the negotiated size, as Moonlight-qt does. The host now logs a
+warning once per encoder at such sizes.
+
+Setting the render size in the frame header is possible without touching the
+tile data: the flag gains `render_width_minus_1` and `render_height_minus_1`,
+32 bits, so everything after it moves by exactly four bytes and the byte
+alignment before the tiles is unchanged. A prototype that parses the
+sequence header and the uncompressed frame header up to `render_size()`
+(`bench-rc21\av1-render\av1_render.py`) rewrote the keyframe correctly:
+`trace_headers` reads 1967 / 2183, and libdav1d decodes a picture
+byte-identical to the original. But FFmpeg 9.0.2 still reports and outputs
+1984×2186 for it with libdav1d: it does not crop to the render size. The
+fix would only help a decoder that honours `render_size()`, and none
+available here does, so it is not shipped. Check whether the Android
+client's MediaCodec AV1 decoder crops to it, or crops to the negotiated
+size itself, before revisiting.
+
 ## October 5 rc.3 release continuation
 
 The user approved WGC compute by default for the next test release after
