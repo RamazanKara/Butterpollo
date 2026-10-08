@@ -172,6 +172,15 @@ Render-to-decode delay over the network is not measured yet: the
 independent client must launch from the laptop's own paired identity, since
 the host ties a session to the address that launched it.
 
+The laptop's smoke test on the installed rc.24 (13:17-13:18 UTC, motion on
+the streamed display, Extended layout) received 118.7 fps for 1968×2184 AV1
+HDR and 120.1 fps for HEVC, with 3.0 and 3.6 ms average host processing.
+Moonlight's AV1 maximum was 20.6 ms against 13.4 ms on rc.23. It is again
+the stream's first frames: every 5 s host window of that AV1 session peaked
+at 3.82-3.93 ms (p99 3.36-3.81 ms), and the HEVC session's at 4.51-4.53 ms.
+A first keyframe's time varies from start to start (12.7-17.7 ms in the
+loopback runs), so one start does not show a regression.
+
 ### AV1 at 1968×2184: padding, and why the render-size rewrite is not shipped
 
 The RX 7900 XT (driver 32.0.31041.1004) encodes a 1968×2184 AV1 stream as
