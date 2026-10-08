@@ -442,11 +442,10 @@ impl Prepared {
             output_override,
             configured_output: config.get("output_name", ""),
         };
-        let virtual_mode = !physical_only
-            && display_request.requested()
-            && (display_request.explicit()
-                || display_request.output_virtual()
-                || butterpollo_windows::display::virtual_display_available());
+        let virtual_mode = display_request.uses_virtual(
+            physical_only,
+            butterpollo_windows::display::virtual_display_available,
+        );
         if physical_only && display_request.requested() {
             launch.warnings.set("display_virtual", "Windows was locked and the virtual display could not be set up there, so this stream shows the physical display. Start the stream again after signing in to use the virtual display.");
         } else if display_request.requested() && !virtual_mode {
