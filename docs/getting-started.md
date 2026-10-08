@@ -8,12 +8,12 @@ Butterpollo is a Windows x64 streaming host written in Rust, with a GPU path tun
 
 ## Install or run portable
 
-Download the Windows package from [Butterpollo Releases](https://github.com/RamazanKara/Butterpollo/releases). For rc.25, choose:
+Download the Windows package from [Butterpollo Releases](https://github.com/RamazanKara/Butterpollo/releases). For rc.26, choose:
 
 | Package | How to start | Best fit |
 | --- | --- | --- |
-| `butterpollo-setup-2.0.0-rc.25.exe` | Run the installer, then open **Butterpollo** from the Start menu. | Normal use, automatic service startup and virtual displays. |
-| `butterpollo-rust-2.0.0-rc.25-windows-x64.zip` | Extract the whole ZIP and open **Start Butterpollo.exe**. | Trying the host with a physical display. |
+| `butterpollo-setup-2.0.0-rc.26.exe` | Run the installer, then open **Butterpollo** from the Start menu. | Normal use, automatic service startup and virtual displays. |
+| `butterpollo-rust-2.0.0-rc.26-windows-x64.zip` | Extract the whole ZIP and open **Start Butterpollo.exe**. | Trying the host with a physical display. |
 
 The installer sets up the host, the Windows service, the virtual display driver and, unless you untick it, the virtual gamepad driver that every emulated controller uses. An upgrade preserves the existing Butterpollo settings and paired devices and can migrate a detected Vibepollo installation. Disconnect streams and close host-launched games before installing.
 
