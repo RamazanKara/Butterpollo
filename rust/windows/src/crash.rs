@@ -214,14 +214,13 @@ pub fn reporter() -> Result<()> {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_millis();
-        let file = std::fs::File::create(
-            startup
-                .directory
-                .join(format!("butterpollo.{}.{stamp}.dmp", startup.parent)),
-        )?;
+        let path = startup
+            .directory
+            .join(format!("butterpollo.{}.{stamp}.dmp", startup.parent));
+        let file = std::fs::File::create(&path)?;
         // SAFETY: `process` and `file` are owned open handles, and `info` outlives the call and
         // points into the host, read with ClientPointers set.
-        unsafe {
+        let written = unsafe {
             // DbgHelp must never suspend threads in its own process: one of
             // them may own a loader/heap lock that the dump writer needs.
             MiniDumpWriteDump(
@@ -232,7 +231,17 @@ pub fn reporter() -> Result<()> {
                 info.as_ref().map(|i| i as *const _),
                 None,
                 None,
-            )?;
+            )
+        };
+        if let Err(error) = written {
+            // An empty dump says nothing; leave the reason instead.
+            drop(file);
+            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::write(
+                path.with_extension("txt"),
+                format!("writing the minidump failed: {error}\n"),
+            );
+            return Err(error.into());
         }
         file.sync_all()?;
         // SAFETY: `completed` is an owned event handle, open for the call.
@@ -338,7 +347,14 @@ mod tests {
             .map(|entry| entry.unwrap().path())
             .filter(|path| path.extension().is_some_and(|ext| ext == "dmp"))
             .collect();
-        assert_eq!(reports.len(), 1);
+        let failures: String = std::fs::read_dir(directory.path().join("crashes"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "txt"))
+            .filter_map(|path| std::fs::read_to_string(path).ok())
+            .filter(|text| text.starts_with("writing the minidump"))
+            .collect();
+        assert_eq!(reports.len(), 1, "{mode}: {failures}");
         let bytes = std::fs::read(&reports[0]).unwrap();
         assert_eq!(&bytes[..4], b"MDMP");
         assert!(bytes.len() > 32);
