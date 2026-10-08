@@ -517,6 +517,7 @@ static INVERSES: [u8; 256] = inverses();
 fn axpy(out: &mut [u8], input: &[u8], coefficient: u8) {
     #[cfg(target_arch = "x86_64")]
     if std::is_x86_feature_detected!("avx2") {
+        // SAFETY: AVX2 is available, and the caller passes equal-length slices.
         unsafe {
             axpy_avx2(out, input, &NIBBLES[coefficient as usize]);
         }
@@ -524,7 +525,7 @@ fn axpy(out: &mut [u8], input: &[u8], coefficient: u8) {
     }
     #[cfg(target_arch = "x86_64")]
     if std::is_x86_feature_detected!("ssse3") {
-        // Both slices have the same length, checked by the caller.
+        // SAFETY: SSSE3 is available, and the caller passes equal-length slices.
         unsafe {
             axpy_ssse3(out, input, &NIBBLES[coefficient as usize]);
         }
@@ -537,8 +538,14 @@ fn axpy(out: &mut [u8], input: &[u8], coefficient: u8) {
 }
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
+/// `out ^= coefficient * input` in GF(2^8), 32 bytes at a time.
+///
+/// # Safety
+/// The CPU supports AVX2 and `input` is at least as long as `out`.
 unsafe fn axpy_avx2(out: &mut [u8], input: &[u8], table: &[u8; 32]) {
     use std::arch::x86_64::*;
+    // SAFETY: loads and stores stay below `out.len()`, which `input` covers,
+    // and `table` holds the 32 bytes read.
     unsafe {
         let low = _mm256_broadcastsi128_si256(_mm_loadu_si128(table.as_ptr().cast()));
         let high = _mm256_broadcastsi128_si256(_mm_loadu_si128(table.as_ptr().add(16).cast()));
@@ -560,9 +567,15 @@ unsafe fn axpy_avx2(out: &mut [u8], input: &[u8], table: &[u8; 32]) {
     }
 }
 
-// Reuse each input load and nibble split across four parity rows. A row is only
-// 1–2 KiB for Moonlight; the active parity set stays in L1 instead of rereading
-// the full input block independently for every row.
+/// Accumulate `ROWS` parity rows from every source shard at once.
+///
+/// Reuses each input load and nibble split across the rows. A row is only
+/// 1–2 KiB for Moonlight, so the active parity set stays in L1 instead of
+/// rereading the whole input block for every row.
+///
+/// # Safety
+/// The CPU supports AVX2; `destination` holds `ROWS` disjoint buffers, and
+/// every source and destination buffer has the same length, at least `OFFSET`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn parity_avx2<const ROWS: usize, const OFFSET: usize>(
@@ -572,6 +585,9 @@ unsafe fn parity_avx2<const ROWS: usize, const OFFSET: usize>(
     parity: usize,
 ) {
     use std::arch::x86_64::*;
+    // SAFETY: every pointer offset stays below the common shard length the
+    // caller guarantees, and each destination row is written through its own
+    // pointer only.
     unsafe {
         let size = source[0].len() - OFFSET;
         let pointers: [*mut u8; ROWS] =
@@ -621,8 +637,14 @@ unsafe fn parity_avx2<const ROWS: usize, const OFFSET: usize>(
 }
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "ssse3")]
+/// `out ^= coefficient * input` in GF(2^8), 16 bytes at a time.
+///
+/// # Safety
+/// The CPU supports SSSE3 and `input` is at least as long as `out`.
 unsafe fn axpy_ssse3(out: &mut [u8], input: &[u8], table: &[u8; 32]) {
     use std::arch::x86_64::*;
+    // SAFETY: loads and stores stay below `out.len()`, which `input` covers,
+    // and `table` holds the 32 bytes read.
     unsafe {
         let low = _mm_loadu_si128(table.as_ptr().cast());
         let high = _mm_loadu_si128(table.as_ptr().add(16).cast());
@@ -764,14 +786,15 @@ fn cauchy_encode_offset<const OFFSET: usize>(
     if std::is_x86_feature_detected!("avx2") {
         let (rows, remainder) = dest.as_chunks_mut::<4>();
         for (batch, out) in rows.iter_mut().enumerate() {
-            // Validation above guarantees disjoint, equally sized buffers and
-            // at most 255 rows/columns, with OFFSET within each allocation.
-            // Each group writes only its own rows beyond the envelope.
+            // SAFETY: AVX2 is available; validation above guarantees disjoint,
+            // equally sized buffers and at most 255 rows and columns, with
+            // OFFSET within each allocation. Each group writes only its own rows.
             unsafe {
                 parity_avx2::<4, OFFSET>(source, out, batch * 4, parity);
             }
         }
         let first = parity - remainder.len();
+        // SAFETY: as for the full groups above.
         unsafe {
             match remainder.len() {
                 1 => parity_avx2::<1, OFFSET>(source, remainder, first, parity),

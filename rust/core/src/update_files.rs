@@ -71,16 +71,29 @@ pub(crate) fn write(
     result.with_context(|| format!("replacing {}", target.display()))
 }
 
-fn publish(source: &Path, target: &Path) -> std::io::Result<()> {
+/// Move `source` over `target` in one step: readers see the old file or the
+/// new one, never a partial one. On Windows the move is written through to
+/// disk before this returns.
+pub(crate) fn publish(source: &Path, target: &Path) -> std::io::Result<()> {
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;
+        const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+        const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
         unsafe extern "system" {
             fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
         }
         let source: Vec<_> = source.as_os_str().encode_wide().chain(Some(0)).collect();
         let target: Vec<_> = target.as_os_str().encode_wide().chain(Some(0)).collect();
-        if unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), 0x1 | 0x8) } == 0 {
+        // SAFETY: both paths are NUL-terminated UTF-16 buffers that outlive the call.
+        let moved = unsafe {
+            MoveFileExW(
+                source.as_ptr(),
+                target.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if moved == 0 {
             return Err(std::io::Error::last_os_error());
         }
         Ok(())

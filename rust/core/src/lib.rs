@@ -10,7 +10,11 @@
 //! `butterpollo` host crate wires both into its servers. The only Windows
 //! calls are the few file operations that need `MoveFileExW`, behind
 //! `cfg(windows)`.
-#![warn(clippy::print_stdout, clippy::print_stderr)]
+#![warn(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::undocumented_unsafe_blocks
+)]
 pub mod audio;
 pub mod auth;
 pub mod bitstream;

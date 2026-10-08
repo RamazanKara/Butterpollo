@@ -116,12 +116,14 @@ fn delete_at_restart(path: &Path) {
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;
+        const MOVEFILE_DELAY_UNTIL_REBOOT: u32 = 0x4;
         unsafe extern "system" {
             fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
         }
         let wide: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-        // MOVEFILE_DELAY_UNTIL_REBOOT
-        unsafe { MoveFileExW(wide.as_ptr(), std::ptr::null(), 0x4) };
+        // SAFETY: `wide` is NUL-terminated and outlives the call; a null target
+        // with this flag schedules deletion.
+        unsafe { MoveFileExW(wide.as_ptr(), std::ptr::null(), MOVEFILE_DELAY_UNTIL_REBOOT) };
     }
     #[cfg(not(windows))]
     let _ = std::fs::remove_file(path);

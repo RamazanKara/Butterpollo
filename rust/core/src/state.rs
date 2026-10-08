@@ -47,17 +47,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         f.sync_all()?;
         drop(f);
         #[cfg(windows)]
-        {
-            use std::os::windows::ffi::OsStrExt;
-            unsafe extern "system" {
-                fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
-            }
-            let a: Vec<_> = tmp.as_os_str().encode_wide().chain(Some(0)).collect();
-            let b: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-            if unsafe { MoveFileExW(a.as_ptr(), b.as_ptr(), 0x1 | 0x8) } == 0 {
-                return Err(std::io::Error::last_os_error().into());
-            }
-        }
+        crate::update_files::publish(&tmp, path)?;
         #[cfg(not(windows))]
         {
             std::fs::rename(&tmp, path)?;
