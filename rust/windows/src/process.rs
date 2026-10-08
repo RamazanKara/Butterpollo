@@ -274,6 +274,13 @@ pub fn console_session() -> u32 {
     // SAFETY: WTSGetActiveConsoleSessionId takes no arguments and has no preconditions.
     unsafe { windows::Win32::System::RemoteDesktop::WTSGetActiveConsoleSessionId() }
 }
+/// This process's own session; the service starts the host in the user's.
+pub fn current_session() -> Result<u32> {
+    let mut session = 0;
+    // SAFETY: `session` is a live local the call writes once.
+    unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session)? };
+    Ok(session)
+}
 /// Whether a user is signed in to this process's session. Only a host
 /// running as SYSTEM can tell; a portable host runs as the user.
 pub fn user_signed_in() -> bool {

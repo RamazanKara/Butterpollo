@@ -273,7 +273,7 @@ fn call(request: &Request) -> Result<Reply> {
             std::process::id().to_string().into(),
         ],
         program.parent(),
-        Target::User { elevated: false },
+        helper_target(crate::process::is_system(), crate::process::current_session)?,
         &BTreeMap::new(),
         true,
     )
@@ -312,6 +312,18 @@ fn call(request: &Request) -> Result<Reply> {
         Response::Done { reply } => Ok(reply),
         Response::Error { message } => bail!("RTSS helper: {message}"),
     }
+}
+/// RTSS runs elevated, and Windows drops an unelevated caller's messages to
+/// it, so the SDK's UpdateProfiles never reached RTSS: it kept showing and
+/// enforcing the old limit. Like Vibepollo, whose SYSTEM host calls the SDK
+/// itself, the service runs the helper as SYSTEM in its own (the user's)
+/// session. A portable host's helper keeps the host's token.
+fn helper_target(service: bool, session: impl FnOnce() -> Result<u32>) -> Result<Target> {
+    Ok(if service {
+        Target::SystemSession(session()?)
+    } else {
+        Target::User { elevated: false }
+    })
 }
 pub fn worker(name: &str, parent: u32) -> Result<()> {
     let pipe = Pipe::client(name, parent, PIPE_PREFIX)?;
@@ -467,6 +479,19 @@ mod tests {
 
     fn launch_error(code: WIN32_ERROR) -> anyhow::Error {
         windows::core::Error::from_hresult(HRESULT::from_win32(code.0)).into()
+    }
+
+    #[test]
+    fn service_helper_runs_as_system_in_the_host_session() {
+        assert!(matches!(
+            helper_target(true, || Ok(3)).unwrap(),
+            Target::SystemSession(3)
+        ));
+        assert!(matches!(
+            helper_target(false, || unreachable!()).unwrap(),
+            Target::User { elevated: false }
+        ));
+        assert!(helper_target(true, || bail!("no session")).is_err());
     }
 
     #[test]
