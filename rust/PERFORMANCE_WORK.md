@@ -5,6 +5,56 @@ without reducing features or picture quality. Opus took over from Codex in the
 evening of October 2. Performance acceptance on the customer's own sessions is
 still open; the measured fixture results below are local loopback evidence.
 
+## October 8 real-client picture age over Wi-Fi (rc.24, laptop)
+
+First render-to-decode measurement from a second machine instead of loopback.
+Host: RX 7900 XT, 2.0.0-rc.24, Desktop app on the Extended virtual display,
+`motion_probe` drawing a QPC barcode (240 Hz source on the 120 fps runs, 120 Hz
+on the 60 fps runs). Client: IdeaPad, Radeon 780M, driver 32.0.31035.1003,
+**on Wi-Fi only** (802.11ax, 5 GHz, 2402 Mbit/s link); host on Ethernet.
+Decoder: the independent `rust/tests/moonlight_client.c` built on the host from
+`e5520ac0` (FFmpeg D3D11VA for HEVC and AV1, decoding on its own thread, reading
+back only a 640x8 barcode strip), launched by a separately paired test client
+("lap-measure", Extended layout). Clock: the host pings the laptop every 200 ms
+over UDP; the 20% of pings with the lowest round trip give a linear
+host-to-laptop QPC map (1,682 pings, minimum RTT 1.16 ms so offset error is
+within about +-0.6 ms, fitted drift 17.5 ppm, fit residual at most 0.3 ms).
+One 30 s run per row, the first 3 s dropped, first decode of each picture only.
+HDR requested on every row; all decoded as 10-bit P010, BT.2020, PQ.
+
+"Received" is when the client's decode thread starts on the picture (fully
+received, after its queue). "Decoded" adds the client's hardware decode plus the
+synchronous strip readback; Moonlight-qt reports 0.3-0.7 ms hardware decode on
+the same laptop, so a Moonlight user's picture age lies between the two columns.
+
+| Config (bitrate) | Fresh fps | Render to received avg / p95 / p99 | Render to decoded avg / p95 / p99 | Host processing avg / p95 | Client decode avg |
+| --- | ---: | --- | --- | --- | ---: |
+| 1968x2184@120 AV1 HDR (80 Mbps) | 120.0 | 13.54 / 14.33 / 14.93 ms | 18.76 / 19.61 / 20.28 ms | 3.04 / 3.3 ms | 5.21 ms |
+| 1968x2184@120 HEVC HDR (80 Mbps) | 120.0 | 14.13 / 14.97 / 15.90 ms | 19.32 / 20.35 / 21.35 ms | 3.70 / 4.1 ms | 5.19 ms |
+| 2560x1440@120 AV1 HDR (50 Mbps) | 119.5 | 14.78 / 21.87 / 34.85 ms | 20.25 / 29.51 / 45.16 ms | 2.74 / 3.0 ms | 5.47 ms |
+| 2560x1440@120 HEVC HDR (50 Mbps) | 120.0 | 13.67 / 14.69 / 19.87 ms | 18.80 / 20.22 / 24.97 ms | 3.11 / 3.2 ms | 5.13 ms |
+| 1920x1080@60 AV1 HDR (20 Mbps) | 60.6 | 12.91 / 15.05 / 17.89 ms | 16.88 / 19.40 / 22.18 ms | 2.16 / 2.5 ms | 3.97 ms |
+| 1920x1080@60 HEVC HDR (20 Mbps) | 60.5 | 12.99 / 14.15 / 16.62 ms | 16.51 / 17.69 / 20.28 ms | 2.39 / 2.7 ms | 3.51 ms |
+
+Every run received all frames with zero decode failures; unique fresh pictures
+matched the stream rate (1440p AV1 skipped 17 source frames and had 183
+intervals over 1.5 frame periods, which is its wider p95/p99; one run, so
+repeat before reading it as an AV1 property). AV1 is 0.6 ms faster than HEVC to
+the client at native resolution, mostly host processing (3.0 vs 3.7 ms).
+
+A first batch at 15:04Z (older client build) is discarded for 120 fps and AV1:
+the client decoded and read back whole frames on its receive thread (8-10 ms a
+frame), shed about 11-15% of frames and queued for seconds, and its FFmpeg chose
+libdav1d without D3D11VA for AV1. Its valid 1080p60 HEVC row (12.91 / 14.82 /
+17.22 ms to received) agrees with the table.
+
+Not measured here: a game load on the host, Ethernet on the client, display
+scanout, PyroWave (stock and fixture clients lack it on this laptop), and
+Vibepollo on the same fixture. Moonlight-qt averages on the same laptop and host
+(rc.21-rc.24): host processing 2.6-3.6 ms, network 1-3 ms, decode 0.3-0.7 ms.
+Raw files: laptop `C:\Users\ramaz\bp-measure\phase2b`, host clock pings and
+rendered-frame maps in the project files.
+
 ## October 8 encoder stall recovery backs off (RX 9070 XT report)
 
 Report: RX 9070 XT host, HD 630 client on Streamlight, 4K60 HEVC 80 Mbps,
