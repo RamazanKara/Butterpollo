@@ -172,10 +172,14 @@ if ($NoUpload) {
     return
 }
 gh release upload $Version -R $repo --clobber "$run\VALIDATION.json"
+# gh writes UTF-8; read in the console's code page, every non-ASCII
+# character in the release text came back garbled (rc.23).
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $body = gh release view $Version -R $repo --json body --jq .body
 if ($body -notmatch 'VALIDATION\.json') {
     $body = ($body -join "`n").TrimEnd() +
         " · [Host validation](https://github.com/$repo/releases/download/$Version/VALIDATION.json)`n"
-    $body | gh release edit $Version -R $repo --notes-file -
+    [IO.File]::WriteAllText("$run\body.md", $body, [Text.UTF8Encoding]::new($false))
+    gh release edit $Version -R $repo --notes-file "$run\body.md"
 }
 Step "checked https://github.com/$repo/releases/tag/$Version"
