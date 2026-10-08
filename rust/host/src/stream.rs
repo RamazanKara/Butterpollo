@@ -2354,14 +2354,14 @@ fn motion_requests(id: u8, capabilities: u16) -> Vec<(u16, Vec<u8>)> {
 }
 fn feedback_packets(id: u16, kind: u16, data: &[u8]) -> Vec<(u16, Vec<u8>)> {
     let mut result = vec![];
-    if matches!(kind, 1 | 3 | 4 | 5) && data.len() >= 8 {
+    if matches!(kind, 4 | 5) && data.len() >= 8 {
         let mut rumble = 0x00c0ffeeu32.to_le_bytes().to_vec();
         rumble.extend_from_slice(&id.to_le_bytes());
         rumble.extend_from_slice(&data[..4]);
         result.push((0x010b, rumble));
         if kind == 4 {
             result.push((0x5500, [&id.to_le_bytes()[..], &data[4..8]].concat()));
-        } else if kind == 1 || (kind == 5 && data[7] & 1 != 0) {
+        } else if kind == 5 && data[7] & 1 != 0 {
             result.push((0x5502, [&id.to_le_bytes()[..], &data[4..7]].concat()));
         }
         if kind == 5 && data.len() == 32 && data[7] & 2 != 0 {
@@ -2402,17 +2402,20 @@ mod tests {
         assert_eq!(reopen_on(false, &mut missing, back), ReopenOn::Wait);
     }
     #[test]
-    fn vigem_feedback_forwards_rumble_and_only_ds4_lightbar() {
-        let report = [255, 255, 128, 128, 12, 34, 56, 0];
-        let x360 = feedback_packets(2, 3, &report);
+    fn pad_feedback_forwards_rumble_and_each_family_extra() {
+        let rumble = (0x010b, vec![0xee, 0xff, 0xc0, 0, 2, 0, 255, 255, 128, 128]);
+        // Xbox pads add trigger rumble.
+        let xbox = feedback_packets(2, 4, &[255, 255, 128, 128, 1, 2, 3, 4]);
+        assert_eq!(xbox, vec![rumble.clone(), (0x5500, vec![2, 0, 1, 2, 3, 4])]);
+        // PlayStation pads add the lightbar only when the report sets it.
+        let ds4 = feedback_packets(2, 5, &[255, 255, 128, 128, 12, 34, 56, 1]);
+        assert_eq!(ds4, vec![rumble.clone(), (0x5502, vec![2, 0, 12, 34, 56])]);
         assert_eq!(
-            x360,
-            vec![(0x010b, vec![0xee, 0xff, 0xc0, 0, 2, 0, 255, 255, 128, 128])]
+            feedback_packets(2, 5, &[255, 255, 128, 128, 12, 34, 56, 0]),
+            vec![rumble]
         );
-        let ds4 = feedback_packets(2, 1, &report);
-        assert_eq!(ds4[0], x360[0]);
-        assert_eq!(ds4[1], (0x5502, vec![2, 0, 12, 34, 56]));
-        assert_eq!(ds4.len(), 2);
+        // Reports of no known kind send nothing.
+        assert!(feedback_packets(2, 3, &[255; 8]).is_empty());
     }
     #[test]
     fn an_override_the_host_cannot_use_is_skipped_and_the_rest_apply() {

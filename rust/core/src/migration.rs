@@ -325,7 +325,7 @@ mod tests {
         ] {
             let old = temp.path().join(family).join("Çağrı Müller/config");
             std::fs::create_dir_all(old.join("credentials"))?;
-            let settings = "sunshine_name = Çağrı Müller\nencoder = amdvce_experimental\namdvce_experimental = true\namd_quality = quality\nvirtual_display_mode = per_client\nvirtual_display_layout = extended\nport = 48000\nfuture_setting = {\"version\":99,\"keep\":true}\n";
+            let settings = "sunshine_name = Çağrı Müller\nencoder = amdvce_experimental\namdvce_experimental = true\namd_quality = quality\nvirtual_display_mode = per_client\nvirtual_display_layout = extended\nport = 48000\ngamepad = x360\nfuture_setting = {\"version\":99,\"keep\":true}\n";
             let mut utf16 = vec![0xff, 0xfe];
             utf16.extend(settings.encode_utf16().flat_map(u16::to_le_bytes));
             std::fs::write(old.join("sunshine.conf"), &utf16)?;
@@ -335,7 +335,7 @@ mod tests {
                 json!({"root":{"uniqueid":"same-host","named_devices":[{
                     "name":"Living room","cert":identity.certificate,"uuid":"same-client",
                     "perm":"119480064","enabled":"true","display_mode":"2560x1440x120",
-                    "virtual_display_guid":"same-display","config_overrides":{"amd_quality":"speed"},
+                    "virtual_display_guid":"same-display","config_overrides":{"amd_quality":"speed","gamepad":"ds4"},
                     "future_device":{"keep":true}}]},"future":99})
             };
             let aliases = json!({"root":{"shared_virtual_display_guid":"f425b740-e441-4b87-8e78-07b91579bf70",
@@ -356,6 +356,8 @@ mod tests {
             import(&old, &next)?;
             let config = Config::load(&next.join("sunshine.conf"))?;
             assert_eq!(config.values, Config::parse(settings)?.values);
+            // ViGEmBus controller types load as the VHF pads that replace them.
+            assert_eq!(config.get("gamepad", ""), "vhf_xbox_one");
             assert_eq!(
                 crate::encoder_policy::canonical_name(config.get("encoder", "")),
                 "amf"
@@ -378,6 +380,12 @@ mod tests {
             assert_eq!(clients.unique_id, "same-host");
             assert_eq!(clients.clients.len(), 1);
             assert_eq!(clients.clients[0].cert, identity.certificate);
+            if family != "Sunshine" {
+                assert_eq!(
+                    clients.clients[0].extra["config_overrides"],
+                    json!({"amd_quality":"speed","gamepad":"vhf_ds4"})
+                );
+            }
             assert!(
                 state::Credentials::load(&next.join("sunshine_credentials.json"))?
                     .unwrap()

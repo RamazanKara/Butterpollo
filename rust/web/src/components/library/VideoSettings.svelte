@@ -24,13 +24,11 @@
 
   const GAMEPADS: Choice[] = [
     { value: 'auto', label: 'Automatic' },
-    { value: 'x360', label: 'Xbox 360 (ViGEmBus)' },
-    { value: 'ds4', label: 'DualShock 4 (ViGEmBus)' },
-    { value: 'vhf_xbox_one', label: 'Xbox One (VHF)' },
-    { value: 'vhf_xbox', label: 'Xbox Series (VHF)' },
-    { value: 'vhf_ds4', label: 'DualShock 4 (VHF)' },
-    { value: 'vhf_ds5', label: 'DualSense (VHF)' },
-    { value: 'vhf_switch', label: 'Switch Pro (VHF)' },
+    { value: 'vhf_xbox_one', label: 'Xbox One' },
+    { value: 'vhf_xbox', label: 'Xbox Series' },
+    { value: 'vhf_ds4', label: 'DualShock 4' },
+    { value: 'vhf_ds5', label: 'DualSense' },
+    { value: 'vhf_switch', label: 'Switch Pro' },
   ];
 </script>
 
@@ -63,7 +61,7 @@
       {draft}
       key="gamepad"
       label="Controller type"
-      hint="Automatic uses ViGEmBus for Xbox-type controllers and the VHF DualSense for PlayStation ones, when both are installed. ViGEmBus Xbox 360 avoids Steam's duplicate-controller issue; motion or touchpad input can select DS4. The ViGEmBus choices need it installed; without it a VHF pad is used."
+      hint="Automatic matches each client's controller: DualSense for PlayStation or for motion and touchpad input, Switch Pro for Nintendo, Xbox Series otherwise. A choice here uses that pad for this app."
       options={GAMEPADS}
     />
   </div>

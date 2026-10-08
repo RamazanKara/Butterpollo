@@ -94,19 +94,19 @@ Under **Settings → Frame limiting**:
 
 ## Controllers
 
-**Settings → Input → Controller type** controls which virtual controller games see. `gamepad = auto` uses ViGEmBus for Xbox-type clients when the installed driver can be opened, as Vibepollo does. Its USB-style Xbox 360 pad avoids a Steam/SDL issue that can list one VHF Xbox pad twice through XInput and GameInput.
+**Settings → Input → Controller type** controls which virtual controller games see. Every pad comes from the VHF gamepad driver that the installer brings; no other driver is needed.
 
-PlayStation clients get a virtual DualSense from the VHF driver when it is installed alongside ViGEmBus. ViGEmBus cannot emulate a DualSense, and only the DualSense has adaptive triggers; it also carries motion, battery, touchpad, lightbar and rumble. A game's trigger effects reach the player only if the client forwards them to a real DualSense. Without the VHF driver, PlayStation clients get a DualShock 4 through ViGEmBus.
+`gamepad = auto` matches each client's controller. PlayStation clients get a DualSense, the only pad with adaptive triggers; it also carries motion, battery, touchpad, lightbar and rumble. A game's trigger effects reach the player only if the client forwards them to a real DualSense. Nintendo clients get a Switch Pro. Other clients get an Xbox Series pad, or a DualSense when they have motion sensors or a touchpad and `motion_as_ds4` or `touchpad_as_ds4` is enabled. Both preferences default to enabled, so a Steam Deck reporting motion gets a DualSense.
 
-Other clients stay on ViGEmBus. Automatic selects DualShock 4 for clients with motion sensors or a touchpad when `motion_as_ds4` or `touchpad_as_ds4` is enabled. Both preferences default to enabled. A Steam Deck reporting motion therefore gets DS4; other clients get Xbox 360. DS4 carries motion, battery and touchpad input, rumble and lightbar feedback. Xbox 360 carries buttons, sticks, triggers and rumble.
+`vhf_xbox`, `vhf_xbox_one`, `vhf_ds4`, `vhf_ds5` and `vhf_switch` give every client that pad: `vhf_ds5` a DualSense, `vhf_ds4` a DualShock 4 without adaptive triggers. Logs name the profile for each connected controller.
 
-Without a usable ViGEmBus driver, Automatic keeps the VHF behavior: DualSense for PlayStation, Switch Pro for Nintendo, and Xbox Series for other controllers, with the motion/touchpad preferences selecting DualSense for those other types. Explicit `x360` and `ds4` use ViGEmBus; `vhf_xbox`, `vhf_xbox_one`, `vhf_ds4`, `vhf_ds5` and `vhf_switch` use VHF. An explicit choice never swaps one controller for another while its driver works, so `vhf_ds5` gives every client a DualSense and `ds4` gives every client a DualShock 4 without adaptive triggers. If ViGEmBus is not installed or cannot be opened, `x360` and `ds4` use the VHF Xbox One or DualShock 4 pad instead of leaving the stream without a controller, and the stream's warning says so. Logs name the backend and profile for each connected controller.
+Earlier releases also offered Xbox 360 (`x360`) and DualShock 4 (`ds4`) through ViGEmBus. Since rc.25 Butterpollo changes those settings to `vhf_xbox_one` and `vhf_ds4` when it loads them, in the host configuration, app and device overrides, and configurations imported from Sunshine, Apollo or Vibepollo. An installed ViGEmBus is no longer used and can be uninstalled.
 
 ### Steam Deck
 
 Moonlight on a Steam Deck passes on the Deck's own controls only when Steam Input is off for Moonlight. With it on, Steam hands Moonlight a virtual Xbox controller without gyro, trackpads or back grips, and the host can only use what Moonlight announces. On the Deck, open Moonlight's controller settings in Steam, choose to disable Steam Input, and reconnect. If the paired device's name says Steam Deck (SteamOS calls it `steamdeck`) and its controller arrives without a gyro, the stream card says this.
 
-With Steam Input off, Moonlight announces a Steam controller with gyro, and Automatic gives it a DualSense on the VHF driver (a DualShock 4 when ViGEmBus is installed):
+With Steam Input off, Moonlight announces a Steam controller with gyro, and Automatic gives it a DualSense:
 
 - **Gyro and accelerometer** are the pad's motion sensors.
 - **Trackpads** share the pad's one touch surface: the left trackpad is its left half and the right trackpad its right half. Moonlight sends trackpad touches only from builds whose SDL reads the Deck's trackpads (SDL 3); older builds send none. Clicking the right trackpad is the touchpad click.
@@ -115,8 +115,6 @@ With Steam Input off, Moonlight announces a Steam controller with gyro, and Auto
 - **Rumble and battery level** are passed on.
 
 Setting `motion_as_ds4` and `touchpad_as_ds4` both off keeps a Deck on an Xbox pad, without its gyro and trackpads.
-
-[ViGEmBus from nefarius](https://github.com/nefarius/ViGEmBus/releases) is retired but widely used. Installing it separately enables the Xbox 360 path that avoids this duplicate-controller issue. Butterpollo detects it; the installer does not bundle it. Reconnect the stream after changing the controller setting.
 
 ## Settings for one app or device
 

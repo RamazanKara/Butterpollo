@@ -2,9 +2,13 @@
 
 [Documentation](../docs/README.md) · [Install and migrate](../docs/getting-started.md) · [Configuration](../docs/configuration.md) · [Compatibility](PARITY.md)
 
-**Release history:** [rc.24](#new-in-rc24) · [rc.23](#new-in-rc23) · [rc.22](#new-in-rc22) · [rc.21](#new-in-rc21) · [rc.20](#new-in-rc20) · [rc.19](#new-in-rc19) · [rc.18](#new-in-rc18) · [rc.17](#new-in-rc17) · [rc.16](#new-in-rc16) · [rc.15](#new-in-rc15) · [rc.14](#new-in-rc14) · [rc.13](#new-in-rc13) · [rc.12](#new-in-rc12) · [rc.11](#new-in-rc11) · [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
+**Release history:** [rc.25](#new-in-rc25) · [rc.24](#new-in-rc24) · [rc.23](#new-in-rc23) · [rc.22](#new-in-rc22) · [rc.21](#new-in-rc21) · [rc.20](#new-in-rc20) · [rc.19](#new-in-rc19) · [rc.18](#new-in-rc18) · [rc.17](#new-in-rc17) · [rc.16](#new-in-rc16) · [rc.15](#new-in-rc15) · [rc.14](#new-in-rc14) · [rc.13](#new-in-rc13) · [rc.12](#new-in-rc12) · [rc.11](#new-in-rc11) · [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
 
 Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.24 installer is named `butterpollo-setup-2.0.0-rc.24.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+
+## New in rc.25
+
+- **ViGEmBus is no longer used.** Every virtual controller now comes from the VHF gamepad driver the installer brings, which covers XInput games, rumble, motion, touchpads and the DualSense's adaptive triggers. The Xbox 360 and DualShock 4 (ViGEmBus) choices are gone: a saved `gamepad = x360` becomes Xbox One and `ds4` becomes DualShock 4, in the host settings, app and device overrides, and profiles imported from Sunshine, Apollo or Vibepollo. With ViGEmBus installed, Automatic used to give Xbox-type clients its Xbox 360 pad; they now get the VHF Xbox Series pad, which Steam's stable client can list twice until it ships the fix the Steam beta already has ([troubleshooting](../docs/troubleshooting.md#steam-shows-two-controllers)). An installed ViGEmBus can be uninstalled.
 
 ## New in rc.24
 

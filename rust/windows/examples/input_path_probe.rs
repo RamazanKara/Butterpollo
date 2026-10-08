@@ -7,7 +7,6 @@
 //! resolution and priority class; --trace prints the input module's logs.
 //! Mouse input is zero-distance moves only. vhf and pad-contention plug a
 //! neutral virtual pad and remove it: run them while no one streams.
-//! pad-contention runs VHF and ViGEm X360 separately.
 use butterpollo_windows::capture::Priority;
 use std::{
     net::UdpSocket,
@@ -874,9 +873,7 @@ fn main() {
         vhf_section(&loads);
     }
     if sections.iter().any(|a| *a == "pad-contention") {
-        for profile in ["vhf", "x360"] {
-            pad_contention_section(&loads, profile);
-        }
+        pad_contention_section(&loads, "vhf");
     }
     if has("injector") {
         injector_section();

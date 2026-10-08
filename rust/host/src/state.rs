@@ -234,6 +234,8 @@ impl Host {
                     app.insert("uuid".into(), json!(uuid::Uuid::new_v4().to_string()));
                     assigned = true;
                 }
+                // A ViGEmBus controller type, say, becomes its VHF pad.
+                assigned |= butterpollo_core::config::replace_retired_in_app(app);
             }
         }
         if assigned {

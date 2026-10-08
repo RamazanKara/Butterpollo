@@ -238,6 +238,15 @@ impl PairedState {
                 c.uuid = uuid::Uuid::new_v4().to_string();
                 ids.insert(c.uuid.clone());
             }
+            // A device's own settings, such as a ViGEmBus controller type,
+            // take their current values; the host saves the state it loads.
+            if let Some(overrides) = c
+                .extra
+                .get_mut("config_overrides")
+                .and_then(Value::as_object_mut)
+            {
+                crate::config::replace_retired(overrides.iter_mut());
+            }
             unique.push(c);
         }
         let clients = unique;
@@ -484,6 +493,33 @@ mod tests {
         assert_eq!(loaded.clients.len(), 1);
         let der = loaded.clients[0].der().unwrap();
         assert!(loaded.client_by_certificate(&der).is_some());
+    }
+    #[test]
+    fn a_device_with_a_vigembus_controller_type_gets_its_vhf_pad() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("state.json");
+        let identity = crypto::Identity::generate().unwrap();
+        let mut s = PairedState::load(&p).unwrap();
+        s.add(
+            &p,
+            Client {
+                name: "Phone".into(),
+                cert: identity.certificate.clone(),
+                uuid: "a".into(),
+                perm: 0x071f_1f00,
+                enabled: true,
+                extra: BTreeMap::from([(
+                    "config_overrides".into(),
+                    json!({"gamepad": "x360", "keyboard": "true"}),
+                )]),
+            },
+        )
+        .unwrap();
+        let loaded = PairedState::load(&p).unwrap();
+        assert_eq!(
+            loaded.clients[0].extra["config_overrides"],
+            json!({"gamepad": "vhf_xbox_one", "keyboard": "true"})
+        );
     }
     #[test]
     fn property_tree_empty_lists_and_unreadable_certificates_load() {

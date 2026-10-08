@@ -1,8 +1,6 @@
 use anyhow::{Context, Result, bail};
 use butterpollo_core::input::Input as Event;
-use butterpollo_core::input_policy::{
-    VHF_AUTO, VIGEM_DS4, VIGEM_X360, gamepad_profile, vhf_stand_in,
-};
+use butterpollo_core::input_policy::{VHF_AUTO, gamepad_profile};
 use std::{
     collections::{BTreeMap, BTreeSet},
     mem::size_of,
@@ -26,7 +24,6 @@ use windows::{
 mod gamepad_backend;
 #[path = "input/gamepad_thread.rs"]
 mod gamepad_thread;
-mod vigem;
 pub use gamepad_thread::{GamepadThread, PadReport};
 
 pub fn open_interface(guid: GUID) -> Result<HANDLE> {
@@ -91,9 +88,6 @@ pub struct Gamepads {
     /// The last feedback report forwarded for each controller.
     last_feedback: BTreeMap<u16, (u16, Vec<u8>)>,
     feedback_failures: BTreeMap<u16, FeedbackFailure>,
-    /// Set when an explicit ViGEm choice runs on a VHF pad because ViGEmBus
-    /// could not be opened.
-    notice: Option<String>,
 }
 #[derive(Default)]
 struct FeedbackFailure {
@@ -120,7 +114,7 @@ pub fn capabilities(config: &butterpollo_core::config::Config) -> u32 {
     if config.boolean("controller", true)
         && !matches!(
             config.get("gamepad", "auto"),
-            "vhf_xbox" | "vhf_xbox_one" | "x360" | "vhf_switch"
+            "vhf_xbox" | "vhf_xbox_one" | "vhf_switch"
         )
     {
         // Moonlight has one general controller-touch feature bit; there is
@@ -141,19 +135,6 @@ impl Gamepads {
     }
     fn open_options(profile: u16, policy: butterpollo_core::input_policy::Policy) -> Result<Self> {
         let (backend, available) = gamepad_backend::Backend::open(profile)?;
-        let chosen = profile;
-        let profile = if matches!(backend, gamepad_backend::Backend::Vhf(_)) {
-            vhf_stand_in(profile)
-        } else {
-            profile
-        };
-        let notice = (profile != chosen).then(|| {
-            format!(
-                "ViGEmBus is not installed or could not be opened, so controllers use {} in place of {}. Install ViGEmBus, or choose Automatic, to change this.",
-                profile_label(profile),
-                profile_label(chosen)
-            )
-        });
         Ok(Self {
             backend,
             active: BTreeMap::new(),
@@ -168,7 +149,6 @@ impl Gamepads {
             unsupported_touchpads: BTreeSet::new(),
             last_feedback: BTreeMap::new(),
             feedback_failures: BTreeMap::new(),
-            notice,
         })
     }
     fn ensure(&mut self, id: u16) -> Result<()> {
@@ -207,14 +187,11 @@ impl Gamepads {
                         controller = id,
                         client_type = kind,
                         capabilities = format!("{capabilities:#x}"),
-                        backend = self.backend.name_for(u32::from(global)),
+                        backend = self.backend.name(),
                         profile = profile_name(profile),
                         "virtual controller connected"
                     );
                     return Ok(());
-                }
-                Err(error) if matches!(profile, VIGEM_X360 | VIGEM_DS4) => {
-                    return Err(error);
                 }
                 Err(_) => {}
             }
@@ -332,7 +309,7 @@ impl Gamepads {
                 };
                 if let Some(b) = gamepad_touch_request(&self.pointers, profile, global, event, dual)
                 {
-                    self.backend.touch(u32::from(global), &b)?;
+                    self.backend.touch(&b)?;
                     b.submitted(&mut self.pointers);
                 }
             }
@@ -401,11 +378,10 @@ impl Gamepads {
         for (id, buttons, left, right, sticks) in updates {
             self.submit(id, buttons, left, right, &sticks)?;
         }
-        self.backend.refresh()?;
         Ok(())
     }
     pub fn motion_supported(&self, id: u16) -> bool {
-        matches!(self.profiles.get(&id).copied(), Some(5..=7 | VIGEM_DS4))
+        matches!(self.profiles.get(&id).copied(), Some(5..=7))
     }
 }
 fn poll_feedback(
@@ -466,23 +442,8 @@ fn poll_feedback(
     failures.retain(|id, _| active.contains_key(id));
     output
 }
-/// The profile as the console's Controller type list names it.
-fn profile_label(profile: u16) -> &'static str {
-    match profile {
-        VIGEM_X360 => "Xbox 360 (ViGEmBus)",
-        VIGEM_DS4 => "DualShock 4 (ViGEmBus)",
-        3 => "Xbox One (VHF)",
-        4 => "Xbox Series (VHF)",
-        5 => "DualShock 4 (VHF)",
-        6 => "DualSense (VHF)",
-        7 => "Switch Pro (VHF)",
-        _ => "Automatic",
-    }
-}
 fn profile_name(profile: u16) -> &'static str {
     match profile {
-        VIGEM_X360 => "x360",
-        VIGEM_DS4 => "ds4",
         3 => "vhf_xbox_one",
         4 => "vhf_xbox",
         5 => "vhf_ds4",
@@ -537,7 +498,7 @@ fn gamepad_touch_request(
     else {
         return None;
     };
-    if *touchpad > u8::from(dual) || !matches!(profile, 5 | 6 | VIGEM_DS4) {
+    if *touchpad > u8::from(dual) || !matches!(profile, 5 | 6) {
         return None;
     }
     let event = match event {
@@ -2358,15 +2319,15 @@ mod tests {
     }
 
     #[test]
-    fn vigem_ds4_keeps_primary_contact_slots_and_ignores_secondary_surfaces() {
+    fn ds4_keeps_primary_contact_slots_and_ignores_secondary_surfaces() {
         let mut pointers = BTreeMap::new();
         for pointer in [17, 18] {
-            submit_touch(&mut pointers, VIGEM_DS4, 2, &touch(2, 0, 1, pointer)).unwrap();
+            submit_touch(&mut pointers, 5, 2, &touch(2, 0, 1, pointer)).unwrap();
         }
-        assert!(submit_touch(&mut pointers, VIGEM_DS4, 2, &touch(2, 0, 1, 19)).is_none());
-        assert!(submit_touch(&mut pointers, VIGEM_DS4, 2, &touch(2, 1, 7, 17)).is_none());
+        assert!(submit_touch(&mut pointers, 5, 2, &touch(2, 0, 1, 19)).is_none());
+        assert!(submit_touch(&mut pointers, 5, 2, &touch(2, 1, 7, 17)).is_none());
         assert_eq!(pointers.len(), 2);
-        submit_touch(&mut pointers, VIGEM_DS4, 2, &touch(2, 0, 7, 17)).unwrap();
+        submit_touch(&mut pointers, 5, 2, &touch(2, 0, 7, 17)).unwrap();
         assert!(pointers.is_empty());
     }
 
@@ -2400,13 +2361,13 @@ mod tests {
     #[test]
     fn the_right_touchpad_stays_ignored_when_the_client_did_not_announce_two() {
         let mut pointers = BTreeMap::new();
-        assert!(submit_touch_on(&mut pointers, VIGEM_DS4, 2, &touch(2, 1, 1, 0), false).is_none());
-        let full = submit_touch_on(&mut pointers, VIGEM_DS4, 2, &touch(2, 0, 1, 0), false).unwrap();
+        assert!(submit_touch_on(&mut pointers, 5, 2, &touch(2, 1, 1, 0), false).is_none());
+        let full = submit_touch_on(&mut pointers, 5, 2, &touch(2, 0, 1, 0), false).unwrap();
         // A single touchpad keeps the whole surface.
         assert_eq!(&full[14..16], &(16383u16).to_le_bytes());
         assert_eq!(pointers.len(), 1);
         // Pads without a touch surface take no touch even when announced dual.
-        for profile in [3, 4, 7, VIGEM_X360] {
+        for profile in [3, 4, 7] {
             assert!(submit_touch_on(&mut pointers, profile, 2, &touch(2, 1, 1, 5), true).is_none());
         }
     }

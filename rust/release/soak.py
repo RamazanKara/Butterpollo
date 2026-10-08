@@ -122,8 +122,7 @@ def main():
     report = dict(mode=args.mode, started_utc=datetime.now(timezone.utc).isoformat(), results=[],
                   package=str(args.package), host_sha256=hashlib.sha256((args.package / 'butterpollo.exe').read_bytes()).hexdigest(),
                   limits={'fresh_fps_minimum_fraction': .9, 'window_seconds': 10},
-                  skipped=[dict(name='controllers-vigem', reason='receiver fixture has no controller sender'),
-                           dict(name='controllers-vhf', reason='receiver fixture has no controller sender'),
+                  skipped=[dict(name='controllers-vhf', reason='receiver fixture has no controller sender'),
                            dict(name='secure-desktop', reason='no Windows desktop or security changes; isolated debug host injects access-lost instead')])
     write(run / 'result.json', report)
     print(f'Artifacts: {run}', flush=True)

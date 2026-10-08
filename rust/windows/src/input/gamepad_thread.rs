@@ -1,6 +1,6 @@
-//! Drive either virtual gamepad backend off the input thread. Blocking VHF
-//! or ViGEmBus calls must not delay keyboard, mouse, touch or the control
-//! stream's acknowledgements.
+//! Drive the virtual gamepads off the input thread. Blocking VHF driver
+//! calls must not delay keyboard, mouse, touch or the control stream's
+//! acknowledgements.
 use super::{Event, Gamepads};
 use anyhow::Result;
 use butterpollo_core::input::Batch;
@@ -34,7 +34,7 @@ pub enum PadReport {
     Motion { id: u8, capabilities: u16 },
 }
 
-/// The pads the thread drives: VHF or ViGEmBus, or a stand-in in tests.
+/// The pads the thread drives: VHF, or a stand-in in tests.
 pub(super) trait Pads {
     fn apply(&mut self, event: &Event) -> Result<()>;
     fn refresh(&mut self) -> Result<()>;
@@ -42,10 +42,6 @@ pub(super) trait Pads {
     fn motion_supported(&self, id: u16) -> bool;
     /// Whether any pad is plugged in, and so feedback needs polling.
     fn plugged(&self) -> bool;
-    /// What to tell the user about the pads just opened, if anything.
-    fn notice(&self) -> Option<String> {
-        None
-    }
 }
 impl Pads for Gamepads {
     fn apply(&mut self, event: &Event) -> Result<()> {
@@ -62,9 +58,6 @@ impl Pads for Gamepads {
     }
     fn plugged(&self) -> bool {
         !self.active.is_empty()
-    }
-    fn notice(&self) -> Option<String> {
-        self.notice.clone()
     }
 }
 
@@ -246,14 +239,10 @@ fn run<P: Pads>(
                 match open() {
                     Ok(opened) => {
                         shared.warnings.clear("input_gamepad");
-                        match opened.notice() {
-                            Some(notice) => shared.warnings.set("input_gamepad_stand_in", notice),
-                            None => shared.warnings.clear("input_gamepad_stand_in"),
-                        }
                         pads = Some(opened);
                     }
                     Err(error) => {
-                        shared.warnings.set("input_gamepad", format!("Virtual gamepad driver unavailable ({error:#}); controller input is ignored while keyboard and mouse remain available. Install or repair ViGEmBus/VHF, or choose an installed gamepad profile."));
+                        shared.warnings.set("input_gamepad", format!("Virtual gamepad driver unavailable ({error:#}); controller input is ignored while keyboard and mouse remain available. Repair the Butterpollo install to restore the VHF gamepad driver, or choose an installed gamepad profile."));
                         retry = Some(now + RETRY);
                         continue;
                     }
@@ -350,7 +339,6 @@ mod tests {
         log: Arc<Mutex<Vec<String>>>,
         plugged: bool,
         feedback: Vec<(u16, u16, Vec<u8>)>,
-        notice: Option<String>,
     }
     impl Pads for Fake {
         fn apply(&mut self, event: &Event) -> Result<()> {
@@ -372,9 +360,6 @@ mod tests {
         fn plugged(&self) -> bool {
             self.plugged
         }
-        fn notice(&self) -> Option<String> {
-            self.notice.clone()
-        }
     }
     impl Drop for Fake {
         fn drop(&mut self) {
@@ -393,7 +378,6 @@ mod tests {
                         log: log.clone(),
                         plugged: false,
                         feedback: vec![(0, 1, vec![1, 2, 3, 4, 0, 0, 0, 0])],
-                        notice: None,
                     })
                 }
             },
@@ -430,37 +414,6 @@ mod tests {
     }
 
     #[test]
-    fn a_stand_in_pad_is_announced_and_still_gets_input() {
-        let warnings = Arc::new(butterpollo_core::session::Warnings::default());
-        let gate = Arc::new(Gate::default());
-        gate.open();
-        let log = Arc::new(Mutex::new(Vec::new()));
-        let pads = GamepadThread::spawn_reported(
-            {
-                let (gate, log) = (gate.clone(), log.clone());
-                move || {
-                    Ok(Fake {
-                        gate: gate.clone(),
-                        log: log.clone(),
-                        plugged: false,
-                        feedback: vec![],
-                        notice: Some("VHF Xbox One in place of Xbox 360".into()),
-                    })
-                }
-            },
-            warnings.clone(),
-        )
-        .unwrap();
-        pads.send(state(0, 1, 0, 0));
-        gate.wait_until(|| !log.lock().unwrap().is_empty());
-        let entries = warnings.snapshot();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].code, "input_gamepad_stand_in");
-        assert!(entries[0].message.contains("in place of Xbox 360"));
-        assert_eq!(*log.lock().unwrap(), logged(&[state(0, 1, 0, 0)]));
-    }
-
-    #[test]
     fn an_unmapped_back_grip_press_shows_a_hint_and_still_reaches_the_pads() {
         let warnings = Arc::new(butterpollo_core::session::Warnings::default());
         let gate = Arc::new(Gate::default());
@@ -475,7 +428,6 @@ mod tests {
                         log: log.clone(),
                         plugged: false,
                         feedback: vec![],
-                        notice: None,
                     })
                 }
             },

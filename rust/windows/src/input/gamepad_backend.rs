@@ -1,97 +1,18 @@
-use super::{GamepadTouchRequest, open_interface, request, vigem};
+use super::{GamepadTouchRequest, open_interface, request};
 use anyhow::{Result, bail};
-use butterpollo_core::input_policy::{
-    GamepadBackend, VHF_AUTO, VIGEM_DS4, VIGEM_PROFILES, VIGEM_X360, gamepad_backend,
-};
+use butterpollo_core::input_policy::VHF_AUTO;
 use windows::{
     Win32::{Foundation::*, System::IO::DeviceIoControl},
     core::GUID,
 };
 
-pub(super) enum Backend {
-    Vhf(HANDLE),
-    Vigem(vigem::Client),
-    /// Automatic with both drivers installed. Each pad lives on the driver
-    /// its profile belongs to.
-    Mixed(Box<Mixed>),
-}
-pub(super) struct Mixed {
-    vigem: Backend,
-    vhf: Backend,
-    /// Slots whose pad is on ViGEmBus; every other plugged slot is on VHF.
-    on_vigem: u32,
-}
-impl Mixed {
-    fn owner(&self, slot: u32) -> &Backend {
-        if self.on_vigem & (1 << slot) != 0 {
-            &self.vigem
-        } else {
-            &self.vhf
-        }
-    }
-    fn pad(&mut self, slot: u32) -> &mut Backend {
-        if self.on_vigem & (1 << slot) != 0 {
-            &mut self.vigem
-        } else {
-            &mut self.vhf
-        }
-    }
-}
+/// The VHF gamepad driver, which the installer brings: Xbox One, Xbox
+/// Series, DualShock 4, DualSense and Switch Pro pads in 16 slots.
+pub(super) struct Backend(HANDLE);
 impl Backend {
+    /// Returns the profiles the installed driver offers, as a bit per profile.
     pub(super) fn open(profile: u16) -> Result<(Self, u32)> {
-        if matches!(profile, 0 | VIGEM_X360 | VIGEM_DS4) {
-            let client = vigem::Client::open();
-            match gamepad_backend(profile, client.is_ok()) {
-                GamepadBackend::Vigem => match client {
-                    Ok(client) => return Ok((Self::Vigem(client), VIGEM_PROFILES)),
-                    // An explicit ViGEm choice without ViGEmBus: `Gamepads`
-                    // gives the clients the VHF pad of the same family and
-                    // says so, rather than leaving the stream without one.
-                    Err(error) => {
-                        tracing::warn!(
-                            error = format!("{error:#}"),
-                            profile,
-                            "ViGEmBus unavailable for the chosen controller; using a VHF pad instead"
-                        );
-                        return Self::open_vhf(0).map_err(|vhf| {
-                            anyhow::anyhow!(
-                                "ViGEmBus is unavailable ({error:#}) and the VHF gamepad driver cannot stand in for it ({vhf:#})"
-                            )
-                        });
-                    }
-                },
-                GamepadBackend::Mixed => {
-                    let vigem = Self::Vigem(client?);
-                    // PlayStation-type clients get the VHF DualSense, which has
-                    // the adaptive triggers ViGEm lacks. Without the driver,
-                    // ViGEmBus serves everyone as before.
-                    return Ok(match Self::open_vhf(0) {
-                        Ok((vhf, available)) => (
-                            Self::Mixed(Box::new(Mixed {
-                                vigem,
-                                vhf,
-                                on_vigem: 0,
-                            })),
-                            VIGEM_PROFILES | available,
-                        ),
-                        Err(error) => {
-                            tracing::debug!(
-                                error = format!("{error:#}"),
-                                "VHF gamepads unavailable; using ViGEmBus alone"
-                            );
-                            (vigem, VIGEM_PROFILES)
-                        }
-                    });
-                }
-                GamepadBackend::Vhf => {
-                    tracing::debug!(error = %client.err().unwrap(), "ViGEmBus unavailable; trying VHF gamepads");
-                }
-            }
-        }
-        Self::open_vhf(profile)
-    }
-    fn open_vhf(profile: u16) -> Result<(Self, u32)> {
-        let mut backend = Self::Vhf(open_interface(GUID::from_u128(
+        let mut backend = Self(open_interface(GUID::from_u128(
             0x27debbf5_1d1e_4e9c_906d_d104b1418b2b,
         ))?);
         let out = backend.ioctl(0x800, &request(8, None), 28)?;
@@ -105,37 +26,14 @@ impl Backend {
         Ok((backend, available))
     }
     pub(super) fn name(&self) -> &'static str {
-        match self {
-            Self::Vhf(_) => "VHF",
-            Self::Vigem(_) => "ViGEmBus",
-            Self::Mixed(_) => "ViGEmBus+VHF",
-        }
-    }
-    /// The ViGEmBus client, when this backend has one.
-    #[cfg(test)]
-    pub(super) fn vigem(&self) -> Option<&vigem::Client> {
-        match self {
-            Self::Vigem(client) => Some(client),
-            Self::Mixed(mixed) => mixed.vigem.vigem(),
-            Self::Vhf(_) => None,
-        }
-    }
-    /// The driver that owns the pad in `slot`.
-    pub(super) fn name_for(&self, slot: u32) -> &'static str {
-        match self {
-            Self::Mixed(mixed) => mixed.owner(slot).name(),
-            other => other.name(),
-        }
+        "VHF"
     }
     fn ioctl(&mut self, function: u32, data: &[u8], output: usize) -> Result<Vec<u8>> {
-        let Self::Vhf(handle) = self else {
-            unreachable!()
-        };
         unsafe {
             let mut result = vec![0; output];
             let mut n = 0;
             DeviceIoControl(
-                *handle,
+                self.0,
                 (0x22 << 16) | (3 << 14) | (function << 2),
                 Some(data.as_ptr().cast()),
                 data.len() as u32,
@@ -149,20 +47,6 @@ impl Backend {
         }
     }
     pub(super) fn plug(&mut self, slot: u32, profile: u16) -> Result<()> {
-        if let Self::Mixed(mixed) = self {
-            let vigem = matches!(profile, VIGEM_X360 | VIGEM_DS4);
-            if vigem {
-                mixed.vigem.plug(slot, profile)?;
-                mixed.on_vigem |= 1 << slot;
-            } else {
-                mixed.vhf.plug(slot, profile)?;
-                mixed.on_vigem &= !(1 << slot);
-            }
-            return Ok(());
-        }
-        if let Self::Vigem(client) = self {
-            return client.plug(slot, profile);
-        }
         let mut b = request(16, Some(slot));
         b.extend_from_slice(&profile.to_le_bytes());
         b.extend_from_slice(&0u16.to_le_bytes());
@@ -170,14 +54,6 @@ impl Backend {
         Ok(())
     }
     pub(super) fn unplug(&mut self, slot: u32) -> Result<()> {
-        if let Self::Mixed(mixed) = self {
-            mixed.pad(slot).unplug(slot)?;
-            mixed.on_vigem &= !(1 << slot);
-            return Ok(());
-        }
-        if let Self::Vigem(client) = self {
-            return client.unplug(slot);
-        }
         self.ioctl(0x802, &request(12, Some(slot)), 0)?;
         Ok(())
     }
@@ -189,12 +65,6 @@ impl Backend {
         right: u8,
         sticks: &[i16; 4],
     ) -> Result<()> {
-        if let Self::Mixed(mixed) = self {
-            return mixed.pad(slot).submit(slot, buttons, left, right, sticks);
-        }
-        if let Self::Vigem(client) = self {
-            return client.submit(slot, buttons, left, right, sticks);
-        }
         let mut b = request(28, Some(slot));
         b.extend_from_slice(&buttons.to_le_bytes());
         for stick in sticks {
@@ -205,12 +75,6 @@ impl Backend {
         Ok(())
     }
     pub(super) fn motion(&mut self, slot: u32, kind: u8, xyz: &[f32; 3]) -> Result<()> {
-        if let Self::Mixed(mixed) = self {
-            return mixed.pad(slot).motion(slot, kind, xyz);
-        }
-        if let Self::Vigem(client) = self {
-            return client.motion(slot, kind, xyz);
-        }
         let mut b = request(28, Some(slot));
         b.extend_from_slice(&[kind, 0, 0, 0]);
         for f in xyz {
@@ -221,35 +85,17 @@ impl Backend {
         self.ioctl(0x806, &b, 0)?;
         Ok(())
     }
-    pub(super) fn touch(&mut self, slot: u32, update: &GamepadTouchRequest) -> Result<()> {
-        if let Self::Mixed(mixed) = self {
-            return mixed.pad(slot).touch(slot, update);
-        }
-        if let Self::Vigem(client) = self {
-            return client.touch(slot, update.slot, update.event, update.position);
-        }
+    pub(super) fn touch(&mut self, update: &GamepadTouchRequest) -> Result<()> {
         self.ioctl(0x805, &update.packet, 0)?;
         Ok(())
     }
     pub(super) fn battery(&mut self, slot: u32, state: u8, percent: u8) -> Result<()> {
-        if let Self::Mixed(mixed) = self {
-            return mixed.pad(slot).battery(slot, state, percent);
-        }
-        if let Self::Vigem(client) = self {
-            return client.battery(slot, state, percent);
-        }
         let mut b = request(16, Some(slot));
         b.extend_from_slice(&[percent, state, 0, 0]);
         self.ioctl(0x807, &b, 0)?;
         Ok(())
     }
     pub(super) fn feedback(&mut self, slot: u32) -> Result<Option<(u16, Vec<u8>)>> {
-        if let Self::Mixed(mixed) = self {
-            return mixed.pad(slot).feedback(slot);
-        }
-        if let Self::Vigem(client) = self {
-            return client.feedback(slot);
-        }
         let b = self.ioctl(0x804, &request(12, Some(slot)), 48)?;
         if b.len() == 48 {
             let kind = u16::from_le_bytes(b[12..14].try_into().unwrap());
@@ -260,21 +106,11 @@ impl Backend {
         }
         Ok(None)
     }
-    pub(super) fn refresh(&mut self) -> Result<()> {
-        match self {
-            Self::Vigem(client) => client.refresh()?,
-            Self::Mixed(mixed) => mixed.vigem.refresh()?,
-            Self::Vhf(_) => {}
-        }
-        Ok(())
-    }
 }
 impl Drop for Backend {
     fn drop(&mut self) {
-        if let Self::Vhf(handle) = self {
-            unsafe {
-                let _ = CloseHandle(*handle);
-            }
+        unsafe {
+            let _ = CloseHandle(self.0);
         }
     }
 }

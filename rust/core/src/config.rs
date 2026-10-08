@@ -8,6 +8,50 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Setting values Butterpollo no longer offers, and what replaces each:
+/// the ViGEmBus controllers, which Sunshine, Apollo, Vibepollo and earlier
+/// Butterpollo profiles can carry, became the VHF pad of the same family.
+pub const RETIRED_VALUES: &[(&str, &str, &str)] = &[
+    ("gamepad", "x360", "vhf_xbox_one"),
+    ("gamepad", "ds4", "vhf_ds4"),
+];
+/// The current value for a retired `value` of `key`, if it is one.
+pub fn replacement(key: &str, value: &str) -> Option<&'static str> {
+    RETIRED_VALUES
+        .iter()
+        .find(|(k, old, _)| *k == key && *old == value)
+        .map(|(_, _, new)| *new)
+}
+
+/// Replace retired values among an app's or a device's settings, which are
+/// JSON. Returns whether anything changed.
+pub fn replace_retired<'a>(
+    settings: impl IntoIterator<Item = (&'a String, &'a mut serde_json::Value)>,
+) -> bool {
+    let mut changed = false;
+    for (key, value) in settings {
+        if let Some(current) = value.as_str().and_then(|old| replacement(key, old)) {
+            *value = serde_json::Value::from(current);
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Replace retired values in a library app: its top-level settings, as
+/// Apollo and Vibepollo store them, and its `config-overrides`. Returns
+/// whether anything changed.
+pub fn replace_retired_in_app(app: &mut serde_json::Map<String, serde_json::Value>) -> bool {
+    let mut changed = replace_retired(app.iter_mut());
+    if let Some(overrides) = app
+        .get_mut("config-overrides")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        changed |= replace_retired(overrides.iter_mut());
+    }
+    changed
+}
+
 /// Retain all keys, including extension keys a newer UI or client may write.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
@@ -76,6 +120,17 @@ impl Config {
                     "configuration key repeated; the first value is used"
                 );
                 continue;
+            }
+            // The console then shows, and the next save writes, the
+            // replacement.
+            if let Some(current) = replacement(key, &value) {
+                tracing::info!(
+                    key,
+                    retired = value,
+                    current,
+                    "retired setting value replaced"
+                );
+                value = current.to_owned();
             }
             values.insert(key.to_owned(), value);
         }
@@ -773,6 +828,44 @@ mod tests {
             .unwrap();
             assert!(config.display_request(1920, 1080, 60).is_err());
         }
+    }
+    #[test]
+    fn retired_vigem_controllers_become_their_vhf_pads() {
+        let c = Config::parse("gamepad = x360\n").unwrap();
+        assert_eq!(c.get("gamepad", ""), "vhf_xbox_one");
+        assert_eq!(c.text().trim(), "gamepad = vhf_xbox_one");
+        let c = Config::parse("gamepad=ds4\n").unwrap();
+        assert_eq!(c.get("gamepad", ""), "vhf_ds4");
+        for kept in ["auto", "vhf_ds5", "ds5", "vhf_xbox"] {
+            let c = Config::parse(&format!("gamepad={kept}\n")).unwrap();
+            assert_eq!(c.get("gamepad", ""), kept);
+        }
+        // Only the gamepad setting has these retired values.
+        assert_eq!(
+            Config::parse("unknown_key=x360\n")
+                .unwrap()
+                .get("unknown_key", ""),
+            "x360"
+        );
+        assert_eq!(replacement("gamepad", "x360"), Some("vhf_xbox_one"));
+        assert_eq!(replacement("gamepad", "vhf_ds4"), None);
+        // An app's or a device's own settings.
+        let mut app = serde_json::json!({"name": "x360", "gamepad": "ds4", "output": "x360"});
+        assert!(replace_retired(app.as_object_mut().unwrap()));
+        assert_eq!(
+            app,
+            serde_json::json!({"name": "x360", "gamepad": "vhf_ds4", "output": "x360"})
+        );
+        assert!(!replace_retired(app.as_object_mut().unwrap()));
+        let mut app = serde_json::json!({"name": "Game", "gamepad": "x360",
+            "config-overrides": {"gamepad": "ds4", "fec_percentage": "30"}});
+        assert!(replace_retired_in_app(app.as_object_mut().unwrap()));
+        assert_eq!(
+            app,
+            serde_json::json!({"name": "Game", "gamepad": "vhf_xbox_one",
+                "config-overrides": {"gamepad": "vhf_ds4", "fec_percentage": "30"}})
+        );
+        assert!(!replace_retired_in_app(app.as_object_mut().unwrap()));
     }
     #[test]
     fn existing_config_round_trips() {

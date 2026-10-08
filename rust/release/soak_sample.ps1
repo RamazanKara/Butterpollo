@@ -17,7 +17,7 @@ try {
         Select-Object Name, DedicatedUsage, SharedUsage, TotalCommitted)
 } catch { $gpuError = $_.Exception.Message }
 $devices = @(Get-CimInstance Win32_PnPEntity |
-    Where-Object { $_.Present -and ($_.PNPClass -eq 'Monitor' -or $_.Name -match 'Xbox|ViGEm|Virtual.*Gamepad|VHF|DualSense|DualShock') } |
+    Where-Object { $_.Present -and ($_.PNPClass -eq 'Monitor' -or $_.Name -match 'Xbox|Virtual.*Gamepad|VHF|DualSense|DualShock') } |
     Select-Object Name, PNPClass, DeviceID)
 @{
     utc = [DateTime]::UtcNow.ToString('o')
