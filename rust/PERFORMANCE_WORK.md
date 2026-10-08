@@ -5,6 +5,66 @@ without reducing features or picture quality. Opus took over from Codex in the
 evening of October 2. Performance acceptance on the customer's own sessions is
 still open; the measured fixture results below are local loopback evidence.
 
+## October 8 rc.22 baseline at the owner's settings
+
+The goal is now a finished product measured at the owner's own settings
+(1968×2184 HDR, 120 fps, AV1 and HEVC) plus 1080p60 and 1440p120. This is
+the host-side baseline every later latency change is compared with.
+
+Fixture: `run-motion.py` from `bench-rc17` copied to
+`bench-rc21` in the artifacts folder, unchanged except for size, rate,
+bitrate and decoder options. Isolated host started as SYSTEM in the signed-in
+session, virtual HDR display at twice the stream rate, WGC capture (the
+default), compute conversion on, native AMF at ultra-low latency with
+`speed`. Picture age is the timestamped rendered picture to independent
+decoding on loopback. Bitrates requested: 80 Mbps native, 50 Mbps 1440p, 20
+Mbps 1080p. rc.22 is the installed release (`3adaa1c22345b6fd`). Three runs
+per row; the numbers are the means of the runs' mean, p95 and p99.
+
+The independent client must decode in hardware at these sizes: with FFmpeg's
+software HEVC decoder (`moonlight-motion-client-dump.exe`, 8 threads) native
+120 fps took 7.8-8.1 ms per frame, the queue grew and picture age reached
+340 ms mean with a 950 ms p99. The client from `rust/tests/moonlight_client.c`
+built with `BUTTERPOLLO_TEST_HW_DECODER=d3d11va` decodes in about 5 ms. For
+AV1 it must pick FFmpeg's `av1` decoder (the default, libdav1d, has no
+hardware path); `rust/tests/moonlight_client.c` now does that when a hardware decoder is set.
+
+| rc.22, idle | Picture age mean / p95 / p99 (ms) | New pictures/s | Host latency |
+|---|---|---|---|
+| 1968×2184 HEVC HDR 120 fps | 13.71 / 14.40 / 15.10 | 120.3 | 3.5 ms |
+| 1968×2184 AV1 HDR 120 fps | 13.45 / 14.08 / 15.01 | 120.5 | 3.1 ms |
+| 2560×1440 HEVC HDR 120 fps | 12.48 / 13.12 / 14.03 | 120.4 | 3.0 ms |
+| 2560×1440 AV1 HDR 120 fps | 12.22 / 12.90 / 13.73 | 120.4 | 2.8 ms |
+| 1920×1080 HEVC HDR 60 fps | 14.60 / 15.83 / 17.57 | 60.3 | 2.3 ms |
+| 1920×1080 HEVC HDR 60 fps beside `gpu_load 45 1000 0 200`, software decode | 33.14 / 41.94 / 44.38 | 59.1 | 2.0 ms |
+
+Native AV1 still decodes as 1984×2186 (AMD's AV1 alignment), so its runs fail
+the fixture's strict size check; the timings are complete. The load row uses
+the software client as on October 7 (33.4 ms for rc.17 WGC then): with a
+hardware decoder on the same GPU as the load, decoding starves and picture
+age reaches seconds, which measures the client, not the host. Native-size
+rows beside a load therefore need the separate laptop client. An earlier
+rc.21 batch matched these idle numbers within 0.3 ms, but some of its runs
+overlapped the rc.22 release session's own e2e streams and it is not used.
+
+Artifacts: `bench-rc21\r22-*` (baseline), `bench-rc21\ab-*` (below).
+
+### Reconnect and issue #6 fixes, no latency change
+
+The sign-in, listener and control-timeout fixes committed alongside this
+entry were checked against rc.22 in one alternating batch, three runs each:
+
+| | rc.22 | With the fixes |
+|---|---|---|
+| 1968×2184 HEVC 120 fps idle, mean / p95 / p99 | 13.66 / 14.39 / 15.15 | 13.76 / 14.49 / 15.21 |
+| 1080p60 beside the load, mean / p95 / p99 | 33.25 / 42.02 / 44.76 | 32.94 / 42.02 / 44.39 |
+
+Every run decoded all received frames with zero failures. The differences
+are within the spread of the runs. The fixes themselves (a reset during
+accept, a session that loses its control peer, a 5-10 s Wi-Fi drop, a launch
+before sign-in) are covered by code review and unit tests; they still need a
+network test on 192.168.4.10 and a signed-out launch on this host.
+
 ## October 5 rc.3 release continuation
 
 The user approved WGC compute by default for the next test release after

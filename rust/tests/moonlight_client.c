@@ -150,7 +150,9 @@ static int video_setup(int format,int width,int height,int rate,void*context,int
     }
 #endif
     enum AVCodecID id=(format&VIDEO_FORMAT_MASK_H264)?AV_CODEC_ID_H264:(format&VIDEO_FORMAT_MASK_H265)?AV_CODEC_ID_HEVC:AV_CODEC_ID_AV1;
-    const AVCodec *codec=avcodec_find_decoder(id);if(!codec){fprintf(stderr,"Independent decoder unavailable for codec %d\n",id);return -1;}
+    // libdav1d, FFmpeg's default AV1 decoder, has no hardware path.
+    const AVCodec *codec=(getenv("BUTTERPOLLO_TEST_HW_DECODER")&&id==AV_CODEC_ID_AV1)?avcodec_find_decoder_by_name("av1"):NULL;
+    if(!codec)codec=avcodec_find_decoder(id);if(!codec){fprintf(stderr,"Independent decoder unavailable for codec %d\n",id);return -1;}
     decoder=avcodec_alloc_context3(codec);if(!decoder)return -1;
     const char *hardware=getenv("BUTTERPOLLO_TEST_HW_DECODER");
     if(hardware){
