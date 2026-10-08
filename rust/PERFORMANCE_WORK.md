@@ -187,8 +187,11 @@ The loopback fixture with the pinned Vibepollo 2.0 build
 (`day-work-20261002\vibepollo-baseline-build`, `VIBEPOLLO_ISOLATED_BENCHMARK`)
 and the installed rc.24, alternating in one batch on October 8 (16:40-16:57
 local), two runs per cell, identical settings: native AMF at ultra-low
-latency, WGC capture for Butterpollo, a virtual HDR display, Extended layout,
-hardware decoding in the client. The owner's monitor now runs at 2560×1440
+latency, Desktop Duplication capture for both (as on October 4), a virtual
+HDR display, Extended layout, hardware decoding in the client. No game load:
+the large October 4 gap (42.4 against 96.4 ms) was beside a GPU load, where
+Vibepollo fed its encoder about 24 fresh pictures a second; its idle gap was
+13.8 against 16.0 ms, in line with these. The owner's monitor now runs at 2560×1440
 120 Hz, and the virtual display came up at 120 Hz instead of twice the stream
 rate in every run of both hosts, so the source drew at 120 fps; these numbers
 compare only with each other. The monitor's mode was checked before and after
