@@ -31,15 +31,19 @@ the same laptop, so a Moonlight user's picture age lies between the two columns.
 | --- | ---: | --- | --- | --- | ---: |
 | 1968x2184@120 AV1 HDR (80 Mbps) | 120.0 | 13.54 / 14.33 / 14.93 ms | 18.76 / 19.61 / 20.28 ms | 3.04 / 3.3 ms | 5.21 ms |
 | 1968x2184@120 HEVC HDR (80 Mbps) | 120.0 | 14.13 / 14.97 / 15.90 ms | 19.32 / 20.35 / 21.35 ms | 3.70 / 4.1 ms | 5.19 ms |
-| 2560x1440@120 AV1 HDR (50 Mbps) | 119.5 | 14.78 / 21.87 / 34.85 ms | 20.25 / 29.51 / 45.16 ms | 2.74 / 3.0 ms | 5.47 ms |
+| 2560x1440@120 AV1 HDR (50 Mbps), repeat 1 | 120.0 | 13.34 / 14.15 / 16.12 ms | 18.58 / 19.76 / 21.49 ms | 2.77 / 3.0 ms | 5.24 ms |
+| 2560x1440@120 AV1 HDR (50 Mbps), repeat 2 | 120.0 | 13.28 / 14.07 / 15.63 ms | 18.10 / 18.92 / 20.91 ms | 2.76 / 3.0 ms | 4.82 ms |
+| 2560x1440@120 AV1 HDR (50 Mbps), first run (noisy) | 119.5 | 14.78 / 21.87 / 34.85 ms | 20.25 / 29.51 / 45.16 ms | 2.74 / 3.0 ms | 5.47 ms |
 | 2560x1440@120 HEVC HDR (50 Mbps) | 120.0 | 13.67 / 14.69 / 19.87 ms | 18.80 / 20.22 / 24.97 ms | 3.11 / 3.2 ms | 5.13 ms |
 | 1920x1080@60 AV1 HDR (20 Mbps) | 60.6 | 12.91 / 15.05 / 17.89 ms | 16.88 / 19.40 / 22.18 ms | 2.16 / 2.5 ms | 3.97 ms |
 | 1920x1080@60 HEVC HDR (20 Mbps) | 60.5 | 12.99 / 14.15 / 16.62 ms | 16.51 / 17.69 / 20.28 ms | 2.39 / 2.7 ms | 3.51 ms |
 
 Every run received all frames with zero decode failures; unique fresh pictures
 matched the stream rate (1440p AV1 skipped 17 source frames and had 183
-intervals over 1.5 frame periods, which is its wider p95/p99; one run, so
-repeat before reading it as an AV1 property). AV1 is 0.6 ms faster than HEVC to
+intervals over 1.5 frame periods, which is its wider p95/p99). Two repeats
+at 15:42Z and 15:43Z (14 and 24 late intervals, no skipped source frames)
+measured 13.3 ms average and 14.1 ms p95 to received; the host side of the
+first run was clean, so its late frames came from Wi-Fi or the client. AV1 is 0.6 ms faster than HEVC to
 the client at native resolution, mostly host processing (3.0 vs 3.7 ms).
 
 A first batch at 15:04Z (older client build) is discarded for 120 fps and AV1:
