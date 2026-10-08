@@ -15,14 +15,14 @@ pub(crate) fn route(fields: &Fields) -> Result<(Method, String), String> {
         "app-move" => (Method::POST, "/api/apps/reorder"),
         "app-live" => (Method::POST, "/api/apps/rtx_hdr/live"),
         "app-delete" => {
-            let uuid = fields
-                .get("uuid")
-                .ok_or("application identifier required")?;
+            let uuid = fields.get("uuid").ok_or("Select an app first.")?;
             if uuid.is_empty()
                 || uuid.len() > 64
                 || !uuid.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-')
             {
-                return Err("invalid application identifier".into());
+                return Err(
+                    "The app could not be identified. Reload the page and try again.".into(),
+                );
             }
             return Ok((Method::DELETE, format!("/api/apps/{uuid}")));
         }
@@ -35,9 +35,12 @@ pub(crate) fn route(fields: &Fields) -> Result<(Method, String), String> {
         "layout" => (Method::PUT, "/api/clients/display-layout"),
         "token-create" => (Method::POST, "/api/token"),
         "token-delete" | "session-revoke" => {
-            let id = fields.get("id").ok_or("identifier required")?;
+            let id = fields.get("id").ok_or("Select a token or browser first.")?;
             if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
-                return Err("invalid identifier".into());
+                return Err(
+                    "The token or browser could not be identified. Reload the page and try again."
+                        .into(),
+                );
             }
             return Ok((
                 Method::DELETE,
@@ -61,21 +64,26 @@ pub(crate) fn route(fields: &Fields) -> Result<(Method, String), String> {
         "install-update" => (Method::POST, "/api/updates/install"),
         "cancel-update" => (Method::POST, "/api/updates/cancel"),
         "restart" => (Method::POST, "/api/restart"),
-        _ => return Err("unknown console action".into()),
+        _ => return Err("This console action is not available.".into()),
     };
     Ok((method, path.to_owned()))
 }
 fn object(fields: &Fields, key: &str) -> Result<Map<String, Value>, String> {
+    let label = if key == "overrides" {
+        "RTX HDR settings"
+    } else {
+        "Advanced settings"
+    };
     let value = fields
         .get(key)
         .map(String::as_str)
         .filter(|s| !s.trim().is_empty())
         .unwrap_or("{}");
     serde_json::from_str::<Value>(value)
-        .map_err(|e| format!("{key}: {e}"))?
+        .map_err(|e| format!("{label}: {e}"))?
         .as_object()
         .cloned()
-        .ok_or_else(|| format!("{key} must be a JSON object"))
+        .ok_or_else(|| format!("{label} must be a JSON object, enclosed in braces."))
 }
 fn payload(h: &Shared, fields: &Fields) -> Result<Value, String> {
     let value = |key: &str| fields.get(key).map(String::as_str).unwrap_or("");
@@ -158,12 +166,14 @@ fn payload(h: &Shared, fields: &Fields) -> Result<Value, String> {
             let index = order
                 .iter()
                 .position(|uuid| uuid.as_str() == Some(value("uuid")))
-                .ok_or("application not found")?;
+                .ok_or("App not found.")?;
             match value("direction") {
                 "up" if index > 0 => order.swap(index, index - 1),
                 "down" if index + 1 < order.len() => order.swap(index, index + 1),
                 "up" | "down" => {}
-                _ => return Err("invalid ordering direction".into()),
+                _ => {
+                    return Err("The app could not be moved. Reload the page and try again.".into());
+                }
             }
             json!({"order": order})
         }
@@ -190,7 +200,7 @@ fn payload(h: &Shared, fields: &Fields) -> Result<Value, String> {
             serde_json::from_str(value("layout")).map_err(|e| format!("Display layout: {e}"))?
         }
         "token-create" => {
-            json!({"scopes":serde_json::from_str::<Value>(value("scopes")).map_err(|e| format!("Token scopes: {e}"))?})
+            json!({"scopes":serde_json::from_str::<Value>(value("scopes")).map_err(|e| format!("Token permissions: {e}"))?})
         }
         "crash-dismiss" => {
             json!({"filename":value("filename"),"captured_at":value("captured_at")})
@@ -223,7 +233,7 @@ pub(crate) async fn action(
     if op == "theme" {
         let theme = fields.get("theme").map(String::as_str).unwrap_or("system");
         if !matches!(theme, "light" | "dark" | "system") {
-            return notice(back, "Invalid appearance");
+            return notice(back, "Choose System, Light or Dark.");
         }
         let mut response = super::redirect(back);
         response.headers_mut().append(header::SET_COOKIE, format!("butterpollo_theme={theme}; Path=/; HttpOnly; SameSite=Strict; Secure; Max-Age=31536000").parse().unwrap());
@@ -276,7 +286,7 @@ pub(crate) async fn action(
         match op {
             "login" => super::redirect("/"),
             "logout" => super::redirect("/login"),
-            "setup" | "password" => notice("/login", "Credentials saved. Sign in to continue."),
+            "setup" | "password" => notice("/login", "Sign-in details saved. Sign in to continue."),
             "config" => notice(back, "Settings saved. Restart the host to apply them."),
             "restart" => notice(back, "Host is restarting. Reload this page in a moment."),
             _ => notice(back, "Saved successfully."),

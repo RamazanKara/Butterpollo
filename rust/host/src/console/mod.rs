@@ -28,19 +28,19 @@ const NAV: [(&str, &str); 8] = [
     ("/maintenance", "Maintenance"),
 ];
 pub(crate) const PERMISSIONS: [(u32, &str); 13] = [
-    (0x01000000, "List applications"),
+    (0x01000000, "List apps"),
     (0x02000000, "View streams"),
-    (0x04000000, "Launch applications"),
+    (0x04000000, "Launch apps"),
     (0x00000100, "Controllers"),
     (0x00000200, "Touch"),
     (0x00000400, "Pen"),
     (0x00000800, "Mouse"),
     (0x00001000, "Keyboard"),
-    (0x00010000, "Clipboard write"),
-    (0x00020000, "Clipboard read"),
-    (0x00040000, "File upload"),
-    (0x00080000, "File download"),
-    (0x00100000, "Server commands"),
+    (0x00010000, "Write to the clipboard"),
+    (0x00020000, "Read the clipboard"),
+    (0x00040000, "Upload files"),
+    (0x00080000, "Download files"),
+    (0x00100000, "Host commands"),
 ];
 pub(crate) fn esc(value: &str) -> String {
     let mut output = String::with_capacity(value.len());
@@ -65,9 +65,6 @@ pub(crate) fn encoded(value: &str) -> String {
 }
 pub(crate) fn text<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or("")
-}
-pub(crate) fn pretty(value: &Value) -> String {
-    esc(&serde_json::to_string_pretty(value).unwrap_or_default())
 }
 pub(crate) fn field(name: &str, label: &str, value: &str, kind: &str) -> String {
     format!(
@@ -318,7 +315,7 @@ pub(crate) async fn page(
         .collect();
     let title = NAV.iter().find(|n| n.0 == path).map_or(
         if path == "/setup" {
-            "Welcome to Butterpollo"
+            "Set up this host"
         } else {
             "Sign in"
         },
@@ -366,7 +363,7 @@ pub(crate) async fn stylesheet() -> impl IntoResponse {
 pub(crate) async fn favicon() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "image/svg+xml")],
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 32 32\"><rect width=\"32\" height=\"32\" rx=\"8\" fill=\"#ad4b10\"/><text x=\"16\" y=\"24\" font-family=\"sans-serif\" font-size=\"24\" font-weight=\"700\" text-anchor=\"middle\" fill=\"white\">B</text></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 32 32\"><rect width=\"32\" height=\"32\" rx=\"8\" fill=\"#f2b705\"/><text x=\"16\" y=\"24\" font-family=\"sans-serif\" font-size=\"24\" font-weight=\"700\" text-anchor=\"middle\" fill=\"#16181c\">B</text></svg>",
     )
 }
 

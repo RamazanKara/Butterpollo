@@ -40,7 +40,7 @@ const GRIPS: &[&str] = &[
 ];
 pub const GLOBAL: &[Setting] = settings! {
     "Audio" => [
-        "virtual_sink", "Virtual audio endpoint", Text;
+        "virtual_sink", "Virtual audio device", Text;
         "stream_audio", "Stream audio", Bool;
         "audio_sink_capture_only", "Capture selected audio without changing defaults", Bool;
         "auto_capture_sink", "Follow audio device changes", Bool;
@@ -55,15 +55,15 @@ pub const GLOBAL: &[Setting] = settings! {
         "dd_refresh_rate_option", "Refresh policy", Choice(&["disabled","auto","manual","prefer_highest"]);
         "dd_manual_refresh_rate", "Manual refresh rate (supports 59.94, 119.88)", Number;
         "dd_hdr_option", "HDR policy", Choice(&["disabled","auto"]);
-        "dd_hdr_request_override", "Client HDR request", Choice(&["auto","force_on","force_off"]);
+        "dd_hdr_request_override", "Device HDR request", Choice(&["auto","force_on","force_off"]);
         "dd_config_revert_on_disconnect", "Restore displays when the stream disconnects", Bool;
         "dd_config_revert_delay", "Display restore delay (milliseconds)", Number;
         "dd_paused_virtual_display_timeout_secs", "Paused display timeout (seconds; 0 keeps it)", Number;
-        "dd_always_restore_from_golden", "Restore the saved display baseline", Bool;
+        "dd_always_restore_from_golden", "Always restore the saved display layout", Bool;
         "dd_activate_virtual_display", "Activate virtual display", Bool;
         "dd_virtual_display_scale", "Virtual display scale (%)", Number;
         "dd_virtual_display_permanent_count", "Permanent virtual displays (0–4)", Number;
-        "dd_snapshot_exclude_devices", "Devices excluded from baseline restore", Json;
+        "dd_snapshot_exclude_devices", "Devices excluded from saved layout restore", Json;
         "dd_mode_remapping", "Resolution and refresh remapping", Json;
         "vulkan_hdr_layer", "Vulkan virtual HDR support", Bool;
         "fallback_mode", "Default launch mode (WIDTHxHEIGHTxFPS)", Text;
@@ -71,7 +71,7 @@ pub const GLOBAL: &[Setting] = settings! {
     "Frame generation and limiting" => [
         "frame_limiter_enable", "Enable frame limiter", Bool;
         "frame_limiter_provider", "Limiter provider", Choice(&["auto","rtss","nvidia-control-panel","none"]);
-        "frame_limiter_fps_limit", "Frame limit (0 uses the client rate)", Number;
+        "frame_limiter_fps_limit", "Frame limit (0 uses the device rate)", Number;
         "frame_limiter_auto_virtual_framegen", "Virtual display frame generation", Choice(&["legacy","enabled","fixed-1000hz","disabled"]);
         "frame_limiter_disable_vsync", "Disable driver vertical sync during streaming", Bool;
         "rtss_install_path", "RTSS installation directory", Text;
@@ -83,20 +83,20 @@ pub const GLOBAL: &[Setting] = settings! {
         "adapter_pnp_id", "Encoding adapter device ID", Text;
         "hevc_mode", "HEVC support (0 auto, 1 disabled, 2 SDR, 3 HDR)", Number;
         "av1_mode", "AV1 support (0 auto, 1 disabled, 2 SDR, 3 HDR)", Number;
-        "max_bitrate", "Maximum bitrate (Kbps; 0 has no configured limit)", Number;
+        "max_bitrate", "Maximum bitrate (kbps; 0 has no configured limit)", Number;
         "limit_framerate", "Use the launch frame rate for encoding", Bool;
         "minimum_fps_target", "Minimum frame rate for an unchanged desktop", Number;
         "wgc_pacing_smoothing", "Smooth capture pacing", Bool;
         "wgc_direct_encoder_input", "Pass GPU capture directly to the encoder", Bool;
         "gpu_compute_conversion", "Copy and convert captures on a compute queue", Bool;
-        "compute_queue_realtime", "Run that compute queue at realtime GPU priority", Bool;
+        "compute_queue_realtime", "Run that compute queue at real-time GPU priority", Bool;
         "wgc_slot_aligned_publish", "Align capture publication to frame slots", Bool;
         "fec_percentage", "Forward error correction (%)", Number;
-        "pyrowave", "Enable PyroWave for compatible clients", Bool;
+        "pyrowave", "Enable PyroWave for compatible devices", Bool;
         "pyrowave_critical_fec_percentage", "PyroWave protection for required image data (%)", Number;
-        "packetsize", "Video packet size (0 uses the client request)", Number;
+        "packetsize", "Video packet size (0 uses the device request)", Number;
         "video_max_batch_size_kb", "Video send batch limit (KiB)", Number;
-        "pacing_max_bitrate_kbps", "Network pacing limit (Kbps; 0 uses twice the bitrate on Wi-Fi/mobile routes, up to 800 Mbps; up to 800 Mbps on other routes)", Number;
+        "pacing_max_bitrate_kbps", "Network pacing limit (kbps; 0 uses twice the bitrate on Wi-Fi/mobile routes, up to 800 Mbps; up to 800 Mbps on other routes)", Number;
     ]
     "AMD encoding" => [
         "amd_usage", "AMF usage", Choice(&["auto","transcoding","ultralowlatency","lowlatency","webcam","high_quality","lowlatency_high_quality"]);
@@ -128,18 +128,18 @@ pub const GLOBAL: &[Setting] = settings! {
         "qsv_coder", "Quick Sync H.264 entropy coder", Choice(&["auto","cabac","cavlc"]);
         "qsv_slow_hevc", "Use Quick Sync software HEVC when needed", Bool;
     ]
-    "Software encoding and TrueHDR" => [
+    "Software encoding and RTX HDR" => [
         "sw_preset", "Software encoder preset", Choice(&["ultrafast","superfast","veryfast","faster","fast","medium","slow","slower","veryslow"]);
         "sw_tune", "Software encoder tuning", Text;
         "min_threads", "Software encoder threads", Number;
         "crf", "Constant rate factor", Number;
         "qp", "Constant quantizer", Number;
-        "rtx_hdr", "NVIDIA TrueHDR", Bool;
-        "rtx_hdr_sdr_brightness", "SDR brightness for TrueHDR", Number;
-        "rtx_hdr_contrast", "TrueHDR contrast", Number;
-        "rtx_hdr_saturation", "TrueHDR saturation", Number;
-        "rtx_hdr_middle_gray", "TrueHDR middle gray", Number;
-        "rtx_hdr_peak_brightness", "TrueHDR peak brightness (nits)", Number;
+        "rtx_hdr", "NVIDIA RTX HDR", Bool;
+        "rtx_hdr_sdr_brightness", "SDR brightness for RTX HDR", Number;
+        "rtx_hdr_contrast", "RTX HDR contrast", Number;
+        "rtx_hdr_saturation", "RTX HDR saturation", Number;
+        "rtx_hdr_middle_gray", "RTX HDR middle gray", Number;
+        "rtx_hdr_peak_brightness", "RTX HDR peak brightness (nits)", Number;
     ]
     "Input" => [
         "keyboard", "Keyboard input", Bool;
@@ -162,30 +162,30 @@ pub const GLOBAL: &[Setting] = settings! {
         "back_grip_r4", "Back grip R4 (upper right) presses", Choice(GRIPS);
         "back_grip_l5", "Back grip L5 (lower left) presses", Choice(GRIPS);
         "back_grip_r5", "Back grip R5 (lower right) presses", Choice(GRIPS);
-        "enable_input_only_mode", "Allow input-only sessions", Bool;
+        "enable_input_only_mode", "Allow input-only connections", Bool;
     ]
     "Remote monitors" => [
         "remote_monitor_mute_audio", "Mute remote monitor audio", Bool;
         "remote_monitor_disconnect_on_stream_end", "Remove remote monitor when its stream ends", Bool;
-        "remote_monitor_disconnect_on_client_disconnect", "Remove remote monitor on client disconnect", Bool;
+        "remote_monitor_disconnect_on_client_disconnect", "Remove remote monitor on device disconnect", Bool;
         "remote_monitor_terminate_on_first_request", "Replace the current game on the first monitor request", Bool;
         "remote_monitor_confirm_app_replacement", "Require confirmation to replace a game with a monitor", Bool;
     ]
     "Network, administration and commands" => [
         "locale", "Language", Choice(&["en","en_GB","en_US","bg","cs","de","es","fr","hu","it","ja","ko","pl","pt","pt_BR","ru","sv","tr","uk","vi","zh","zh_TW"]);
         "port", "Base Moonlight port", Number;
-        "bind_address", "Network interface (blank uses all)", Text;
+        "bind_address", "Listen address (leave empty for all network interfaces)", Text;
         "address_family", "IP support", Choice(&["ipv4","both"]);
-        "enable_discovery", "Moonlight LAN discovery", Bool;
-        "enable_pairing", "Allow new client pairings", Bool;
+        "enable_discovery", "Moonlight discovery on the local network", Bool;
+        "enable_pairing", "Allow new device pairings", Bool;
         "upnp", "UPnP router port forwarding", Bool;
-        "lan_encryption_mode", "LAN encryption (0 never, 1 optional, 2 required)", Number;
-        "wan_encryption_mode", "WAN encryption (0 never, 1 optional, 2 required)", Number;
-        "ping_timeout", "Client timeout (milliseconds)", Number;
+        "lan_encryption_mode", "Local network encryption (0 never, 1 optional, 2 required)", Number;
+        "wan_encryption_mode", "Internet encryption (0 never, 1 optional, 2 required)", Number;
+        "ping_timeout", "Device timeout (milliseconds)", Number;
         "origin_web_ui_allowed", "Administration access", Choice(&["pc","lan","wan"]);
         "csrf_allowed_origins", "Additional trusted administration origins", Json;
         "session_token_ttl_seconds", "Sign-in session lifetime (seconds)", Number;
-        "remember_me_refresh_token_ttl_seconds", "Remembered device lifetime (seconds)", Number;
+        "remember_me_refresh_token_ttl_seconds", "Remembered browser lifetime (seconds)", Number;
         "system_tray", "Show system tray icon", Bool;
         "hide_tray_controls", "Hide tray shutdown controls", Bool;
         "min_log_level", "Log level (0 verbose, 1 debug, 2 info, 3 warning, 4 error, 6 off)", Number;
@@ -193,49 +193,49 @@ pub const GLOBAL: &[Setting] = settings! {
         "auto_update", "Install updates automatically when idle", Bool;
         "notify_pre_releases", "Include prerelease updates", Bool;
         "update_check_interval", "Update check interval (seconds; 0 disables)", Number;
-        "legacy_ordering", "Use legacy application ordering", Bool;
-        "envvar_compatibility_mode", "Set legacy SUNSHINE client environment variables", Bool;
-        "global_prep_cmd", "Global preparation and undo commands", Json;
-        "global_state_cmd", "Global application state commands", Json;
-        "server_cmd", "Client-triggered server commands", Json;
+        "legacy_ordering", "Use legacy app ordering", Bool;
+        "envvar_compatibility_mode", "Set legacy SUNSHINE device environment variables", Bool;
+        "global_prep_cmd", "Global preparation and cleanup commands", Json;
+        "global_state_cmd", "Global pause and resume commands", Json;
+        "server_cmd", "Host commands available to devices", Json;
     ]
 };
 pub const APP: &[Setting] = settings! {
-    "Application behavior" => [
+    "App behavior" => [
         "elevated", "Run as administrator", Bool;
-        "auto-detach", "Keep streaming after an application launcher exits", Bool;
-        "wait-all", "Wait for all application processes", Bool;
-        "exit-timeout", "Application shutdown timeout (seconds)", Number;
-        "terminate-on-pause", "Close the application when streaming pauses", Bool;
-        "allow-client-commands", "Allow per-client connection commands", Bool;
+        "auto-detach", "Keep streaming after an app launcher exits", Bool;
+        "wait-all", "Wait for all app processes", Bool;
+        "exit-timeout", "App shutdown timeout (seconds)", Number;
+        "terminate-on-pause", "Close the app when streaming pauses", Bool;
+        "allow-client-commands", "Allow per-device connection commands", Bool;
         "exclude-global-state-cmd", "Exclude global pause and resume commands", Bool;
-        "state-cmd", "Application resume and pause commands", Json;
-        "output", "Application log path (null discards output)", Text;
+        "state-cmd", "App resume and pause commands", Json;
+        "output", "App log path (null discards output)", Text;
         "gamepad", "Controller profile override", Choice(&["auto","vhf_xbox","vhf_xbox_one","vhf_ds4","vhf_ds5","vhf_switch"]);
     ]
-    "Application display and frame generation" => [
+    "App display and frame generation" => [
         "display-output", "Display override (sunshine:virtual_display selects a virtual display)", Text;
         "virtual-display", "Use a virtual display", Bool;
-        "virtual-screen", "Use application virtual display preferences", Bool;
+        "virtual-screen", "Use app virtual display preferences", Bool;
         "virtual-display-mode", "Virtual display mode", Choice(&["disabled","per_client","shared"]);
         "virtual-display-layout", "Virtual display layout", Choice(&["exclusive","extended","extended_primary","extended_isolated","extended_primary_isolated"]);
         "virtual-display-primary", "Make the virtual display primary", Bool;
         "dd-configuration-option", "Display activation override", Choice(&["disabled","verify_only","ensure_active","ensure_primary","ensure_only_display"]);
         "scale-factor", "Display resolution scale (%)", Number;
-        "use-app-identity", "Keep one virtual display identity for this application", Bool;
-        "per-client-app-identity", "Keep a display identity for each application and client", Bool;
-        "prefer-10bit-sdr", "Prefer ten-bit SDR", Bool;
+        "use-app-identity", "Keep one virtual display identity for this app", Bool;
+        "per-client-app-identity", "Keep a display identity for each app and device", Bool;
+        "prefer-10bit-sdr", "Prefer 10-bit SDR", Bool;
         "frame-generation-mode", "Frame generation", Choice(&["none","game-provided","nvidia-smooth-motion"]);
         "gen1-framegen-fix", "Legacy frame generation capture fix", Bool;
         "frame-gen-limiter-fix", "Frame generation limiter fix", Bool;
     ]
-    "Application TrueHDR" => [
-        "rtx-hdr", "TrueHDR override", Bool;
+    "App RTX HDR" => [
+        "rtx-hdr", "RTX HDR override", Bool;
         "rtx-hdr-sdr-brightness", "SDR brightness override", Number;
-        "rtx-hdr-contrast", "TrueHDR contrast override", Number;
-        "rtx-hdr-saturation", "TrueHDR saturation override", Number;
-        "rtx-hdr-middle-gray", "TrueHDR middle gray override", Number;
-        "rtx-hdr-peak-brightness", "TrueHDR peak brightness override (nits)", Number;
+        "rtx-hdr-contrast", "RTX HDR contrast override", Number;
+        "rtx-hdr-saturation", "RTX HDR saturation override", Number;
+        "rtx-hdr-middle-gray", "RTX HDR middle gray override", Number;
+        "rtx-hdr-peak-brightness", "RTX HDR peak brightness override (nits)", Number;
     ]
 };
 pub const CLIENT: &[Setting] = settings! {
@@ -244,7 +244,7 @@ pub const CLIENT: &[Setting] = settings! {
         "always_use_virtual_display", "Always use a virtual display", Bool;
         "virtual_display_mode", "Virtual display mode", Choice(&["disabled","per_client","shared"]);
         "virtual_display_layout", "Virtual display layout", Choice(&["exclusive","extended","extended_primary","extended_isolated","extended_primary_isolated"]);
-        "prefer_10bit_sdr", "Prefer ten-bit SDR", Bool;
+        "prefer_10bit_sdr", "Prefer 10-bit SDR", Bool;
         "hdr_profile", "HDR ICC profile filename", Text;
         "allow_client_commands", "Run this device's connection commands", Bool;
         "do", "Connection commands", Json;
@@ -288,15 +288,110 @@ pub fn render(prefix: &str, schema: &[Setting], values: &Value) -> String {
                     (
                         choice,
                         match choice {
-                            "true" => "Enabled",
-                            "false" => "Disabled",
+                            "enabled" if setting.key == "frame_limiter_auto_virtual_framegen" => {
+                                "Four times the stream frame rate"
+                            }
+                            "none" if setting.key == "amd_av1_latency_mode" => "Driver default",
+                            "true" | "enabled" => "On",
+                            "false" | "disabled" => "Off",
+                            "auto" => "Automatic",
+                            "none" => "None",
+                            "exclusive" => "Turn off other monitors",
+                            "extended" => "Extend the desktop",
+                            "extended_primary" => "Extend and make primary",
+                            "extended_isolated" => "Extend away from other monitors",
+                            "extended_primary_isolated" => "Extend, make primary and isolate",
+                            "verify_only" => "Only check that it is on",
+                            "ensure_active" => "Turn it on",
+                            "ensure_primary" => "Turn it on and make it primary",
+                            "ensure_only_display" => "Turn it on and other displays off",
+                            "manual" => "Use a fixed value",
+                            "prefer_highest" => "Highest available",
+                            "force_on" => "Always on",
+                            "force_off" => "Always off",
+                            "rtss" => "RivaTuner Statistics Server (RTSS)",
+                            "nvidia-control-panel" => "NVIDIA driver",
+                            "legacy" => "Twice the stream frame rate",
+                            "fixed-1000hz" => "1000 Hz",
+                            "async" => "Asynchronous",
+                            "front-edge-sync" => "Front edge sync",
+                            "back-edge-sync" => "Back edge sync",
+                            "nvidia-reflex" => "NVIDIA Reflex",
+                            "transcoding" => "Transcoding (convert video formats)",
+                            "ultralowlatency" => "Ultra low latency",
+                            "lowlatency" => "Low latency",
+                            "webcam" => "Webcam",
+                            "high_quality" => "High quality",
+                            "lowlatency_high_quality" => "Low latency, high quality",
+                            "speed" => "Speed",
+                            "balanced" => "Balanced",
+                            "quality" => "Quality",
+                            "cqp" => "Constant quantization (fixed compression level)",
+                            "cbr" => "Constant bitrate",
+                            "vbr_latency" => "Variable bitrate, limited latency",
+                            "vbr_peak" => "Variable bitrate, limited peak rate",
+                            "qvbr" => "Variable bitrate, target quality",
+                            "hqvbr" => "High-quality variable bitrate",
+                            "hqcbr" => "High-quality constant bitrate",
+                            "cabac" => "CABAC (better compression)",
+                            "cavlc" => "CAVLC (simpler decoding)",
+                            "power_saving" => "Power saving",
+                            "realtime" => "Real time",
+                            "lowest" => "Lowest latency",
+                            "quarter_res" => "Quarter resolution",
+                            "full_res" => "Full resolution",
+                            "forced" => "Always on",
+                            "ultrafast" => "Ultra fast",
+                            "superfast" => "Super fast",
+                            "veryfast" => "Very fast",
+                            "faster" => "Faster",
+                            "fast" => "Fast",
+                            "medium" => "Medium",
+                            "slow" => "Slow",
+                            "slower" => "Slower",
+                            "veryslow" => "Very slow",
+                            "vhf_xbox" => "Xbox Series",
+                            "vhf_xbox_one" => "Xbox One",
+                            "vhf_ds4" => "DualShock 4",
+                            "vhf_ds5" => "DualSense",
+                            "vhf_switch" => "Switch Pro",
+                            "steam_deck" => "Steam Deck",
+                            "virtual_pad" => "Virtual controller",
+                            "a" => "A (Cross)",
+                            "b" => "B (Circle)",
+                            "x" => "X (Square)",
+                            "y" => "Y (Triangle)",
+                            "lb" => "Left bumper (L1)",
+                            "rb" => "Right bumper (R1)",
+                            "lt" => "Left trigger (L2)",
+                            "rt" => "Right trigger (R2)",
+                            "l3" => "Left stick click (L3)",
+                            "r3" => "Right stick click (R3)",
+                            "back" => "Back (Select)",
+                            "start" => "Start (Options)",
+                            "guide" => "Guide (Home)",
+                            "dpad_up" => "D-pad up",
+                            "dpad_down" => "D-pad down",
+                            "dpad_left" => "D-pad left",
+                            "dpad_right" => "D-pad right",
+                            "touchpad" => "Touchpad click",
+                            "misc" => "Share (Xbox) or mute (DualSense)",
+                            "ipv4" => "IPv4 only",
+                            "both" => "IPv4 and IPv6",
+                            "pc" => "This PC only",
+                            "lan" => "Local network",
+                            "wan" => "Any network",
+                            "per_client" => "One for each device",
+                            "shared" => "One shared by all devices",
+                            "game-provided" => "Provided by the game",
+                            "nvidia-smooth-motion" => "NVIDIA Smooth Motion",
                             _ if setting.key == "locale" => i18n::language_name(choice),
                             _ => choice,
                         },
                     )
                 }));
                 if !value.is_empty() && !choices.contains(&value.as_str()) {
-                    options.push((&value, &value));
+                    options.push((&value, "Saved custom choice"));
                 }
                 select(&name, setting.label, &value, &options)
             }
@@ -339,6 +434,14 @@ pub fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn choice_labels_preserve_the_saved_values() {
+        let html = i18n::render(&render("cfg_", GLOBAL, &serde_json::json!({})), "en");
+        assert!(html.contains("value=\"vhf_ds5\">DualSense</option>"));
+        assert!(html.contains("value=\"extended_primary\">Extend and make primary</option>"));
+        assert!(html.contains("value=\"enabled\">Four times the stream frame rate</option>"));
+        assert!(!html.contains(">vhf_ds5</option>"));
+    }
     #[test]
     fn encoder_settings_save_keys_the_encoders_read() {
         for setting in GLOBAL {
