@@ -1,5 +1,12 @@
+mod apps;
+mod clients;
+mod config;
+mod displays;
+mod logs;
+mod maintenance;
+mod session;
+
 use crate::{state::Shared, tls::Connection};
-use anyhow::Context;
 use axum::{
     Extension, Json, Router,
     body::Bytes,
@@ -10,10 +17,7 @@ use axum::{
     routing::get,
 };
 use base64::Engine;
-use butterpollo_core::{
-    auth, crypto, state,
-    state::{App, Credentials},
-};
+use butterpollo_core::{auth, crypto, state, state::Credentials};
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
@@ -611,373 +615,42 @@ pub(crate) async fn api(
     };
     let text = |k: &str| data.get(k).and_then(Value::as_str).unwrap_or("");
     if method == Method::POST && path == "/api/covers/upload" {
-        let result = async {
-            let key = text("key");
-            if key.is_empty()
-                || key.len() > 128
-                || !key
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-            {
-                anyhow::bail!("invalid cover key");
-            }
-            if let Some(data) = data.get("data").and_then(Value::as_str) {
-                // The request body limit bounds the size.
-                let bytes = base64::engine::general_purpose::STANDARD.decode(data)?;
-                if bytes.len() < 24 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-                    anyhow::bail!("cover must be PNG");
-                }
-                let path = h.directory.join("covers").join(format!("{key}.png"));
-                state::atomic_write(&path, &bytes)?;
-                return Ok(json!({"status":true,"path":path}));
-            }
-            let url = url::Url::parse(text("url"))?;
-            if url.scheme() != "https"
-                || url.host_str() != Some("images.igdb.com")
-                || !url.path().starts_with("/igdb/image/upload/")
-                || !url.username().is_empty()
-                || url.password().is_some()
-                || url.port().is_some()
-            {
-                anyhow::bail!("cover URL must use the IGDB image service");
-            }
-            let client = reqwest::Client::builder()
-                .https_only(true)
-                .timeout(std::time::Duration::from_secs(20))
-                .redirect(reqwest::redirect::Policy::none())
-                .build()?;
-            let mut response = client.get(url).send().await?.error_for_status()?;
-            let mut bytes = vec![];
-            while let Some(chunk) = response.chunk().await? {
-                if bytes.len() + chunk.len() > 16 * 1024 * 1024 {
-                    anyhow::bail!("cover exceeds the limit");
-                }
-                bytes.extend_from_slice(&chunk);
-            }
-            if bytes.len() < 24 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-                anyhow::bail!("cover must be PNG");
-            }
-            let path = h.directory.join("covers").join(format!("{key}.png"));
-            state::atomic_write(&path, &bytes)?;
-            Ok::<_, anyhow::Error>(json!({"status":true,"path":path}))
-        }
-        .await;
-        return match result {
-            Ok(value) => Json(value).into_response(),
-            Err(err) => error(StatusCode::BAD_REQUEST, &err.to_string()),
-        };
+        return apps::upload_cover(&h, &data).await;
     }
     if let Some(action) = path.strip_prefix("/api/steam/") {
-        // Reading the libraries and converting covers waits on the disk.
-        let h = h.clone();
-        let appid = |value: Option<&Value>| -> Option<u32> {
-            match value? {
-                Value::Number(n) => n.as_u64().and_then(|n| u32::try_from(n).ok()),
-                Value::String(s) => s.trim().parse().ok(),
-                _ => None,
-            }
-        };
-        let query: std::collections::HashMap<String, String> =
-            url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes())
-                .into_owned()
-                .collect();
-        let task = match (method.as_str(), action) {
-            ("GET", "status") => {
-                tokio::task::spawn_blocking(move || Ok(crate::steam::status(&h))).await
-            }
-            ("GET", "games") => {
-                let id = query.get("appid").and_then(|v| v.parse().ok());
-                tokio::task::spawn_blocking(move || crate::steam::games(&h, id)).await
-            }
-            ("POST", "force_sync") => {
-                tokio::task::spawn_blocking(move || {
-                    crate::steam::sync(&h).map(|outcome| {
-                        json!({"status":true,"changed":outcome.changed,"game_count":outcome.games,"importable_game_count":outcome.importable})
-                    })
-                })
-                .await
-            }
-            ("POST", "launch") => {
-                let Some(id) = appid(data.get("appid")).or_else(|| appid(data.get("steam_id")))
-                else {
-                    return error(StatusCode::BAD_REQUEST, "appid required");
-                };
-                tokio::task::spawn_blocking(move || crate::steam::launch(&h, id)).await
-            }
-            _ => return error(StatusCode::BAD_REQUEST, "unknown API endpoint"),
-        };
-        return match task {
-            Ok(Ok(value)) => Json(value).into_response(),
-            Ok(Err(err)) => error(StatusCode::BAD_REQUEST, &format!("{err:#}")),
-            Err(err) => error(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
-        };
+        return apps::steam(&h, &method, action, &uri, &data).await;
     }
     if let Some(action) = path.strip_prefix("/api/playnite/") {
-        let h = h.clone();
-        let task = match (method.as_str(), action) {
-            ("GET", "status") => {
-                tokio::task::spawn_blocking(move || Ok(crate::playnite::status(&h))).await
-            }
-            ("GET", "games") => tokio::task::spawn_blocking(crate::playnite::games).await,
-            ("GET", "categories") => tokio::task::spawn_blocking(crate::playnite::categories).await,
-            ("POST", "install") => {
-                tokio::task::spawn_blocking(move || {
-                    crate::playnite::install_plugin(&h).map(|folder| {
-                        json!({"status":true,"path":folder,
-                               "restart_required":butterpollo_windows::playnite::running().is_some()})
-                    })
-                })
-                .await
-            }
-            ("POST", "uninstall") => {
-                tokio::task::spawn_blocking(|| crate::playnite::uninstall_plugin().map(|()| json!({"status":true}))).await
-            }
-            ("POST", "force_sync") => {
-                tokio::task::spawn_blocking(move || {
-                    crate::playnite::sync(&h)
-                        .map(|outcome| json!({"status":true,"changed":outcome.changed,"game_count":outcome.games}))
-                })
-                .await
-            }
-            ("POST", "cover") => {
-                let (id, key) = (text("playnite_id").to_owned(), text("cover_key").to_owned());
-                if id.is_empty() || key.is_empty() {
-                    return error(StatusCode::BAD_REQUEST, "Playnite game ID and cover key are required");
-                }
-                tokio::task::spawn_blocking(move || {
-                    crate::playnite::set_cover(&h, &id, &key)
-                        .map(|path| json!({"status":true,"path":path.to_string_lossy().replace('\\', "/")}))
-                })
-                .await
-            }
-            ("POST", "launch") => {
-                tokio::task::spawn_blocking(|| crate::playnite::restart().map(|()| json!({"status":true}))).await
-            }
-            _ => return error(StatusCode::BAD_REQUEST, "unknown API endpoint"),
-        };
-        return match task {
-            Ok(Ok(value)) => Json(value).into_response(),
-            Ok(Err(err)) => error(StatusCode::BAD_REQUEST, &format!("{err:#}")),
-            Err(err) => error(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
-        };
+        return apps::playnite(&h, &method, action, &data).await;
     }
     if method == Method::GET && path == "/api/lossless_scaling/status" {
-        let candidate = url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes())
-            .find(|(key, _)| key == "path")
-            .map(|(_, value)| value.into_owned());
-        let configured = h
-            .config
-            .read()
-            .unwrap()
-            .get("lossless_scaling_path", "")
-            .to_owned();
-        let checked = candidate.unwrap_or_else(|| configured.clone());
-        let result = tokio::task::spawn_blocking(move || {
-            let resolved = butterpollo_windows::lossless::program(&checked);
-            let status = match (&resolved, checked.trim().is_empty()) {
-                (Some(_), _) => "detected",
-                (None, true) => "not-configured",
-                (None, false) => "path-not-found",
-            };
-            json!({"status": status, "configured_path": configured, "checked_path": checked,
-                   "resolved_path": resolved, "using_configured_path": !configured.trim().is_empty()})
-        })
-        .await;
-        return match result {
-            Ok(value) => Json(value).into_response(),
-            Err(err) => error(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
-        };
+        return apps::lossless_scaling(&h, &uri).await;
     }
     if method == Method::GET && path == "/api/browse" {
-        let query: std::collections::HashMap<String, String> =
-            url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes())
-                .into_owned()
-                .collect();
-        let filter = butterpollo_core::browse::Filter::parse(query.get("type").map(String::as_str));
-        let requested = query.get("path").cloned().unwrap_or_default();
-        // Listing a folder waits on the disk, or on the network for a share.
-        let result = tokio::task::spawn_blocking(move || {
-            if butterpollo_core::browse::root(&requested) {
-                Ok(butterpollo_core::browse::drives(
-                    &butterpollo_windows::files::drives(),
-                ))
-            } else {
-                butterpollo_core::browse::listing(std::path::Path::new(&requested), filter)
-            }
-        })
-        .await;
-        return match result {
-            Ok(Ok(value)) => Json(value).into_response(),
-            Ok(Err(message)) => error(StatusCode::BAD_REQUEST, &message),
-            Err(err) => error(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
-        };
+        return apps::browse(&uri).await;
     }
     if method == Method::GET
         && let Some(id) = icon_id(path)
     {
-        let icon = h
-            .apps
-            .read()
-            .unwrap()
-            .iter()
-            .find(|a| a.extra.get("uuid").and_then(Value::as_str) == Some(id))
-            .and_then(butterpollo_core::catalog::icon);
-        if let Some(icon) = icon
-            && let Ok(bytes) = tokio::fs::read(icon).await
-        {
-            return ([(header::CONTENT_TYPE, "image/png")], bytes).into_response();
-        }
-        return StatusCode::NOT_FOUND.into_response();
+        return apps::icon(&h, id).await;
     }
     if method == Method::POST && path == "/api/apps/purge_autosync" {
-        let mut removed = 0;
-        return match crate::steam::update_apps(&h, |apps| {
-            removed = butterpollo_core::playnite::purge(apps);
-            removed > 0
-        }) {
-            Ok(_) => Json(json!({"status":true,"removed":removed})).into_response(),
-            Err(err) => error(StatusCode::INTERNAL_SERVER_ERROR, &format!("{err:#}")),
-        };
+        return apps::purge_autosync(&h);
     }
     if method == Method::GET && path == "/api/logs/export_crash" {
-        let h = h.clone();
-        let result = tokio::task::spawn_blocking(move || -> anyhow::Result<std::fs::File> {
-            use std::os::windows::fs::OpenOptionsExt;
-            let path = crate::maintenance::bundle(&h)?;
-            Ok(std::fs::OpenOptions::new()
-                .access_mode(0x80000000 | 0x00010000)
-                .share_mode(1 | 4)
-                .custom_flags(0x04000000)
-                .open(path)?)
-        })
-        .await;
-        return match result {
-            Ok(Ok(file)) => (
-                [
-                    (header::CONTENT_TYPE, "application/zip"),
-                    (
-                        header::CONTENT_DISPOSITION,
-                        "attachment; filename=butterpollo-support.zip",
-                    ),
-                ],
-                axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(
-                    tokio::fs::File::from_std(file),
-                )),
-            )
-                .into_response(),
-            Ok(Err(err)) => error(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
-            Err(err) => error(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
-        };
+        return logs::export_crash(&h).await;
     }
     if method == Method::GET && path == "/api/logs/tail" {
-        use std::io::{Read, Seek};
-        let query: std::collections::HashMap<String, String> =
-            url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes())
-                .into_owned()
-                .collect();
-        let offset: i64 = query
-            .get("offset")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(-1);
-        let max: u64 = query
-            .get("max")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(256 * 1024)
-            .clamp(1024, 4 * 1024 * 1024);
-        let result = (|| -> std::io::Result<Value> {
-            let mut file = match std::fs::File::open(crate::maintenance::log_path(&h)) {
-                Ok(file) => file,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    return Ok(
-                        json!({"status":true,"offset":0,"size":0,"reset":offset != 0,"text":""}),
-                    );
-                }
-                Err(e) => return Err(e),
-            };
-            let size = file.metadata()?.len();
-            // A negative offset asks for the tail; an offset past the end
-            // means the log was rotated.
-            let reset = offset < 0 || offset as u64 > size;
-            let start = if reset {
-                size.saturating_sub(max)
-            } else {
-                offset as u64
-            };
-            file.seek(std::io::SeekFrom::Start(start))?;
-            let mut bytes = vec![];
-            file.take(max).read_to_end(&mut bytes)?;
-            // End on a line break so no line is split between two reads.
-            if start + (bytes.len() as u64) < size
-                && let Some(end) = bytes.iter().rposition(|b| *b == b'\n')
-            {
-                bytes.truncate(end + 1);
-            }
-            Ok(json!({
-                "status": true,
-                "offset": start + bytes.len() as u64,
-                "size": size,
-                "reset": reset,
-                "text": String::from_utf8_lossy(&bytes),
-            }))
-        })();
-        return match result {
-            Ok(value) => axum::Json(value).into_response(),
-            Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
-        };
+        return logs::tail(&h, &uri);
     }
     if method == Method::GET && matches!(path, "/api/logs" | "/api/logs/export") {
-        use std::io::{Read, Seek};
-        let result = (|| -> std::io::Result<String> {
-            let mut file = std::fs::File::open(crate::maintenance::log_path(&h))?;
-            let length = file.metadata()?.len();
-            file.seek(std::io::SeekFrom::Start(
-                length.saturating_sub(8 * 1024 * 1024),
-            ))?;
-            let mut bytes = vec![];
-            file.take(8 * 1024 * 1024).read_to_end(&mut bytes)?;
-            Ok(String::from_utf8_lossy(&bytes).into_owned())
-        })();
-        let mut result = (
-            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-            result.unwrap_or_default(),
-        )
-            .into_response();
-        if path.ends_with("/export") {
-            result.headers_mut().insert(
-                header::CONTENT_DISPOSITION,
-                "attachment; filename=butterpollo.log".parse().unwrap(),
-            );
-        }
-        return result;
+        return logs::export(&h, path);
     }
     if method == Method::GET
         && ((path.starts_with("/api/apps/") && path.ends_with("/cover"))
             || path.starts_with("/api/covers/"))
     {
-        let Some(id) = cover_id(path) else {
-            return StatusCode::NOT_FOUND.into_response();
-        };
-        let app = h
-            .apps
-            .read()
-            .unwrap()
-            .iter()
-            .find(|a| {
-                a.extra.get("uuid").and_then(Value::as_str) == Some(id) || a.id().to_string() == id
-            })
-            .cloned();
-        let Some(app) = app else {
-            return StatusCode::NOT_FOUND.into_response();
-        };
-        let path = butterpollo_core::catalog::artwork(&app, h.assets.parent().unwrap_or(&h.assets));
-        if tokio::fs::metadata(&path)
-            .await
-            .is_ok_and(|m| m.len() <= 16 * 1024 * 1024)
-            && let Ok(bytes) = tokio::fs::read(path).await
-        {
-            return ([(header::CONTENT_TYPE, "image/png")], bytes).into_response();
-        }
-        return StatusCode::NOT_FOUND.into_response();
+        return apps::cover(&h, path).await;
     }
     if path == "/api/auth/status" {
         let configured = h.credentials.read().unwrap().is_some();
@@ -1107,68 +780,38 @@ pub(crate) async fn api(
         let path = uri.path();
         let text = |k: &str| data.get(k).and_then(Value::as_str).unwrap_or("");
         Ok(match (method.as_str(), path) {
-            ("GET", "/api/updates") => crate::updater::status(&h),
-            ("POST", "/api/updates/install") => { crate::updater::queue(&h, false)?; json!({"status":true}) },
-            ("POST", "/api/updates/cancel") => { crate::updater::cancel(&h)?; json!({"status":true}) },
-            ("POST", "/api/updates/check") => {
-                crate::maintenance::trigger_update(&h, false);
-                json!({"status":true})
+            ("GET", "/api/updates")
+            | ("POST", "/api/updates/install")
+            | ("POST", "/api/updates/cancel")
+            | ("POST", "/api/updates/check") => maintenance::handle(&h, method.as_str(), path)?,
+            ("GET", "/api/health/crashdump")
+            | ("POST", "/api/health/crashdump/dismiss")
+            | ("GET", "/api/logs/export_crash/manifest") => {
+                logs::handle(&h, method.as_str(), path, &data)?
             }
-            ("GET", "/api/health/crashdump") => crate::maintenance::crash_status(&h)?,
-            ("POST", "/api/health/crashdump/dismiss") => {
-                crate::maintenance::dismiss_crash(&h, &data)?
+            ("GET", "/api/display/golden_status")
+            | ("POST", "/api/display/export_golden")
+            | ("POST", "/api/display/restore_golden")
+            | ("POST", "/api/reset-display-device-persistence")
+            | ("DELETE", "/api/display/golden")
+            | ("POST", "/api/display/terminate_virtual")
+            | ("GET", "/api/clients/display-layout")
+            | ("PUT", "/api/clients/display-layout") => {
+                displays::handle(&h, method.as_str(), &uri, &data)?
             }
-            ("GET", "/api/logs/export_crash/manifest") => crate::maintenance::bundle_manifest(&h),
-            ("GET", "/api/display/golden_status") => crate::maintenance::golden_status(
-                &h,
-                uri.query().is_some_and(|q| q.contains("compare_current=1")),
-            )?,
-            ("POST", "/api/display/export_golden") => crate::maintenance::capture_golden(&h)?,
-            ("POST", "/api/display/restore_golden") => crate::maintenance::restore_golden(&h)?,
-            ("POST", "/api/reset-display-device-persistence") => {
-                if !h.sessions.lock().unwrap().active.is_empty()
-                    || !h.monitors.lock().unwrap().is_empty()
-                {
-                    anyhow::bail!(
-                        "disconnect active sessions before resetting display persistence"
-                    );
-                }
-                butterpollo_windows::display_recovery::reset()?;
-                json!({"status":true})
-            }
-            ("DELETE", "/api/display/golden") => {
-                let path = h.directory.join("display-baseline-rust.json");
-                let exists = path.exists();
-                if exists {
-                    std::fs::remove_file(path)?;
-                }
-                state::atomic_write(
-                    &h.directory.join("display-baseline-disabled"),
-                    b"legacy baseline import disabled\n",
-                )?;
-                json!({"status":true,"deleted":exists})
-            }
-            ("POST", "/api/display/terminate_virtual") => {
-                crate::runtime::release_displays(&h);
-                json!({"status":true})
-            }
-            ("GET", "/api/clients/display-layout") => crate::remote_display::snapshot(&h)?,
-            ("PUT", "/api/clients/display-layout") => crate::remote_display::save(&h, &data)?,
             ("GET", "/api/rtss/status" | "/api/frame-limiter/status") => {
-                crate::maintenance::integration_status(&h)
+                session::handle(&h, method.as_str(), path)?
             }
-            ("GET", "/api/health/vulkan-hdr-layer") => butterpollo_windows::vulkan::status(
-                h.config.read().unwrap().boolean("vulkan_hdr_layer", true),
-            ),
-            ("POST", "/api/health/vulkan-hdr-layer/register") => {
-                butterpollo_windows::vulkan::register(true)?;
-                butterpollo_windows::vulkan::status(
-                    h.config.read().unwrap().boolean("vulkan_hdr_layer", true),
-                )
+            ("GET", "/api/health/vulkan-hdr-layer")
+            | ("POST", "/api/health/vulkan-hdr-layer/register") => {
+                displays::handle(&h, method.as_str(), &uri, &data)?
             }
             ("GET", "/api/auth/sessions") => {
                 let sessions = h.web_sessions.lock().unwrap();
-                let current = crate::web_sessions::resolve_hash(&sessions, &access(&headers).unwrap_or_default());
+                let current = crate::web_sessions::resolve_hash(
+                    &sessions,
+                    &access(&headers).unwrap_or_default(),
+                );
                 let sessions: Vec<_> = sessions
                     .iter()
                     .filter(|(_, s)| s.refresh_expires > Instant::now())
@@ -1181,7 +824,10 @@ pub(crate) async fn api(
                         object.insert("id".into(), json!(token));
                         object.insert(
                             "current".into(),
-                            json!(current.as_ref().is_some_and(|current| crypto::equal(token.as_bytes(), current.as_bytes()))),
+                            json!(current.as_ref().is_some_and(|current| crypto::equal(
+                                token.as_bytes(),
+                                current.as_bytes()
+                            ))),
                         );
                         row
                     })
@@ -1235,381 +881,36 @@ pub(crate) async fn api(
                 *document = next;
                 json!({"status":true})
             }
-            ("GET", "/api/config") => {
-                let c = h.config.read().unwrap();
-                let mut v = c.json();
-                v["status"] = json!(true);
-                v["platform"] = json!("windows");
-                v["version"] = json!(env!("CARGO_PKG_VERSION"));
-                v
+            ("GET", "/api/config")
+            | ("POST" | "PATCH", "/api/config")
+            | ("GET", "/api/configLocale")
+            | ("GET", "/api/meta" | "/api/metadata") => {
+                config::handle(&h, method.as_str(), path, &data)?
             }
-            ("POST" | "PATCH", "/api/config") => {
-                let mut object = data
-                    .as_object()
-                    .ok_or_else(|| anyhow::anyhow!("configuration must be an object"))?
-                    .clone();
-                for key in ["status", "platform", "version"] {
-                    object.remove(key);
-                }
-                let mut config = h.config.write().unwrap();
-                let mut next = config.clone();
-                next.update(&object)?;
-                next.check_saved(object.keys())?;
-                state::atomic_write(&h.config_path, next.text().as_bytes())?;
-                let warning =
-                    butterpollo_windows::vulkan::reconcile(next.boolean("vulkan_hdr_layer", true))
-                        .err()
-                        .map(|e| e.to_string());
-                *config = next;
-                drop(config);
-                h.metadata.lock().unwrap().take();
-                json!({"status":true,"restart_required":true,"warning":warning})
-            }
-            ("GET", "/api/configLocale") => {
-                json!({"status":true,"locale":h.config.read().unwrap().get("locale","en")})
-            }
-            ("GET", "/api/meta" | "/api/metadata") => {
-                let shared = h.clone();
-                (|| -> anyhow::Result<Value> {
-                    let mut cached=shared.metadata.lock().unwrap();
-                    if let Some((checked,value))=cached.as_ref() && checked.elapsed()<Duration::from_secs(5) { return Ok(value.clone()); }
-                    let _com=butterpollo_windows::capture::ComGuard::new()?;
-                    let codecs=shared.codecs.load(std::sync::atomic::Ordering::Acquire);
-                    let probing=shared.probing_codecs.load(std::sync::atomic::Ordering::Acquire);
-                    let virtual_display=butterpollo_windows::display::virtual_display_status();
-                    let capable=virtual_display["capable"].as_bool().unwrap_or(false);
-                    let audio=butterpollo_windows::audio_route::endpoints();
-                    let displays=butterpollo_windows::capture::displays();
-                    let config=shared.config.read().unwrap().clone();
-                    let port=config.ports()?.http;
-                    let address = |host: String| if port == 47989 { host } else { format!("{host}:{port}") };
-                    let addresses = butterpollo_windows::net::lan_addresses().unwrap_or_default().into_iter().map(address).collect::<Vec<_>>();
-                    let pc_address = addresses.first().cloned().unwrap_or_else(|| address(std::env::var("COMPUTERNAME").unwrap_or_default()));
-                    let value=json!({"status":true,"platform":"windows","version":env!("CARGO_PKG_VERSION"),"branch":"codex/butterpollo-rust","host_name":crate::network::host_name(&config),"pc_address":pc_address,"pc_addresses":addresses,"paired_devices":shared.paired.read().unwrap().clients.len(),"warnings":shared.warnings.snapshot(),"encoder_status":{"state":if probing {"checking"} else if codecs == 0 {"failed"} else {"ready"},"h264":codecs&1!=0,"hevc":codecs&0x100!=0,"av1":codecs&0x10000!=0,"pyrowave":codecs&0x800000!=0},"capture_status":{"configured_backend":config.get("capture","auto"),"virtual_display_configured":config.virtual_display_mode(butterpollo_windows::display::windows_11())!="disabled","displays":displays.as_ref().ok(),"error":displays.as_ref().err().map(|e|e.to_string())},"virtual_display":virtual_display,"audio_sinks":audio.as_ref().ok(),"audio_error":audio.as_ref().err().map(|e|e.to_string()),"audio_enabled":config.boolean("stream_audio",true),"features":{"rust_host":true,"hdr":true,"truehdr_runtime":butterpollo_windows::truehdr::available(),"pyrowave":codecs&0x800000!=0,"virtual_display":capable},"credentials_exists":shared.credentials.read().unwrap().is_some()});
-                    *cached=Some((Instant::now(),value.clone())); Ok(value)
-                })()?
-            }
-            ("GET", "/api/apps") => {
-                let mut d = h.app_document.read().unwrap().clone();
-                d["apps"] = serde_json::to_value(&*h.apps.read().unwrap())?;
-                d["status"] = json!(true);
-                d
-            }
-            ("POST", "/api/apps") => {
-                let mut app: App = serde_json::from_value(data.clone())?;
-                if app.name.trim().is_empty() {
-                    anyhow::bail!("application name required");
-                }
-                let mut tuning = serde_json::Map::new();
-                for &key in crate::stream::RTX_KEYS {
-                    if let Some(value) = app
-                        .extra
-                        .get(&key.replace('_', "-"))
-                        .filter(|value| !value.is_null() && value.as_str() != Some(""))
-                    {
-                        tuning.insert(key.into(), value.clone());
-                    }
-                    if let Some(value) = app
-                        .extra
-                        .get("config-overrides")
-                        .and_then(|v| v.get(key))
-                        .filter(|value| !value.is_null() && value.as_str() != Some(""))
-                    {
-                        tuning.insert(key.into(), value.clone());
-                    }
-                }
-                h.config.read().unwrap().clone().update(&tuning)?;
-                if !app.extra.contains_key("uuid") {
-                    app.extra
-                        .insert("uuid".into(), json!(uuid::Uuid::new_v4().to_string()));
-                }
-                let uuid = app.extra["uuid"].clone();
-                let mut apps = h.apps.write().unwrap();
-                let mut next = apps.clone();
-                if let Some(i) = next.iter().position(|a| a.extra.get("uuid") == Some(&uuid)) {
-                    next[i] = app;
-                } else {
-                    next.push(app);
-                }
-                h.assign_apps(&mut next)?;
-                let mut doc = h.app_document.read().unwrap().clone();
-                doc["apps"] = serde_json::to_value(&next)?;
-                state::write_json(&h.apps_path, &doc)?;
-                *apps = next;
-                *h.app_document.write().unwrap() = doc;
-                json!({"status":true,"uuid":uuid})
-            }
-            ("POST", "/api/apps/delete") => {
-                delete_app(&h, text("uuid"))?;
-                json!({"status":true})
-            }
-            ("POST", "/api/apps/reorder") => {
-                let order = data["order"]
-                    .as_array()
-                    .ok_or_else(|| anyhow::anyhow!("order must be an array"))?;
-                let mut apps = h.apps.write().unwrap();
-                let next = butterpollo_core::catalog::reorder(&apps, order);
-                let mut document = h.app_document.read().unwrap().clone();
-                document["apps"] = serde_json::to_value(&next)?;
-                state::write_json(&h.apps_path, &document)?;
-                *apps = next;
-                *h.app_document.write().unwrap() = document;
-                json!({"status":true})
-            }
-            ("POST", "/api/apps/rtx_hdr/live") => {
-                let values = match data.get("config-overrides") {
-                    Some(values) => values
-                        .as_object()
-                        .ok_or_else(|| anyhow::anyhow!("config-overrides must be an object"))?
-                        .clone(),
-                    None => Default::default(),
-                };
-                json!({"status":true,"applied":h.update_live_rtx(text("uuid"),&values)?})
-            }
-            ("POST", "/api/apps/close") => {
-                h.sessions
-                    .lock()
-                    .unwrap()
-                    .stop_role(butterpollo_core::session::Role::Stream, None);
-                h.stop_app();
-                json!({"status":true})
-            }
-            ("POST", "/api/apps/launch") => {
-                let _transition = h.launch_transition.lock().unwrap();
-                if crate::updater::installing(&h) { anyhow::bail!("Butterpollo is installing an update"); }
-                let uuid = text("uuid");
-                let app = h
-                    .apps
-                    .read()
-                    .unwrap()
-                    .iter()
-                    .find(|a| a.extra.get("uuid").and_then(Value::as_str) == Some(uuid))
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("application not found"))?;
-                if h.current_app.lock().unwrap().is_some() {
-                    anyhow::bail!("application already running");
-                }
-                // Started without the lock every serverinfo request takes: its
-                // prep commands can run for minutes. launch_transition keeps
-                // another app from being installed meanwhile.
-                let running = crate::process::launch(&h, &app, &Default::default())?;
-                let mut current = h.current_app.lock().unwrap();
-                if current.is_some() {
-                    drop(current);
-                    drop(running);
-                    anyhow::bail!("application already running");
-                }
-                *current = Some(running);
-                json!({"status":true})
-            }
-            ("GET", "/api/clients/list") => {
-                let connected = h
-                    .sessions
-                    .lock()
-                    .unwrap()
-                    .active
-                    .values()
-                    .filter(|s| !s.stopping())
-                    .map(|s| s.launch.client.uuid.clone())
-                    .collect::<std::collections::HashSet<_>>();
-                let clients: Vec<_> = h
-                    .paired
-                    .read()
-                    .unwrap()
-                    .clients
-                    .iter()
-                    .map(|c| {
-                        let mut v = serde_json::to_value(c).unwrap();
-                        v.as_object_mut().unwrap().remove("cert");
-                        v["connected"] = json!(connected.contains(&c.uuid));
-                        v
-                    })
-                    .collect();
-                json!({"status":true,"clients":clients,"named_certs":clients})
-            }
+            ("GET", "/api/apps")
+            | ("POST", "/api/apps")
+            | ("POST", "/api/apps/delete")
+            | ("POST", "/api/apps/reorder")
+            | ("POST", "/api/apps/rtx_hdr/live")
+            | ("POST", "/api/apps/close")
+            | ("POST", "/api/apps/launch") => apps::handle(&h, method.as_str(), path, &data)?,
+            ("GET", "/api/clients/list") => clients::handle(&h, method.as_str(), path, &data)?,
             ("GET", "/api/clients/hdr-profiles") => {
-                let path = std::path::PathBuf::from(
-                    std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into()),
-                )
-                .join("System32/spool/drivers/color");
-                let mut profiles: Vec<_> = std::fs::read_dir(path)?.filter_map(Result::ok).filter(|e| e.path().extension().and_then(|s|s.to_str()).is_some_and(|s|s.eq_ignore_ascii_case("icc") || s.eq_ignore_ascii_case("icm"))).take(1024).map(|e|json!({"filename":e.file_name().to_string_lossy(),"added_ms":e.metadata().ok().and_then(|m|m.created().ok()).and_then(|t|t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d|d.as_millis()).unwrap_or(0)})).collect();
-                profiles.sort_by_key(|p| std::cmp::Reverse(p["added_ms"].as_u64().unwrap_or(0)));
-                json!({"status":true,"profiles":profiles})
+                displays::handle(&h, method.as_str(), &uri, &data)?
             }
-            ("POST", "/api/clients/unpair") => {
-                h.sessions.lock().unwrap().request_stop(Some(text("uuid")));
-                crate::remote_display::disconnect(&h, Some(text("uuid")));
-                h.paired
-                    .write()
-                    .unwrap()
-                    .remove(&h.paired_path, text("uuid"))?;
-                json!({"status":true})
+            ("POST", "/api/clients/unpair")
+            | ("POST", "/api/clients/unpair-all")
+            | ("POST", "/api/clients/disconnect")
+            | ("POST", "/api/clients/update")
+            | ("GET", "/api/clients/pending") => clients::handle(&h, method.as_str(), path, &data)?,
+            ("GET", "/api/rtsp/sessions") | ("GET", "/api/session/status") => {
+                session::handle(&h, method.as_str(), path)?
             }
-            ("POST", "/api/clients/unpair-all") => {
-                h.sessions.lock().unwrap().request_stop(None);
-                crate::remote_display::disconnect(&h, None);
-                let mut state = h.paired.write().unwrap();
-                let mut next = state.clone();
-                next.clients.clear();
-                next.save(&h.paired_path)?;
-                *state = next;
-                json!({"status":true})
+            ("GET", "/api/display-devices") | ("GET", "/api/framegen/edid-refresh") => {
+                displays::handle(&h, method.as_str(), &uri, &data)?
             }
-            ("POST", "/api/clients/disconnect") => {
-                h.sessions.lock().unwrap().request_stop(Some(text("uuid")));
-                crate::remote_display::disconnect(&h, Some(text("uuid")));
-                json!({"status":true})
-            }
-            ("POST", "/api/clients/update") => {
-                let mut state = h.paired.write().unwrap();
-                let mut next = state.clone();
-                let c = next
-                    .clients
-                    .iter_mut()
-                    .find(|c| c.uuid == text("uuid"))
-                    .ok_or_else(|| anyhow::anyhow!("client not found"))?;
-                let previous_perm = c.perm;
-                if let Some(n) = data.get("name").and_then(Value::as_str) {
-                    c.name = n.into();
-                }
-                if let Some(n) = data.get("perm").and_then(Value::as_u64) {
-                    c.perm = u32::try_from(n)? & 0x071f1f00;
-                }
-                if let Some(v) = data.get("enabled").and_then(Value::as_bool) {
-                    c.enabled = v;
-                }
-                for (k, v) in data
-                    .as_object()
-                    .ok_or_else(|| anyhow::anyhow!("client update must be an object"))?
-                {
-                    if !matches!(k.as_str(), "uuid" | "cert" | "perm" | "name" | "enabled") {
-                        // null clears a per-device setting.
-                        if v.is_null() {
-                            c.extra.remove(k);
-                        } else {
-                            c.extra.insert(k.clone(), v.clone());
-                        }
-                    }
-                }
-                let revoked = data.get("enabled").and_then(Value::as_bool) == Some(false)
-                    || data
-                        .get("perm")
-                        .and_then(Value::as_u64)
-                        .is_some_and(|p| previous_perm & !(p as u32) != 0);
-                next.save(&h.paired_path)?;
-                *state = next;
-                drop(state);
-                // Other changes apply from the device's next stream; disabling
-                // it or removing permissions ends what it is doing now.
-                if revoked {
-                    h.sessions.lock().unwrap().request_stop(Some(text("uuid")));
-                    crate::remote_display::disconnect(&h, Some(text("uuid")));
-                }
-                json!({"status":true,"disconnected":revoked})
-            }
-            ("GET", "/api/clients/pending") => {
-                let pins = h.pins.lock().unwrap();
-                json!({"status":true,"requests":pins
-                    .iter()
-                    .filter(|(_, p)| p.created.elapsed() < Duration::from_secs(300))
-                    .map(|(id, p)| json!({"uniqueid":id,"name":p.name,"age_seconds":p.created.elapsed().as_secs()}))
-                    .collect::<Vec<_>>()})
-            }
-            ("GET", "/api/rtsp/sessions") => {
-                json!({"status":true,"sessions":h.sessions.lock().unwrap().active.values().map(|s|s.info()).collect::<Vec<_>>()})
-            }
-            ("GET", "/api/session/status") => {
-                let current = h.current_app.lock().unwrap();
-                let sessions = h.sessions.lock().unwrap();
-                let uuid = current.as_ref().and_then(|running| {
-                    h.apps
-                        .read()
-                        .unwrap()
-                        .iter()
-                        .find(|app| app.id() == running.id)
-                        .and_then(|app| app.extra.get("uuid"))
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                });
-                json!({"status":true,"activeSessions":sessions.active.len(),"appRunning":current.is_some(),"appName":current.as_ref().map(|a|a.name.as_str()).unwrap_or(""),"paused":current.is_some()&&sessions.active.is_empty(),"lastEncoderProbeFailed":h.warnings.snapshot().iter().any(|warning| warning.code == "video_encoder"),"running":!sessions.active.is_empty(),"app":current.as_ref().map(|a|json!({"name":a.name,"id":a.id,"uuid":uuid}))})
-            }
-            ("GET", "/api/display-devices") => {
-                serde_json::to_value(butterpollo_windows::display::monitors()?)?
-            }
-            ("GET", "/api/framegen/edid-refresh") => {
-                let query: std::collections::HashMap<_, _> =
-                    url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes())
-                        .into_owned()
-                        .collect();
-                let hint = ["device_id", "device", "id", "display"]
-                    .into_iter()
-                    .find_map(|key| query.get(key).filter(|value| !value.trim().is_empty()))
-                    .context("device_id query parameter is required")?;
-                let mut targets = query
-                    .get("targets")
-                    .map(|text| {
-                        text.split(',')
-                            .filter_map(|value| value.trim().parse::<u32>().ok())
-                            .filter(|hz| *hz > 0 && *hz <= 4000)
-                            .take(64)
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                if targets.is_empty() {
-                    targets = vec![120, 180, 240, 288];
-                }
-                butterpollo_windows::display::edid_refresh(hint, &targets)?
-            }
-            ("POST", "/api/otp") => {
-                let passphrase = text("passphrase");
-                if passphrase.chars().count() < 4 {
-                    anyhow::bail!("passphrase must have at least four characters");
-                }
-                let pin = format!("{:04}", rand::Rng::gen_range(&mut rand::thread_rng(), 0..10_000u16));
-                *h.otp.lock().unwrap() = Some(crate::state::OneTimePin {
-                    pin: pin.clone(),
-                    passphrase: passphrase.to_owned(),
-                    device_name: text("deviceName").to_owned(),
-                    created: Instant::now(),
-                });
-                let config = h.config.read().unwrap().clone();
-                json!({
-                    "status": true,
-                    "otp": pin,
-                    "ip": butterpollo_windows::net::lan_addresses().unwrap_or_default().first().cloned().unwrap_or_default(),
-                    "name": crate::network::host_name(&config),
-                    "message": "OTP created, effective within 3 minutes.",
-                })
-            }
-            ("POST", "/api/pin") => {
-                let pin = text("pin");
-                if pin.len() != 4 || !pin.bytes().all(|c| c.is_ascii_digit()) {
-                    anyhow::bail!("PIN must contain four digits");
-                }
-                let mut pins = h.pins.lock().unwrap();
-                let key = if !text("uniqueid").is_empty() {
-                    text("uniqueid").to_owned()
-                } else {
-                    if pins.len() != 1 {
-                        anyhow::bail!("select one pending pairing request");
-                    }
-                    pins.keys()
-                        .next()
-                        .cloned()
-                        .ok_or_else(|| anyhow::anyhow!("no pending pairing request"))?
-                };
-                let p = pins
-                    .remove(&key)
-                    .ok_or_else(|| anyhow::anyhow!("pairing request no longer exists"))?;
-                let name = if text("name").is_empty() {
-                    p.name
-                } else {
-                    text("name").to_owned()
-                };
-                p.sender
-                    .send((pin.into(), name))
-                    .map_err(|_| anyhow::anyhow!("pairing request expired"))?;
-                json!({"status":true})
+            ("POST", "/api/otp") | ("POST", "/api/pin") => {
+                clients::handle(&h, method.as_str(), path, &data)?
             }
             ("POST", "/api/password") => {
                 if let Some(c) = h.credentials.read().unwrap().as_ref()
@@ -1632,46 +933,23 @@ pub(crate) async fn api(
                 *h.credentials.write().unwrap() = Some(c);
                 json!({"status":true})
             }
-            ("POST", "/api/restart") => {
-                h.restart.store(true, std::sync::atomic::Ordering::Release);
-                h.stop.store(true, std::sync::atomic::Ordering::Release);
-                json!({"status":true})
-            }
-            ("POST", "/api/quit") => {
-                h.stop.store(true, std::sync::atomic::Ordering::Release);
-                json!({"status":true})
+            ("POST", "/api/restart") | ("POST", "/api/quit") => {
+                maintenance::handle(&h, method.as_str(), path)?
             }
             ("DELETE", p) if p.starts_with("/api/apps/") => {
-                delete_app(&h, &p[10..])?;
-                json!({"status":true})
+                apps::handle(&h, method.as_str(), path, &data)?
             }
             _ => {
                 return Err(anyhow::anyhow!("unknown API endpoint"));
             }
         })
-    }).await.unwrap_or_else(|e| Err(e.into()));
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.into()));
     match result {
         Ok(v) => Json(v).into_response(),
         Err(e) => error(StatusCode::BAD_REQUEST, &e.to_string()),
     }
-}
-fn delete_app(h: &Shared, id: &str) -> anyhow::Result<()> {
-    let mut apps = h.apps.write().unwrap();
-    let mut next = apps.clone();
-    let before = next.len();
-    next.retain(|a| {
-        a.extra.get("uuid").and_then(Value::as_str) != Some(id) && a.id().to_string() != id
-    });
-    if next.len() == before {
-        anyhow::bail!("application not found");
-    }
-    h.assign_apps(&mut next)?;
-    let mut doc = h.app_document.read().unwrap().clone();
-    doc["apps"] = serde_json::to_value(&next)?;
-    state::write_json(&h.apps_path, &doc)?;
-    *apps = next;
-    *h.app_document.write().unwrap() = doc;
-    Ok(())
 }
 #[cfg(test)]
 mod tests {
