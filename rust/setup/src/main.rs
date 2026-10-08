@@ -6,6 +6,7 @@
 //! butterpollo-setup.exe [--quiet] [--install-dir <folder>] [--no-gamepad-driver]
 //!                       [--no-display-driver] [--no-start]
 //! butterpollo-setup.exe --uninstall [--quiet] [--factory-reset] [--remove-drivers]
+//! butterpollo-setup.exe --repair-drivers (the service runs this one)
 #![warn(clippy::undocumented_unsafe_blocks)]
 
 mod detect;
@@ -39,6 +40,8 @@ struct Arguments {
     no_start: bool,
     factory_reset: bool,
     remove_drivers: bool,
+    /// The service found no virtual display driver: set it up again.
+    repair_drivers: bool,
     /// Diagnostics: write what setup found to this file and exit.
     detect: Option<PathBuf>,
     /// Diagnostics: unpack and verify the package into this folder and exit.
@@ -63,6 +66,7 @@ fn arguments() -> Result<Arguments, String> {
             "--no-start" => parsed.no_start = true,
             "--factory-reset" => parsed.factory_reset = true,
             "--remove-drivers" => parsed.remove_drivers = true,
+            "--repair-drivers" => parsed.repair_drivers = true,
             "--detect" => {
                 parsed.detect = Some(PathBuf::from(args.next().ok_or("--detect needs a file")?))
             }
@@ -121,13 +125,44 @@ fn main() {
     if !system::elevated() {
         std::process::exit(system::relaunch_elevated().unwrap_or(1));
     }
-    log::open();
-    let code = if args.update {
+    if args.repair_drivers {
+        // Run as SYSTEM, whose %TEMP% nobody looks in: log with the host.
+        log::open_at(
+            install::profile().join("logs").join("driver-repair.log"),
+            true,
+        );
+    } else {
+        log::open();
+    }
+    let code = if args.repair_drivers {
+        match ui::progress(TITLE, "Repairing the drivers", true, |progress| {
+            install::repair_drivers(&progress)
+        }) {
+            Ok(true) => 3010,
+            Ok(false) => 0,
+            Err(error) => failed(true, "The drivers could not be repaired", &error),
+        }
+    } else if args.update {
         match args.install_dir.as_ref() {
             Some(folder) if args.quiet && !args.uninstall => {
                 let folder = folder.clone();
                 match ui::progress(TITLE, "Updating Butterpollo", true, move |progress| {
-                    update::run(&folder, true, &progress)
+                    update::run(&folder, true, &progress)?;
+                    // As a reinstall does. In-app updates never set the
+                    // drivers up, so hosts updated from the console since
+                    // rc.22 had none.
+                    let mut notes = Vec::new();
+                    install::install_drivers(
+                        &system::win32_path(&folder)?,
+                        true,
+                        true,
+                        &progress,
+                        &mut notes,
+                    );
+                    for note in notes {
+                        log::line(format!("note: {note}"));
+                    }
+                    anyhow::Ok(())
                 }) {
                     Ok(()) => 0,
                     Err(error) => failed(true, "Butterpollo could not be updated", &error),

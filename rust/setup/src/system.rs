@@ -11,7 +11,7 @@ use std::{
 };
 use windows::{
     Win32::{
-        Foundation::{CloseHandle, ERROR_SUCCESS},
+        Foundation::{CloseHandle, ERROR_SERVICE_MARKED_FOR_DELETE, ERROR_SUCCESS},
         System::{Registry::*, Services::*, Threading::*},
         UI::Shell::*,
     },
@@ -390,6 +390,33 @@ pub fn delete_service(name: &str) -> Result<()> {
 /// Create the service, or point an existing one with this name at `program`.
 /// Runs as LocalSystem, starts automatically and restarts after failures.
 pub fn install_service(name: &str, display: &str, description: &str, program: &Path) -> Result<()> {
+    // Apollo's and Sunshine's uninstallers delete this service. While
+    // something still holds it open, Windows only marks it for deletion and
+    // refuses to create or change one with its name until it is gone.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        match install_service_once(name, display, description, program) {
+            Err(error)
+                if Instant::now() < deadline
+                    && error
+                        .downcast_ref::<windows::core::Error>()
+                        .is_some_and(|e| {
+                            e.code() == ERROR_SERVICE_MARKED_FOR_DELETE.to_hresult()
+                        }) =>
+            {
+                line(format!("service {name} is still being deleted; waiting"));
+                std::thread::sleep(Duration::from_secs(1));
+            }
+            result => return result,
+        }
+    }
+}
+fn install_service_once(
+    name: &str,
+    display: &str,
+    description: &str,
+    program: &Path,
+) -> Result<()> {
     let manager = manager()?;
     let binary = wide(&format!("\"{}\"", program.display()));
     let wide_name = wide(name);

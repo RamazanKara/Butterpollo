@@ -1610,8 +1610,22 @@ pub fn virtual_display_status() -> serde_json::Value {
             serde_json::json!({"capable":true,"ready":true,"reason":"","protocol":driver.protocol.name()})
         }
         Err(error) => {
-            serde_json::json!({"capable":false,"ready":false,"reason":format!("{error:#}"),"protocol":"3.5+"})
+            serde_json::json!({"capable":false,"ready":false,"reason":driver_problem(&error),"protocol":"3.5+"})
         }
+    }
+}
+/// What the console says when the driver cannot be opened.
+fn driver_problem(error: &anyhow::Error) -> String {
+    use windows::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_NO_MORE_ITEMS};
+    let code = error
+        .downcast_ref::<windows::core::Error>()
+        .map(|e| e.code());
+    if code == Some(ERROR_NO_MORE_ITEMS.to_hresult()) {
+        "The virtual display driver is not installed, or Windows must restart to finish installing it. The Butterpollo service sets it up again a minute after it starts; if it stays missing, run the Butterpollo installer.".into()
+    } else if code == Some(ERROR_ACCESS_DENIED.to_hresult()) {
+        "Only the Butterpollo service may open the virtual display driver, and this host runs outside it. Install Butterpollo with its setup and let the service run the host.".into()
+    } else {
+        format!("{error:#}")
     }
 }
 fn display_label(name: &str) -> [u8; 32] {

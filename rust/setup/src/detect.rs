@@ -115,7 +115,7 @@ fn resolve_location(
 }
 /// The program a DisplayIcon ("C:\App\app.exe,0") or a command line
 /// ("\"C:\App\uninstall.exe\" /S") names, if it is a full path.
-fn program(text: &str) -> Option<PathBuf> {
+pub(crate) fn program(text: &str) -> Option<PathBuf> {
     let text = text.trim();
     let path = match text.strip_prefix('"') {
         Some(quoted) => quoted.split('"').next()?,

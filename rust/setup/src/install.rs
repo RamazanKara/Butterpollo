@@ -144,7 +144,14 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
                 "The Windows Firewall rule could not be updated: {error:#}"
             ));
         }
-        restart_needed |= install_drivers(&install, options, progress, &mut notes);
+        remember_driver_choice(&profile, options.display_driver);
+        restart_needed |= install_drivers(
+            &install,
+            options.display_driver,
+            options.gamepad_driver,
+            progress,
+            &mut notes,
+        );
         if let Err(error) = system::shortcut(
             &start_menu_link(),
             &install.join("Start Butterpollo.exe"),
@@ -333,7 +340,14 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
     }
     secure_profile(&profile)?;
 
-    restart_needed |= install_drivers(&install, options, progress, &mut notes);
+    remember_driver_choice(&profile, options.display_driver);
+    restart_needed |= install_drivers(
+        &install,
+        options.display_driver,
+        options.gamepad_driver,
+        progress,
+        &mut notes,
+    );
 
     progress.set("Adding Butterpollo to Start and Apps…");
     if let Err(error) = system::shortcut(
@@ -598,14 +612,28 @@ fn copy_tree(source: &Path, target: &Path) -> Result<()> {
     }
     Ok(())
 }
-fn install_drivers(
+/// Set up the drivers with the scripts in `install`. Setup, an in-app update
+/// and the service's repair take turns: two driver scripts at once would
+/// stop and restart the service and the device under each other.
+pub(crate) fn install_drivers(
     install: &Path,
-    options: &Options,
+    display: bool,
+    gamepad: bool,
+    progress: &Progress,
+    notes: &mut Vec<String>,
+) -> bool {
+    let _turn = driver_lock(Duration::from_secs(900));
+    run_drivers(install, display, gamepad, progress, notes)
+}
+fn run_drivers(
+    install: &Path,
+    display: bool,
+    gamepad: bool,
     progress: &Progress,
     notes: &mut Vec<String>,
 ) -> bool {
     let mut restart_needed = false;
-    if options.display_driver && install.join("drivers\\display\\install.ps1").is_file() {
+    if display && install.join("drivers\\display\\install.ps1").is_file() {
         progress.set("Installing the virtual display driver…");
         let script = install.join("drivers\\display\\install.ps1");
         restart_needed |=
@@ -619,7 +647,7 @@ fn install_drivers(
             "Vulkan layer",
         );
     }
-    if options.gamepad_driver && install.join("drivers\\gamepad\\install.ps1").is_file() {
+    if gamepad && install.join("drivers\\gamepad\\install.ps1").is_file() {
         progress.set("Installing the virtual gamepad driver…");
         restart_needed |= run_driver_script(
             &install.join("drivers\\gamepad\\install.ps1"),
@@ -667,23 +695,156 @@ fn run_driver_script(script: &Path, args: &[&str], notes: &mut Vec<String>, name
 }
 fn driver_result(code: i32, output: &str, notes: &mut Vec<String>, name: &str) -> bool {
     if output.contains("DRIVER_WARNING") || !matches!(code, 0 | 3010) {
-        notes.push(format!(
-            "The {name} driver reported a problem; see the setup log."
-        ));
+        // The scripts name what failed: a blocked certificate or catalog, a
+        // tool an antivirus stopped, a DriverStore that kept an old copy.
+        let after = |marker: &str| {
+            output
+                .lines()
+                .find_map(|line| line.split_once(marker))
+                .map(|(_, reason)| reason.trim())
+                .filter(|reason| !reason.is_empty())
+        };
+        let reason = after("driver action failed: ").or_else(|| after("DRIVER_WARNING: "));
+        notes.push(match reason {
+            Some(reason) => format!(
+                "The {name} driver could not be set up: {reason} Butterpollo tries again when its service starts; the setup log has the details."
+            ),
+            None => format!("The {name} driver reported a problem; see the setup log."),
+        });
     }
     code == 3010 || output.contains("RESTART_REQUIRED") || output.contains("A reboot is required")
 }
+/// The one driver setup at a time, waited for up to `wait`. Without it the
+/// driver scripts run anyway: a stale lock must not keep drivers out.
+fn driver_lock(wait: Duration) -> Option<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    let profile = profile();
+    let _ = std::fs::create_dir_all(&profile);
+    let deadline = Instant::now() + wait;
+    loop {
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .share_mode(0)
+            .open(profile.join("driver-setup.lock"))
+        {
+            Ok(file) => return Some(file),
+            Err(error) if Instant::now() >= deadline => {
+                line(format!("another setup is installing drivers ({error})"));
+                return None;
+            }
+            Err(_) => std::thread::sleep(Duration::from_secs(1)),
+        }
+    }
+}
+const REPAIR_RECORD: &str = "driver-repair.json";
+/// A new installation may repair the display driver again, unless it was
+/// installed with --no-display-driver.
+fn remember_driver_choice(profile: &Path, display_driver: bool) {
+    let record = profile.join(REPAIR_RECORD);
+    let _ = if display_driver {
+        std::fs::remove_file(&record)
+    } else {
+        std::fs::create_dir_all(profile)
+            .and_then(|()| std::fs::write(&record, br#"{"declined":true}"#))
+    };
+}
+/// `butterpollo-setup.exe --repair-drivers`, which the service runs when its
+/// host has had no virtual display driver for a minute. An old host's
+/// uninstaller, an in-app update before rc.27 or a failed driver step leaves
+/// it missing, and Artemis then reports the "SudoVDA" driver as not
+/// installed. Sets the display driver up again from this installation, at
+/// most once a day per version and never during a stream; the driver script
+/// restarts the service. Returns whether Windows must restart.
+pub fn repair_drivers(progress: &Progress) -> Result<bool> {
+    let exe = std::env::current_exe()?;
+    let install = system::win32_path(exe.parent().context("setup folder unavailable")?)?;
+    let profile = profile();
+    let record = profile.join(REPAIR_RECORD);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    let version = env!("CARGO_PKG_VERSION");
+    if let Some(reason) = repair_skipped(std::fs::read(&record).ok().as_deref(), version, now) {
+        line(format!("not repairing the display driver: {reason}"));
+        return Ok(false);
+    }
+    // Setup or an update that is installing the drivers right now restarts
+    // the service when done, and the service checks again.
+    let Some(_turn) = driver_lock(Duration::ZERO) else {
+        return Ok(false);
+    };
+    ensure_idle(probe(&profile))?;
+    std::fs::write(
+        &record,
+        serde_json::to_vec(&serde_json::json!({"version": version, "unix": now}))?,
+    )?;
+    let mut notes = Vec::new();
+    let restart = run_drivers(&install, true, false, progress, &mut notes);
+    for note in notes {
+        line(format!("note: {note}"));
+    }
+    Ok(restart)
+}
+fn repair_skipped(record: Option<&[u8]>, version: &str, now: u64) -> Option<&'static str> {
+    let record: serde_json::Value = serde_json::from_slice(record?).ok()?;
+    if record["declined"] == true {
+        return Some("it was left out with --no-display-driver");
+    }
+    (record["version"] == version
+        && record["unix"]
+            .as_u64()
+            .is_some_and(|at| now.saturating_sub(at) < 86_400))
+    .then_some("this version already tried today")
+}
 fn remove_legacy(product: &crate::detect::Product) -> Result<()> {
-    let command = product
-        .quiet_uninstall
-        .clone()
-        .or_else(|| product.uninstall.clone().map(|u| format!("{u} /S")))
-        .context("no uninstall command")?;
+    let (command, in_place) = legacy_uninstall(product, is_nsis).context("no uninstall command")?;
     let (code, _) = system::run_cmd(&command, Duration::from_secs(300))?;
     if code != 0 {
         bail!("its uninstaller exited with {code}");
     }
+    // Run in place, an NSIS uninstaller cannot delete itself.
+    if let Some(program) = in_place {
+        let _ = std::fs::remove_file(&program);
+        if let Some(folder) = program.parent() {
+            let _ = std::fs::remove_dir(folder);
+        }
+    }
     Ok(())
+}
+/// The command that removes a legacy host, and the uninstaller it runs in
+/// place. An NSIS uninstaller (Apollo, Sunshine, Vibepollo 1) copies itself
+/// to %TEMP%, starts the copy and exits at once: setup went on while the
+/// copy still had to stop and delete ApolloService, the service Butterpollo
+/// reuses, and remove drivers. With "_?=<folder>", always last and
+/// unquoted, it runs in place and setup waits for it.
+fn legacy_uninstall(
+    product: &crate::detect::Product,
+    nsis: impl Fn(&Path) -> bool,
+) -> Option<(String, Option<PathBuf>)> {
+    let command = product
+        .quiet_uninstall
+        .clone()
+        .or_else(|| product.uninstall.clone().map(|u| format!("{u} /S")))?;
+    let program = detect::program(&command).filter(|program| nsis(program));
+    Some(match program {
+        Some(program) if !command.contains("_?=") => {
+            let folder = program.parent()?.display().to_string();
+            (format!("{command} _?={folder}"), Some(program))
+        }
+        _ => (command, None),
+    })
+}
+/// Whether a program is an NSIS installer or uninstaller: its data follows
+/// the executable with this signature.
+fn is_nsis(program: &Path) -> bool {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(program)
+        .and_then(|file| file.take(16 << 20).read_to_end(&mut bytes))
+        .is_ok()
+        && bytes.windows(12).any(|window| window == b"NullsoftInst")
 }
 pub(crate) fn register(install: &Path, entries: &[payload::Entry]) -> Result<()> {
     // The updater uses canonical paths for file identity and backups. Do not
@@ -824,6 +985,86 @@ mod tests {
         assert_eq!(notes.len(), 1);
         assert!(!driver_result(1, "failed", &mut notes, "gamepad"));
         assert_eq!(notes.len(), 2);
+        // The script's own reason reaches the note.
+        driver_result(
+            0,
+            "WARNING: [SunshineVirtualDisplay] VIRTUAL_DISPLAY_DRIVER_WARNING: Optional virtual display driver setup did not complete.\nWARNING: [SunshineVirtualDisplay] Installer best-effort driver action failed: nefconc.exe failed with exit code 5.\n",
+            &mut notes,
+            "virtual display",
+        );
+        assert!(
+            notes[2].starts_with(
+                "The virtual display driver could not be set up: nefconc.exe failed with exit code 5."
+            ),
+            "{}",
+            notes[2]
+        );
+    }
+    #[test]
+    fn nsis_uninstallers_run_in_place_so_setup_waits_for_them() -> Result<()> {
+        let product = |uninstall: Option<&str>, quiet: Option<&str>| detect::Product {
+            key: "Apollo".into(),
+            name: "Apollo".into(),
+            version: "0.4.6".into(),
+            location: None,
+            uninstall: uninstall.map(Into::into),
+            quiet_uninstall: quiet.map(Into::into),
+            msi: false,
+            root: HKEY_LOCAL_MACHINE,
+        };
+        let apollo = product(Some(r#""C:\Program Files\Apollo\Uninstall.exe""#), None);
+        assert_eq!(
+            legacy_uninstall(&apollo, |_| true),
+            Some((
+                r#""C:\Program Files\Apollo\Uninstall.exe" /S _?=C:\Program Files\Apollo"#.into(),
+                Some(PathBuf::from(r"C:\Program Files\Apollo\Uninstall.exe"))
+            ))
+        );
+        // Other uninstallers, and a command that already runs in place, are
+        // run as registered.
+        assert_eq!(
+            legacy_uninstall(&apollo, |_| false),
+            Some((r#""C:\Program Files\Apollo\Uninstall.exe" /S"#.into(), None))
+        );
+        let quiet = product(None, Some(r"C:\Apollo\Uninstall.exe /S _?=C:\Apollo"));
+        assert_eq!(
+            legacy_uninstall(&quiet, |_| true),
+            Some((r"C:\Apollo\Uninstall.exe /S _?=C:\Apollo".into(), None))
+        );
+        assert_eq!(legacy_uninstall(&product(None, None), |_| true), None);
+
+        let folder = tempfile::tempdir()?;
+        let nsis = folder.path().join("Uninstall.exe");
+        std::fs::write(
+            &nsis,
+            [&b"MZ"[..], &[0; 4096], b"\xef\xbe\xad\xdeNullsoftInst"].concat(),
+        )?;
+        let other = folder.path().join("unins000.exe");
+        std::fs::write(&other, [&b"MZ"[..], &[0; 4096], b"Inno Setup"].concat())?;
+        assert!(is_nsis(&nsis));
+        assert!(!is_nsis(&other));
+        assert!(!is_nsis(&folder.path().join("missing.exe")));
+        Ok(())
+    }
+    #[test]
+    fn the_display_driver_is_repaired_once_a_day_per_version_unless_declined() {
+        let day = 86_400;
+        let record = |text: &str| Some(text.as_bytes().to_vec());
+        let skipped =
+            |text: Option<Vec<u8>>, now| repair_skipped(text.as_deref(), "2.0.0-rc.27", now);
+        assert_eq!(skipped(None, day), None);
+        assert_eq!(skipped(record("not json"), day), None);
+        let tried = record(r#"{"version":"2.0.0-rc.27","unix":86400}"#);
+        assert!(skipped(tried.clone(), day + 60).is_some());
+        assert_eq!(skipped(tried, 2 * day), None);
+        assert_eq!(
+            skipped(
+                record(r#"{"version":"2.0.0-rc.26","unix":86400}"#),
+                day + 60
+            ),
+            None
+        );
+        assert!(skipped(record(r#"{"declined":true}"#), day).is_some());
     }
     #[test]
     fn setup_refuses_streams_pending_connections_and_apps() {

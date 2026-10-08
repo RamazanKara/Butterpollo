@@ -90,6 +90,41 @@ fn status(state: ServiceState, checkpoint: u32) -> ServiceStatus {
         process_id: None,
     }
 }
+/// Setup installs the virtual display driver, but an old host's uninstaller,
+/// an in-app update before rc.27 or a failed driver step can leave it
+/// missing, and Artemis then reports its "SudoVDA" driver as not installed.
+/// When the driver is still missing a minute after the service starts (it
+/// can come up after the service at boot), setup sets it up again from this
+/// installation. Setup does that at most once a day per version and never
+/// during a stream; the driver script stops and restarts this service.
+fn repair_display_driver(install: &std::path::Path, stop: Arc<AtomicBool>) {
+    use std::os::windows::process::CommandExt;
+    let setup = install.join("uninstall.exe");
+    if !setup.is_file() || !install.join("drivers\\display\\install.ps1").is_file() {
+        return;
+    }
+    std::thread::spawn(move || {
+        for _ in 0..12 {
+            if stop.load(Ordering::Acquire) || crate::display::virtual_display_available() {
+                return;
+            }
+            std::thread::sleep(Duration::from_secs(5));
+        }
+        let status = crate::display::virtual_display_status();
+        tracing::warn!(
+            reason = status["reason"].as_str().unwrap_or(""),
+            "the virtual display driver is missing; setting it up again"
+        );
+        // Not a child that dies with the service: the script stops it.
+        if let Err(error) = std::process::Command::new(&setup)
+            .arg("--repair-drivers")
+            .creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0)
+            .spawn()
+        {
+            tracing::warn!(%error, "the driver repair could not start");
+        }
+    });
+}
 fn supervise() -> Result<()> {
     let stop = Arc::new(AtomicBool::new(false));
     let event_stop = stop.clone();
@@ -144,6 +179,9 @@ fn supervise() -> Result<()> {
                 "rolling back an interrupted update failed"
             ),
         }
+    }
+    if let Some(install) = executable.parent() {
+        repair_display_driver(install, stop.clone());
     }
     let mut child: Option<crate::process::Process> = None;
     let mut session = u32::MAX;

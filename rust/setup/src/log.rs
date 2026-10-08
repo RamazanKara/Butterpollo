@@ -18,8 +18,26 @@ pub fn open() -> Option<PathBuf> {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    let path = std::env::temp_dir().join(format!("butterpollo-setup-{seconds}.log"));
-    let file = std::fs::File::create(&path).ok()?;
+    open_at(
+        std::env::temp_dir().join(format!("butterpollo-setup-{seconds}.log")),
+        false,
+    )
+}
+/// Open the log at `path`, after what it holds if `append`.
+pub fn open_at(path: PathBuf, append: bool) -> Option<PathBuf> {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    if let Some(folder) = path.parent() {
+        let _ = std::fs::create_dir_all(folder);
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(append)
+        .truncate(!append)
+        .open(&path)
+        .ok()?;
     *LOG.lock().unwrap() = Some(Log {
         path: path.clone(),
         file,
