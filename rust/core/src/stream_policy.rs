@@ -459,9 +459,29 @@ pub fn runtime_bitrate_kbps(config: &Config, requested: u32) -> u32 {
         applied
     }
 }
+/// How long an encoder holding a full backlog may return nothing before the
+/// stream recreates it. The first stall waits 100 ms; each recreation that
+/// brings no frame back doubles the wait, up to 800 ms. A fresh encoder's
+/// first keyframe at 4K on a busy single-engine GPU (the RX 9070 XT's one
+/// VCN) can outlast 100 ms, and tearing it down then only restarts that wait
+/// while hammering the driver with create/destroy cycles until the session's
+/// recovery budget runs out.
+pub fn encoder_stall_limit(recreations: u32) -> Duration {
+    Duration::from_millis(100 << recreations.min(3))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn repeated_encoder_stalls_back_off_within_the_recovery_budget() {
+        let limits: Vec<u64> = (0..6)
+            .map(|n| encoder_stall_limit(n).as_millis() as u64)
+            .collect();
+        assert_eq!(limits, [100, 200, 400, 800, 800, 800]);
+        assert_eq!(encoder_stall_limit(u32::MAX), Duration::from_millis(800));
+        // Four escalating attempts still fit the stream's 5 s recovery budget.
+        assert!(limits[..4].iter().sum::<u64>() < 5_000);
+    }
     #[test]
     fn the_fec_and_audio_share_of_the_client_bitrate_is_not_a_warning() {
         let warnings = crate::session::Warnings::default();

@@ -1045,6 +1045,8 @@ impl Media {
                     let mut first_seen: Option<(usize, Instant, Option<Duration>, Option<Instant>)> = None;
                     // Since when a full encoder has returned nothing.
                     let mut backlog_since: Option<Instant> = None;
+                    // Backlog recreations since a frame last got through.
+                    let mut stall_recreations = 0u32;
                     let mut video_qos = Tagged::default();
                     let mut batch = butterpollo_windows::net::Batch::default();
                     let mut network_pacer = butterpollo_core::network_pacing::Pacer::new(Instant::now());
@@ -1361,17 +1363,31 @@ impl Media {
                             {
                                 // An encoder that returns nothing for 100 ms is
                                 // recreated, as a queue that never drained was.
-                                if backlog_since.get_or_insert_with(Instant::now).elapsed() >= Duration::from_millis(100) {
+                                // A recreated one that is still silent gets
+                                // longer each time: its first keyframe can
+                                // outlast 100 ms on a busy single-engine GPU.
+                                if encoder_failing.is_none() {
+                                    stall_recreations = 0;
+                                }
+                                let limit = butterpollo_core::stream_policy::encoder_stall_limit(stall_recreations);
+                                if backlog_since.get_or_insert_with(Instant::now).elapsed() >= limit {
                                     backlog_since = None;
                                     let since = *encoder_failing.get_or_insert_with(Instant::now);
                                     if since.elapsed() >= ENCODER_RECOVERY {
                                         anyhow::bail!("the encoder stopped returning frames");
                                     }
-                                    s.launch.warnings.set("encoder_recovery", "The encoder returned no frame for 100 ms; recreating the same encoder while the picture freezes. Lower game GPU load or update the graphics driver if this repeats.");
+                                    s.launch.warnings.set("encoder_recovery", format!("The encoder returned no frame for {} ms; recreating the same encoder while the picture freezes. Lower game GPU load or update the graphics driver if this repeats.", limit.as_millis()));
+                                    stall_recreations += 1;
                                     encoder = None;
                                     continue;
                                 }
-                                send_frames(collect(&mut encoder, &mut encoder_failing, &s.launch.warnings)?, peer, Duration::ZERO)?;
+                                let output = collect(&mut encoder, &mut encoder_failing, &s.launch.warnings)?;
+                                // A frame out means the encoder is alive, even if
+                                // its count of frames in flight has not dropped.
+                                if !output.is_empty() {
+                                    backlog_since = None;
+                                }
+                                send_frames(output, peer, Duration::ZERO)?;
                                 continue;
                             }
                             backlog_since = None;

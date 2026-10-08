@@ -5,6 +5,26 @@ without reducing features or picture quality. Opus took over from Codex in the
 evening of October 2. Performance acceptance on the customer's own sessions is
 still open; the measured fixture results below are local loopback evidence.
 
+## October 8 encoder stall recovery backs off (RX 9070 XT report)
+
+Report: RX 9070 XT host, HD 630 client on Streamlight, 4K60 HEVC 80 Mbps,
+rc.22: freeze, then the stream ends, with `encoder_recovery` "returned no
+frame for 100 ms". That rule dates from rc.19 (`07a8a55e`); rc.22 only moved
+the message onto the stream card. When two frames sit in AMF for 100 ms the
+encoder is recreated, and a recreated encoder that was silent for another
+100 ms was recreated again, about ten create/destroy cycles a second, until
+the 5 s budget ended the session ("the encoder stopped returning frames").
+A fresh encoder's first 4K keyframe on the 9070 XT's single VCN beside a game
+can outlast 100 ms, so the loop could never let it finish.
+
+Change: the first stall still recreates after 100 ms; each further
+recreation without a frame doubles the wait (200, 400, 800 ms), and any frame
+out resets the stall timer even if the in-flight count did not drop. The
+5 s budget is unchanged and streams without stalls take the same path.
+Not measured: the RX 9070 XT is not available, and the RX 7900 XT has not
+reproduced the stall. The debug soak's encoder-failure fault exercises the
+encode-error path, not this one; a stall injection is still to be written.
+
 ## October 8 rc.22 baseline at the owner's settings
 
 The goal is now a finished product measured at the owner's own settings
