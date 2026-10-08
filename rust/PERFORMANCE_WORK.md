@@ -133,6 +133,35 @@ and the client keeps fresh pictures. Not addressed: a session thread stuck in
 a driver call (encoder terminate or init) would also freeze the picture with
 audio running; there is no watchdog for it yet.
 
+Host check, October 9 01:36-01:41, build `9cf57ce` (includes `2180d8f` and
+`b193b88`), isolated host on the RX 7900 XT with the extended layout, WGC,
+HEVC 1920x1080 at 60 fps to the hardware-decoding receiver on a per-client
+virtual display at 120 Hz with the motion probe at 120 Hz, 60 s:
+
+- Freeze fix: while that stream ran, three other clients each paired,
+  launched Desktop on their own 1280x720 virtual display, streamed 5 s and
+  disconnected without quitting the app. The first stream kept running to the
+  end: no capture error, no "left the desktop", nothing to reopen. Host fresh
+  fps stayed 59.9-60.5 per 5 s window with `wgc_stamp_frames` 242-308, except
+  one window at 40 fps with a 195 ms send gap. No run of 20 fps repeats.
+  Pass for the freeze.
+- But each new virtual display hitches the other stream: picture age rose to
+  0.5-0.6 s for about 1.3 s while the second and third displays were created
+  (receiver p99 122 ms and max 612 ms over the run, 54 intervals over 1.5
+  periods, 46 repeated pictures). The clients leaving caused none. The hitch
+  is the age of what the renderer on the first display had presented, so it
+  is likely DWM pausing presents during the topology change rather than the
+  host's capture; not yet compared with Vibepollo. A first try, where the
+  extra clients quit the app on leaving (as the test receiver does by
+  default), ended the first stream with them, as expected for a quit.
+- Remote Monitor (`2180d8f`): a launch with `remote_monitor=1` and the host
+  layout extended logged `role=RemoteMonitor ... layout="extended"
+  arrangement=None` and made no display changes beyond creating its own
+  display. It also warned "Display refresh is 60.000 Hz for a 60.000 fps
+  stream": the remote monitor runs at the stream rate, not 2x as a stream's
+  virtual display does. Exclusive and primary were not tried on this PC (the
+  owner's monitor would switch off), nor a per-device layout.
+
 ## October 8 real-client picture age over Wi-Fi (rc.24, laptop)
 
 First render-to-decode measurement from a second machine instead of loopback.
