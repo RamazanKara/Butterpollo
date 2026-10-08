@@ -167,8 +167,9 @@ fn finish_update(
             .iter()
             .any(|e| e.path.eq_ignore_ascii_case(&old.path))
         {
-            let path = payload::safe_join(install, &old.path)?;
-            let _ = std::fs::remove_file(path);
+            // A file still loaded (an old Vulkan layer in a running game)
+            // goes at the next restart, as a full installation does.
+            system::remove_file_later(&payload::safe_join(install, &old.path)?);
         }
     }
     let _ = std::fs::remove_dir_all(work);

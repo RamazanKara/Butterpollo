@@ -58,7 +58,9 @@ pub fn uninstall(options: &Options, progress: &Progress) -> Result<()> {
 
     // The host registers its HDR Vulkan layer while it runs.
     let layers = "SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers";
-    let prefix = install.display().to_string().to_ascii_lowercase();
+    // With the separator, so removing ...\Butterpollo keeps ...\Butterpollo2's layer.
+    let prefix =
+        format!("{}\\", install.display().to_string().trim_end_matches('\\')).to_ascii_lowercase();
     for value in system::values(HKEY_LOCAL_MACHINE, layers, KEY_WOW64_64KEY) {
         if value.to_ascii_lowercase().starts_with(&prefix) {
             system::delete_value(HKEY_LOCAL_MACHINE, layers, &value, KEY_WOW64_64KEY);
