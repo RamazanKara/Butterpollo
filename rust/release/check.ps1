@@ -156,6 +156,10 @@ if (-not $NoInstall) {
     if (-not (Test-Path "$run\elevated\display-self-test.json")) {
         Write-Warning "The display self-test wrote no report; see $run\elevated\transcript.txt"
     }
+    # Setup installs ViGEmBus with the gamepad driver unless one is installed.
+    $vigem = Get-Service ViGEmBus -ErrorAction SilentlyContinue
+    if ($vigem) { Step "ViGEmBus: $($vigem.Status)" }
+    else { Write-Warning 'ViGEmBus is not installed after setup; see the setup log. Xbox 360 and DualShock 4 (ViGEmBus) choices fall back to VHF pads.' }
 }
 
 Step 'record results'

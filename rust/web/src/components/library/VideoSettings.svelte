@@ -63,7 +63,7 @@
       {draft}
       key="gamepad"
       label="Controller type"
-      hint="Automatic uses ViGEmBus for Xbox-type controllers and the VHF DualSense for PlayStation ones, when both are installed. ViGEmBus Xbox 360 avoids Steam's duplicate-controller issue; motion or touchpad input can select DS4. The ViGEmBus choices need it installed; without it a VHF pad is used."
+      hint="Automatic uses ViGEmBus for Xbox-type controllers and the VHF DualSense for PlayStation ones, when both are installed. ViGEmBus Xbox 360 avoids Steam's duplicate-controller issue; motion or touchpad input can select DS4. Setup installs ViGEmBus; if it is missing, the ViGEmBus choices use a VHF pad."
       options={GAMEPADS}
     />
   </div>

@@ -10,6 +10,8 @@ param(
     # Signed virtual display and gamepad driver packages (a Vibepollo
     # installation's drivers folder); fetched from Vibepollo 2.0.0 otherwise.
     [string]$DriverRoot = $env:BUTTERPOLLO_DRIVER_ROOT,
+    # ViGEmBus 1.22.0's signed setup; fetched from its release otherwise.
+    [string]$VigemBusSetup = $env:BUTTERPOLLO_VIGEMBUS_SETUP,
     [switch]$FetchDependencies,
     [switch]$DebugBuild,
     [switch]$SkipTrueHdr,
@@ -82,6 +84,16 @@ if ($FetchDependencies -and !$DriverRoot) {
     $process = Start-Process msiexec.exe -ArgumentList "/a `"$msi`" /qn TARGETDIR=`"$expanded`"" -Wait -PassThru
     if ($process.ExitCode -ne 0) { throw "Extracting the Vibepollo driver packages failed with $($process.ExitCode)" }
     $DriverRoot = Join-Path $expanded 'Apollo\drivers'
+}
+if ($FetchDependencies -and !$VigemBusSetup) {
+    # ViGEmBus (BSD-3-Clause) for the Xbox 360 and DualShock 4 pads; setup
+    # installs it unless it is already installed.
+    $VigemBusSetup = Join-Path $Dependencies 'ViGEmBus_1.22.0_x64_x86_arm64.exe'
+    Get-PinnedArchive 'https://github.com/nefarius/ViGEmBus/releases/download/v1.22.0/ViGEmBus_1.22.0_x64_x86_arm64.exe' $VigemBusSetup '89220a7865076b342892f98865f3499fb7c4cfd673159e89d352c360fd014c6a'
+}
+if ($VigemBusSetup) {
+    $signature = Get-AuthenticodeSignature -LiteralPath $VigemBusSetup
+    if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '^CN=Nefarius Software Solutions e\.U\.,') { throw "ViGEmBus setup is not signed as expected: $VigemBusSetup" }
 }
 if ($DriverRoot) {
     foreach ($catalog in @('sunshine\SunshineVirtualDisplayDriver.cat', 'vhf-gamepad\driver\VibeshineVhfGamepad.cat', 'vhf-gamepad\tools\VibeshineVhfGamepadDeviceSetup.exe')) {
@@ -229,6 +241,11 @@ try {
                 'Playnite plugin (plugins\playnite): Sunshine Playnite Connector from the same Vibepollo 2.0.0 release (GPL-3.0).',
                 'nefconc.exe: https://github.com/nefarius/nefcon by Nefarius Software Solutions.'
             ) | Set-Content -LiteralPath "$distribution\licenses\drivers.txt" -Encoding utf8
+        }
+        if ($VigemBusSetup) {
+            # setup.exe looks for it under this name (VIGEMBUS_SETUP in rust/setup/src/install.rs).
+            New-Item -ItemType Directory -Path "$distribution\drivers\vigembus" -Force | Out-Null
+            Copy-Item -LiteralPath $VigemBusSetup -Destination "$distribution\drivers\vigembus\ViGEmBus_1.22.0_x64_x86_arm64.exe" -Force
         }
         $metadata = & cargo $toolchain metadata --format-version 1 --locked
         Assert-NativeExit 'Dependency manifest'
