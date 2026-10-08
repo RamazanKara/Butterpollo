@@ -19,7 +19,16 @@ use std::{
 use windows::Win32::{
     Foundation::*,
     Storage::FileSystem::WriteFile,
-    System::{Diagnostics::Debug::*, Threading::*},
+    System::{
+        Diagnostics::{
+            Debug::*,
+            ToolHelp::{
+                CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First,
+                Thread32Next,
+            },
+        },
+        Threading::*,
+    },
 };
 
 static REPORTER: OnceLock<Reporter> = OnceLock::new();
@@ -214,11 +223,38 @@ pub fn reporter() -> Result<()> {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_millis();
-        let file = std::fs::File::create(
-            startup
-                .directory
-                .join(format!("butterpollo.{}.{stamp}.dmp", startup.parent)),
-        )?;
+        let path = startup
+            .directory
+            .join(format!("butterpollo.{}.{stamp}.dmp", startup.parent));
+        let mut result = Ok(());
+        for attempt in 1..=3 {
+            result = write(&process, startup.parent, thread, info.as_ref(), &path)
+                .with_context(|| format!("writing {} (attempt {attempt})", path.display()));
+            if result.is_ok() {
+                break;
+            }
+        }
+        if let Err(error) = &result {
+            // An empty dump says nothing; keep why it failed instead.
+            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::write(path.with_extension("error.txt"), format!("{error:#}"));
+        }
+        result?;
+        // SAFETY: `completed` is an owned event handle, open for the call.
+        unsafe { SetEvent(HANDLE(completed.as_raw_handle()))? };
+    }
+}
+
+fn write(
+    process: &OwnedHandle,
+    id: u32,
+    thread: u32,
+    info: Option<&MINIDUMP_EXCEPTION_INFORMATION>,
+    path: &Path,
+) -> Result<()> {
+    let file = std::fs::File::create(path)?;
+    {
+        let _still = Suspended::threads(id, thread);
         // SAFETY: `process` and `file` are owned open handles, and `info` outlives the call and
         // points into the host, read with ClientPointers set.
         unsafe {
@@ -226,17 +262,60 @@ pub fn reporter() -> Result<()> {
             // them may own a loader/heap lock that the dump writer needs.
             MiniDumpWriteDump(
                 HANDLE(process.as_raw_handle()),
-                startup.parent,
+                id,
                 HANDLE(file.as_raw_handle()),
                 MiniDumpNormal | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules,
-                info.as_ref().map(|i| i as *const _),
+                info.map(|i| i as *const _),
                 None,
                 None,
             )?;
         }
-        file.sync_all()?;
-        // SAFETY: `completed` is an owned event handle, open for the call.
-        unsafe { SetEvent(HANDLE(completed.as_raw_handle()))? };
+    }
+    file.sync_all()?;
+    Ok(())
+}
+
+/// The host's threads, held still while DbgHelp reads them: a thread that exits or frees memory
+/// mid-dump fails MiniDumpWriteDump and leaves an empty file. The reporting thread is left
+/// running so its timeout still works if this helper hangs.
+struct Suspended(Vec<OwnedHandle>);
+impl Suspended {
+    fn threads(process: u32, except: u32) -> Self {
+        let mut threads = Vec::new();
+        // SAFETY: the snapshot and thread handles are new handles owned here, `entry` outlives
+        // each call, and each thread is suspended once and resumed once on drop.
+        unsafe {
+            let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) else {
+                return Self(threads);
+            };
+            let snapshot = OwnedHandle::from_raw_handle(snapshot.0);
+            let mut entry = THREADENTRY32 {
+                dwSize: size_of::<THREADENTRY32>() as u32,
+                ..Default::default()
+            };
+            let mut found = Thread32First(HANDLE(snapshot.as_raw_handle()), &mut entry);
+            while found.is_ok() {
+                if entry.th32OwnerProcessID == process
+                    && entry.th32ThreadID != except
+                    && let Ok(handle) = OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID)
+                {
+                    let handle = OwnedHandle::from_raw_handle(handle.0);
+                    if SuspendThread(HANDLE(handle.as_raw_handle())) != u32::MAX {
+                        threads.push(handle);
+                    }
+                }
+                found = Thread32Next(HANDLE(snapshot.as_raw_handle()), &mut entry);
+            }
+        }
+        Self(threads)
+    }
+}
+impl Drop for Suspended {
+    fn drop(&mut self) {
+        for thread in &self.0 {
+            // SAFETY: each handle is an owned thread handle this helper suspended once.
+            unsafe { ResumeThread(HANDLE(thread.as_raw_handle())) };
+        }
     }
 }
 
@@ -333,13 +412,21 @@ mod tests {
                 _ => unreachable!(),
             }
         );
-        let reports: Vec<_> = std::fs::read_dir(directory.path().join("crashes"))
+        let files: Vec<_> = std::fs::read_dir(directory.path().join("crashes"))
             .unwrap()
             .map(|entry| entry.unwrap().path())
+            .collect();
+        let reports: Vec<_> = files
+            .iter()
             .filter(|path| path.extension().is_some_and(|ext| ext == "dmp"))
             .collect();
-        assert_eq!(reports.len(), 1);
-        let bytes = std::fs::read(&reports[0]).unwrap();
+        let errors: Vec<_> = files
+            .iter()
+            .filter(|path| path.to_string_lossy().ends_with(".error.txt"))
+            .map(|path| std::fs::read_to_string(path).unwrap())
+            .collect();
+        assert_eq!(reports.len(), 1, "reporter errors: {errors:?}");
+        let bytes = std::fs::read(reports[0]).unwrap();
         assert_eq!(&bytes[..4], b"MDMP");
         assert!(bytes.len() > 32);
         (directory, bytes)
