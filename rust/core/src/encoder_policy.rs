@@ -539,89 +539,9 @@ pub fn ffmpeg(config: &Config, stream: &Negotiated, name: &str) -> Result<Vec<(S
     Ok(output)
 }
 
-/// How far a stream whose encoder keeps failing has stepped away from its
-/// configured settings: 0 none, 1 colour conversion on the graphics queue,
-/// 2 also AMF's conservative profile. `episodes` counts separate failures in
-/// the session, `attempts` the recreations in the current one; either
-/// reaching the next step moves there. One failure that the first
-/// recreation fixes (a game holding the GPU, a driver reset) costs nothing.
-pub fn recovery_level(episodes: u32, attempts: u32) -> u8 {
-    match episodes.max(attempts) {
-        0 | 1 => 0,
-        2 => 1,
-        _ => 2,
-    }
-}
-/// Settings for an encoder recreated at recovery `level`. Some drivers
-/// accept the compute queue at creation and fail on it later, every time;
-/// RDNA4 drivers have stalled H.264 and HEVC with forced low latency, an
-/// input queue, SmartAccess Video or long-term references
-/// (AlkaidLab/foundation-sunshine#666). The conservative profile drops all
-/// of them, and ultra-low-latency usage for plain low latency: a little more
-/// latency beats a frozen stream.
-pub fn recovery_tuning(config: &Config, level: u8) -> Config {
-    let mut tuning = config.clone();
-    if level >= 1 {
-        tuning
-            .values
-            .insert("gpu_compute_conversion".into(), "false".into());
-    }
-    if level >= 2 {
-        for key in [
-            "amd_lowlatency_mode",
-            "amd_input_queue_size",
-            "amd_preanalysis",
-            "amd_enforce_hrd",
-        ] {
-            tuning.values.remove(key);
-        }
-        for (key, value) in [
-            ("amd_usage", "lowlatency"),
-            ("amd_smart_access_video", "false"),
-            ("amd_ltr_frames", "0"),
-            ("amd_split_frame", "auto"),
-        ] {
-            tuning.values.insert(key.into(), value.into());
-        }
-    }
-    tuning
-}
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn a_failing_encoder_steps_down_to_safer_settings() {
-        assert_eq!(recovery_level(0, 0), 0);
-        assert_eq!(recovery_level(1, 1), 0);
-        assert_eq!(recovery_level(1, 2), 1);
-        assert_eq!(recovery_level(2, 0), 1);
-        assert_eq!(recovery_level(1, 3), 2);
-        assert_eq!(recovery_level(9, 9), 2);
-        let mut config = Config::default();
-        for (key, value) in [
-            ("amd_usage", "ultralowlatency"),
-            ("amd_lowlatency_mode", "true"),
-            ("amd_input_queue_size", "1"),
-            ("amd_smart_access_video", "true"),
-            ("amd_ltr_frames", "2"),
-            ("amd_quality", "quality"),
-        ] {
-            config.values.insert(key.into(), value.into());
-        }
-        assert_eq!(recovery_tuning(&config, 0).values, config.values);
-        let compute = recovery_tuning(&config, 1);
-        assert_eq!(compute.values["gpu_compute_conversion"], "false");
-        assert_eq!(compute.values["amd_usage"], "ultralowlatency");
-        let safe = recovery_tuning(&config, 2);
-        assert_eq!(safe.values["gpu_compute_conversion"], "false");
-        assert_eq!(safe.values["amd_usage"], "lowlatency");
-        assert_eq!(safe.values["amd_smart_access_video"], "false");
-        assert_eq!(safe.values["amd_ltr_frames"], "0");
-        assert!(!safe.values.contains_key("amd_lowlatency_mode"));
-        assert!(!safe.values.contains_key("amd_input_queue_size"));
-        // Picture-quality choices that do not stall the driver stay.
-        assert_eq!(safe.values["amd_quality"], "quality");
-    }
     #[test]
     fn amf_rate_limits_preserve_driver_defaults_and_use_codec_names_and_bits() {
         for (codec, prefix, cap) in [

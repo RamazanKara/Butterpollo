@@ -1012,9 +1012,6 @@ impl Media {
                     let mut encoder_failing: Option<Instant> = None;
                     // Separate encoder failures in this session, each counted once.
                     let (mut failures, mut counted_failure) = (0u32, None);
-                    // Recreations in the current failure, and the safer settings
-                    // reached so far (kept for the session).
-                    let (mut episode_attempts, mut recovery_level) = (0u32, 0u8);
                     let mut runtime_config = c.clone();
                     let mut profiles = None;
                     let mut foreground = None;
@@ -1424,34 +1421,25 @@ impl Media {
                             let rebuilt = rebuild_encoder;
                             if rebuild_encoder {
                                 encoder = None;
-                                // Each failure steps the encoder toward safer settings
-                                // for the rest of the session, rather than recreating
-                                // the same one until the stream ends: graphics-queue
-                                // conversion, then AMF's conservative profile. One
-                                // failure the first recreation fixes (a game holding
-                                // the GPU, a driver reset) must not cost the session
-                                // the slower path, 6-9 ms a frame beside a GPU-bound game.
+                                // Some drivers accept the compute path at creation and
+                                // fail on it later, every time: after a second failure
+                                // in the session, convert on the graphics queue. One
+                                // failure (a game holding the GPU, a driver reset) must
+                                // not cost the rest of the session the slower path,
+                                // 6-9 ms a frame beside a GPU-bound game.
                                 if let Some(since) = encoder_failing
                                     && counted_failure != Some(since)
                                 {
                                     counted_failure = Some(since);
                                     failures += 1;
-                                    episode_attempts = 0;
                                 }
-                                if encoder_failing.is_some() {
-                                    episode_attempts += 1;
-                                }
-                                let level = butterpollo_core::encoder_policy::recovery_level(failures, episode_attempts);
-                                if level > recovery_level && matches!(pinned_backend, Some("amf" | "pyrowave")) {
-                                    if level >= 1 && recovery_level < 1 && butterpollo_windows::compute::enabled(&c) {
+                                let mut tuning = c.clone();
+                                if failures >= 2 {
+                                    tuning.values.insert("gpu_compute_conversion".into(), "false".into());
+                                    if butterpollo_windows::compute::enabled(&c) && matches!(pinned_backend, Some("amf" | "pyrowave")) {
                                         s.launch.warnings.set("encoder_compute_recovery", "Compute conversion disabled after repeated encoder failures; using the graphics queue for the rest of this session. A busy game can delay frames; lower game GPU load or update the AMD driver, then reconnect to retry compute.");
                                     }
-                                    if level >= 2 && pinned_backend == Some("amf") {
-                                        s.launch.warnings.set("encoder_safe_mode", "The encoder kept stalling, so this session now uses AMF's conservative settings (low-latency usage; no SmartAccess Video, long-term references or forced queue). Expect slightly higher latency; update the AMD driver, then reconnect to return to your settings.");
-                                    }
                                 }
-                                recovery_level = recovery_level.max(level);
-                                let tuning = butterpollo_core::encoder_policy::recovery_tuning(&c, recovery_level);
                                 match Encoder::new_gpu_reported(
                                     &s.config,
                                     pinned_backend.unwrap_or(c.get("encoder", "auto")),
