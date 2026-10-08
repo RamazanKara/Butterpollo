@@ -1,3 +1,11 @@
+//! Video encoder selection and the FFmpeg-backed encoders.
+//!
+//! [`Encoder`] picks the native AMF or NVENC encoder for the capture GPU and
+//! falls back to FFmpeg's NVENC, Quick Sync or software encoders when the
+//! native one fails. [`Ffmpeg`] wraps libavcodec, and [`Convert`] turns
+//! captured frames into the pixel format an FFmpeg encoder takes.
+mod gpu;
+
 use crate::{
     capture::{GpuImage, Image},
     ff,
@@ -311,7 +319,7 @@ pub struct Ffmpeg {
     context: *mut ff::AVCodecContext,
     packet: *mut ff::AVPacket,
     convert: Option<Convert>,
-    native: Option<crate::ffmpeg_gpu::Native>,
+    native: Option<gpu::Native>,
     config: Negotiated,
     software_pixel: i32,
     luminance: [f32; 2],
@@ -359,7 +367,7 @@ impl Ffmpeg {
                 bail!("QSV 4:4:4 is unavailable in this SDK");
             }
             let native = image
-                .map(|image| crate::ffmpeg_gpu::Native::new(image, config, name.ends_with("_qsv")))
+                .map(|image| gpu::Native::new(image, config, name.ends_with("_qsv")))
                 .transpose()?;
             let context = ff::avcodec_alloc_context3(codec);
             if context.is_null() {

@@ -1,11 +1,14 @@
-//! Direct NVIDIA encoder ABI, including API 11–13 compatibility and RFI.
-//! GPU resources stay owned until their output completes. No previous host code
-//! or FFmpeg private encoder layout is used by this adapter.
+//! Native NVIDIA NVENC encoder, called through NVIDIA's driver ABI.
+//!
+//! Supports NVENC API 11 to 13 and reference frame invalidation. GPU
+//! resources stay owned until their output completes; 10-bit 4:4:4 input goes
+//! through CUDA interop (`cuda`).
+mod cuda;
+
 use crate::{
     capture::{Device, GpuImage, Image, Pixel},
     encoder::Encoded,
     nvenc_abi::*,
-    nvenc_cuda,
 };
 use anyhow::{Context, Result, bail};
 use butterpollo_core::{
@@ -262,7 +265,7 @@ struct Input {
     kind: NV_ENC_INPUT_RESOURCE_TYPE,
     pitch: u32,
     _texture: Option<ID3D11Texture2D>,
-    cuda: Option<nvenc_cuda::Input>,
+    cuda: Option<cuda::Input>,
 }
 struct Slot {
     input: Input,
@@ -294,7 +297,7 @@ struct Session {
     functions: NV_ENCODE_API_FUNCTION_LIST,
     api: ApiVersion,
     _runtime: Arc<Runtime>,
-    cuda: Option<Rc<nvenc_cuda::Context>>,
+    cuda: Option<Rc<cuda::Context>>,
     config: Box<NV_ENC_CONFIG>,
     initialize: Box<NV_ENC_INITIALIZE_PARAMS>,
     stream: Negotiated,
@@ -315,7 +318,7 @@ impl Session {
         runtime: Arc<Runtime>,
         device: *mut c_void,
         kind: NV_ENC_DEVICE_TYPE,
-        cuda: Option<Rc<nvenc_cuda::Context>>,
+        cuda: Option<Rc<cuda::Context>>,
         stream: &Negotiated,
         tuning: &Tuning,
     ) -> Result<Self> {
@@ -348,7 +351,7 @@ impl Session {
         runtime: Arc<Runtime>,
         device: *mut c_void,
         kind: NV_ENC_DEVICE_TYPE,
-        cuda: Option<Rc<nvenc_cuda::Context>>,
+        cuda: Option<Rc<cuda::Context>>,
         stream: &Negotiated,
         tuning: &Tuning,
         api: ApiVersion,
@@ -403,7 +406,7 @@ impl Session {
         session.configure(tuning)?;
         Ok(session)
     }
-    fn guard(&self) -> Result<Option<nvenc_cuda::Guard>> {
+    fn guard(&self) -> Result<Option<cuda::Guard>> {
         self.cuda.as_ref().map(|ctx| ctx.enter()).transpose()
     }
     fn check(&self, status: NVENCSTATUS, operation: &'static str) -> Result<()> {
@@ -796,8 +799,7 @@ impl Session {
             return Ok(index);
         }
         let input = if let Some(context) = &self.cuda {
-            let cuda =
-                nvenc_cuda::Input::new(context, texture, self.stream.width, self.stream.height)?;
+            let cuda = cuda::Input::new(context, texture, self.stream.width, self.stream.height)?;
             Input {
                 key,
                 raw: cuda.pointer as usize as *mut c_void,
@@ -1187,7 +1189,7 @@ impl Encoder {
         let runtime = Runtime::load()?;
         let tuning = Tuning::new(options, config)?;
         let cuda = if config.yuv444 && config.ten_bit() {
-            Some(nvenc_cuda::Context::new(&gpu)?)
+            Some(cuda::Context::new(&gpu)?)
         } else {
             None
         };

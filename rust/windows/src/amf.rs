@@ -1,4 +1,10 @@
-//! AMD's C ABI is called directly. No Butterpollo C++ code or FFmpeg AMF encoder is linked.
+//! Native AMD AMF encoder for H.264, HEVC and AV1.
+//!
+//! Calls AMF's C ABI directly (no FFmpeg wrapper), takes D3D11 or D3D12
+//! textures from capture and Radeon compute without a copy, and applies the
+//! per-codec settings from `butterpollo_core::encoder_policy`.
+pub(crate) mod gpu;
+
 use crate::{
     amf_abi::*,
     capture::{Device, GpuImage, Image},
@@ -64,14 +70,14 @@ pub struct Encoder {
     _device: Device,
     _library: libloading::Library,
     index: i64,
-    gpu_convert: Option<crate::amf_gpu::Converter>,
+    gpu_convert: Option<gpu::Converter>,
     in_flight: std::collections::VecDeque<Submission>,
     /// A frame AMF never returned may have been a reference: the next frame
     /// is a keyframe, or the client decodes damaged pictures until one comes.
     recover: bool,
     bitrate: u32,
     references: butterpollo_core::ltr::References,
-    ownership: Box<crate::amf_gpu::Ownership>,
+    ownership: Box<gpu::Ownership>,
     pub(crate) luminance: [f32; 2],
     /// The HDR10 metadata last written into the bitstream.
     hdr_metadata: Option<butterpollo_core::hdr::Metadata>,
@@ -80,7 +86,7 @@ pub struct Encoder {
 }
 struct ComputeInput {
     converter: crate::compute::Converter,
-    context: crate::amf_gpu::D3d12Context,
+    context: gpu::D3d12Context,
 }
 impl Encoder {
     pub fn new(config: &butterpollo_core::rtsp::Negotiated, display: &str) -> Result<Self> {
@@ -175,7 +181,7 @@ impl Encoder {
             let mut d3d12 = None;
             let result = (|| -> Result<()> {
                 if let Some(compute) = &compute {
-                    let interface = crate::amf_gpu::D3d12Context::new(context)?;
+                    let interface = gpu::D3d12Context::new(context)?;
                     interface.init(&compute.device)?;
                     d3d12 = Some(interface);
                 } else {
@@ -248,7 +254,7 @@ impl Encoder {
                 recover: false,
                 bitrate: config.bitrate_kbps,
                 references: Default::default(),
-                ownership: crate::amf_gpu::Ownership::new(),
+                ownership: gpu::Ownership::new(),
                 luminance: [100., 1.],
                 hdr_metadata: None,
                 compute,
@@ -504,7 +510,7 @@ impl Encoder {
         use butterpollo_core::encoder_policy::Value;
         let value = match property.value {
             Value::Integer(n) => int(n),
-            Value::Boolean(on) => crate::amf_gpu::boolean(on),
+            Value::Boolean(on) => gpu::boolean(on),
         };
         self.property_raw(&property.name, value)?;
         let mut applied = int(0);
@@ -976,7 +982,7 @@ impl Encoder {
                 _ => &["Av1ForceInsertSequenceHeader"],
             };
             for header in headers {
-                apply(header, crate::amf_gpu::boolean(true))?;
+                apply(header, gpu::boolean(true))?;
             }
         }
         Ok(plan)
@@ -1310,7 +1316,7 @@ impl Encoder {
                 pointer.as_ref(),
                 image.ready.as_ref(),
             )?;
-            crate::amf_gpu::synchronize(&converted.texture, &converted.fence, converted.value)?;
+            gpu::synchronize(&converted.texture, &converted.fence, converted.value)?;
             let surface = input
                 .context
                 .wrap(&converted.texture, &mut self.ownership)?;
@@ -1321,11 +1327,7 @@ impl Encoder {
                 .as_ref()
                 .is_none_or(|converter| converter.source != source)
             {
-                self.gpu_convert = Some(crate::amf_gpu::Converter::new(
-                    &self._device,
-                    &self.config,
-                    source,
-                )?);
+                self.gpu_convert = Some(gpu::Converter::new(&self._device, &self.config, source)?);
             }
             self.gpu_convert
                 .as_mut()

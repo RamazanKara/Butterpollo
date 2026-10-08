@@ -13,7 +13,6 @@
 #![warn(clippy::print_stdout, clippy::print_stderr)]
 
 pub mod amf;
-mod amf_gpu;
 pub mod audio;
 pub mod audio_route;
 pub mod capture;
@@ -27,7 +26,6 @@ pub mod display;
 pub mod display_arrangement;
 pub mod display_recovery;
 pub mod encoder;
-mod ffmpeg_gpu;
 pub mod files;
 pub mod firewall;
 pub mod foreground;
@@ -45,7 +43,6 @@ pub mod lossless;
 pub mod net;
 mod nvapi;
 pub mod nvenc;
-mod nvenc_cuda;
 pub mod playnite;
 pub mod present_timing;
 pub mod process;

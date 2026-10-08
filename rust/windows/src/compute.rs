@@ -586,7 +586,7 @@ struct Target {
 impl Target {
     /// The value the fence was last set to wait for, by us or the encoder.
     fn last(&self) -> u64 {
-        crate::amf_gpu::fence_value(&self.fence).map_or(self.value, |v| v.max(self.value))
+        crate::amf::gpu::fence_value(&self.fence).map_or(self.value, |v| v.max(self.value))
     }
     /// Free when nothing holds the texture and nothing will still signal
     /// its fence.
