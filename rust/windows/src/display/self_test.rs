@@ -10,6 +10,7 @@
 //!    mode, as in issue #4, and a stream's virtual display still comes up.
 //! 3. A saved layout with that clone group is restored after the group was
 //!    broken up.
+use super::topology::activate_target;
 use super::*;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
