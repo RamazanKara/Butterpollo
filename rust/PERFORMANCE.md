@@ -703,7 +703,7 @@ failure cases are covered by regression tests; a new SYSTEM-context runtime
 test was not run in this pass.
 
 Local raw results, guards and validation logs are in
-`C:\Users\ramaz\.codex\artifacts\butterpollo-wgc-20261005`.
+`%USERPROFILE%\.codex\artifacts\butterpollo-wgc-20261005`.
 The stream's full logs are in the earlier fixture's
 `day-work-20261002/codex-20261005-wgc-startup` directory. The final host SHA-256
 is `c10eeb65724d0598b7869dab6f6a6ace7715d2b46da06e0ab85640339eb3e0c2`.
@@ -1074,7 +1074,7 @@ The tester can run a candidate when available, but the RX 9070 XT itself is
 not remotely accessible. Keep the 4.7 versus 3.9 ms report open until matched
 measurements arrive. The local fixture is RX 7900 XT and the LAN receiver is
 a wired Intel NUC, not the reported Wi-Fi system. rc.3 artifacts are under
-`C:\Users\ramaz\.codex\artifacts\butterpollo-rc3-20261005`.
+`%USERPROFILE%\.codex\artifacts\butterpollo-rc3-20261005`.
 
 ## October 5 AV1 idle recheck
 
@@ -1095,7 +1095,7 @@ throughout this check. A low-priority, two-job build was also running. The updat
 lets the source renderer finish and retains its frame timestamps alongside
 the receiver's barcode and timing records. Picture age stops at decode,
 excluding client scanout and input latency. Evidence is under
-`C:\Users\ramaz\.codex\artifacts\butterpollo-monitor-av1-20261005\rc5-idle-av1-strip`.
+`%USERPROFILE%\.codex\artifacts\butterpollo-monitor-av1-20261005\rc5-idle-av1-strip`.
 
 The rc.6 runtime delivered 59.925 fresh FPS in the same idle strip check,
 decoding all 1,116 received frames. A final process inventory found RTSS
@@ -1122,7 +1122,7 @@ polls, with one observation every eight polls and identical output checksums.
 Median time fell from 84.79 ms to 14.32 ms (5.92 times faster for this small
 calculation). This is a small CPU saving; it does not establish a whole-stream
 latency or FPS improvement. Evidence and both implementations are under
-`C:\Users\ramaz\.codex\artifacts\butterpollo-rtss-autostart-20261005\qa`.
+`%USERPROFILE%\.codex\artifacts\butterpollo-rtss-autostart-20261005\qa`.
 
 The first rc.8 candidate was installed through the normal update transaction.
 Settings, pairings and app-library hashes remained unchanged. With RTSS fully
@@ -1225,9 +1225,9 @@ presentation statistics with `BUTTERPOLLO_TEST_PRESENT_STATS=1`.
 registered notifications; no production notification policy was changed.
 
 All original runs, including failed comparisons, are preserved in
-`C:\Users\ramaz\.codex\artifacts\butterpollo-monitor-av1-20261005`.
+`%USERPROFILE%\.codex\artifacts\butterpollo-monitor-av1-20261005`.
 The consolidated `CAPTURE_QA.json` is under
-`C:\Users\ramaz\.codex\artifacts\butterpollo-rtss-autostart-20261005\qa`.
+`%USERPROFILE%\.codex\artifacts\butterpollo-rtss-autostart-20261005\qa`.
 Full-screen 120 fresh FPS and the reporter's RX 9070 XT/Wi-Fi comparison
 remain open. The final candidate also still needs an installed-service
 check; a prior installer launch was rejected before execution by tool policy.
@@ -1292,7 +1292,7 @@ FPS, input latency, or zero performance impact on the game. Earlier failed
 barcode checks remain failed historical evidence. A controlled motion check
 of this revised executable is still required before claiming the full
 smoothness acceptance gate passes. The probe and timestamp records are under
-`C:\Users\ramaz\.codex\artifacts\butterpollo-rtss-autostart-20261005\qa\native-cadence-fresh-session.json`.
+`%USERPROFILE%\.codex\artifacts\butterpollo-rtss-autostart-20261005\qa\native-cadence-fresh-session.json`.
 
 Two further eight-second background AV1 checks used the real user-helper and
 compute path at 2560x720, 60 FPS and 20 Mbps, with an independent local decoder.
@@ -2299,12 +2299,12 @@ not recommended quality targets or assertions that the codec is lossless.
 
 On an AMD machine, use the usual Rust SDK environment, then run from the
 workspace root. On this machine the environment script is
-`C:\Users\ramaz\.codex\artifacts\butterpollo-rust-20260930\performance-probe\rust-env.ps1`.
+`%USERPROFILE%\.codex\artifacts\butterpollo-rust-20260930\performance-probe\rust-env.ps1`.
 `BUTTERPOLLO_PYROWAVE_ROOT\share\pyrowave-shared\build-info.txt` must name
 commit `186f0393b77f7755953b5ecde994bb1cec2e4155`.
 
 ```powershell
-. 'C:\Users\ramaz\.codex\artifacts\butterpollo-rust-20260930\performance-probe\rust-env.ps1'
+. "$env:USERPROFILE\.codex\artifacts\butterpollo-rust-20260930\performance-probe\rust-env.ps1"
 cargo test -p butterpollo-windows --lib --no-run --target-dir target\qa
 if ($LASTEXITCODE) { throw 'Test build failed' }
 Copy-Item "$env:BUTTERPOLLO_PYROWAVE_ROOT\bin\libpyrowave-shared-0.dll" target\qa\debug\deps\
@@ -2488,7 +2488,7 @@ AMD is the measured platform; NVIDIA users should use Vibepollo.
 To reproduce, use the SDK environment and DLL from the preceding section:
 
 ```powershell
-. 'C:\Users\ramaz\.codex\artifacts\butterpollo-rust-20260930\performance-probe\rust-env.ps1'
+. "$env:USERPROFILE\.codex\artifacts\butterpollo-rust-20260930\performance-probe\rust-env.ps1"
 cargo test -p butterpollo-windows --lib --release --no-run --target-dir target\qa
 if ($LASTEXITCODE) { throw 'Test build failed' }
 Copy-Item "$env:BUTTERPOLLO_PYROWAVE_ROOT\bin\libpyrowave-shared-0.dll" target\qa\release\deps\
@@ -2835,7 +2835,7 @@ better under load (33.42 versus 35.36 ms). Component differences do not
 predict that entire journey.
 
 Raw artifacts are under
-`C:\Users\ramaz\AppData\Local\Temp\claude\C--src-butterpollo\7e5651cf-4ad6-4e53-8a70-43a4eede758f\scratchpad\`:
+`%USERPROFILE%\AppData\Local\Temp\claude\C--src-butterpollo\7e5651cf-4ad6-4e53-8a70-43a4eede758f\scratchpad\`:
 `vphase/u-01` through `u-18` supply the main table, `vphase/v-*` the earlier
 SYSTEM batch, and `phase/idle59-*`, `phase/t-*` and `phase/stampsrc-*` the
 physical checks. The raw stamp probe's aggregate above was reported by the
@@ -2867,7 +2867,7 @@ settings line confirmed the value after Init. Before every run the host log
 was checked for a stream; a first batch that overlapped a client's stream was
 discarded. `--slices N` and `--intra-refresh` were added to the probe for the
 interaction runs. Every run's JSON, settings line and decision line are in
-`C:\Users\ramaz\.codex\artifacts\butterpollo-amf-split-frame-20261007`
+`%USERPROFILE%\.codex\artifacts\butterpollo-amf-split-frame-20261007`
 (`probe.jsonl` is the discarded batch).
 
 The driver reports two engines for both codecs (`HevcNumOfHwInstances=2`,
