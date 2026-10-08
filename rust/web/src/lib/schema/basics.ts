@@ -443,9 +443,9 @@ function backGrip(key: string, name: string, where: string): Setting {
   return {
     key,
     label: `Back grip ${name}`,
-    description: `What the ${where} back button presses: a Steam Deck's ${name}, or the matching paddle on an Xbox Elite or DualSense Edge. No virtual controller has back buttons, so they do nothing until mapped here.`,
+    description: `What the ${where} back button presses: a Steam Deck's ${name}, or the matching paddle on an Xbox Elite or DualSense Edge. The virtual pads have no back buttons, so they do nothing until mapped here. A Steam Deck passed through as a Steam Deck keeps its own.`,
     category: 'input',
-    group: 'Back grips',
+    group: 'Steam Deck and back grips',
     control: { kind: 'select', options: gripOptions },
     default: 'none',
     visibleWhen: controllerOn,
@@ -626,6 +626,24 @@ const input: Setting[] = [
     group: 'Controllers',
     control: { kind: 'number', min: -1, max: 60000, step: 1, unit: 'ms' },
     default: -1,
+    visibleWhen: controllerOn,
+  },
+  {
+    key: 'steam_deck_controller',
+    label: 'Steam Deck controller',
+    description:
+      "How a Steam Deck's controls reach the host. Steam Deck attaches a real Steam Deck controller through usbip-win2, so Steam on the host sees a Steam Deck with its trackpads, gyro and back grips and applies its Steam Input layout; it needs usbip-win2 installed. Automatic does that while Steam is running on the host. Virtual pad always uses the virtual DualSense or Xbox pad.",
+    category: 'input',
+    group: 'Steam Deck and back grips',
+    control: {
+      kind: 'select',
+      options: [
+        { value: 'auto', label: 'Automatic' },
+        { value: 'steam_deck', label: 'Steam Deck' },
+        { value: 'virtual_pad', label: 'Virtual pad' },
+      ],
+    },
+    default: 'auto',
     visibleWhen: controllerOn,
   },
   backGrip('back_grip_l4', 'L4', 'upper left'),

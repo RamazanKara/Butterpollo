@@ -505,6 +505,7 @@ pub fn override_allowed(key: &str) -> bool {
         "back_grip_l4",
         "back_grip_r5",
         "back_grip_l5",
+        "steam_deck_controller",
         "keyboard",
         "key_repeat_delay",
         "key_repeat_frequency",

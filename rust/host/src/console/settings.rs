@@ -157,6 +157,7 @@ pub const GLOBAL: &[Setting] = settings! {
         "motion_as_ds4", "Use PlayStation profile for motion input", Bool;
         "touchpad_as_ds4", "Use PlayStation profile for touchpad input", Bool;
         "back_button_timeout", "Hold Back to press Guide (milliseconds; -1 disables)", Number;
+        "steam_deck_controller", "Steam Deck controller", Choice(&["auto", "steam_deck", "virtual_pad"]);
         "back_grip_l4", "Back grip L4 (upper left) presses", Choice(GRIPS);
         "back_grip_r4", "Back grip R4 (upper right) presses", Choice(GRIPS);
         "back_grip_l5", "Back grip L5 (lower left) presses", Choice(GRIPS);

@@ -24,6 +24,7 @@ use windows::{
 mod gamepad_backend;
 #[path = "input/gamepad_thread.rs"]
 mod gamepad_thread;
+mod steam_deck_pad;
 pub use gamepad_thread::{GamepadThread, PadReport};
 
 pub fn open_interface(guid: GUID) -> Result<HANDLE> {
@@ -88,6 +89,12 @@ pub struct Gamepads {
     /// The last feedback report forwarded for each controller.
     last_feedback: BTreeMap<u16, (u16, Vec<u8>)>,
     feedback_failures: BTreeMap<u16, FeedbackFailure>,
+    /// Steam Deck clients' controllers attached as real Steam Decks.
+    decks: BTreeMap<u16, steam_deck_pad::DeckPad>,
+    /// Controllers a Steam Deck could not be attached for; they keep their
+    /// VHF pad until they arrive again.
+    deck_failed: BTreeSet<u16>,
+    warnings: std::sync::Arc<butterpollo_core::session::Warnings>,
 }
 #[derive(Default)]
 struct FeedbackFailure {
@@ -131,9 +138,14 @@ impl Gamepads {
         Self::open_options(
             profile,
             butterpollo_core::input_policy::Policy::resolve(&Default::default())?,
+            Default::default(),
         )
     }
-    fn open_options(profile: u16, policy: butterpollo_core::input_policy::Policy) -> Result<Self> {
+    fn open_options(
+        profile: u16,
+        policy: butterpollo_core::input_policy::Policy,
+        warnings: std::sync::Arc<butterpollo_core::session::Warnings>,
+    ) -> Result<Self> {
         let (backend, available) = gamepad_backend::Backend::open(profile)?;
         Ok(Self {
             backend,
@@ -149,7 +161,72 @@ impl Gamepads {
             unsupported_touchpads: BTreeSet::new(),
             last_feedback: BTreeMap::new(),
             feedback_failures: BTreeMap::new(),
+            decks: BTreeMap::new(),
+            deck_failed: BTreeSet::new(),
+            warnings,
         })
+    }
+    /// Attaches a real Steam Deck controller for a Steam Deck client when
+    /// the `steam_deck_controller` setting and the host allow it. Returns
+    /// whether controller `id` is one.
+    fn ensure_deck(&mut self, id: u16) -> Result<bool> {
+        use butterpollo_core::input_policy::{CTYPE_STEAM, DeckPad};
+        if self.decks.contains_key(&id) {
+            return Ok(true);
+        }
+        let steam = self
+            .arrivals
+            .get(&id)
+            .is_some_and(|(kind, _)| *kind == CTYPE_STEAM);
+        if !steam || self.deck_failed.contains(&id) {
+            return Ok(false);
+        }
+        let mode = self.policy.steam_deck;
+        let exe = match mode {
+            DeckPad::VirtualPad => None,
+            _ => steam_deck_pad::usbip_exe(),
+        };
+        let Some(exe) = exe else {
+            if mode == DeckPad::SteamDeck {
+                self.warnings.set("input_steam_deck", "Steam Deck controller unavailable: usbip-win2 is not installed, so the Deck's controls arrive as a virtual pad. Install usbip-win2 on the host to pass the Deck through as a Steam Deck, then reconnect.");
+            }
+            self.deck_failed.insert(id);
+            return Ok(false);
+        };
+        if mode == DeckPad::Auto && !steam_deck_pad::steam_running() {
+            tracing::info!(
+                controller = id,
+                "Steam is not running; the Steam Deck's controls use a virtual pad"
+            );
+            self.deck_failed.insert(id);
+            return Ok(false);
+        }
+        let deck = match steam_deck_pad::DeckPad::plug(&exe, &format!("BUTTERPOLLO{id}")) {
+            Ok(deck) => deck,
+            Err(error) => {
+                self.warnings.set("input_steam_deck", format!("Steam Deck controller unavailable ({error:#}); the Deck's controls arrive as a virtual pad. Check that usbip-win2 is installed and working, then reconnect."));
+                self.deck_failed.insert(id);
+                return Ok(false);
+            }
+        };
+        self.warnings.clear("input_steam_deck");
+        tracing::info!(
+            controller = id,
+            port = deck.port(),
+            "Steam Deck controller attached through usbip-win2"
+        );
+        // A VHF pad plugged before the arrival made way for it.
+        if let Some(global) = self.active.remove(&id) {
+            self.backend.unplug(u32::from(global))?;
+            self.profiles.remove(&id);
+            self.states.remove(&id);
+            self.last_feedback.remove(&id);
+            self.feedback_failures.remove(&id);
+            self.pointers.retain(|(pad, _), _| u16::from(*pad) != id);
+            SLOTS.lock().unwrap()[global as usize] = false;
+        }
+        self.decks.insert(id, deck);
+        Ok(true)
     }
     fn ensure(&mut self, id: u16) -> Result<()> {
         if id >= 16 {
@@ -208,6 +285,7 @@ impl Gamepads {
                 if *id >= 16 {
                     bail!("controller ID out of range");
                 }
+                self.decks.retain(|i, _| active & (1 << *i) != 0);
                 for (i, global) in self.active.clone() {
                     if active & (1 << i) == 0 {
                         // A pad that would not unplug stays tracked and is
@@ -233,6 +311,10 @@ impl Gamepads {
                     }
                 }
                 if active & (1 << id) == 0 {
+                    return Ok(());
+                }
+                if let Some(deck) = self.decks.get(id) {
+                    deck.apply(event);
                     return Ok(());
                 }
                 self.ensure(*id)?;
@@ -266,10 +348,19 @@ impl Gamepads {
                 capabilities,
                 ..
             } => {
-                self.arrivals.insert(u16::from(*id), (*kind, *capabilities));
-                self.ensure(u16::from(*id))?;
+                let id = u16::from(*id);
+                self.arrivals.insert(id, (*kind, *capabilities));
+                // A controller that arrives again may try a Steam Deck again.
+                self.deck_failed.remove(&id);
+                if !self.ensure_deck(id)? {
+                    self.ensure(id)?;
+                }
             }
             Event::Motion { id, kind, xyz } => {
+                if let Some(deck) = self.decks.get(&u16::from(*id)) {
+                    deck.apply(event);
+                    return Ok(());
+                }
                 // Only arrival and state packets create a pad: motion travels on
                 // another channel and can arrive after the pad was removed.
                 if !self.motion_supported(u16::from(*id)) {
@@ -277,6 +368,9 @@ impl Gamepads {
                 }
                 self.backend
                     .motion(self.slot(u16::from(*id))?, *kind, xyz)?;
+            }
+            Event::ControllerTouch { id, .. } if self.decks.contains_key(&u16::from(*id)) => {
+                self.decks[&u16::from(*id)].apply(event);
             }
             Event::ControllerTouch { id, touchpad, .. } => {
                 // The driver exposes one PlayStation touch surface with two
@@ -312,7 +406,7 @@ impl Gamepads {
             }
             Event::Battery { id, state, percent } => {
                 // Only the PlayStation and Switch profiles have a battery.
-                if !self.motion_supported(u16::from(*id)) {
+                if !matches!(self.profiles.get(&u16::from(*id)).copied(), Some(5..=7)) {
                     return Ok(());
                 }
                 self.backend
@@ -326,14 +420,20 @@ impl Gamepads {
     /// A controller with nothing pending or a failed poll does not hide the
     /// others' feedback, and a repeated report is not sent again.
     pub fn feedback(&mut self) -> Vec<(u16, u16, Vec<u8>)> {
-        poll_feedback(
+        let mut reports = poll_feedback(
             &self.active,
             &mut self.last_feedback,
             &mut self.feedback_failures,
             self.backend.name(),
             Instant::now(),
             |slot| self.backend.feedback(slot),
-        )
+        );
+        for (id, deck) in &mut self.decks {
+            if let Some((kind, data)) = deck.feedback() {
+                reports.push((*id, kind, data));
+            }
+        }
+        reports
     }
     fn submit(
         &mut self,
@@ -378,7 +478,7 @@ impl Gamepads {
         Ok(())
     }
     pub fn motion_supported(&self, id: u16) -> bool {
-        matches!(self.profiles.get(&id).copied(), Some(5..=7))
+        self.decks.contains_key(&id) || matches!(self.profiles.get(&id).copied(), Some(5..=7))
     }
 }
 fn poll_feedback(

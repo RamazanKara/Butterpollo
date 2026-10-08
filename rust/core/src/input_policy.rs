@@ -31,6 +31,30 @@ pub const BACK_GRIP_KEYS: [&str; 4] = [
 /// The stream-card hint for a back grip pressed while it is unmapped.
 pub const BACK_GRIP_HINT: &str = "A controller's back grips (a Steam Deck's L4, R4, L5 or R5) were pressed, but no virtual controller has them, so they do nothing. Choose what each one presses under Settings, Input, Controllers.";
 
+/// The `steam_deck_controller` setting: what a Steam Deck client's
+/// controller becomes on the host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeckPad {
+    /// A real Steam Deck controller when usbip-win2 is installed and Steam
+    /// is running on the host; otherwise the virtual pad.
+    Auto,
+    /// A real Steam Deck controller whenever usbip-win2 is installed.
+    SteamDeck,
+    /// Always the VHF pad, with back grips mapped by the `back_grip_*` settings.
+    VirtualPad,
+}
+pub fn deck_pad(value: &str) -> DeckPad {
+    match value {
+        "auto" => DeckPad::Auto,
+        "steam_deck" => DeckPad::SteamDeck,
+        "virtual_pad" => DeckPad::VirtualPad,
+        other => {
+            crate::config::fallback("steam_deck_controller", other, "auto");
+            DeckPad::Auto
+        }
+    }
+}
+
 /// What a back grip presses on the virtual pad, none of which has back grips.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GripTarget {
@@ -71,18 +95,19 @@ pub fn grip_target(key: &str, value: &str) -> Option<GripTarget> {
 }
 
 /// The stream-card hint for a Steam Deck whose controller reaches Moonlight
-/// through Steam Input: Moonlight then sees Steam's virtual Xbox pad, without
-/// the gyro, trackpads and back grips, and so does the host. Only the
-/// device's name can tell such a Deck from an Xbox pad.
-pub fn steam_input_hint(device: &str, kind: u8, capabilities: u16) -> Option<String> {
+/// through Steam Input: Moonlight then sees Steam's virtual pad, without the
+/// gyro, trackpads and back grips, and so does the host. SDL may still name
+/// it a Steam Deck (Steam tells it the real controller), so only the
+/// missing sensors and the device's name give such a Deck away.
+pub fn steam_input_hint(device: &str, capabilities: u16) -> Option<String> {
     let name: String = device
         .chars()
         .filter(char::is_ascii_alphanumeric)
         .map(|c| c.to_ascii_lowercase())
         .collect();
-    (name.contains("steamdeck") && kind != CTYPE_STEAM && capabilities & 0x30 == 0).then(|| {
+    (name.contains("steamdeck") && capabilities & 0x30 == 0).then(|| {
         format!(
-            "{device} looks like a Steam Deck whose controls reach Moonlight through Steam Input, so the host gets a plain Xbox pad without gyro, trackpads or back grips. To pass them on, set Moonlight's controller settings in Steam on the Deck to disable Steam Input, then reconnect."
+            "{device} looks like a Steam Deck whose controls reach Moonlight through Steam Input, so the host gets its buttons and sticks but no gyro, trackpads or back grips. To pass them on, set Moonlight's controller settings in Steam on the Deck to disable Steam Input, then reconnect."
         )
     })
 }
@@ -122,6 +147,7 @@ pub struct Policy {
     pub back_button_timeout: Option<Duration>,
     /// What each back grip presses, in [`PADDLES`] order.
     pub back_grips: [Option<GripTarget>; 4],
+    pub steam_deck: DeckPad,
     pub keybindings: BTreeMap<u16, u16>,
 }
 impl Policy {
@@ -183,6 +209,7 @@ impl Policy {
                 .ok()
                 .map(|ms| Duration::from_millis(ms.min(60000))),
             back_grips: BACK_GRIP_KEYS.map(|key| grip_target(key, config.get(key, "none"))),
+            steam_deck: deck_pad(config.get("steam_deck_controller", "auto")),
             keybindings,
         })
     }
@@ -447,19 +474,27 @@ mod tests {
         assert_eq!(grip_target("back_grip_r4", "none"), None);
     }
     #[test]
-    fn the_steam_input_hint_names_a_deck_that_arrived_as_a_plain_xbox_pad() {
+    fn the_steam_input_hint_names_a_deck_whose_sensors_did_not_arrive() {
         for name in ["steamdeck", "Steam Deck", "steam-deck (OLED)"] {
-            let hint = steam_input_hint(name, 1, 0x47).unwrap();
+            let hint = steam_input_hint(name, 0x47).unwrap();
             assert!(hint.starts_with(name));
             assert!(hint.contains("disable Steam Input"));
-            // No gyro announced, whatever type SDL saw.
-            assert!(steam_input_hint(name, 0, 0x03).is_some());
+            assert!(steam_input_hint(name, 0x03).is_some());
         }
         // A Deck that passes its own controls on, and other devices.
-        assert_eq!(steam_input_hint("Steam Deck", CTYPE_STEAM, 0x138), None);
-        assert_eq!(steam_input_hint("Steam Deck", 1, 0x30), None);
-        assert_eq!(steam_input_hint("Pixel 8", 1, 0), None);
-        assert_eq!(steam_input_hint("Deck", 1, 0), None);
+        assert_eq!(steam_input_hint("Steam Deck", 0x138), None);
+        assert_eq!(steam_input_hint("Steam Deck", 0x30), None);
+        assert_eq!(steam_input_hint("Pixel 8", 0), None);
+        assert_eq!(steam_input_hint("Deck", 0), None);
+    }
+    #[test]
+    fn the_steam_deck_controller_setting_falls_back_to_auto() {
+        assert_eq!(deck_pad("auto"), DeckPad::Auto);
+        assert_eq!(deck_pad("steam_deck"), DeckPad::SteamDeck);
+        assert_eq!(deck_pad("virtual_pad"), DeckPad::VirtualPad);
+        assert_eq!(deck_pad("dualsense"), DeckPad::Auto);
+        let policy = Policy::resolve(&Default::default()).unwrap();
+        assert_eq!(policy.steam_deck, DeckPad::Auto);
     }
     #[test]
     fn key_repeat_delay_follows_vibepollo() {

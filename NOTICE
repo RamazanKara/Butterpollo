@@ -28,3 +28,11 @@ and the AV1 encoding latency mode (rust/core/src/encoder_policy.rs), and the
 reasoning behind it, are derived from Foundation Sunshine: AlkaidLab/foundation-sunshine
 commit 3340d28 ("feat(amf): align AMD aggressive defaults with FFmpeg amfenc",
 AlkaidLab/foundation-sunshine#666) by qiin2333. Both projects are licensed under GPLv3.
+
+InputPlumber and SDL
+
+The virtual Steam Deck controller (rust/core/src/steam_deck.rs) uses the Steam Deck's
+HID report descriptors and the feature-report replies Steam expects as captured by
+InputPlumber (https://github.com/ShadowBlip/InputPlumber, GPLv3), and the input
+report layout and button bits from SDL's SDL_hidapi_steamdeck.c and
+controller_structs.h (https://github.com/libsdl-org/SDL, zlib license).

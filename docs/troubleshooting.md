@@ -221,10 +221,12 @@ Steam's `logs/controller.txt` shows each arrival. Butterpollo no longer uses ViG
 
 ## A Steam Deck has no gyro, trackpads or back grips
 
-The host only follows what Moonlight announces when a controller connects. With Steam Input on for Moonlight, Steam gives Moonlight a virtual Xbox controller, which has no gyro, trackpads or back grips. On the Deck, disable Steam Input in Moonlight's controller settings in Steam, then reconnect. The stream card says this when the paired device is named Steam Deck and its controller has no gyro. In Butterpollo's logs, a Deck that Moonlight sees directly connects with `client_type=4` and the DualSense profile (`vhf_ds5`). If `motion_as_ds4` and `touchpad_as_ds4` are both off, a Deck stays an Xbox pad and loses them again.
+The host only follows what Moonlight announces when a controller connects. With Steam Input on for Moonlight, Steam on the Deck gives Moonlight a virtual pad, which has no gyro, trackpads or back grips. On the Deck, disable Steam Input in Moonlight's controller settings in Steam, then reconnect. The stream card says this when the paired device is named Steam Deck and its controller has no gyro. In Butterpollo's logs, a Deck that Moonlight sees directly connects with `client_type=4`.
 
+- **Steam on the host doesn't show a Steam Deck:** the host attaches one only with usbip-win2 installed and, with **Automatic**, while Steam is running on the host when the controller connects; otherwise the log says `Steam is not running` and the Deck gets a virtual DualSense. The log line `Steam Deck controller attached through usbip-win2` names the usbip-win2 port, and `usbip.exe port` lists it. If the stream card says the attach failed, its message is usbip.exe's own.
 - **No trackpads with Steam Input off:** Moonlight builds whose SDL predates SDL 3 do not read the Deck's trackpads, so they send none.
-- **Back grips do nothing:** choose what each grip presses under **Settings → Input → Back grips**; no virtual controller has back buttons of its own.
+- **Back grips do nothing on the virtual pad:** choose what each grip presses under **Settings → Input → Steam Deck and back grips**; the virtual pads have no back buttons of their own. A Deck attached as a Steam Deck keeps its own grips, and Steam Input on the host decides what they do.
+- **A Steam Deck controller left behind after a crash:** usbip-win2 detaches it when Butterpollo's connection closes, then keeps trying to attach it again. `usbip.exe attach --stop-all` stops that.
 
 See [Steam Deck](configuration.md#steam-deck).
 

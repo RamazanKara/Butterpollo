@@ -2105,13 +2105,10 @@ impl Media {
                                         }
                                     }
                                     Ok(event) => {
-                                        if let input::Input::Arrival {
-                                            kind, capabilities, ..
-                                        } = &event
+                                        if let input::Input::Arrival { capabilities, .. } = &event
                                             && let Some(hint) =
                                                 butterpollo_core::input_policy::steam_input_hint(
                                                     &s.launch.client.name,
-                                                    *kind,
                                                     *capabilities,
                                                 )
                                         {

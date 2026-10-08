@@ -57,7 +57,7 @@ impl Pads for Gamepads {
         Gamepads::motion_supported(self, id)
     }
     fn plugged(&self) -> bool {
-        !self.active.is_empty()
+        !self.active.is_empty() || !self.decks.is_empty()
     }
 }
 
@@ -93,8 +93,9 @@ impl GamepadThread {
         warnings: Arc<butterpollo_core::session::Warnings>,
     ) -> std::io::Result<Self> {
         let unmapped_grips = policy.unmapped_back_grips();
+        let pad_warnings = warnings.clone();
         let mut thread = Self::spawn_reported(
-            move || Gamepads::open_options(profile, policy.clone()),
+            move || Gamepads::open_options(profile, policy.clone(), pad_warnings.clone()),
             warnings,
         )?;
         thread.unmapped_grips = unmapped_grips;

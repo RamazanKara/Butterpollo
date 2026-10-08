@@ -106,17 +106,25 @@ Earlier releases also offered Xbox 360 (`x360`) and DualShock 4 (`ds4`) through 
 
 ### Steam Deck
 
-Moonlight on a Steam Deck passes on the Deck's own controls only when Steam Input is off for Moonlight. With it on, Steam hands Moonlight a virtual Xbox controller without gyro, trackpads or back grips, and the host can only use what Moonlight announces. On the Deck, open Moonlight's controller settings in Steam, choose to disable Steam Input, and reconnect. If the paired device's name says Steam Deck (SteamOS calls it `steamdeck`) and its controller arrives without a gyro, the stream card says this.
+A Steam Deck can reach the host as a **real Steam Deck controller**: Butterpollo serves the Deck's own USB controller (Valve 28de:1205) over USB/IP on the host's loopback address, and [usbip-win2](https://github.com/vadimgrn/usbip-win2) attaches it with its signed driver, so Windows sees a Steam Deck plugged into a USB port. Steam on the host then recognises a Steam Deck and applies the Deck's Steam Input layout, with both trackpads, the gyro, the back grips (L4, R4, L5, R5), the Steam and "…" buttons and rumble. Games see whatever Steam Input makes of it, as on a Deck.
 
-With Steam Input off, Moonlight announces a Steam controller with gyro, and Automatic gives it a DualSense:
+- **Settings → Input → Steam Deck and back grips → Steam Deck controller** (`steam_deck_controller`): **Automatic** (`auto`, the default) attaches a Steam Deck when usbip-win2 is installed and Steam is running on the host when the controller connects; **Steam Deck** (`steam_deck`) attaches one whenever usbip-win2 is installed, even without Steam, where only SDL-based games see it; **Virtual pad** (`virtual_pad`) always uses the virtual DualSense or Xbox pad below.
+- **Install usbip-win2 on the host** from its [releases](https://github.com/vadimgrn/usbip-win2/releases) (Windows 10 1903 or later). Its setup installs a driver and restarts the USB hubs once, so devices on them reconnect; it recommends a restore point first. Butterpollo looks for `usbip.exe` in `C:\Program Files\USBip` and on `PATH`. Nothing listens beyond `127.0.0.1`.
+- If usbip-win2 is missing or the attach fails, the Deck falls back to the virtual pad, and the stream card says why when **Steam Deck** was chosen or an attach failed.
+
+Moonlight passes on the Deck's own controls only when Steam Input is off for Moonlight on the Deck. With it on, Steam on the Deck turns the controls into a virtual pad first: the host still gets a Steam Deck with the buttons, sticks and triggers, but no gyro, trackpads or back grips, because Moonlight never receives them. On the Deck, open Moonlight's controller settings in Steam, choose to disable Steam Input, and reconnect. If the paired device's name says Steam Deck (SteamOS calls it `steamdeck`) and its controller arrives without a gyro, the stream card says this.
+
+What Moonlight can't carry: touching a stick (capacitive), clicking the left trackpad, and the Deck's own orientation quaternion. Moonlight sends trackpad touches only from builds whose SDL reads the Deck's trackpads (SDL 3); older builds send none.
+
+With the virtual pad (no usbip-win2, or **Virtual pad**), Moonlight's Steam controller with gyro gets a DualSense:
 
 - **Gyro and accelerometer** are the pad's motion sensors.
-- **Trackpads** share the pad's one touch surface: the left trackpad is its left half and the right trackpad its right half. Moonlight sends trackpad touches only from builds whose SDL reads the Deck's trackpads (SDL 3); older builds send none. Clicking the right trackpad is the touchpad click.
-- **Back grips** (L4, R4, L5, R5): no virtual controller has back buttons, so each grip presses what **Settings → Input → Back grips** sets for it: a face button, bumper, a fully pulled trigger, a stick click, Back, Start, Guide, a d-pad direction, the touchpad click or Share/Mute (`back_grip_l4`, `back_grip_r4`, `back_grip_l5`, `back_grip_r5`; values `a`, `b`, `x`, `y`, `lb`, `rb`, `lt`, `rt`, `l3`, `r3`, `back`, `start`, `guide`, `dpad_up`, `dpad_down`, `dpad_left`, `dpad_right`, `touchpad`, `misc`). They default to nothing, and pressing an unmapped grip shows a hint on the stream card. The same settings map an Xbox Elite's paddles (P1 is R4, P3 is L4, P2 is R5, P4 is L5) and a DualSense Edge's back buttons.
+- **Trackpads** share the pad's one touch surface: the left trackpad is its left half and the right trackpad its right half. Clicking the right trackpad is the touchpad click.
+- **Back grips** (L4, R4, L5, R5): the virtual pads have no back buttons, so each grip presses what **Settings → Input → Steam Deck and back grips** sets for it: a face button, bumper, a fully pulled trigger, a stick click, Back, Start, Guide, a d-pad direction, the touchpad click or Share/Mute (`back_grip_l4`, `back_grip_r4`, `back_grip_l5`, `back_grip_r5`; values `a`, `b`, `x`, `y`, `lb`, `rb`, `lt`, `rt`, `l3`, `r3`, `back`, `start`, `guide`, `dpad_up`, `dpad_down`, `dpad_left`, `dpad_right`, `touchpad`, `misc`). They default to nothing, and pressing an unmapped grip shows a hint on the stream card. The same settings map an Xbox Elite's paddles (P1 is R4, P3 is L4, P2 is R5, P4 is L5) and a DualSense Edge's back buttons.
 - **Steam and "…" buttons** become the PS button and the DualSense's mute button (the touchpad click on a DualShock 4), when Steam on the Deck lets them through to Moonlight.
 - **Rumble and battery level** are passed on.
 
-Setting `motion_as_ds4` and `touchpad_as_ds4` both off keeps a Deck on an Xbox pad, without its gyro and trackpads.
+Setting `motion_as_ds4` and `touchpad_as_ds4` both off keeps a Deck's virtual pad an Xbox pad, without its gyro and trackpads.
 
 ## Settings for one app or device
 
