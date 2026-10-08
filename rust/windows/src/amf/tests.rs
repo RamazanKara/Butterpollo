@@ -1,3 +1,5 @@
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use super::*;
 
 #[test]
@@ -261,6 +263,8 @@ fn native_av1_geometry_and_hdr_are_preserved() -> Result<()> {
                 };
                 let read = |name: &str| -> Result<AMFVariantStruct> {
                     let mut value = int(0);
+                    // SAFETY: `encoder.component` is the live AMF component the encoder owns; the
+                    // name and `value` outlive the call.
                     unsafe {
                         check(((*(*encoder.component).pVtbl).GetProperty.unwrap())(
                             encoder.component,
@@ -272,6 +276,8 @@ fn native_av1_geometry_and_hdr_are_preserved() -> Result<()> {
                 };
                 let applied_alignment = read("Av1AlignmentMode")?;
                 let applied_size = read("Av1FrameSize")?;
+                // SAFETY: Every AMFVariant union member read here is plain integers, valid for any
+                // bit pattern.
                 let properties = unsafe {
                     serde_json::json!({
                         "alignment_variant":applied_alignment.type_,

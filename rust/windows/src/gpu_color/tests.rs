@@ -1,3 +1,5 @@
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use super::*;
 use crate::capture::{ComGuard, Image};
 use std::time::Instant;
@@ -12,6 +14,7 @@ fn gpu_conversion_timing() -> Result<()> {
     let timer = crate::timing::Timer::new()?;
     let query = |kind| -> Result<ID3D11Query> {
         let mut query = None;
+        // SAFETY: `gpu.device` is a live D3D11 device; the descriptor and out-slot are live locals.
         unsafe {
             gpu.device.CreateQuery(
                 &D3D11_QUERY_DESC {
@@ -44,20 +47,24 @@ fn gpu_conversion_timing() -> Result<()> {
             .map(|_| Ok((query(D3D11_QUERY_TIMESTAMP)?, query(D3D11_QUERY_TIMESTAMP)?)))
             .collect::<Result<_>>()?;
         let mut calls = vec![];
+        // SAFETY: `disjoint` is a live query made on this device's context.
         unsafe {
             gpu.context.Begin(&disjoint);
         }
         for (start, end) in &queries {
+            // SAFETY: `start` is a live timestamp query made on this device.
             unsafe {
                 gpu.context.End(start);
             }
             let begin = Instant::now();
             converter.convert(&source)?;
             calls.push(begin.elapsed().as_secs_f64() * 1000.);
+            // SAFETY: `end` is a live timestamp query made on this device.
             unsafe {
                 gpu.context.End(end);
             }
         }
+        // SAFETY: `disjoint` is a live query made on this device's context.
         unsafe {
             gpu.context.End(&disjoint);
             gpu.context.Flush();
@@ -65,6 +72,8 @@ fn gpu_conversion_timing() -> Result<()> {
         let deadline = Instant::now() + std::time::Duration::from_secs(5);
         let mut clock = D3D11_QUERY_DATA_TIMESTAMP_DISJOINT::default();
         loop {
+            // SAFETY: `clock` is a live local of exactly the size passed, the size the disjoint
+            // query writes.
             unsafe {
                 gpu.context.GetData(
                     &disjoint,
@@ -89,6 +98,7 @@ fn gpu_conversion_timing() -> Result<()> {
             let mut ticks = [0u64; 2];
             for (query, value) in [start, end].iter().zip(ticks.iter_mut()) {
                 loop {
+                    // SAFETY: `value` is a live u64, the size a timestamp query writes.
                     unsafe {
                         gpu.context.GetData(
                             query,
@@ -142,6 +152,8 @@ fn make_image(colors: &[[f32; 3]], patch: usize, height: usize) -> Image {
     }
 }
 fn readback(gpu: &Device, texture: &ID3D11Texture2D) -> Result<Vec<u16>> {
+    // SAFETY: `staging` is a CPU-readable copy of `texture`; each row read lies within the mapped
+    // planes (P010 chroma follows luma) and stays valid until Unmap below.
     unsafe {
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         texture.GetDesc(&mut desc);
@@ -185,6 +197,8 @@ fn readback_compute(
     texture: &windows::Win32::Graphics::Direct3D12::ID3D12Resource,
 ) -> Result<Vec<u16>> {
     use windows::Win32::Graphics::Direct3D12::*;
+    // SAFETY: `buffer` is sized by GetCopyableFootprints for both planes, the copy is waited for
+    // before Map, and each row read stays within its footprint until Unmap below.
     unsafe {
         let desc = texture.GetDesc();
         let mut layouts = [D3D12_PLACED_SUBRESOURCE_FOOTPRINT::default(); 2];
@@ -383,6 +397,8 @@ fn compute_conversion_matches_the_graphics_converter() -> Result<()> {
 }
 /// A one-plane texture's bytes, row by row without padding.
 fn plane_bytes(gpu: &Device, texture: &ID3D11Texture2D) -> Result<Vec<u8>> {
+    // SAFETY: `staging` is a CPU-readable copy of `texture` and each row read is `Width * pixel`
+    // bytes within `RowPitch`, valid until Unmap below.
     unsafe {
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         texture.GetDesc(&mut desc);
@@ -459,6 +475,7 @@ fn compute_planes_match_the_pyrowave_graphics_planes() -> Result<()> {
         &[0b00110000, 0b01010000],
     )?;
     pointer.position = [20, 10];
+    // SAFETY: `compute.device` is a live D3D12 device.
     let fence: ID3D12Fence = unsafe { compute.device.CreateFence(0, D3D12_FENCE_FLAG_NONE)? };
     let mut value = 0;
     for (width, height) in [(96, 40), (48, 20), (64, 64)] {
@@ -488,9 +505,12 @@ fn compute_planes_match_the_pyrowave_graphics_planes() -> Result<()> {
                     let outputs = PlanarConverter::new(&gpu, &config, source)?;
                     for plane in &outputs.textures {
                         let mut desc = D3D11_TEXTURE2D_DESC::default();
+                        // SAFETY: `plane` is a live texture and `desc` a live local.
                         unsafe { plane.GetDesc(&mut desc) };
                         let pitch = desc.Width * if config.ten_bit() { 2 } else { 1 };
                         let fill = vec![0xab_u8; (pitch * desc.Height) as usize];
+                        // SAFETY: `fill` holds `pitch * Height` bytes, exactly one plane at the
+                        // pitch passed.
                         unsafe {
                             gpu.context.UpdateSubresource(
                                 plane.as_ref(),
@@ -536,6 +556,7 @@ fn compute_planes_match_the_pyrowave_graphics_planes() -> Result<()> {
                         &planes,
                     )?;
                     let deadline = Instant::now() + std::time::Duration::from_secs(2);
+                    // SAFETY: `fence` is a live D3D12 fence.
                     while unsafe { fence.GetCompletedValue() } < value {
                         assert!(
                             Instant::now() < deadline,
@@ -854,6 +875,7 @@ fn gpu_444_preserves_per_pixel_chroma_and_planar_ten_bit_codes() -> Result<()> {
     // Test the packed shader through its documented RGBA-compatible view.
     // Radeon cannot allocate AYUV; native AYUV registration is exercised
     // separately by the opt-in NVIDIA hardware fixture.
+    // SAFETY: `gpu.device` is live and each descriptor and out-slot is a live local.
     unsafe {
         let mut texture = None;
         gpu.device.CreateTexture2D(
@@ -885,6 +907,8 @@ fn gpu_444_preserves_per_pixel_chroma_and_planar_ten_bit_codes() -> Result<()> {
         });
     }
     let texture = converter.convert(&source)?;
+    // SAFETY: `staging` is a CPU-readable 64-pixel-wide RGBA copy, so its first 8 mapped bytes are
+    // readable until Unmap below.
     unsafe {
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         texture.GetDesc(&mut desc);

@@ -1,4 +1,6 @@
 //! Owned DXGI ETW tracking. Failure keeps the original WGC composition time.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use crate::capture::qpc_frequency;
 use butterpollo_core::present_timing::Refiner;
 use std::{
@@ -75,6 +77,8 @@ impl Tracker {
             .chain(Some(0))
             .collect();
         let mut properties = Properties::new(true);
+        // SAFETY: `properties` is a repr(C) buffer whose BufferSize and LoggerNameOffset describe
+        // it, and `name` is NUL-terminated; both outlive the call.
         let mut result = unsafe {
             StartTraceW(
                 &mut s.session,
@@ -84,6 +88,7 @@ impl Tracker {
         };
         if result == ERROR_INVALID_PARAMETER {
             properties = Properties::new(false);
+            // SAFETY: As above, with freshly built `properties` and the same NUL-terminated `name`.
             result = unsafe {
                 StartTraceW(
                     &mut s.session,
@@ -100,6 +105,8 @@ impl Tracker {
             );
             return None;
         }
+        // SAFETY: `s.session` was just started by StartTraceW, DXGI is a static GUID, and no filter
+        // parameters are passed.
         let result = unsafe {
             EnableTraceEx2(
                 s.session,
@@ -132,6 +139,8 @@ impl Tracker {
             Context: (&*s.events as *const Events).cast_mut().cast(),
             ..Default::default()
         };
+        // SAFETY: `logfile` and the NUL-terminated `name` outlive the call; Context points into the
+        // boxed Events, which Drop frees only after joining the trace worker.
         s.consumer = unsafe { OpenTraceW(&mut logfile) };
         if s.consumer.Value == u64::MAX {
             return None;
@@ -139,6 +148,8 @@ impl Tracker {
         let handle = s.consumer.Value;
         match thread::Builder::new()
             .name("dxgi-presents".into())
+            // SAFETY: `handle` was opened by OpenTraceW above and is closed only in Drop, which
+            // then joins this worker before freeing the Events the callback reads.
             .spawn(move || unsafe {
                 let _ = ProcessTrace(&[PROCESSTRACE_HANDLE { Value: handle }], None, None);
             }) {
@@ -186,6 +197,7 @@ fn hex_nonce() -> u64 {
     u64::from_le_bytes(butterpollo_core::crypto::random::<8>())
 }
 unsafe extern "system" fn on_event(record: *mut EVENT_RECORD) {
+    // SAFETY: ETW passes either null or a record that is valid for the whole callback.
     let Some(record) = (unsafe { record.as_ref() }) else {
         return;
     };
@@ -200,6 +212,7 @@ unsafe extern "system" fn on_event(record: *mut EVENT_RECORD) {
     if record.UserData.is_null() || usize::from(record.UserDataLength) < pointer_bytes + 4 {
         return;
     }
+    // SAFETY: UserData is non-null, and ETW guarantees UserDataLength bytes there for the callback.
     let data = unsafe {
         std::slice::from_raw_parts(
             record.UserData.cast::<u8>(),
@@ -212,6 +225,8 @@ unsafe extern "system" fn on_event(record: *mut EVENT_RECORD) {
     if flags & 1 != 0 {
         return;
     } // DXGI_PRESENT_TEST
+    // SAFETY: UserContext is the non-null Context given to OpenTraceW, the boxed Events, which
+    // outlives the consumer; the tests pass a live Events too.
     let events = unsafe { &*record.UserContext.cast::<Events>() };
     let Ok(mut values) = events.values.lock() else {
         return;
@@ -234,6 +249,8 @@ impl Drop for Tracker {
     fn drop(&mut self) {
         if self.session.Value != 0 {
             let mut properties = Properties::new(false);
+            // SAFETY: `self.session` was started by this Tracker and is stopped once, here;
+            // `properties` is sized for the logger name the call writes back.
             unsafe {
                 let _ = ControlTraceW(
                     self.session,
@@ -244,6 +261,7 @@ impl Drop for Tracker {
             }
         }
         if self.consumer.Value != u64::MAX {
+            // SAFETY: `self.consumer` came from OpenTraceW and is closed only here.
             unsafe {
                 let _ = CloseTrace(self.consumer);
             }
@@ -303,6 +321,7 @@ impl Stamper {
                 dmSize: size_of::<DEVMODEW>() as u16,
                 ..Default::default()
             };
+            // SAFETY: `name` is NUL-terminated and `mode` has dmSize set; both outlive the call.
             self.grid = if unsafe {
                 EnumDisplaySettingsW(PCWSTR(name.as_ptr()), ENUM_CURRENT_SETTINGS, &mut mode)
             }
@@ -316,6 +335,7 @@ impl Stamper {
             self.refiner = Refiner::default();
         }
         let mut counter = 0;
+        // SAFETY: `counter` is a local i64 that outlives the call.
         if unsafe { QueryPerformanceCounter(&mut counter) }.is_err() {
             return captured;
         }
@@ -327,6 +347,7 @@ impl Stamper {
         let composition = counter - (age.as_secs_f64() * frequency as f64) as i64;
         if composition >= self.next_poll {
             self.next_poll = composition + frequency / 4;
+            // SAFETY: The call only writes the owner's id into `self.pid`; a null window yields 0.
             unsafe {
                 GetWindowThreadProcessId(GetForegroundWindow(), Some(&mut self.pid));
             }
@@ -381,6 +402,8 @@ mod tests {
             record.EventHeader.ProcessId = 17;
             record.EventHeader.TimeStamp = 2000;
             record.EventHeader.Flags = if pointer == 4 { 0x20 } else { 0 };
+            // SAFETY: `record` points at the live `events` and `data`, with UserDataLength within
+            // `data`.
             unsafe {
                 on_event(&mut record);
             }
@@ -388,16 +411,22 @@ mod tests {
             assert_eq!((saved.qpc, saved.pid, saved.chain), (2000, 17, 0x1234));
             let length = events.values.lock().unwrap().len();
             data[pointer] = 1; // DXGI_PRESENT_TEST
+            // SAFETY: `record` points at the live `events` and `data`, with UserDataLength within
+            // `data`.
             unsafe {
                 on_event(&mut record);
             }
             data[pointer] = 0;
             record.UserDataLength = pointer as u16;
+            // SAFETY: `record` points at the live `events` and `data`, with UserDataLength within
+            // `data`.
             unsafe {
                 on_event(&mut record);
             }
             record.UserDataLength = data.len() as u16;
             record.EventHeader.EventDescriptor.Id = 99;
+            // SAFETY: `record` points at the live `events` and `data`, with UserDataLength within
+            // `data`.
             unsafe {
                 on_event(&mut record);
             }

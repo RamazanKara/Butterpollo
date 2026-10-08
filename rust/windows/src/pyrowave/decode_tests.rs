@@ -1,3 +1,5 @@
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use super::{Api, check};
 use crate::{
     capture::{ComGuard, Device, GpuImage, Image, Pixel},
@@ -28,6 +30,8 @@ macro_rules! decoder_api {
         struct DecoderApi { $($name: $ty,)* }
         impl DecoderApi {
             unsafe fn load(dll: &libloading::Library) -> Result<Self> {
+                // SAFETY: Each symbol matches its 0.6 C signature, and callers keep `dll` loaded
+                // inside the shared Api.
                 Ok(Self { $($name: unsafe {
                     *dll.get::<$ty>(concat!("pyrowave_", stringify!($name), "\0").as_bytes())?
                 },)* })
@@ -60,6 +64,8 @@ struct Decoder {
 impl Decoder {
     fn new(gpu: &Device, config: &Negotiated) -> Result<Self> {
         let api = Api::load()?;
+        // SAFETY: `gpu` is a live D3D11 device, each create-info outlives its call, and `s` owns
+        // every PyroWave handle made here so Drop releases it on error.
         unsafe {
             let mut s = Self {
                 calls: DecoderApi::load(&api._dll)?,
@@ -199,6 +205,7 @@ impl Decoder {
     }
 
     fn decode(&mut self, gpu: &Device, packets: &[&[u8]]) -> Result<Vec<Vec<u16>>> {
+        // SAFETY: `decoder`, `images` and `sync` were made in `new`; arguments outlive each call.
         unsafe {
             (self.calls.decoder_clear)(self.decoder);
             ensure!(
@@ -277,6 +284,7 @@ impl Decoder {
 }
 impl Drop for Decoder {
     fn drop(&mut self) {
+        // SAFETY: Each non-null handle was made in `new` on `self.device`, destroyed last.
         unsafe {
             if !self.decoder.is_null() {
                 (self.calls.decoder_destroy)(self.decoder);
@@ -295,6 +303,8 @@ impl Drop for Decoder {
 }
 
 fn readback(gpu: &Device, texture: &ID3D11Texture2D) -> Result<Vec<u16>> {
+    // SAFETY: `staging` is a CPU-readable copy of `texture`, and each row read lies within the
+    // mapped `RowPitch * Height` bytes, which stay valid until Unmap below.
     unsafe {
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         texture.GetDesc(&mut desc);

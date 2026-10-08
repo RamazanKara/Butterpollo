@@ -1,5 +1,7 @@
 //! CUDA driver interop for NVENC's 10-bit planar 4:4:4 input.
 //! Only the installed driver is loaded; no CUDA toolkit or CPU readback is used.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use crate::{capture::Device, cuda_abi::*};
 use anyhow::{Context as _, Result, bail};
 use std::{ffi::c_void, ptr, rc::Rc, sync::Arc};
@@ -52,6 +54,8 @@ impl Drop for Guard {
     fn drop(&mut self) {
         let mut popped = ptr::null_mut();
         if let Err(error) = check(
+            // SAFETY: A Guard exists only after a successful push of this context, and `popped` is
+            // a live local.
             unsafe { (self.context.api.pop)(&mut popped) },
             "pop context",
         ) {
@@ -61,6 +65,8 @@ impl Drop for Guard {
 }
 impl Context {
     pub fn new(device: &Device) -> Result<Rc<Self>> {
+        // SAFETY: `library` is moved into `Api`, so every copied symbol stays loaded; each is
+        // declared with the CUDA driver API's C signature, and all out-pointers are live locals.
         unsafe {
             let library = crate::nvenc::system_library("nvcuda.dll")?;
             let init: Init = *library.get(b"cuInit\0")?;
@@ -115,6 +121,8 @@ impl Context {
         self.raw.cast()
     }
     pub fn enter(self: &Rc<Self>) -> Result<Guard> {
+        // SAFETY: `push` comes from the loaded driver and `self.raw` is the live context destroyed
+        // only in Drop.
         check(unsafe { (self.api.push)(self.raw) }, "push context")?;
         Ok(Guard {
             context: self.clone(),
@@ -123,6 +131,8 @@ impl Context {
 }
 impl Drop for Context {
     fn drop(&mut self) {
+        // SAFETY: `self.raw` was created in `new`; every Guard and Input holds an Rc, so none can
+        // still use it.
         let _ = check(unsafe { (self.api.destroy)(self.raw) }, "destroy context");
     }
 }
@@ -155,6 +165,8 @@ impl Input {
             rows: height.checked_mul(3).context("4:4:4 height overflow")?,
             mapped: false,
         };
+        // SAFETY: The context is current (guard above), `texture` is kept alive in `_texture`, and
+        // Drop releases whatever this block acquired before an error.
         unsafe {
             check(
                 (context.api.register)(&mut input.resource, texture.as_raw(), 0),
@@ -183,6 +195,8 @@ impl Input {
     }
     pub fn copy(&mut self) -> Result<()> {
         let _guard = self.context.enter()?;
+        // SAFETY: The context is current; `resource` is the registered texture and the copy writes
+        // `width * 2` bytes by `rows` rows, within the `pitch` allocation made in `new`.
         unsafe {
             check(
                 (self.context.api.map)(1, &mut self.resource, ptr::null_mut()),
@@ -228,6 +242,8 @@ impl Drop for Input {
         let Ok(_guard) = self.context.enter() else {
             return;
         };
+        // SAFETY: The context is current; each resource is released only if acquired, before the
+        // texture drops.
         unsafe {
             if self.mapped {
                 let _ = (self.context.api.unmap)(1, &mut self.resource, ptr::null_mut());

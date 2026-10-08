@@ -1,3 +1,5 @@
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use super::*;
 
 #[test]
@@ -457,6 +459,7 @@ fn wgc_compute_snapshots_match_d3d11_during_motion() -> Result<()> {
             wgc.check_size(&frame)?;
             let surface = frame.Surface()?;
             let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
+            // SAFETY: `access` is the surface of `frame`, which is closed only after this closure.
             let source: ID3D11Texture2D = unsafe { access.GetInterface()? };
             let snapshot = wgc.owned.copy(&wgc.gpu, &source)?.context("copy dropped")?;
             anyhow::ensure!(snapshot.ready.is_some(), "compute fell back to graphics");
@@ -526,6 +529,8 @@ fn wgc_reconnect_and_com_teardown_keep_the_runtime_loaded() -> Result<()> {
             drop(capture);
             drop(com);
             // Reproduce the unload boundary before a subsequent stream/thread.
+            // SAFETY: CoFreeUnusedLibrariesEx takes no pointers, and the name is a static
+            // NUL-terminated literal.
             unsafe {
                 CoFreeUnusedLibrariesEx(0, None);
                 GetModuleHandleW(windows::core::w!("GraphicsCapture.dll"))?;

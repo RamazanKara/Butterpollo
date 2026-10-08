@@ -1,4 +1,6 @@
 //! Rust-owned D3D11/Vulkan PyroWave encoder using the stable 2.0 bitstream.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use crate::{
     capture::{Device, GpuImage, Image, Pixel},
     encoder::Encoded,
@@ -32,6 +34,8 @@ macro_rules! api {
         impl Api {
             fn load() -> Result<Arc<Self>> {
                 let path=std::env::current_exe()?.parent().context("executable directory unavailable")?.join("libpyrowave-shared-0.dll");
+                // SAFETY: `dll` moves into the Api, keeping every copied symbol loaded; each
+                // matches the 0.6 C header, and the version is checked below.
                 unsafe {
                     let dll=libloading::Library::new(&path).with_context(||format!("loading {}",path.display()))?;
                     $(let $name=*dll.get::<$ty>(concat!("pyrowave_",stringify!($name),"\0").as_bytes())?;)*
@@ -91,6 +95,8 @@ impl Interop {
         pyro: p::pyrowave_device,
         texture: Arc<ID3D11Texture2D>,
     ) -> Result<Self> {
+        // SAFETY: `texture` and `device` share one live D3D11 device, the create-infos outlive
+        // their calls, and `s` owns each handle so Drop frees it on error.
         unsafe {
             let mut desc = D3D11_TEXTURE2D_DESC::default();
             texture.GetDesc(&mut desc);
@@ -165,6 +171,8 @@ impl Interop {
 }
 impl Drop for Interop {
     fn drop(&mut self) {
+        // SAFETY: `sync` and `image` were created on the Encoder's device, which is destroyed after
+        // `interop`.
         unsafe {
             if !self.sync.is_null() {
                 (self.api.sync_object_destroy)(self.sync);
@@ -202,6 +210,8 @@ impl ComputePlanes {
             compute.open(&textures[1])?,
             compute.open(&textures[2])?,
         ];
+        // SAFETY: `fence` is a live shared D3D11 fence and `compute.device` is a D3D12 device on
+        // the same adapter; `opened` is a live local and the handle is closed once opened.
         let fence = unsafe {
             let handle = fence.CreateSharedHandle(None, GENERIC_ALL.0, PCWSTR::null())?;
             let mut opened: Option<windows::Win32::Graphics::Direct3D12::ID3D12Fence> = None;
@@ -295,6 +305,7 @@ impl Encoder {
         warnings: Arc<butterpollo_core::session::Warnings>,
     ) -> Result<Self> {
         let api = Api::load()?;
+        // SAFETY: `d3d.device` is a live D3D11 device; GetAdapter and GetDesc only read it.
         let desc = unsafe { d3d.device.cast::<IDXGIDevice>()?.GetAdapter()?.GetDesc()? };
         let mut luid = p::pyrowave_luid { luid: [0; 8] };
         luid.luid[..4].copy_from_slice(&desc.AdapterLuid.LowPart.to_le_bytes());
@@ -318,6 +329,8 @@ impl Encoder {
             bitstream: vec![],
             packets: vec![],
         };
+        // SAFETY: `luid` and `info` are live locals, and `s` owns the device and encoder, which
+        // Drop destroys.
         unsafe {
             let result = (s.api.create_device_by_compat)(
                 0,
@@ -410,6 +423,8 @@ impl Encoder {
         if budget < 16 {
             return Ok(vec![]);
         }
+        // SAFETY: `interop` holds the three images and views made on `self.device`; `images`
+        // outlives the synchronous encode and the output buffers are sized as passed.
         unsafe {
             let images: Vec<_> = self
                 .interop
@@ -570,6 +585,8 @@ impl Encoder {
 }
 impl Drop for Encoder {
     fn drop(&mut self) {
+        // SAFETY: `encoder` and `device` were created in `new_device_reported`; the interop images
+        // go before the device.
         unsafe {
             if !self.encoder.is_null() {
                 (self.api.encoder_destroy)(self.encoder);

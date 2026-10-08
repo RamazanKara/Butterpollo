@@ -1,5 +1,7 @@
 //! Playnite on this PC: where it is installed, where its extensions go, and
 //! the named pipe its Butterpollo (Vibepollo) plugin serves.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use anyhow::{Context, Result, bail};
 use std::{
     fs::File,
@@ -31,6 +33,7 @@ pub const PROCESSES: [&str; 2] = ["Playnite.DesktopApp.exe", "Playnite.Fullscree
 
 fn session(pid: u32) -> Option<u32> {
     let mut session = 0;
+    // SAFETY: `session` is a local u32 that outlives the call.
     unsafe { ProcessIdToSessionId(pid, &mut session).ok()? };
     Some(session)
 }
@@ -47,12 +50,14 @@ fn in_session(
 /// Processes in the streaming user's session, including games handed off
 /// to a store client rather than started as Playnite children.
 pub fn session_processes() -> Result<Vec<butterpollo_core::steam::Process>> {
+    // SAFETY: GetCurrentProcessId takes no arguments and cannot fail.
     let current =
         session(unsafe { GetCurrentProcessId() }).context("reading the host's Windows session")?;
     Ok(in_session(crate::process::processes()?, current, session))
 }
 /// The running Playnite process (id and program), if any.
 pub fn running() -> Option<(u32, PathBuf)> {
+    // SAFETY: GetCurrentProcessId takes no arguments and cannot fail.
     let current = session(unsafe { GetCurrentProcessId() })?;
     find_running(
         crate::process::processes().ok()?,
@@ -188,6 +193,7 @@ fn handle(file: &File) -> HANDLE {
 }
 fn check_session(file: &File, current: u32) -> Result<()> {
     let mut server_session = 0;
+    // SAFETY: `file` keeps the pipe handle open, and `server_session` outlives the call.
     unsafe { GetNamedPipeServerSessionId(handle(file), &mut server_session)? };
     if server_session != current {
         bail!(
@@ -199,6 +205,7 @@ fn check_session(file: &File, current: u32) -> Result<()> {
 /// Bytes waiting in the pipe; an error once it is closed.
 fn available(file: &File) -> Result<u32> {
     let mut count = 0;
+    // SAFETY: `file` keeps the pipe handle open; only `count` is written, and it outlives the call.
     unsafe { PeekNamedPipe(handle(file), None, 0, None, Some(&mut count), None)? };
     Ok(count)
 }
@@ -216,6 +223,7 @@ fn open(name: &str, wait: Duration) -> Result<File> {
             // Busy: another client is mid-handshake.
             Err(error) if error.raw_os_error() == Some(231) && Instant::now() < deadline => {
                 let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+                // SAFETY: `wide` is a NUL-terminated pipe name that outlives the call.
                 unsafe {
                     let _ = WaitNamedPipeW(windows::core::PCWSTR(wide.as_ptr()), 500);
                 }
@@ -242,6 +250,7 @@ impl Pipe {
         Self::connect_to(PIPE, hello)
     }
     fn connect_to(control_name: &str, hello: &serde_json::Value) -> Result<Self> {
+        // SAFETY: GetCurrentProcessId takes no arguments and cannot fail.
         let current = session(unsafe { GetCurrentProcessId() })
             .context("reading the host's Windows session")?;
         let mut control = open(control_name, Duration::from_secs(2))
@@ -369,6 +378,8 @@ mod tests {
 
     fn server(name: &str) -> File {
         let name: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+        // SAFETY: `name` is NUL-terminated and outlives the call; null attributes mean default
+        // security.
         let pipe = unsafe {
             CreateNamedPipeW(
                 PCWSTR(name.as_ptr()),
@@ -382,7 +393,11 @@ mod tests {
             )
         };
         assert!(!pipe.is_invalid());
+        // SAFETY: `pipe` was checked valid and nothing else owns it, so the File takes sole
+        // ownership.
         let file = unsafe { File::from_raw_handle(pipe.0) };
+        // SAFETY: `file` owns the pipe handle, and a null OVERLAPPED is allowed for this
+        // synchronous call on a PIPE_NOWAIT pipe.
         unsafe {
             let _ = ConnectNamedPipe(handle(&file), None);
         }
@@ -392,6 +407,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let mut pid = 0;
+            // SAFETY: `file` keeps the pipe open and `pid` outlives the call.
             if unsafe { GetNamedPipeClientProcessId(handle(file), &mut pid) }.is_ok() {
                 return;
             }
@@ -494,6 +510,8 @@ mod tests {
         client.write_all(&[1]).unwrap();
         server.read_exact(&mut [0]).unwrap();
         let mut level = SECURITY_IMPERSONATION_LEVEL::default();
+        // SAFETY: `server` is a connected pipe that has read client data, as impersonation
+        // requires; `token` is owned once opened and `level` outlives GetTokenInformation.
         unsafe {
             ImpersonateNamedPipeClient(handle(&server)).unwrap();
             let mut token = HANDLE::default();

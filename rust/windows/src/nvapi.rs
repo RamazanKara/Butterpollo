@@ -1,4 +1,6 @@
 //! Direct NVIDIA DRS C ABI. No previous C++ host or helper is linked.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use anyhow::{Context, Result, bail};
 use libloading::Library;
 use serde::{Deserialize, Serialize};
@@ -44,11 +46,15 @@ fn unicode(value: &str) -> Result<[u16; 2048]> {
 }
 unsafe fn function<T: Copy>(query: Query, ids: &[u32]) -> Result<T> {
     for id in ids {
+        // SAFETY: The caller passes nvapi_QueryInterface from the loaded nvapi64.dll; any id is
+        // valid.
         let pointer = unsafe { query(*id) };
         if !pointer.is_null() {
             if size_of::<T>() != size_of::<*mut c_void>() {
                 bail!("invalid NvAPI function type");
             }
+            // SAFETY: The size check above holds, and the caller guarantees `T` is the function
+            // pointer type NvAPI documents for this id.
             return Ok(unsafe { std::mem::transmute_copy(&pointer) });
         }
     }
@@ -129,12 +135,18 @@ impl Drs {
     pub fn open_scope(scope: &Scope, create_profile: bool) -> Result<Self> {
         let path = std::env::var_os("SystemRoot").context("Windows directory missing")?;
         let library =
+            // SAFETY: Loads the NVIDIA driver's nvapi64.dll by its full System32 path, so only the
+            // driver's own initialisers run.
             unsafe { Library::new(std::path::PathBuf::from(path).join("System32/nvapi64.dll"))? };
+        // SAFETY: nvapi_QueryInterface has the Query signature, and `library` is kept in Drs for as
+        // long as the pointer is used.
         let query: Query = unsafe {
             *library
                 .get(b"nvapi_QueryInterface\0")
                 .or_else(|_| library.get(b"NvAPI_QueryInterface\0"))?
         };
+        // SAFETY: Each id is resolved to its documented NvAPI function type, the structs are the
+        // repr(C) NVDRS v1 layouts, and every pointer passed outlives its call.
         unsafe {
             let init: unsafe extern "C" fn() -> i32 = function(query, &[0x0150e828])?;
             let unload = function(query, &[0xd22bdd7e])?;
@@ -244,6 +256,8 @@ impl Drs {
     }
     pub fn read(&self, id: u32) -> Result<Value> {
         let mut setting = Setting::new(id);
+        // SAFETY: `get` is NvAPI_DRS_GetSetting from the library Drs keeps loaded, with the open
+        // session and profile; `setting` is a versioned NVDRS_SETTING that outlives the call.
         let code = unsafe { (self.get)(self.session, self.profile, id, &mut setting) };
         if code == -160 {
             return Ok(Value {
@@ -266,6 +280,8 @@ impl Drs {
     /// exclude inherited global values so app/global precedence stays explicit.
     pub fn profile_dword(&self, id: u32) -> Result<Option<u32>> {
         let mut setting = Setting::new(id);
+        // SAFETY: `get` is NvAPI_DRS_GetSetting from the library Drs keeps loaded, with the open
+        // session and profile; `setting` is a versioned NVDRS_SETTING that outlives the call.
         let code = unsafe { (self.get)(self.session, self.profile, id, &mut setting) };
         if code == -160 {
             return Ok(None);
@@ -280,10 +296,14 @@ impl Drs {
             let mut setting = Setting::new(id);
             setting.value[0] = value;
             check(
+                // SAFETY: NvAPI_DRS_SetSetting with the open session and profile, and a live
+                // `setting`.
                 unsafe { (self.set)(self.session, self.profile, &mut setting) },
                 "SetSetting",
             )
         } else {
+            // SAFETY: NvAPI_DRS_DeleteProfileSetting with the open session and profile; no
+            // pointers.
             let code = unsafe { (self.delete)(self.session, self.profile, id) };
             if code == -160 {
                 Ok(())
@@ -293,23 +313,31 @@ impl Drs {
         }
     }
     pub fn save(&self) -> Result<()> {
+        // SAFETY: `query` is nvapi_QueryInterface from the library Drs keeps loaded.
         let f = unsafe { (self.query)(0xfcbc7e14) };
         if f.is_null() {
             bail!("NvAPI SaveSettings is unavailable");
         }
+        // SAFETY: `f` is non-null and 0xfcbc7e14 is NvAPI_DRS_SaveSettings, with the SessionFn
+        // signature.
         let save: SessionFn = unsafe { std::mem::transmute(f) };
+        // SAFETY: `save` takes the session this Drs opened and still owns.
         check(unsafe { save(self.session) }, "SaveSettings")
     }
     pub fn version(&self) -> Result<u32> {
+        // SAFETY: `query` is nvapi_QueryInterface from the library Drs keeps loaded.
         let f = unsafe { (self.query)(0x2926aaad) };
         if f.is_null() {
             return Ok(0);
         }
+        // SAFETY: `f` is non-null and 0x2926aaad is NvAPI_SYS_GetDriverAndBranchVersion, which has
+        // this signature.
         let version: unsafe extern "C" fn(*mut u32, *mut u8) -> i32 =
             unsafe { std::mem::transmute(f) };
         let mut result = 0;
         let mut branch = [0; 64];
         check(
+            // SAFETY: `result` and the 64-byte `branch` (an NvAPI_ShortString) outlive the call.
             unsafe { version(&mut result, branch.as_mut_ptr()) },
             "GetDriverAndBranchVersion",
         )?;
@@ -318,6 +346,8 @@ impl Drs {
 }
 impl Drop for Drs {
     fn drop(&mut self) {
+        // SAFETY: `session` was created by this Drs and is destroyed once; NvAPI is unloaded before
+        // the `_library` field is dropped.
         unsafe {
             if !self.session.is_null() {
                 (self.destroy)(self.session);

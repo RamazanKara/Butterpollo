@@ -3,6 +3,8 @@
 //! Supports NVENC API 11 to 13 and reference frame invalidation. GPU
 //! resources stay owned until their output completes; 10-bit 4:4:4 input goes
 //! through CUDA interop (`cuda`).
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 mod cuda;
 
 use crate::{
@@ -46,11 +48,14 @@ type GetMaximum = unsafe extern "C" fn(*mut u32) -> NVENCSTATUS;
 
 pub(crate) fn system_library(name: &str) -> Result<libloading::Library> {
     let mut directory = [0u16; 32768];
+    // SAFETY: `directory` is a live, writable UTF-16 buffer and the call writes at most its length.
     let length = unsafe { GetSystemDirectoryW(Some(&mut directory)) } as usize;
     if length == 0 || length >= directory.len() {
         bail!("cannot locate the Windows system directory");
     }
     let path = std::path::PathBuf::from(String::from_utf16(&directory[..length])?).join(name);
+    // SAFETY: `path` is an absolute System32 path, so no search-order DLL is picked up; loading
+    // runs only the installed driver's initialisers.
     Ok(unsafe {
         libloading::os::windows::Library::load_with_flags(path, LOAD_LIBRARY_SEARCH_SYSTEM32.0)?
     }
@@ -63,6 +68,8 @@ struct Runtime {
 }
 impl Runtime {
     fn load() -> Result<Arc<Self>> {
+        // SAFETY: `library` moves into the Runtime, keeping the copied `create` pointer loaded;
+        // both symbols use NVIDIA's documented C signatures.
         unsafe {
             let library =
                 system_library("nvEncodeAPI64.dll").context("NVIDIA encode driver unavailable")?;
@@ -118,8 +125,12 @@ fn check_raw(
         functions
             .nvEncGetLastErrorString
             .and_then(|get| {
+                // SAFETY: `raw` is non-null and every caller passes the live session that
+                // `functions` was created for.
                 let message = unsafe { get(raw) };
                 (!message.is_null()).then(|| {
+                    // SAFETY: The driver returns a NUL-terminated string that stays valid until the
+                    // next call on `raw`.
                     unsafe { CStr::from_ptr(message) }
                         .to_string_lossy()
                         .into_owned()
@@ -280,6 +291,7 @@ struct Slot {
 impl Drop for Slot {
     fn drop(&mut self) {
         if !self.event.is_invalid() {
+            // SAFETY: This slot alone owns the event that `Session::slot` created.
             let _ = unsafe { CloseHandle(self.event) };
         }
     }
@@ -361,6 +373,8 @@ impl Session {
             ..Default::default()
         };
         check_raw(
+            // SAFETY: `create` is NvEncodeAPICreateInstance from the still-loaded DLL and
+            // `functions` is versioned.
             unsafe { (runtime.create)(&mut functions) },
             "create function table",
             &functions,
@@ -397,6 +411,8 @@ impl Session {
         };
         // The owner exists before the driver call, so even a partially opened
         // rejected version is destroyed before the next candidate is tried.
+        // SAFETY: `validate` confirmed nvEncOpenEncodeSessionEx exists, `device` is the caller's
+        // live D3D11 device or CUDA context, and both out-pointers are live locals.
         let status =
             unsafe { (functions.nvEncOpenEncodeSessionEx.unwrap())(&mut open, &mut session.raw) };
         session.check(status, "open session")?;
@@ -420,6 +436,8 @@ impl Session {
         };
         let mut value = 0;
         self.check(
+            // SAFETY: `self.raw` is the open session, `validate` checked nvEncGetEncodeCaps, and
+            // outputs are locals.
             unsafe {
                 (self.functions.nvEncGetEncodeCaps.unwrap())(
                     self.raw,
@@ -483,6 +501,8 @@ impl Session {
         let guid = codec_guid(self.stream.codec)?;
         let preset_guid = preset_guid(tuning.preset);
         let result = if let Some(get) = self.functions.nvEncGetEncodePresetConfigEx {
+            // SAFETY: `get` is the driver's own preset entry, `self.raw` is the open session and
+            // `preset` is versioned.
             unsafe {
                 get(
                     self.raw,
@@ -510,6 +530,8 @@ impl Session {
                     ..Default::default()
                 };
                 self.check(
+                    // SAFETY: `get` is the driver's legacy preset entry for the open session and
+                    // `preset` is versioned.
                     unsafe { get(self.raw, guid, preset_guid, &mut preset) },
                     "query compatible preset",
                 )?;
@@ -592,6 +614,8 @@ impl Session {
                 } else {
                     NV_ENC_H264_PROFILE_HIGH_GUID
                 };
+                // SAFETY: The preset was queried for the H.264 GUID, so this union member is
+                // active; it holds only integers and raw pointers.
                 let codec = unsafe { &mut self.config.encodeCodecConfig.h264Config };
                 codec.set_repeatSPSPPS(1);
                 codec.idrPeriod = u32::MAX;
@@ -627,6 +651,8 @@ impl Session {
                 } else {
                     NV_ENC_HEVC_PROFILE_MAIN_GUID
                 };
+                // SAFETY: The preset was queried for the HEVC GUID, so this union member is active;
+                // it holds only integers and raw pointers.
                 let codec = unsafe { &mut self.config.encodeCodecConfig.hevcConfig };
                 codec.set_repeatSPSPPS(1);
                 codec.idrPeriod = u32::MAX;
@@ -656,6 +682,8 @@ impl Session {
             }
             2 => {
                 self.config.profileGUID = NV_ENC_AV1_PROFILE_MAIN_GUID;
+                // SAFETY: The preset was queried for the AV1 GUID, so this union member is active;
+                // it holds only integers and raw pointers.
                 let codec = unsafe { &mut self.config.encodeCodecConfig.av1Config };
                 codec.set_repeatSeqHdr(1);
                 codec.idrPeriod = u32::MAX;
@@ -713,6 +741,8 @@ impl Session {
         {
             self.initialize.set_splitEncodeMode(tuning.split);
         }
+        // SAFETY: `validate` checked nvEncInitializeEncoder; `initialize` and the config it points
+        // to are boxed in `self`, so both addresses stay valid for the session.
         let status = unsafe {
             (self.functions.nvEncInitializeEncoder.unwrap())(self.raw, self.initialize.as_mut())
         };
@@ -760,6 +790,8 @@ impl Session {
             bufferUsage: _NV_ENC_BUFFER_USAGE_NV_ENC_INPUT_IMAGE,
             ..Default::default()
         };
+        // SAFETY: `validate` checked the entry; `input.raw` is kept alive by the slot's texture
+        // clone or CUDA allocation until `cleanup_slot` unregisters it.
         let status =
             unsafe { (self.functions.nvEncRegisterResource.unwrap())(self.raw, &mut register) };
         self.slots[index].registered = register.registeredResource;
@@ -771,6 +803,8 @@ impl Session {
             version: self.api.structure(1, false),
             ..Default::default()
         };
+        // SAFETY: `validate` checked the entry and `output` is versioned; the buffer is owned by
+        // this slot.
         let status =
             unsafe { (self.functions.nvEncCreateBitstreamBuffer.unwrap())(self.raw, &mut output) };
         self.slots[index].output = output.bitstreamBuffer;
@@ -779,6 +813,8 @@ impl Session {
             bail!("NVENC returned no output buffer");
         }
         if self.initialize.enableEncodeAsync != 0 {
+            // SAFETY: No pointers are passed; the handle is owned by the slot and closed in
+            // `Slot::drop`.
             self.slots[index].event = unsafe { CreateEventW(None, false, false, None) }?;
             let mut event = NV_ENC_EVENT_PARAMS {
                 version: self.api.event(),
@@ -786,6 +822,8 @@ impl Session {
                 ..Default::default()
             };
             self.check(
+                // SAFETY: `enableEncodeAsync` is set only if nvEncRegisterAsyncEvent exists;
+                // `event` is the slot's handle.
                 unsafe { (self.functions.nvEncRegisterAsyncEvent.unwrap())(self.raw, &mut event) },
                 "register completion event",
             )?;
@@ -839,6 +877,8 @@ impl Session {
             registeredResource: self.slots[slot].registered,
             ..Default::default()
         };
+        // SAFETY: `registered` is this slot's live registration and no pending frame has it mapped
+        // (checked above).
         let status = unsafe { (self.functions.nvEncMapInputResource.unwrap())(self.raw, &mut map) };
         self.slots[slot].mapped = map.mappedResource;
         self.check(status, "map encoder input")?;
@@ -884,6 +924,8 @@ impl Session {
             }
         }
         let started = Instant::now();
+        // SAFETY: `picture` points at the slot's mapped input, output buffer and boxed metadata,
+        // which all stay alive while the slot is in `pending`.
         let status =
             unsafe { (self.functions.nvEncEncodePicture.unwrap())(self.raw, &mut picture) };
         if status != SUCCESS && status != _NVENCSTATUS_NV_ENC_ERR_NEED_MORE_INPUT {
@@ -912,6 +954,7 @@ impl Session {
             let index = pending.slot;
             let slot = &mut self.slots[index];
             if !slot.event.is_invalid() && !slot.signaled {
+                // SAFETY: `slot.event` is a valid handle (checked above) owned by the slot.
                 match unsafe { WaitForSingleObject(slot.event, 0) } {
                     WAIT_OBJECT_0 => slot.signaled = true,
                     WAIT_TIMEOUT => {
@@ -929,6 +972,8 @@ impl Session {
                 ..Default::default()
             };
             lock.set_doNotWait(u32::from(!slot.event.is_invalid()));
+            // SAFETY: `slot.output` is the pending slot's bitstream buffer on this session and
+            // `lock` is versioned.
             let status =
                 unsafe { (self.functions.nvEncLockBitstream.unwrap())(self.raw, &mut lock) };
             if status == _NVENCSTATUS_NV_ENC_ERR_LOCK_BUSY {
@@ -948,6 +993,8 @@ impl Session {
                 }
                 let idr = lock.pictureType == _NV_ENC_PIC_TYPE_NV_ENC_PIC_TYPE_IDR;
                 Ok(Encoded {
+                    // SAFETY: The lock succeeded and the pointer is non-null with a bounded size;
+                    // the bytes stay valid until the unlock below.
                     bytes: unsafe {
                         std::slice::from_raw_parts(
                             lock.bitstreamBufferPtr.cast(),
@@ -962,6 +1009,7 @@ impl Session {
                 })
             })();
             self.check(
+                // SAFETY: `output` was locked by the successful nvEncLockBitstream above.
                 unsafe {
                     (self.functions.nvEncUnlockBitstream.unwrap())(
                         self.raw,
@@ -972,6 +1020,8 @@ impl Session {
             )?;
             let encoded = result?;
             self.check(
+                // SAFETY: `mapped` is the input mapped for this frame in `submit`, and its output
+                // has been collected.
                 unsafe {
                     (self.functions.nvEncUnmapInputResource.unwrap())(
                         self.raw,
@@ -1041,6 +1091,8 @@ impl Session {
         reconfigure.set_resetEncoder(u32::from(after > before));
         reconfigure.set_forceIDR(u32::from(after > before));
         self.check(
+            // SAFETY: `dynamic_bitrate` requires nvEncReconfigureEncoder, and the boxed `config` is
+            // kept as `self.config` after the call.
             unsafe {
                 (self.functions.nvEncReconfigureEncoder.unwrap())(self.raw, &mut reconfigure)
             },
@@ -1064,6 +1116,8 @@ impl Session {
             Recovery::Invalidate { first, last } => {
                 for frame in first..=last {
                     self.check(
+                        // SAFETY: `plan` returns Invalidate only when `self.invalidation`, which
+                        // requires this entry, is set.
                         unsafe {
                             (self.functions.nvEncInvalidateRefFrames.unwrap())(self.raw, frame)
                         },
@@ -1087,6 +1141,8 @@ fn cleanup_slot(
     slot: &mut Slot,
 ) -> Result<()> {
     let check = |status, operation| check_raw(status, operation, functions, raw);
+    // SAFETY: `raw` is the session these resources belong to; each is released only while still
+    // held and then cleared, and the unregister entry existed when `event_registered` was set.
     unsafe {
         if !slot.mapped.is_null() {
             check(
@@ -1142,6 +1198,7 @@ impl Drop for Session {
                 encodePicFlags: _NV_ENC_PIC_FLAGS_NV_ENC_PIC_FLAG_EOS,
                 ..Default::default()
             };
+            // SAFETY: `self.raw` is the non-null open session and `eos` is versioned.
             let _ = unsafe { (self.functions.nvEncEncodePicture.unwrap())(self.raw, &mut eos) };
             let _ = self.drain();
         }
@@ -1156,6 +1213,8 @@ impl Drop for Session {
                 tracing::warn!(%error, "NVENC input cleanup deferred to session destruction");
             }
         }
+        // SAFETY: `self.raw` is non-null (checked at the top) and is destroyed once, since it is
+        // cleared below.
         let status = unsafe { (self.functions.nvEncDestroyEncoder.unwrap())(self.raw) };
         if let Err(error) = self.check(status, "destroy session") {
             // A failed native destroy leaves its async workers' lifetime

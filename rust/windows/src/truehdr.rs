@@ -1,4 +1,6 @@
 //! Optional Rust NGX adapter; creation, conversion and teardown stay on one thread.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use crate::capture::{Device, GpuImage, GpuPool, Image, Pixel, read_texture};
 use anyhow::{Context, Result, bail};
 use std::{ffi::c_void, ptr};
@@ -39,6 +41,7 @@ impl Filter {
         Self::new_device(image.gpu.clone(), parameters)
     }
     fn new_device(device: Device, parameters: [u32; 4]) -> Result<Self> {
+        // SAFETY: `device.device` is a live D3D11 device; the DXGI calls only read its adapter.
         unsafe {
             let adapter = device
                 .device
@@ -53,6 +56,8 @@ impl Filter {
             .parent()
             .context("executable directory unavailable")?
             .join("butterpollo_truehdr.dll");
+        // SAFETY: The DLL beside the executable exports these symbols with these types (ABI 1 is
+        // checked first), and Filter keeps `dll` and `device` while the pointers are used.
         unsafe {
             let dll =
                 libloading::Library::new(path).context("Rust TrueHDR runtime is unavailable")?;
@@ -87,6 +92,8 @@ impl Filter {
         if image.pixel != Pixel::Bgra8 || image.gpu.device.as_raw() != self.device.device.as_raw() {
             bail!("TrueHDR requires an SDR texture on the capture device");
         }
+        // SAFETY: `state` is the live NGX state, created on this device, whose multithread lock is
+        // held; the returned texture is only borrowed while it is copied into the pool.
         unsafe {
             let lock: ID3D11Multithread = self.device.context.cast()?;
             lock.Enter();
@@ -124,6 +131,8 @@ impl Filter {
         {
             bail!("invalid TrueHDR input image");
         }
+        // SAFETY: `image.bytes` holds stride * height bytes (checked above) for UpdateSubresource,
+        // and `state` is the live NGX state; the output is only borrowed while it is read back.
         unsafe {
             if self.size != (image.width, image.height) {
                 self.input = None;
@@ -174,6 +183,8 @@ impl Filter {
 }
 impl Drop for Filter {
     fn drop(&mut self) {
+        // SAFETY: `state` came from create and is destroyed once, here; `_dll` is dropped after
+        // this.
         unsafe {
             (self.destroy)(self.state);
         }

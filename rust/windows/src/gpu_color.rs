@@ -1,4 +1,6 @@
 //! D3D11 conversion owned by the Rust host. No readback or vendor tone mapping.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use crate::capture::{Device, GpuImage, Pixel};
 use anyhow::{Context, Result, bail};
 use std::{borrow::Cow, sync::Arc};
@@ -18,10 +20,17 @@ use windows::{
 const SHADER: &str = include_str!("shaders/color.hlsl");
 include!(concat!(env!("OUT_DIR"), "/shader_bytecode.rs"));
 
+/// The precompiled bytecode for `entry` and `target`, or the HLSL compiled now.
+///
+/// # Safety
+///
+/// `entry` and `target` must be NUL-terminated.
 unsafe fn compile(entry: &'static [u8], target: &'static [u8]) -> Result<Cow<'static, [u8]>> {
     if let Some(bytecode) = shader_bytecode(entry, target) {
         return Ok(Cow::Borrowed(bytecode));
     }
+    // SAFETY: `SHADER` is passed with its exact length, callers pass NUL-terminated `entry` and
+    // `target`, and each blob is read only within GetBufferSize bytes while it is still alive.
     unsafe {
         let mut code = None;
         let mut errors = None;
@@ -146,6 +155,8 @@ impl Converter {
         if !config.hdr && source.2 == Pixel::Rgba10Pq {
             bail!("HDR surface supplied to an SDR converter");
         }
+        // SAFETY: `gpu.device` is a live D3D11 device, `compile` gets NUL-terminated names, and
+        // every descriptor and the 80-byte `values` outlive the calls that read them.
         unsafe {
             let mut vertex = None;
             let mut luma = None;
@@ -229,6 +240,8 @@ impl Converter {
         if self.targets.len() >= 8 {
             bail!("GPU conversion queue reached its bounded limit");
         }
+        // SAFETY: `gpu.device` is live, each descriptor outlives its call, and the views target the
+        // new texture.
         unsafe {
             let mut texture = None;
             self.gpu
@@ -305,6 +318,8 @@ impl Converter {
             self.dirty = true;
         }
         let mut source = None;
+        // SAFETY: `image.texture` is live and on this device, which callers check with
+        // `accepts_gpu_device`.
         unsafe {
             self.gpu.device.CreateShaderResourceView(
                 image.texture.as_ref(),
@@ -317,6 +332,8 @@ impl Converter {
     pub fn convert(&mut self, image: &GpuImage) -> Result<Arc<ID3D11Texture2D>> {
         let index = self.target()?;
         let source = self.source_views(image)?;
+        // SAFETY: The context is held from Enter to Leave with no early return between, all bound
+        // objects are on this device, and `values` is the buffer's 80 bytes.
         unsafe {
             let context = &self.gpu.context;
             // Capture and the codec share this device. Keep the complete draw
@@ -386,6 +403,8 @@ impl PlanarConverter {
         base.values[11] = u32::from(config.yuv444);
         base.dirty = true;
         let divisor = if config.yuv444 { 1 } else { 2 };
+        // SAFETY: `gpu.device` is a live D3D11 device, `compile` gets NUL-terminated names, and
+        // every descriptor outlives the call that reads it.
         unsafe {
             let mut textures = Vec::new();
             let mut views = Vec::new();
@@ -447,6 +466,8 @@ impl PlanarConverter {
     pub fn convert(&mut self, image: &GpuImage, luminance: [f32; 2]) -> Result<()> {
         self.base.set_luminance(luminance);
         let source = self.base.source_views(image)?;
+        // SAFETY: The context is held from Enter to Leave with no early return between, all bound
+        // objects are on this device, and `values` is the buffer's 80 bytes.
         unsafe {
             let context = &self.base.gpu.context;
             let lock: ID3D11Multithread = windows::core::Interface::cast(context)?;

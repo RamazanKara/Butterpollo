@@ -1,3 +1,5 @@
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use anyhow::Result;
 use std::time::{Duration, Instant};
 use windows::{
@@ -23,6 +25,7 @@ pub struct DisplayAwake {
 impl DisplayAwake {
     pub fn enter() -> Result<Self> {
         let required = ES_CONTINUOUS | ES_DISPLAY_REQUIRED;
+        // SAFETY: SetThreadExecutionState takes only flags by value and affects only this thread.
         let previous = unsafe { SetThreadExecutionState(required) };
         anyhow::ensure!(
             previous.0 != 0,
@@ -36,6 +39,8 @@ impl DisplayAwake {
         // a caller keeping the system awake. Drop also handles this error path.
         if previous & !required != EXECUTION_STATE(0) {
             anyhow::ensure!(
+                // SAFETY: Flags only, by value; this changes only the calling thread's execution
+                // state.
                 unsafe { SetThreadExecutionState(previous | required) }.0 != 0,
                 "Windows rejected the combined execution-state request"
             );
@@ -45,21 +50,28 @@ impl DisplayAwake {
 }
 impl Drop for DisplayAwake {
     fn drop(&mut self) {
+        // SAFETY: Flags only; the guard is !Send, so this restores the state on the thread that set
+        // it.
         unsafe {
             SetThreadExecutionState(self.previous | ES_CONTINUOUS);
         }
     }
 }
 // Windows event operations are thread-safe; ownership keeps the handle alive.
+// SAFETY: Signal owns its event handle until Drop, and event calls may come from any thread.
 unsafe impl Send for Signal {}
+// SAFETY: SetEvent, ResetEvent and waits are thread-safe kernel calls, and none needs `&mut self`.
 unsafe impl Sync for Signal {}
 impl Signal {
     pub fn new() -> Result<Self> {
+        // SAFETY: Null attributes and name create a new unnamed event; Signal owns the handle and
+        // closes it only in Drop.
         Ok(Self(unsafe {
             CreateEventW(None, true, false, PCWSTR::null())?
         }))
     }
     pub fn set(&self) -> Result<()> {
+        // SAFETY: `self.0` is the event this Signal owns, open until Drop.
         unsafe {
             SetEvent(self.0)?;
         }
@@ -71,6 +83,7 @@ impl Signal {
     }
     /// Reset while holding the protected capture-image lock, before waiting.
     pub fn reset(&self) -> Result<()> {
+        // SAFETY: `self.0` is the event this Signal owns, open until Drop.
         unsafe {
             ResetEvent(self.0)?;
         }
@@ -79,6 +92,7 @@ impl Signal {
 }
 impl Drop for Signal {
     fn drop(&mut self) {
+        // SAFETY: `self.0` is owned by this Signal and closed exactly once, here.
         unsafe {
             let _ = CloseHandle(self.0);
         }
@@ -86,6 +100,8 @@ impl Drop for Signal {
 }
 impl Timer {
     pub fn new() -> Result<Self> {
+        // SAFETY: Null attributes and name create a new unnamed timer; Timer owns the handle and
+        // closes it only in Drop.
         unsafe {
             let timer = CreateWaitableTimerExW(
                 None,
@@ -102,6 +118,8 @@ impl Timer {
         if remaining > Duration::from_micros(100) {
             let ticks = -(((remaining - Duration::from_micros(50)).as_nanos() / 100)
                 .min(i64::MAX as u128) as i64);
+            // SAFETY: `self.0` is this Timer's open handle, `ticks` outlives the call, and no
+            // completion routine is registered.
             unsafe {
                 if SetWaitableTimer(self.0, &ticks, 0, None, None, false).is_ok() {
                     let _ = WaitForSingleObject(
@@ -143,6 +161,8 @@ impl Timer {
             return Ok(true);
         }
         while Instant::now() < deadline {
+            // SAFETY: `signal.0` is an event the borrowed Signal keeps open; a zero timeout only
+            // polls it.
             if unsafe { WaitForSingleObject(signal.0, 0) } == WAIT_OBJECT_0 {
                 return Ok(true);
             }
@@ -158,6 +178,8 @@ impl Timer {
             return Ok(false);
         }
         let ticks = -((remaining.as_nanos() / 100).clamp(1, i64::MAX as u128) as i64);
+        // SAFETY: Both handles stay open for the borrows of `self` and `signal`, `ticks` outlives
+        // the call, and no completion routine is registered.
         unsafe {
             SetWaitableTimer(self.0, &ticks, 0, None, None, false)?;
             let result = WaitForMultipleObjects(&[self.0, signal.0], false, INFINITE);
@@ -173,6 +195,7 @@ impl Timer {
 }
 impl Drop for Timer {
     fn drop(&mut self) {
+        // SAFETY: `self.0` is owned by this Timer and closed exactly once, here.
         unsafe {
             let _ = CloseHandle(self.0);
         }
@@ -206,6 +229,8 @@ static STREAMS: std::sync::Mutex<Streams> = std::sync::Mutex::new(Streams {
 /// returns the previous settings to restore.
 fn force_cursor() -> Option<windows::Win32::UI::Accessibility::MOUSEKEYS> {
     use windows::Win32::UI::{Accessibility::*, WindowsAndMessaging::*};
+    // SAFETY: Both MOUSEKEYS are locals with cbSize set, and they outlive the SystemParametersInfoW
+    // calls that read and write them.
     unsafe {
         if GetSystemMetrics(SM_MOUSEPRESENT) != 0 {
             return None;
@@ -272,6 +297,8 @@ fn wifi_streaming_mode() -> Option<usize> {
     ) -> u32;
     type Free = unsafe extern "system" fn(*const core::ffi::c_void);
     type Close = unsafe extern "system" fn(HANDLE, *const core::ffi::c_void) -> u32;
+    // SAFETY: Each pointer is resolved from wlanapi.dll, never freed, with its documented
+    // signature; `list` is non-null and freed only after its dwNumberOfItems entries are read.
     unsafe {
         let module = LoadLibraryW(windows::core::w!("wlanapi.dll")).ok()?;
         let open: Open =
@@ -333,6 +360,8 @@ fn wifi_streaming_mode() -> Option<usize> {
 fn close_wlan(handle: usize) {
     use windows::Win32::System::LibraryLoader::*;
     type Close = unsafe extern "system" fn(HANDLE, *const core::ffi::c_void) -> u32;
+    // SAFETY: wlanapi.dll was loaded and never freed, WlanCloseHandle has this signature, and
+    // `handle` came from WlanOpenHandle; STREAMS hands it here only once.
     unsafe {
         if let Ok(module) = GetModuleHandleW(windows::core::w!("wlanapi.dll"))
             && let Some(close) = GetProcAddress(module, windows::core::s!("WlanCloseHandle"))
@@ -352,6 +381,8 @@ pub fn disable_power_throttling() {
             | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
         StateMask: 0,
     };
+    // SAFETY: `state` is an initialised local that outlives the call, the size passed is its size,
+    // and GetCurrentProcess returns a pseudo handle.
     if let Err(error) = unsafe {
         SetProcessInformation(
             GetCurrentProcess(),
@@ -367,6 +398,7 @@ impl StreamingScope {
     pub fn enter() -> Self {
         let mut streams = STREAMS.lock().unwrap();
         if streams.count == 0 {
+            // SAFETY: DwmEnableMMCSS takes only a BOOL.
             unsafe {
                 let _ = windows::Win32::Graphics::Dwm::DwmEnableMMCSS(true);
             }
@@ -374,6 +406,8 @@ impl StreamingScope {
             if streams.mouse_keys.is_none() {
                 streams.mouse_keys = force_cursor();
             }
+            // SAFETY: GetCurrentProcess returns a pseudo handle that needs no closing, and the
+            // other calls take only plain values.
             unsafe {
                 let process = GetCurrentProcess();
                 disable_power_throttling();
@@ -393,6 +427,8 @@ impl Drop for StreamingScope {
         let mut streams = STREAMS.lock().unwrap();
         streams.count -= 1;
         if streams.count == 0 {
+            // SAFETY: The process pseudo handle needs no closing, the priority was saved by enter,
+            // and the calls take only plain values.
             unsafe {
                 let process = GetCurrentProcess();
                 if streams.priority != 0 {
@@ -406,6 +442,8 @@ impl Drop for StreamingScope {
             }
             // Keep the original settings until they are back, as the C++ host does.
             if let Some(mut previous) = streams.mouse_keys
+                // SAFETY: `previous` is a local MOUSEKEYS, its cbSize set by force_cursor, that
+                // outlives the call.
                 && unsafe {
                     windows::Win32::UI::WindowsAndMessaging::SystemParametersInfoW(
                     windows::Win32::UI::WindowsAndMessaging::SPI_SETMOUSEKEYS,
@@ -429,6 +467,7 @@ mod tests {
     #[test]
     #[ignore = "temporarily keeps the interactive display awake"]
     fn display_awake_preserves_and_restores_thread_power_requirements() -> Result<()> {
+        // SAFETY: SetThreadExecutionState takes only flags and affects only this test's thread.
         let previous = unsafe { SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) };
         anyhow::ensure!(previous.0 != 0, "cannot set test execution state");
         let restore = DisplayAwake {
@@ -438,11 +477,14 @@ mod tests {
         let before = ES_CONTINUOUS | ES_SYSTEM_REQUIRED;
         let required = before | ES_DISPLAY_REQUIRED;
         let first = DisplayAwake::enter()?;
+        // SAFETY: SetThreadExecutionState takes only flags and affects only this test's thread.
         assert_eq!(unsafe { SetThreadExecutionState(required) }, required);
         let second = DisplayAwake::enter()?;
         drop(second);
+        // SAFETY: SetThreadExecutionState takes only flags and affects only this test's thread.
         assert_eq!(unsafe { SetThreadExecutionState(required) }, required);
         drop(first);
+        // SAFETY: SetThreadExecutionState takes only flags and affects only this test's thread.
         assert_eq!(unsafe { SetThreadExecutionState(before) }, before);
         drop(restore);
         Ok(())

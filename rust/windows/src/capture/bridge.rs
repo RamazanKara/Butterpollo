@@ -4,6 +4,8 @@
 //! 0x80070424). Only capture runs in the user process; the host keeps its service
 //! identity for input, display recovery and credentials. A private local pipe
 //! carries metadata. Three unnamed keyed textures carry pixels, never the CPU.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use super::*;
 use crate::ipc::Pipe;
 use anyhow::ensure;
@@ -26,6 +28,8 @@ const START_TIMEOUT: Duration = Duration::from_secs(5);
 const PIPE_PREFIX: &str = r"\\.\pipe\Butterpollo.Wgc.";
 
 fn owned(handle: HANDLE) -> OwnedHandle {
+    // SAFETY: Callers pass a handle this process owns and closes nowhere else: a fresh
+    // CreateSharedHandle result, or the event the pid-checked parent duplicated into this process.
     unsafe { OwnedHandle::from_raw_handle(handle.0) }
 }
 fn raw(handle: &OwnedHandle) -> HANDLE {
@@ -78,6 +82,8 @@ enum Reply {
 /// No desktop mutation. A user capture cannot show Winlogon/UAC; the SYSTEM
 /// host must temporarily use Desktop Duplication there.
 pub(super) fn desktop_available() -> bool {
+    // SAFETY: `desktop` is closed exactly once below, and `name` is a live buffer whose byte size
+    // is passed.
     unsafe {
         let Ok(desktop) = OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_READOBJECTS)
         else {
@@ -99,6 +105,8 @@ pub(super) fn desktop_available() -> bool {
 /// AcquireSync's WAIT_TIMEOUT and WAIT_ABANDONED are *successful HRESULTs*.
 /// The generated Result binding loses that distinction, so inspect the raw code.
 fn acquire(mutex: &IDXGIKeyedMutex, key: u64) -> Result<bool> {
+    // SAFETY: `mutex` is a live IDXGIKeyedMutex and AcquireSync takes (this, key, timeout) as
+    // called here.
     let status = unsafe { (mutex.vtable().AcquireSync)(mutex.as_raw(), key, 0) };
     acquired_status(status)
 }
@@ -266,6 +274,7 @@ impl Session {
             "--wgc-worker".into(),
             pipe_name.into(),
             "--wgc-parent".into(),
+            // SAFETY: GetCurrentProcessId has no preconditions.
             unsafe { GetCurrentProcessId() }.to_string().into(),
         ];
         let process = crate::process::Process::spawn(
@@ -330,8 +339,11 @@ impl Session {
         let mut textures = Vec::with_capacity(SLOTS);
         for handle in handles {
             let handle = process.duplicate_resource(usize::try_from(handle)?)?;
+            // SAFETY: `handle` is the helper's shared texture duplicated into this process; `desc`
+            // is checked below.
             let texture: ID3D11Texture2D = unsafe { device.OpenSharedResource1(raw(&handle))? };
             let mut desc = D3D11_TEXTURE2D_DESC::default();
+            // SAFETY: `texture` is a live texture and `desc` a live local.
             unsafe {
                 texture.GetDesc(&mut desc);
             }
@@ -450,6 +462,8 @@ impl Session {
             // Handoff orders the context after its compute copy. Releasing the
             // keyed mutex therefore cannot let the helper overwrite a texture
             // while our GPU is still reading it, even without a CPU wait.
+            // SAFETY: This process acquired the keyed mutex with key 1 above, and the context is
+            // this device's.
             unsafe {
                 texture.mutex.ReleaseSync(0)?;
                 self.gpu.context.Flush();
@@ -521,6 +535,7 @@ fn next_native(capture: &mut Wgc) -> Result<Option<NativeFrame>> {
 }
 fn native_texture(frame: &NativeFrame) -> Result<ID3D11Texture2D> {
     let access: IDirect3DDxgiInterfaceAccess = frame.0.Surface()?.cast()?;
+    // SAFETY: `access` is the surface of a frame that `frame` keeps open for this call.
     Ok(unsafe { access.GetInterface()? })
 }
 
@@ -603,6 +618,7 @@ fn worker(pipe: &Pipe) -> Result<()> {
         }
         if Instant::now() >= repaint {
             repaint = Instant::now() + Duration::from_millis(500);
+            // SAFETY: RedrawWindow takes no pointers here and only queues repaints.
             unsafe {
                 use windows::Win32::Graphics::Gdi::{
                     RDW_ALLCHILDREN, RDW_INVALIDATE, RedrawWindow,
@@ -625,6 +641,7 @@ fn worker(pipe: &Pipe) -> Result<()> {
     };
     let source = native_texture(first.as_ref().unwrap())?;
     let mut desc = D3D11_TEXTURE2D_DESC::default();
+    // SAFETY: `source` is a live texture and `desc` a live local.
     unsafe {
         source.GetDesc(&mut desc);
     }
@@ -639,6 +656,8 @@ fn worker(pipe: &Pipe) -> Result<()> {
     let mut textures = Vec::with_capacity(SLOTS);
     let mut handles = Vec::with_capacity(SLOTS);
     for _ in 0..SLOTS {
+        // SAFETY: `gpu.device` is live and `desc` was validated above; each shared handle is owned
+        // by `handles`.
         unsafe {
             let mut texture = None;
             gpu.device
@@ -712,6 +731,8 @@ fn worker(pipe: &Pipe) -> Result<()> {
                         })?;
                     }
                     if copy.is_none() {
+                        // SAFETY: Both textures live on `gpu.device`, and this process holds
+                        // `texture`'s keyed mutex (key 0).
                         unsafe {
                             gpu.context.CopyResource(&texture.texture, &source);
                         }
@@ -720,6 +741,8 @@ fn worker(pipe: &Pipe) -> Result<()> {
                 })();
                 // Release is queued after the compute handoff's context wait.
                 // Thus the host sees complete pixels even under GPU load.
+                // SAFETY: This process acquired the keyed mutex with key 0 above, and the context
+                // is this device's.
                 unsafe {
                     texture.mutex.ReleaseSync(1)?;
                     gpu.context.Flush();
@@ -737,6 +760,7 @@ fn worker(pipe: &Pipe) -> Result<()> {
                     sequence,
                     qpc,
                 })?;
+                // SAFETY: `wake` is an event handle this process owns until `worker` returns.
                 unsafe {
                     let _ = windows::Win32::System::Threading::SetEvent(raw(&wake));
                 }
@@ -761,6 +785,7 @@ mod tests {
     #[test]
     fn private_pipe_checks_peers_bounds_messages_and_reports_disconnect() -> Result<()> {
         let (server, name) = Pipe::server(PIPE_PREFIX)?;
+        // SAFETY: GetCurrentProcessId has no preconditions.
         let pid = unsafe { GetCurrentProcessId() };
         assert!(Pipe::client(&name, pid.wrapping_add(1), PIPE_PREFIX).is_err());
         // The rejected client closes its endpoint; use a fresh single-instance

@@ -1,4 +1,6 @@
 //! Avoid stale UDP ICMP errors aborting a subsequent streaming client.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use anyhow::Result;
 use std::{
     net::{SocketAddr, UdpSocket},
@@ -9,6 +11,7 @@ use windows::Win32::Networking::WinSock::*;
 pub fn host_name() -> Option<String> {
     use windows::Win32::System::SystemInformation::{ComputerNameDnsHostname, GetComputerNameExW};
     let mut size = 0u32;
+    // SAFETY: A null buffer only queries the required length into the local `size`.
     unsafe {
         let _ = GetComputerNameExW(ComputerNameDnsHostname, None, &mut size);
     }
@@ -16,6 +19,8 @@ pub fn host_name() -> Option<String> {
         return None;
     }
     let mut name = vec![0u16; size as usize];
+    // SAFETY: `name` holds `size` UTF-16 units, the length the previous call reported, and outlives
+    // the call.
     unsafe {
         GetComputerNameExW(
             ComputerNameDnsHostname,
@@ -46,6 +51,7 @@ pub fn local_mac(address: std::net::IpAddr) -> Result<String> {
         // The Windows records contain u64 members and pointers.
         let mut storage = vec![0u64; (size as usize).div_ceil(8)];
         let first = storage.as_mut_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
+        // SAFETY: `storage` is 8-byte aligned, at least `size` bytes long, and outlives the call.
         let status = unsafe {
             GetAdaptersAddresses(
                 AF_UNSPEC.0 as u32,
@@ -61,6 +67,8 @@ pub fn local_mac(address: std::net::IpAddr) -> Result<String> {
         if status != ERROR_SUCCESS.0 {
             return Err(std::io::Error::from_raw_os_error(status as i32).into());
         }
+        // SAFETY: GetAdaptersAddresses filled `storage`, still alive, with linked records; each
+        // sockaddr is read as IPv4 or IPv6 only after its family and length are checked.
         unsafe {
             let mut adapter = first;
             while let Some(row) = adapter.as_ref() {
@@ -117,6 +125,7 @@ pub fn lan_addresses() -> Result<Vec<String>> {
         );
         let mut storage = vec![0u64; (size as usize).div_ceil(8)];
         let first = storage.as_mut_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
+        // SAFETY: `storage` is 8-byte aligned, at least `size` bytes long, and outlives the call.
         let status = unsafe {
             GetAdaptersAddresses(
                 AF_INET.0 as u32,
@@ -133,6 +142,8 @@ pub fn lan_addresses() -> Result<Vec<String>> {
             return Err(std::io::Error::from_raw_os_error(status as i32).into());
         }
         let mut addresses = Vec::new();
+        // SAFETY: As in local_mac, the linked records live in `storage`, and each sockaddr is read
+        // as SOCKADDR_IN only when non-null and long enough; `interface` is a local.
         unsafe {
             let mut adapter = first;
             while let Some(row) = adapter.as_ref() {
@@ -181,6 +192,8 @@ pub fn lan_addresses() -> Result<Vec<String>> {
 pub fn configure_udp(socket: &UdpSocket) -> Result<()> {
     let disabled = 0u32;
     let mut returned = 0;
+    // SAFETY: The borrowed socket stays open, `disabled` is the 4-byte input buffer, and the call
+    // is synchronous with no output buffer.
     if unsafe {
         WSAIoctl(
             SOCKET(socket.as_raw_socket() as usize),
@@ -195,6 +208,7 @@ pub fn configure_udp(socket: &UdpSocket) -> Result<()> {
         )
     } == SOCKET_ERROR
     {
+        // SAFETY: WSAGetLastError only reads this thread's last Winsock error.
         return Err(std::io::Error::from_raw_os_error(unsafe { WSAGetLastError() }.0).into());
     }
     // Vibepollo's video socket buffer: a key frame's burst fits without the
@@ -243,9 +257,12 @@ pub fn wait_readable(
         events: POLLRDNORM,
         revents: WSAPOLL_EVENT_FLAGS(0),
     }];
+    // SAFETY: `poll` is a one-element array that outlives the call; a stale socket only makes
+    // WSAPoll fail.
     match unsafe { WSAPoll(poll.as_mut_ptr(), 1, timeout_ms) } {
         ready if ready >= 0 => Ok(ready > 0),
         _ => Err(std::io::Error::from_raw_os_error(
+            // SAFETY: WSAGetLastError only reads this thread's last Winsock error.
             unsafe { WSAGetLastError() }.0,
         )),
     }
@@ -256,6 +273,8 @@ fn writable(socket: &UdpSocket) -> bool {
         events: POLLWRNORM,
         revents: WSAPOLL_EVENT_FLAGS(0),
     }];
+    // SAFETY: `poll` is a one-element array that outlives the call, for a socket the borrow keeps
+    // open.
     (unsafe { WSAPoll(poll.as_mut_ptr(), 1, WRITABLE_WAIT_MS) }) > 0
         && poll[0].revents.0 & POLLWRNORM.0 != 0
 }
@@ -355,6 +374,8 @@ pub fn routed_link(peer: SocketAddr) -> Link {
     }
     let address = socket2::SockAddr::from(peer);
     let mut index = 0;
+    // SAFETY: `address` and `row` outlive the calls that read and fill them; `table` is valid on
+    // success and freed only after `stack`, its NumEntries rows, is last used.
     unsafe {
         if GetBestInterfaceEx(address.as_ptr().cast(), &mut index) != 0 {
             return Link::default();
@@ -421,6 +442,8 @@ fn qwave() -> Option<&'static Qwave> {
     }
     type Create = unsafe extern "system" fn(*const Version, *mut HANDLE) -> windows::core::BOOL;
     static QWAVE: std::sync::OnceLock<Option<Qwave>> = std::sync::OnceLock::new();
+    // SAFETY: qwave.dll comes from System32 and is never freed, so its pointers, transmuted to
+    // their documented signatures, stay valid; `Version` and `handle` outlive the call.
     QWAVE
         .get_or_init(|| unsafe {
             let module = LoadLibraryExW(
@@ -476,6 +499,8 @@ impl QosFlow {
         };
         let address = socket2::SockAddr::from(peer);
         let mut flow = 0;
+        // SAFETY: `add` stays valid because qwave.dll is never freed, the handle is from
+        // QOSCreateHandle, and `address` and `flow` outlive the call.
         let added = unsafe {
             (qwave.add)(
                 windows::Win32::Foundation::HANDLE(qwave.handle as *mut _),
@@ -495,6 +520,8 @@ impl QosFlow {
 impl Drop for QosFlow {
     fn drop(&mut self) {
         if let Some(qwave) = qwave() {
+            // SAFETY: The function and handle come from the never-freed Qwave, and `self.0` is the
+            // flow QOSAddSocketToFlow returned; it is removed only here.
             unsafe {
                 let _ = (qwave.remove)(
                     windows::Win32::Foundation::HANDLE(qwave.handle as *mut _),
@@ -649,6 +676,8 @@ impl Batch {
         for attempt in 0..2 {
             let mut sent = 0;
             self.system_calls += 1;
+            // SAFETY: `message` and all it points to outlive this synchronous call, and the only
+            // caller limits packets to 64, so dwBufferCount stays within `buffers`.
             let result = unsafe {
                 WSASendMsg(
                     SOCKET(socket.as_raw_socket() as usize),
@@ -666,6 +695,7 @@ impl Batch {
                 );
                 return Ok(Ok(expected));
             }
+            // SAFETY: WSAGetLastError only reads this thread's last Winsock error.
             let error = unsafe { WSAGetLastError() };
             if error != WSAEWOULDBLOCK || attempt == 1 || !writable(socket) {
                 return Ok(Err(error));

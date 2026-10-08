@@ -1,5 +1,7 @@
 //! A driver function table exercises the real session owner and submission
 //! path without requiring NVIDIA hardware. Hardware decode is a separate test.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use super::*;
 use std::{
     cell::RefCell,
@@ -52,10 +54,13 @@ fn version(value: u32) -> ApiVersion {
     ApiVersion((value & 0xff) as u8, (value >> 24 & 0xf) as u8)
 }
 unsafe fn handle(raw: *mut c_void) -> ApiVersion {
+    // SAFETY: Callers pass a session handle that `open` boxed from an ApiVersion and `destroy` has
+    // not freed.
     unsafe { *raw.cast::<ApiVersion>() }
 }
 
 unsafe extern "C" fn create(table: *mut NV_ENCODE_API_FUNCTION_LIST) -> NVENCSTATUS {
+    // SAFETY: `Session::open_version` passes its live, exclusive function table.
     let table = unsafe { &mut *table };
     assert_eq!(table.version, version(table.version).structure(2, false));
     table.nvEncOpenEncodeSessionEx = Some(open);
@@ -83,14 +88,17 @@ unsafe extern "C" fn open(
     parameters: *mut NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS,
     raw: *mut *mut c_void,
 ) -> NVENCSTATUS {
+    // SAFETY: The session passes a pointer to its live parameter struct for this call.
     let p = unsafe { &*parameters };
     let api = version(p.apiVersion);
     assert_eq!(p.version, api.structure(1, false));
+    // SAFETY: `raw` points at the session's `raw` field, writable for this call.
     unsafe {
         *raw = Box::into_raw(Box::new(api)).cast();
     }
     state(|d| {
         d.opened.push(api);
+        // SAFETY: `raw` was written just above and still points at the session's field.
         d.active.insert(unsafe { *raw } as usize);
         if d.reject_open == Some(api) {
             _NVENCSTATUS_NV_ENC_ERR_INVALID_VERSION
@@ -100,6 +108,7 @@ unsafe extern "C" fn open(
     })
 }
 unsafe extern "C" fn destroy(raw: *mut c_void) -> NVENCSTATUS {
+    // SAFETY: `raw` is a live handle from `open`; it is freed only at the end of this call.
     let api = unsafe { handle(raw) };
     state(|d| {
         assert!(d.active.remove(&(raw as usize)));
@@ -122,6 +131,7 @@ unsafe extern "C" fn destroy(raw: *mut c_void) -> NVENCSTATUS {
         d.destroyed.push(api);
         d.calls.push("destroy session");
     });
+    // SAFETY: `raw` came from Box::into_raw in `open`, and each session is destroyed once.
     drop(unsafe { Box::from_raw(raw.cast::<ApiVersion>()) });
     SUCCESS
 }
@@ -131,8 +141,11 @@ unsafe extern "C" fn caps(
     parameters: *mut NV_ENC_CAPS_PARAM,
     value: *mut i32,
 ) -> NVENCSTATUS {
+    // SAFETY: The session passes a pointer to its live parameter struct for this call.
     let p = unsafe { &*parameters };
+    // SAFETY: `raw` is a live handle that `open` boxed and `destroy` has not freed.
     assert_eq!(p.version, unsafe { handle(raw) }.structure(1, false));
+    // SAFETY: `value` points at the session's live local out-value.
     unsafe {
         *value = state(|d| match p.capsToQuery {
             _NV_ENC_CAPS_NV_ENC_CAPS_WIDTH_MAX | _NV_ENC_CAPS_NV_ENC_CAPS_HEIGHT_MAX => 8192,
@@ -150,7 +163,9 @@ unsafe extern "C" fn preset(
     _: GUID,
     config: *mut NV_ENC_PRESET_CONFIG,
 ) -> NVENCSTATUS {
+    // SAFETY: `raw` is a live handle that `open` boxed and `destroy` has not freed.
     let api = unsafe { handle(raw) };
+    // SAFETY: The session passes an exclusive pointer to its live preset struct.
     let p = unsafe { &mut *config };
     assert_eq!(p.version, api.preset());
     assert_eq!(p.presetCfg.version, api.config());
@@ -175,6 +190,7 @@ unsafe extern "C" fn preset_ex(
     if state(|d| d.preset_fallback) {
         _NVENCSTATUS_NV_ENC_ERR_UNSUPPORTED_PARAM
     } else {
+        // SAFETY: The arguments are this call's own, valid as `preset` requires.
         unsafe { preset(raw, codec, guid, config) }
     }
 }
@@ -182,10 +198,13 @@ unsafe extern "C" fn initialize(
     raw: *mut c_void,
     parameters: *mut NV_ENC_INITIALIZE_PARAMS,
 ) -> NVENCSTATUS {
+    // SAFETY: The session passes a pointer to its live parameter struct for this call.
     let p = unsafe { *parameters };
+    // SAFETY: `raw` is a live handle that `open` boxed and `destroy` has not freed.
     let api = unsafe { handle(raw) };
     assert_eq!(p.version, api.initialize());
     assert!(!p.encodeConfig.is_null());
+    // SAFETY: `encodeConfig` is non-null (asserted above) and points at the session's boxed config.
     let config = unsafe { *p.encodeConfig };
     assert_eq!(config.version, api.config());
     state(|d| {
@@ -201,7 +220,9 @@ unsafe extern "C" fn register(
     raw: *mut c_void,
     parameters: *mut NV_ENC_REGISTER_RESOURCE,
 ) -> NVENCSTATUS {
+    // SAFETY: The session passes an exclusive pointer to its live parameter struct for this call.
     let p = unsafe { &mut *parameters };
+    // SAFETY: `raw` is a live handle that `open` boxed and `destroy` has not freed.
     assert_eq!(p.version, unsafe { handle(raw) }.register());
     p.registeredResource = p.resourceToRegister;
     state(|d| {
@@ -226,7 +247,9 @@ unsafe extern "C" fn map(
     raw: *mut c_void,
     parameters: *mut NV_ENC_MAP_INPUT_RESOURCE,
 ) -> NVENCSTATUS {
+    // SAFETY: The session passes an exclusive pointer to its live parameter struct for this call.
     let p = unsafe { &mut *parameters };
+    // SAFETY: `raw` is a live handle that `open` boxed and `destroy` has not freed.
     assert_eq!(p.version, unsafe { handle(raw) }.structure(4, false));
     p.mappedResource = p.registeredResource;
     state(|d| {
@@ -247,7 +270,9 @@ unsafe extern "C" fn output(
     raw: *mut c_void,
     parameters: *mut NV_ENC_CREATE_BITSTREAM_BUFFER,
 ) -> NVENCSTATUS {
+    // SAFETY: The session passes an exclusive pointer to its live parameter struct for this call.
     let p = unsafe { &mut *parameters };
+    // SAFETY: `raw` is a live handle that `open` boxed and `destroy` has not freed.
     assert_eq!(p.version, unsafe { handle(raw) }.structure(1, false));
     let mut buffer = Box::<Buffer>::default();
     p.bitstreamBuffer = (&mut *buffer as *mut Buffer).cast();
@@ -273,7 +298,9 @@ unsafe extern "C" fn register_event(
     raw: *mut c_void,
     parameters: *mut NV_ENC_EVENT_PARAMS,
 ) -> NVENCSTATUS {
+    // SAFETY: The session passes a pointer to its live parameter struct for this call.
     let p = unsafe { &*parameters };
+    // SAFETY: `raw` is a live handle that `open` boxed and `destroy` has not freed.
     assert_eq!(p.version, unsafe { handle(raw) }.event());
     state(|d| assert!(d.events.insert(p.completionEvent as usize)));
     SUCCESS
@@ -282,7 +309,9 @@ unsafe extern "C" fn unregister_event(
     raw: *mut c_void,
     parameters: *mut NV_ENC_EVENT_PARAMS,
 ) -> NVENCSTATUS {
+    // SAFETY: The session passes a pointer to its live parameter struct for this call.
     let p = unsafe { &*parameters };
+    // SAFETY: `raw` is a live handle that `open` boxed and `destroy` has not freed.
     assert_eq!(p.version, unsafe { handle(raw) }.event());
     state(|d| {
         assert!(d.events.remove(&(p.completionEvent as usize)));
@@ -291,7 +320,9 @@ unsafe extern "C" fn unregister_event(
     SUCCESS
 }
 unsafe extern "C" fn encode(raw: *mut c_void, parameters: *mut NV_ENC_PIC_PARAMS) -> NVENCSTATUS {
+    // SAFETY: The session passes a pointer to its live parameter struct for this call.
     let p = unsafe { &*parameters };
+    // SAFETY: `raw` is a live handle that `open` boxed and `destroy` has not freed.
     assert_eq!(p.version, unsafe { handle(raw) }.picture());
     if p.encodePicFlags & _NV_ENC_PIC_FLAGS_NV_ENC_PIC_FLAG_EOS != 0 {
         return SUCCESS;
@@ -304,17 +335,23 @@ unsafe extern "C" fn encode(raw: *mut c_void, parameters: *mut NV_ENC_PIC_PARAMS
         buffer.timestamp = p.inputTimeStamp;
         buffer.idr = p.encodePicFlags & _NV_ENC_PIC_FLAGS_NV_ENC_PIC_FLAG_FORCEIDR != 0;
         let pointer = if codec == 1 {
+            // SAFETY: An HEVC session fills this union member; it holds only integers and pointers.
             unsafe { p.codecPicParams.hevcPicParams.pMasteringDisplay }
         } else if codec == 2 {
+            // SAFETY: An AV1 session fills this union member; it holds only integers and pointers.
             unsafe { p.codecPicParams.av1PicParams.pMasteringDisplay }
         } else {
             ptr::null_mut()
         };
         if !pointer.is_null() {
+            // SAFETY: `pointer` is non-null and points at the slot's boxed metadata, live while the
+            // frame is pending.
             buffer.metadata = Some((pointer, unsafe { (*pointer).maxLuma }));
         }
         if !p.completionEvent.is_null() {
             assert!(d.events.contains(&(p.completionEvent as usize)));
+            // SAFETY: `completionEvent` is the slot's live event, registered with this driver
+            // (asserted above).
             unsafe {
                 SetEvent(HANDLE(p.completionEvent)).unwrap();
             }
@@ -327,7 +364,9 @@ unsafe extern "C" fn encode(raw: *mut c_void, parameters: *mut NV_ENC_PIC_PARAMS
     })
 }
 unsafe extern "C" fn lock(raw: *mut c_void, parameters: *mut NV_ENC_LOCK_BITSTREAM) -> NVENCSTATUS {
+    // SAFETY: The session passes an exclusive pointer to its live parameter struct for this call.
     let p = unsafe { &mut *parameters };
+    // SAFETY: `raw` is a live handle that `open` boxed and `destroy` has not freed.
     assert_eq!(p.version, unsafe { handle(raw) }.lock());
     state(|d| {
         if d.lock_busy > 0 {
@@ -337,6 +376,7 @@ unsafe extern "C" fn lock(raw: *mut c_void, parameters: *mut NV_ENC_LOCK_BITSTRE
         let buffer = d.outputs.get_mut(&(p.outputBitstream as usize)).unwrap();
         if let Some((pointer, expected)) = buffer.metadata {
             assert_eq!(
+                // SAFETY: The slot owning `pointer` is still pending, so its metadata box is live.
                 unsafe { (*pointer).maxLuma },
                 expected,
                 "in-flight HDR metadata was overwritten"
@@ -369,8 +409,11 @@ unsafe extern "C" fn reconfigure(
     raw: *mut c_void,
     parameters: *mut NV_ENC_RECONFIGURE_PARAMS,
 ) -> NVENCSTATUS {
+    // SAFETY: The session passes a pointer to its live parameter struct for this call.
     let p = unsafe { *parameters };
+    // SAFETY: `raw` is a live handle that `open` boxed and `destroy` has not freed.
     assert_eq!(p.version, unsafe { handle(raw) }.reconfigure());
+    // SAFETY: `encodeConfig` is the boxed config `Session::bitrate` keeps alive for this call.
     let config = unsafe { *p.reInitEncodeParams.encodeConfig };
     state(|d| {
         d.reconfigured = Some((p, config));
@@ -451,6 +494,7 @@ fn rejected_versions_destroy_partial_sessions_and_keep_legacy_ten_bit_fields() -
     };
     let encoder = session(&config, ApiVersion(13, 0))?;
     assert_eq!(encoder.api, ApiVersion(12, 1));
+    // SAFETY: The session configured HEVC; the union member holds only integers and pointers.
     let format = unsafe { encoder.config.encodeCodecConfig.hevcConfig };
     assert_eq!(format.reserved3(), 2);
     assert_eq!(format.inputBitDepth, 0);
@@ -479,6 +523,7 @@ fn rejected_versions_destroy_partial_sessions_and_keep_legacy_ten_bit_fields() -
         },
         ApiVersion(12, 1),
     )?;
+    // SAFETY: The session configured AV1; the union member holds only integers and pointers.
     let format = unsafe { av1.config.encodeCodecConfig.av1Config };
     assert_eq!(format.enableTemporalSVC(), 1);
     assert_eq!(format.reserved4(), 1);
@@ -620,6 +665,7 @@ fn failed_bitrate_reconfigure_keeps_previous_config_then_higher_rate_requests_id
         assert_eq!(parameters.resetEncoder(), 1);
         assert_eq!(config.rcParams.maxBitRate, 40_000_000);
         assert_eq!(
+            // SAFETY: HEVC was configured; the union member is plain integers and pointers.
             unsafe { config.encodeCodecConfig.hevcConfig }
                 .hevcVUIParameters
                 .transferCharacteristics,
