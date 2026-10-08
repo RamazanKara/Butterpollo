@@ -503,6 +503,10 @@ struct LaunchState {
     fullscreen: bool,
     fullscreen_seen: bool,
     game_id: String,
+    /// A game started, or the fullscreen menu appeared or came back: bring
+    /// it to the front (`playnite_focus_*`).
+    focus_game: bool,
+    focus_menu: bool,
 }
 impl LaunchState {
     fn status(&mut self, id: &str, message: Message) {
@@ -539,6 +543,7 @@ impl LaunchState {
                 }
                 self.stopped = false;
                 self.missing_since = None;
+                self.focus_game = true;
                 tracing::info!(id, folder = %self.install_dir, exe = %self.exe, "Playnite started the game");
             }
             "gameStopped" if ours => {
@@ -627,6 +632,9 @@ impl LaunchState {
         if !self.fullscreen || !running {
             return;
         }
+        if !self.fullscreen_seen {
+            self.focus_menu = true;
+        }
         self.fullscreen_seen = true;
         if self.phase == Phase::Exited {
             tracing::info!(id = %self.game_id, "Playnite game ended; keeping the fullscreen menu open");
@@ -637,6 +645,7 @@ impl LaunchState {
             self.stopped = false;
             self.saw_process = false;
             self.missing_since = None;
+            self.focus_menu = true;
         }
     }
 }
@@ -667,6 +676,7 @@ impl Launch {
             .context("Playnite launch failed: no Desktop or Fullscreen executable found; open Playnite once or repair its installation")?;
         tracing::info!(id, fullscreen, executable = %program.display(), running = butterpollo_windows::playnite::running().is_some(), "Playnite launch prepared");
         let plugin_ready = update_plugin(h);
+        let settings = Settings::from_config(&h.config.read().unwrap());
         let baseline = butterpollo_windows::playnite::session_processes().unwrap_or_default();
         let state = Arc::new(Mutex::new(LaunchState {
             fullscreen,
@@ -678,7 +688,17 @@ impl Launch {
             let (id, environment) = (id.to_owned(), environment.clone());
             std::thread::Builder::new()
                 .name("playnite-launch".into())
-                .spawn(move || run(&program, &id, &environment, &state, &stop, plugin_ready))
+                .spawn(move || {
+                    run(
+                        &program,
+                        &id,
+                        &environment,
+                        &state,
+                        &stop,
+                        plugin_ready,
+                        &settings,
+                    )
+                })
                 .context("starting the Playnite launch worker")?
         };
         Ok(Self {
@@ -729,6 +749,7 @@ fn run(
     state: &Mutex<LaunchState>,
     stop: &AtomicBool,
     plugin_ready: bool,
+    settings: &Settings,
 ) {
     let fullscreen = id.is_empty();
     let set = |phase: Phase| state.lock().unwrap().phase = phase;
@@ -801,6 +822,8 @@ fn run(
     let mut reconnect_at = requested;
     let mut pipe = Some(pipe);
     let shared = state;
+    // What to bring to the front: the game (false) or the fullscreen menu.
+    let mut focus: Option<(bool, playnite::Focus)> = None;
     // The connection stays open for the stream: Playnite keeps the
     // stream's environment for the game until it closes.
     while !stop.load(Ordering::Acquire) {
@@ -880,7 +903,23 @@ fn run(
         if !fullscreen && pipe.is_none() && state.phase == Phase::Untracked {
             return;
         }
+        // A game that started wins over the menu it started from.
+        let game = std::mem::take(&mut state.focus_game);
+        if std::mem::take(&mut state.focus_menu) || game {
+            focus = playnite::Focus::arm(settings, Instant::now()).map(|f| (!game, f));
+        }
+        let (install_dir, exe) = (state.install_dir.clone(), state.exe.clone());
         drop(state);
+        if let Some((menu, budget)) = &mut focus
+            && budget.due(Instant::now())
+        {
+            let focused = bring_forward(*menu, &install_dir, &exe);
+            budget.checked(Instant::now(), focused);
+            if budget.finished(Instant::now()) {
+                tracing::info!(id, menu = *menu, focused, "Playnite window focus finished");
+                focus = None;
+            }
+        }
         if reconnect {
             reconnect_at = Instant::now() + Duration::from_secs(5);
             if let Ok(connected) = Pipe::connect(&hello)
@@ -893,6 +932,31 @@ fn run(
             }
         }
     }
+}
+/// Bring the game's window, or Playnite's fullscreen menu, to the front;
+/// true when it is in front.
+fn bring_forward(menu: bool, install_dir: &str, exe: &str) -> bool {
+    let Ok(processes) = butterpollo_windows::playnite::session_processes() else {
+        return false;
+    };
+    let candidates: Vec<u32> = processes
+        .iter()
+        .filter(|p| {
+            if menu {
+                p.name.eq_ignore_ascii_case("Playnite.FullscreenApp.exe")
+            } else {
+                butterpollo_windows::process::image_path(p.pid)
+                    .is_some_and(|path| playnite::game_process(&path, install_dir, exe))
+            }
+        })
+        .map(|p| p.pid)
+        .collect();
+    if butterpollo_windows::foreground::process().is_some_and(|pid| candidates.contains(&pid)) {
+        return true;
+    }
+    candidates
+        .into_iter()
+        .any(butterpollo_windows::lossless::focus)
 }
 fn launch_command(id: &str, environment: &BTreeMap<String, String>) -> Value {
     if id.is_empty() {
@@ -1065,6 +1129,27 @@ mod tests {
         state.status("", status("gameStarted", "second"));
         assert_eq!(state.phase, Phase::Running);
         assert_eq!(state.game_id, "second");
+    }
+
+    #[test]
+    fn a_started_game_and_the_returning_menu_ask_for_focus() {
+        let mut state = LaunchState {
+            fullscreen: true,
+            ..Default::default()
+        };
+        let at = Instant::now();
+        state.poll_fullscreen(true);
+        assert!(std::mem::take(&mut state.focus_menu));
+        state.poll_fullscreen(true);
+        assert!(!state.focus_menu);
+        state.status("", status("gameStarted", "game"));
+        assert!(std::mem::take(&mut state.focus_game));
+        state.status("", status("gameStopped", "game"));
+        state.poll(at, Some(false));
+        state.poll(at + EXIT_GRACE, Some(false));
+        state.poll_fullscreen(true);
+        assert!(state.focus_menu);
+        assert!(!state.focus_game);
     }
 
     #[test]

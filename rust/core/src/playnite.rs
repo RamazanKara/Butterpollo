@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     path::PathBuf,
+    time::{Duration, Instant},
 };
 
 /// A game as the plugin describes it.
@@ -271,6 +272,51 @@ impl Settings {
             focus_exit_on_first: config.boolean("playnite_focus_exit_on_first", false),
             fullscreen_entry: config.boolean("playnite_fullscreen_entry_enabled", false),
         }
+    }
+}
+
+/// Bringing a started game, or the fullscreen menu, to the front, as
+/// Vibepollo's launcher does with the `playnite_focus_*` settings: once a
+/// second for `focus_timeout_secs`, until the window was confirmed in front
+/// `focus_attempts` times (once with `focus_exit_on_first`). Launchers and
+/// splash screens take the foreground back while a game starts, so a single
+/// success is not always the end of it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Focus {
+    left: i64,
+    deadline: Instant,
+    next: Instant,
+}
+impl Focus {
+    pub const INTERVAL: Duration = Duration::from_secs(1);
+    /// Start focusing at `now`; None when the settings turn it off.
+    pub fn arm(settings: &Settings, now: Instant) -> Option<Self> {
+        if settings.focus_attempts <= 0 || settings.focus_timeout_secs <= 0 {
+            return None;
+        }
+        Some(Self {
+            left: if settings.focus_exit_on_first {
+                1
+            } else {
+                settings.focus_attempts
+            },
+            deadline: now + Duration::from_secs(settings.focus_timeout_secs as u64),
+            next: now,
+        })
+    }
+    /// Whether to check the window, and bring it forward, now.
+    pub fn due(&self, now: Instant) -> bool {
+        now >= self.next && !self.finished(now)
+    }
+    pub fn finished(&self, now: Instant) -> bool {
+        self.left <= 0 || now >= self.deadline
+    }
+    /// Record a check at `now`; `focused` when the window was in front.
+    pub fn checked(&mut self, now: Instant, focused: bool) {
+        if focused {
+            self.left -= 1;
+        }
+        self.next = now + Self::INTERVAL;
     }
 }
 
@@ -884,5 +930,53 @@ mod tests {
         assert!(fullscreen_entry(&mut apps, false));
         assert_eq!(apps.len(), 1);
         assert_eq!(purge(&mut apps), 1);
+    }
+
+    fn focus_settings(attempts: i64, timeout: i64, exit_on_first: bool) -> Settings {
+        let mut settings = Settings::from_config(&Config::default());
+        settings.focus_attempts = attempts;
+        settings.focus_timeout_secs = timeout;
+        settings.focus_exit_on_first = exit_on_first;
+        settings
+    }
+    #[test]
+    fn focus_defaults_match_vibepollo_and_zero_turns_it_off() {
+        let settings = Settings::from_config(&Config::default());
+        assert_eq!(
+            (settings.focus_attempts, settings.focus_timeout_secs),
+            (3, 15)
+        );
+        assert!(!settings.focus_exit_on_first);
+        let now = Instant::now();
+        assert!(Focus::arm(&focus_settings(0, 15, false), now).is_none());
+        assert!(Focus::arm(&focus_settings(3, 0, true), now).is_none());
+    }
+    #[test]
+    fn focus_retries_once_a_second_until_confirmed_the_set_number_of_times() {
+        let at = Instant::now();
+        let mut focus = Focus::arm(&focus_settings(2, 15, false), at).unwrap();
+        assert!(focus.due(at));
+        focus.checked(at, false);
+        assert!(!focus.due(at + Duration::from_millis(500)));
+        let second = at + Focus::INTERVAL;
+        assert!(focus.due(second));
+        focus.checked(second, true);
+        assert!(!focus.finished(second));
+        let third = second + Focus::INTERVAL;
+        focus.checked(third, true);
+        assert!(focus.finished(third));
+        assert!(!focus.due(third + Focus::INTERVAL));
+    }
+    #[test]
+    fn focus_can_stop_at_the_first_success_and_always_stops_at_the_timeout() {
+        let at = Instant::now();
+        let mut first = Focus::arm(&focus_settings(5, 15, true), at).unwrap();
+        first.checked(at, true);
+        assert!(first.finished(at));
+        let mut timed = Focus::arm(&focus_settings(5, 3, false), at).unwrap();
+        timed.checked(at, false);
+        assert!(timed.due(at + Duration::from_secs(2)));
+        assert!(!timed.due(at + Duration::from_secs(3)));
+        assert!(timed.finished(at + Duration::from_secs(3)));
     }
 }

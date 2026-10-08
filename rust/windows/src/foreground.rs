@@ -1,4 +1,5 @@
-//! Read-only visible window stack, including passive shell/compositor overlays.
+//! Read-only visible window stack, including passive shell/compositor
+//! overlays, and the foreground window's process.
 use crate::capture::Display;
 use std::sync::{Arc, Mutex, mpsc};
 use windows::{
@@ -64,6 +65,19 @@ impl Tracker {
             .as_ref()
             .filter(|snapshot| snapshot.request == request)
             .and_then(|snapshot| snapshot.selected.clone())
+    }
+}
+/// The process of the foreground window on the input desktop.
+pub fn process() -> Option<u32> {
+    crate::input::follow_input_desktop();
+    unsafe {
+        let window = GetForegroundWindow();
+        if window.is_invalid() {
+            return None;
+        }
+        let mut pid = 0;
+        GetWindowThreadProcessId(window, Some(&mut pid));
+        (pid != 0).then_some(pid)
     }
 }
 fn process_path(pid: u32) -> Option<String> {
