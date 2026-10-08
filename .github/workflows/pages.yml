@@ -15,6 +15,9 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      pages: read
+    outputs:
+      deploy: ${{ steps.pages.outputs.deploy }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - name: Build the site
@@ -22,11 +25,28 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install --quiet -r site/requirements.txt
           "$RUNNER_TEMP/venv/bin/python" site/build.py
-      - uses: actions/upload-pages-artifact@v4
+      # Deploy only once Pages is set to publish from Actions; until then
+      # the build still checks the site and the run stays green.
+      - id: pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if source=$(gh api "repos/$GITHUB_REPOSITORY/pages" --jq .build_type 2>&1); then :
+          elif [[ $source == *"HTTP 404"* ]]; then source=off
+          else echo "$source"; exit 1
+          fi
+          if [ "$source" = workflow ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Built, not deployed: GitHub Pages does not publish from GitHub Actions ($source). Set Settings > Pages > Source to GitHub Actions."
+          fi
+      - if: steps.pages.outputs.deploy
+        uses: actions/upload-pages-artifact@v4
         with:
           path: _site
   deploy:
     needs: build
+    if: needs.build.outputs.deploy
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

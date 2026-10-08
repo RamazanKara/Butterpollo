@@ -116,7 +116,7 @@ The development server proxies `/api` to `https://localhost:47990` by default. S
 
 ## Website
 
-[site/](../site) builds the project website at https://ramazankara.github.io/Butterpollo/: a landing page plus these guides, rendered from the repository's Markdown. [.github/workflows/pages.yml](../.github/workflows/pages.yml) publishes it whenever `site/`, `docs/`, `README.md` or the Markdown in `rust/` changes on `main`. To preview it, from the repository root:
+[site/](../site) builds the project website at https://ramazankara.github.io/Butterpollo/: a landing page plus these guides, rendered from the repository's Markdown. [.github/workflows/pages.yml](../.github/workflows/pages.yml) publishes it whenever `site/`, `docs/`, `README.md` or the Markdown in `rust/` changes on `main`. Until **Settings → Pages → Source** is set to GitHub Actions, it builds and checks the site but skips the deployment. To preview it, from the repository root:
 
 ```sh
 python3 -m pip install -r site/requirements.txt
