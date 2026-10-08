@@ -1,10 +1,25 @@
-# Butterpollo 2.0.0-rc.22 release candidate for Windows
+# Butterpollo 2.0.0-rc.23 release candidate for Windows
 
 [Documentation](../docs/README.md) · [Install and migrate](../docs/getting-started.md) · [Configuration](../docs/configuration.md) · [Compatibility](PARITY.md)
 
-**Release history:** [rc.22](#new-in-rc22) · [rc.21](#new-in-rc21) · [rc.20](#new-in-rc20) · [rc.19](#new-in-rc19) · [rc.18](#new-in-rc18) · [rc.17](#new-in-rc17) · [rc.16](#new-in-rc16) · [rc.15](#new-in-rc15) · [rc.14](#new-in-rc14) · [rc.13](#new-in-rc13) · [rc.12](#new-in-rc12) · [rc.11](#new-in-rc11) · [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
+**Release history:** [rc.23](#new-in-rc23) · [rc.22](#new-in-rc22) · [rc.21](#new-in-rc21) · [rc.20](#new-in-rc20) · [rc.19](#new-in-rc19) · [rc.18](#new-in-rc18) · [rc.17](#new-in-rc17) · [rc.16](#new-in-rc16) · [rc.15](#new-in-rc15) · [rc.14](#new-in-rc14) · [rc.13](#new-in-rc13) · [rc.12](#new-in-rc12) · [rc.11](#new-in-rc11) · [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
 
-Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.22 installer is named `butterpollo-setup-2.0.0-rc.22.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.23 installer is named `butterpollo-setup-2.0.0-rc.23.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+
+## New in rc.23
+
+- **Streams ride out a saturated GPU instead of ending.** An RX 9070 XT streaming 4K60 HEVC beside a game froze and then lost the stream with "The encoder returned no frame for 100 ms": the host recreated a stalled encoder about ten times a second, and a fresh encoder's first 4K keyframe on a busy GPU never got time to arrive. A stall now waits 250 ms before the first recreation, then 500 ms, 1 s and 2 s, and the session gives up after 20 s instead of 10 s. Large frames keep the error correction that fits instead of none. Your encoder settings are never changed behind your back.
+- **Sturdier connections:**
+  - A client resetting its connection while connecting no longer shuts the host down and ends the running game.
+  - A session whose control connection is lost now ends after the ping timeout instead of holding the encoder, capture and display until the host restarts.
+  - A Wi-Fi drop of 5-10 s no longer ends the stream: the network library's own 5 s timeout now follows the 10 s ping timeout.
+- **Streaming before sign-in (issue #6, first part):** a launch on the sign-in screen no longer fails with error 503 while looking for old Sunshine display files in a user folder that doesn't exist yet. Streaming while Windows is locked still fails and is being worked on.
+- **Better H.264 picture at low bitrates.** AMF's adaptive quantization is now off by default for H.264: on two game clips at 1440p120 and 20 Mbps, turning it off raised VMAF by 1.0 and 9.4 points at the same encode time. HEVC and AV1 keep it on, where it made no clear difference. Set `amd_vbaq` to turn it back on. The other AMF settings (quality presets, constant bitrate, low-latency usage, high-motion boost) were measured too and stay as they are: none improved the picture without slower encoding or larger frames.
+- **AV1 at sizes AMD pads:** at sizes such as 1968×2184, AMD encodes AV1 with extra rows and columns (1984×2186) that clients have to crop. The log now says so once per stream; HEVC avoids it.
+- **Playnite, as Vibepollo does it:** games are brought to the front using the existing focus settings, Playnite fullscreen starts again after a game instead of ending the stream, a cover saved in the console is set in Playnite too, and the console can restart Playnite. Not verified with a real Playnite installation.
+- **Tray:** notifications when an app starts, pauses, resumes and stops; a green or amber dot on the icon while an app streams or is paused; "Quit <app>"; and "Check for updates".
+- **Console file picker:** Browse buttons for an app's command and working folder and for the Lossless Scaling and RTSS paths.
+- **No latency change from rc.22.** On the RX 7900 XT, rc.22 and this release alternated in one batch at 1968×2184 HDR 120 fps (HEVC and AV1), 1440p120 and 1080p60, idle and beside a game; picture age matched within the spread of the runs. Details in `rust/PERFORMANCE_WORK.md`.
 
 ## New in rc.22
 
@@ -299,8 +314,8 @@ Current automated validation: 263 ordinary tests passed, with 27 environment-dep
 
 ## Install
 
-- `butterpollo-setup-2.0.0-rc.22.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
-- For a portable copy, extract `butterpollo-rust-2.0.0-rc.22-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
+- `butterpollo-setup-2.0.0-rc.23.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
+- For a portable copy, extract `butterpollo-rust-2.0.0-rc.23-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
 - These are unsigned test builds. Keep a copy of your configuration and the previous installer for rollback.
 
 ## Lower latency

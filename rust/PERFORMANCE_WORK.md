@@ -236,6 +236,31 @@ are the same, but the gains were not measured there), two clips upscaled
 from 720p and 1080p, and VMAF's default model. A 1 to 2 VMAF difference is
 barely visible; the H.264 row at 20 Mbps is the one a viewer would notice.
 
+### rc.23 against rc.22
+
+Main at `bad6076c` (`c4a2d51393496851`) against the installed rc.22, the
+same fixture, alternating in one batch, Extended layout, hardware decoding.
+Since the morning batches the owner's physical monitor runs in a half-width
+mode and the fixture adds its display beside it rather than alone; every
+cell sits 4-6 ms above the morning's and the runs spread over about 2 ms, so
+compare only within this table.
+
+| Picture age mean / p95 / p99 (ms) | rc.22 | rc.23 candidate |
+|---|---|---|
+| 1968×2184 HEVC 120 fps (3 runs) | 19.69 / 20.77 / 21.75 | 19.75 / 20.92 / 21.65 |
+| 1968×2184 AV1 120 fps (3) | 19.00 / 20.23 / 21.06 | 19.22 / 20.26 / 21.01 |
+| 2560×1440 HEVC 120 fps (7) | 17.70 / 18.80 / 19.33 | 18.14 / 19.18 / 20.63 |
+| 1920×1080 HEVC 60 fps (3) | 15.40 / 17.56 / 19.08 | 14.49 / 15.76 / 17.28 |
+| 1968×2184 HEVC beside the 60 fps game (7) | 21.94 / 24.82 / 30.01 | 23.61 / 36.11 / 40.40 |
+
+Run means at 1440p fall into two groups, about 16.6 and 18.6 ms, for both
+builds. Beside the game one rc.23 run averaged 32.2 ms; its host log is
+healthy (claim wait at most 1.1 ms, encode p99 4.2 ms), so the time went in
+the client's decoding next to the load, and without it rc.23 averages 22.2
+ms against rc.22's 21.9. No regression is visible on the host side; every
+run decoded all received frames without failures. Artifacts:
+`bench-rc21\r23-*`.
+
 ## October 5 rc.3 release continuation
 
 The user approved WGC compute by default for the next test release after
