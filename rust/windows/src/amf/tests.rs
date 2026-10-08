@@ -137,6 +137,10 @@ fn hdr10_metadata_and_range_reach_the_bitstream() -> Result<()> {
                     "{name}: {first}"
                 );
                 assert_eq!(first["color_transfer"], "smpte2084", "{name}: {first}");
+                // The matrix is left to the driver to derive from the colour
+                // profile; a client converting with BT.709 would shift colours.
+                assert_eq!(first["color_primaries"], "bt2020", "{name}: {first}");
+                assert_eq!(first["color_space"], "bt2020nc", "{name}: {first}");
                 let side = first["side_data_list"]
                     .as_array()
                     .with_context(|| format!("{name}: no side data in {first}"))?;
