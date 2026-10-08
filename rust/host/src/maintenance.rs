@@ -276,7 +276,14 @@ pub fn baseline(h: &Shared) -> Result<Option<butterpollo_windows::display::Snaps
         return Ok(None);
     }
     let mut candidates = vec![h.directory.join("display_golden_restore.json")];
-    let environment = butterpollo_windows::process::user_environment()?;
+    // Before sign-in there is no user whose folders could hold an old
+    // snapshot; only the machine-wide folder is searched then (issue #6).
+    let environment = butterpollo_windows::process::user_environment().unwrap_or_else(|error| {
+        tracing::debug!(%error, "no signed-in user; searching only machine-wide display snapshots");
+        std::env::var("PROGRAMDATA")
+            .map(|root| [("PROGRAMDATA".to_owned(), root)].into())
+            .unwrap_or_default()
+    });
     for key in ["APPDATA", "LOCALAPPDATA", "PROGRAMDATA"] {
         if let Some(root) = environment.get(key) {
             candidates.push(PathBuf::from(root).join("Sunshine/display_golden_restore.json"));
