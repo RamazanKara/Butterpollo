@@ -13,6 +13,10 @@ on:
         description: Release the version in Cargo.toml (main only); tags it like a pushed tag would
         type: boolean
         default: false
+      commit:
+        description: The commit of main to release, when not main's head
+        type: string
+        default: ''
 concurrency:
   # A release run is never cancelled by a later push to main.
   group: butterpollo-rust-${{ github.ref }}-${{ inputs.publish && 'publish' || 'ci' }}
@@ -30,13 +34,23 @@ jobs:
     outputs:
       run: ${{ steps.built.outputs.run }}
       version: ${{ steps.version.outputs.version }}
+      sha: ${{ steps.version.outputs.sha }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+          fetch-depth: 0
       - id: version
         run: |
+          sha=$(git rev-parse HEAD)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             version=$GITHUB_REF_NAME
           else
+            if ! git merge-base --is-ancestor "$sha" origin/main; then
+              echo "::error::$sha is not on main"
+              exit 1
+            fi
             version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
             if [ -n "$(git ls-remote --tags origin "refs/tags/$version")" ]; then
               echo "::error::$version is already tagged; bump the version first"
@@ -49,7 +63,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          run=$(gh run list -R "$GITHUB_REPOSITORY" --workflow rust-windows.yml --branch main --commit "$GITHUB_SHA" \
+          run=$(gh run list -R "$GITHUB_REPOSITORY" --workflow rust-windows.yml --branch main --commit "${{ steps.version.outputs.sha }}" \
             --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
           echo "run=$run" >> "$GITHUB_OUTPUT"
           if [ -n "$run" ]; then echo "::notice::reusing the build of $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run"; fi
@@ -65,6 +79,8 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ needs.tag.outputs.sha || github.sha }}
       - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e
         id: msys
         with:
@@ -130,8 +146,11 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       VERSION: ${{ needs.tag.outputs.version }}
       BUILD: ${{ needs.tag.outputs.run || github.run_id }}
+      SHA: ${{ needs.tag.outputs.sha }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ needs.tag.outputs.sha }}
       - name: Publish the release
         run: |
           if gh release view "$VERSION" > /dev/null 2>&1; then
@@ -152,5 +171,5 @@ jobs:
           test -f out/butterpollo-launch-film.gif -a -f out/butterpollo-launch-film.mp4
           flags=()
           if [[ $VERSION == *-* ]]; then flags+=(--prerelease); fi
-          gh release create "$VERSION" --target "$GITHUB_SHA" --title "Butterpollo $VERSION" --notes-file body.md "${flags[@]}" out/*
+          gh release create "$VERSION" --target "$SHA" --title "Butterpollo $VERSION" --notes-file body.md "${flags[@]}" out/*
           echo "::notice::published $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$VERSION"
