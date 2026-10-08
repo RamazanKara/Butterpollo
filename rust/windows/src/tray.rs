@@ -29,6 +29,8 @@ pub enum Action {
     StopSessions,
     /// Quit the running app, as the console's close button does.
     QuitApp,
+    /// Look for a newer release and say what was found.
+    CheckUpdates,
     Restart,
     Quit,
 }
@@ -210,6 +212,7 @@ unsafe extern "system" fn window(
                     WM_RBUTTONUP | WM_CONTEXTMENU => {
                         if let Ok(menu) = CreatePopupMenu() {
                             let _ = AppendMenuW(menu, MF_STRING, 1, w!("Open Butterpollo"));
+                            let _ = AppendMenuW(menu, MF_STRING, 6, w!("Check for updates"));
                             if !s.hide_controls {
                                 let _ = AppendMenuW(menu, MF_STRING, 2, w!("Disconnect clients"));
                                 let app = APP.lock().unwrap().app.clone();
@@ -250,6 +253,7 @@ unsafe extern "system" fn window(
                                 3 => Some(Action::Restart),
                                 4 => Some(Action::Quit),
                                 5 => Some(Action::QuitApp),
+                                6 => Some(Action::CheckUpdates),
                                 _ => None,
                             };
                             if let Some(action) = action {

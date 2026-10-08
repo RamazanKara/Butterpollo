@@ -79,6 +79,7 @@ fn user_action(h: &Shared, action: Action, web_port: u16) {
                 h.stop_app();
             });
         }
+        Action::CheckUpdates => maintenance::trigger_update(h, true),
         Action::Restart => {
             h.restart.store(true, Ordering::Release);
             h.stop.store(true, Ordering::Release);
@@ -202,7 +203,7 @@ pub async fn maintain(
             // Not during a stream, as in Vibepollo; try again in a minute.
             let streaming = crate::updater::busy(&h);
             if interval > 0 && !streaming {
-                maintenance::trigger_update(&h);
+                maintenance::trigger_update(&h, false);
             }
             update_at = Instant::now()
                 + Duration::from_secs(if interval > 0 && !streaming {

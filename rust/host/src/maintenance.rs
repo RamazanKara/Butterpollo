@@ -7,7 +7,10 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-pub fn trigger_update(h: &Shared) {
+/// Look for a newer release. `tell` (the tray's "Check for updates")
+/// also reports the result in a notification, even an update already
+/// announced.
+pub fn trigger_update(h: &Shared, tell: bool) {
     let mut state = h.updates.lock().unwrap();
     if state["checking"] == true {
         return;
@@ -83,8 +86,16 @@ pub fn trigger_update(h: &Shared) {
                 state["releases"] = json!(releases);
                 state["check_error"] = Value::Null;
                 drop(state);
+                if tell && latest.is_none() {
+                    butterpollo_windows::tray::notify(
+                        "Butterpollo is up to date",
+                        &format!("Version {current} is the latest."),
+                    );
+                }
                 if let Some(latest) = latest {
-                    announce(&h, &latest);
+                    if !announce(&h, &latest) && tell {
+                        notify_update(&latest);
+                    }
                     let automatic = h.config.read().unwrap().boolean("auto_update", false);
                     if automatic && let Err(error) = crate::updater::queue(&h, true) {
                         tracing::warn!(%error, "automatic update could not be queued");
@@ -94,15 +105,22 @@ pub fn trigger_update(h: &Shared) {
             Err(error) => {
                 state["check_error"] = json!(error.to_string());
                 tracing::warn!(%error,"release check failed");
+                if tell {
+                    butterpollo_windows::tray::notify(
+                        "Update check failed",
+                        "GitHub could not be reached. See Maintenance in the console.",
+                    );
+                }
             }
         }
     });
 }
-/// Tell the user about a new version once, as Vibepollo does.
-fn announce(h: &Shared, version: &str) {
+/// Tell the user about a new version once, as Vibepollo does; false when
+/// it was told before.
+fn announce(h: &Shared, version: &str) -> bool {
     let mut aliases = h.aliases.lock().unwrap();
     if aliases["root"]["last_notified_version"].as_str() == Some(version) {
-        return;
+        return false;
     }
     let mut next = aliases.clone();
     if !next["root"].is_object() {
@@ -114,6 +132,10 @@ fn announce(h: &Shared, version: &str) {
     }
     drop(aliases);
     tracing::info!(version, "a newer Butterpollo is available");
+    notify_update(version);
+    true
+}
+fn notify_update(version: &str) {
     butterpollo_windows::tray::notify(
         "Butterpollo update",
         &format!(
