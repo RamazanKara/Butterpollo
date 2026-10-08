@@ -2412,9 +2412,10 @@ mod tests {
         encoder_progress(&mut failing, true, start + Duration::from_secs(4)).unwrap();
         assert_eq!(failing, None);
         encoder_progress(&mut failing, false, start + ENCODER_RECOVERY).unwrap();
-        failing = Some(start + Duration::from_secs(6));
-        encoder_progress(&mut failing, false, start + Duration::from_secs(7)).unwrap();
-        assert!(encoder_progress(&mut failing, false, start + Duration::from_secs(11)).is_err());
+        let later = start + ENCODER_RECOVERY + Duration::from_secs(1);
+        failing = Some(later);
+        encoder_progress(&mut failing, false, later + Duration::from_secs(1)).unwrap();
+        assert!(encoder_progress(&mut failing, false, later + ENCODER_RECOVERY).is_err());
     }
     #[test]
     fn wgc_interval_is_unrestricted_by_default_and_preserves_overrides() {
