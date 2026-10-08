@@ -30,6 +30,17 @@ usage, no SmartAccess Video, LTR, forced queue, LowLatencyInternal or
 pre-analysis), the settings tied to RDNA4 stalls in foundation-sunshine#666.
 The stream card says so. The give-up budget is 10 s instead of 5 s, so a
 driver reset (Windows allows about 2 s plus recovery) no longer ends it.
+
+Second follow-up, from the reporter's log: the last timings before the
+stall were healthy (59.4 fps, encode 4.6 ms mean, 5.4 ms p99, host max 6.1
+ms), the GPU was near 99% with a game, and `network_fec` had fired. The
+stall was sudden, not a slow encoder, and Sunshine on the same PC only got
+choppy when the GPU was saturated. So a stall now waits 250 ms before the
+first recreation (then 500 ms, 1 s, 2 s), the budget is 20 s, and a frame
+too large for full FEC in Moonlight's four blocks keeps the parity that
+still fits instead of none (849-1019 shards; 900 shards at 20% now get
+13%). `wgc_stamp_future_frames` 302/303 with WGC's stamp about 4 ms ahead
+is a capture clock offset the timings keep signed, not a cause.
 Not measured: the RX 9070 XT is not available, and the RX 7900 XT has not
 reproduced the stall. The debug soak's encoder-failure fault exercises the
 encode-error path, not this one; a stall injection is still to be written.

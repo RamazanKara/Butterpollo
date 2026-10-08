@@ -460,14 +460,15 @@ pub fn runtime_bitrate_kbps(config: &Config, requested: u32) -> u32 {
     }
 }
 /// How long an encoder holding a full backlog may return nothing before the
-/// stream recreates it. The first stall waits 100 ms; each recreation that
-/// brings no frame back doubles the wait, up to 800 ms. A fresh encoder's
-/// first keyframe at 4K on a busy single-engine GPU (the RX 9070 XT's one
-/// VCN) can outlast 100 ms, and tearing it down then only restarts that wait
-/// while hammering the driver with create/destroy cycles until the session's
-/// recovery budget runs out.
+/// stream recreates it. The first stall waits 250 ms; each recreation that
+/// brings no frame back doubles the wait, up to 2 s. A GPU saturated by a
+/// game (99% in an RX 9070 XT report) can hold the encoder's input for well
+/// over a frame; recreating it then only adds an encoder start and a large
+/// keyframe to a GPU that is already behind, and a stream that should have
+/// turned choppy ended instead. A fresh encoder's first 4K keyframe on the
+/// RX 9070 XT's single VCN can outlast a short limit too.
 pub fn encoder_stall_limit(recreations: u32) -> Duration {
-    Duration::from_millis(100 << recreations.min(3))
+    Duration::from_millis(250 << recreations.min(3))
 }
 #[cfg(test)]
 mod tests {
@@ -477,10 +478,10 @@ mod tests {
         let limits: Vec<u64> = (0..6)
             .map(|n| encoder_stall_limit(n).as_millis() as u64)
             .collect();
-        assert_eq!(limits, [100, 200, 400, 800, 800, 800]);
-        assert_eq!(encoder_stall_limit(u32::MAX), Duration::from_millis(800));
+        assert_eq!(limits, [250, 500, 1000, 2000, 2000, 2000]);
+        assert_eq!(encoder_stall_limit(u32::MAX), Duration::from_millis(2000));
         // Four escalating attempts fit well inside the stream's recovery budget.
-        assert!(limits[..4].iter().sum::<u64>() < 5_000);
+        assert!(limits[..4].iter().sum::<u64>() < 20_000);
     }
     #[test]
     fn the_fec_and_audio_share_of_the_client_bitrate_is_not_a_warning() {

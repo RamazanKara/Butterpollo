@@ -128,18 +128,28 @@ pub struct PyrowaveFec {
     pub wire_budget: usize,
     pub ipv6: bool,
 }
-fn conventional_fec(total_shards: usize, percentage: usize) -> (usize, usize) {
+/// FEC blocks and parity percentage for a frame of `total_shards`. Moonlight
+/// takes at most four blocks of 255 shards each. A frame too large for the
+/// requested percentage keeps as much parity as still fits in four blocks
+/// (with at least `minimum` parity shards per block) instead of none: at
+/// 4K60 and 80 Mbps large P-frames lost all protection just past the cutoff.
+fn conventional_fec(total_shards: usize, percentage: usize, minimum: usize) -> (usize, usize) {
     let blocks = total_shards.div_ceil(255 * 100 / (100 + percentage));
-    if blocks > 4 {
-        (4, 0)
-    } else {
-        (blocks, percentage)
+    if blocks <= 4 {
+        return (blocks, percentage);
     }
+    let per_block = total_shards.div_ceil(4);
+    let room = 255usize.saturating_sub(per_block);
+    if percentage == 0 || room == 0 || room < minimum {
+        return (4, 0);
+    }
+    // ceil(per_block * fitted / 100) <= room for every block.
+    (4, (100 * room / per_block).min(percentage))
 }
 impl VideoPacketizer {
     pub fn fec_limited(&self, payload_bytes: usize) -> bool {
         let shards = (payload_bytes + 8).div_ceil(self.packet_size - 16);
-        conventional_fec(shards, self.fec_percent).1 < self.fec_percent
+        conventional_fec(shards, self.fec_percent, self.min_fec).1 < self.fec_percent
     }
 
     pub fn encode(
@@ -260,7 +270,7 @@ impl VideoPacketizer {
         header[4..6]
             .copy_from_slice(&((if last == 0 { slice } else { last }) as u16).to_le_bytes());
         header[6..8].copy_from_slice(&(critical as u16).to_le_bytes());
-        let (mut blocks, percentage) = conventional_fec(total_shards, self.fec_percent);
+        let (mut blocks, percentage) = conventional_fec(total_shards, self.fec_percent, minimum);
         let aligned = total_shards.div_ceil(blocks);
         let plan = if let Some(pyro) = pyrowave.as_ref() {
             let baseline = crate::pyrowave::plan(
@@ -798,9 +808,23 @@ fn cauchy_encode_offset<const OFFSET: usize>(
 mod tests {
     #[test]
     fn large_conventional_frames_report_the_wire_fec_cutoff() {
-        assert_eq!(super::conventional_fec(848, 20), (4, 20));
-        assert_eq!(super::conventional_fec(849, 20), (4, 0));
-        assert_eq!(super::conventional_fec(849, 0), (4, 0));
+        assert_eq!(super::conventional_fec(848, 20, 0), (4, 20));
+        // Past the cutoff the parity that still fits is kept.
+        assert_eq!(super::conventional_fec(849, 20, 0), (4, 19));
+        assert_eq!(super::conventional_fec(900, 20, 0), (4, 13));
+        assert_eq!(super::conventional_fec(1000, 20, 0), (4, 2));
+        assert_eq!(super::conventional_fec(1000, 20, 6), (4, 0));
+        assert_eq!(super::conventional_fec(1020, 20, 0), (4, 0));
+        assert_eq!(super::conventional_fec(5000, 20, 0), (4, 0));
+        assert_eq!(super::conventional_fec(849, 0, 0), (4, 0));
+        for shards in 849..1020 {
+            let (blocks, percentage) = super::conventional_fec(shards, 20, 2);
+            let per_block = shards.div_ceil(blocks);
+            let parity = (per_block * percentage)
+                .div_ceil(100)
+                .max(if percentage > 0 { 2 } else { 0 });
+            assert!(per_block + parity <= 255 || percentage == 0, "{shards}");
+        }
     }
     use super::*;
 

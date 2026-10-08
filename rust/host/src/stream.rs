@@ -18,8 +18,9 @@ pub(crate) const RTX_KEYS: &[&str] = &[
 /// How often completed encoder output is collected while a frame is in flight.
 const OUTPUT_POLL: Duration = Duration::from_micros(100);
 /// How long an encoder that fails mid-stream is recreated before the session
-/// gives up: a GPU busy with a game or a driver reset costs frames, not the stream.
-const ENCODER_RECOVERY: Duration = Duration::from_secs(10);
+/// gives up: a GPU busy with a game or a driver reset costs frames, not the
+/// stream. Moonlight keeps waiting with a frozen picture meanwhile.
+const ENCODER_RECOVERY: Duration = Duration::from_secs(20);
 /// Keep one queued picture while an encode is running. Larger queues did not
 /// improve throughput on an overloaded AMF encoder, but increased frame age.
 const ENCODER_BACKLOG: usize = 2;
@@ -1107,7 +1108,7 @@ impl Media {
                                 && fec_reported.is_none_or(|at: Instant| at.elapsed() >= Duration::from_secs(1))
                             {
                                 fec_reported = Some(Instant::now());
-                                s.launch.warnings.event("network_fec", "FEC was omitted for large video frames because they exceed the four-block wire limit. Packet loss is harder to recover; lower bitrate or resolution to keep FEC protection.", butterpollo_core::session::EVENT_PERIOD);
+                                s.launch.warnings.event("network_fec", "FEC was reduced or omitted for large video frames because they exceed Moonlight's four-block limit. Packet loss in those frames is harder to recover; lower bitrate or resolution to keep full FEC protection.", butterpollo_core::session::EVENT_PERIOD);
                             }
                             next_wire_frame.set(u64::from(packetizer.frame));
                             let frame_bytes = packets.iter().map(|p|p.len() as u64).sum();
@@ -1364,11 +1365,11 @@ impl Media {
                             if !rebuild_encoder
                                 && encoder.as_ref().is_some_and(|e| e.backlog() >= ENCODER_BACKLOG)
                             {
-                                // An encoder that returns nothing for 100 ms is
-                                // recreated, as a queue that never drained was.
-                                // A recreated one that is still silent gets
-                                // longer each time: its first keyframe can
-                                // outlast 100 ms on a busy single-engine GPU.
+                                // An encoder that returns nothing for 250 ms is
+                                // recreated, as a queue that never drained was;
+                                // a shorter stall on a saturated GPU only makes the
+                                // stream choppy. A recreated one that is still
+                                // silent gets longer each time.
                                 if encoder_failing.is_none() {
                                     stall_recreations = 0;
                                 }
