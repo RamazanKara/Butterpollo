@@ -65,6 +65,45 @@ accept, a session that loses its control peer, a 5-10 s Wi-Fi drop, a launch
 before sign-in) are covered by code review and unit tests; they still need a
 network test on 192.168.4.10 and a signed-out launch on this host.
 
+### Native size beside a game, and two rejected settings
+
+The October 7 load (`gpu_load 45 1000 0 200`, uncapped) starves the
+loopback client's hardware decoder at 1968×2184 120 fps: decoding took 8.3-12.6
+ms a frame, above the 8.3 ms period, and picture age grew to seconds. Lighter
+uncapped loads (fewer draws or iterations) did the same. A game capped at 60
+fps (`gpu_load 45 1000 60 200`, 5.3-5.6 ms of GPU work per frame) leaves the
+decoder at 4.7-6.8 ms and is the native loaded cell from now on. A game
+capped at 120 fps beside 1440p120 sits at the decoder's limit (8.2 ms) and
+its runs spread from 17 to 172 ms, so that cell is not used.
+
+rc.22, 1968×2184 HEVC HDR 120 fps beside the 60 fps game, seven default runs
+from three batches: picture age 17.2-18.7 ms mean, p95 18.8-21.7, p99
+19.3-22.6, 120 new pictures a second. The host's own split shows where the
+load costs time: `claim_wait` (copy submitted to encoder claim) rises from
+0.06 ms idle to 1.0-3.0 ms mean, p95 6 ms, and `frame_age` from 0.2 to 1.6-3.5
+ms. Encoding stays at 3.3 ms. `claim_wait` is bimodal by run (about 1 or 2.8
+ms), which follows the phase between the 60 fps game and the 120 fps stream.
+
+Two settings were tried against that wait, alternating with the default in
+one batch each, three runs per row:
+
+| Beside the 60 fps game | Picture age mean / p95 / p99 (ms) | claim_wait mean |
+|---|---|---|
+| Default (compute queue priority HIGH) | 18.11 / 20.15 / 21.51 | 2.81 ms |
+| `compute_queue_realtime=true` (GLOBAL_REALTIME granted) | 17.93 / 19.96 / 21.40 | 2.71 ms |
+| Default, second batch | 17.64 / 19.08 / 19.93 | 2.22 ms |
+| `frame_pacing_source_phase=false` | 18.09 / 20.23 / 21.77 | 2.23 ms |
+| also `frame_pacing_predictive=false` | 17.87 / 22.62 / 24.54 | 2.72 ms |
+
+A realtime copy queue changes nothing, so the wait is not the copy queuing
+behind the game's compute. Turning off source-phase or predictive pacing
+does not remove it either and makes the 95th and 99th percentiles worse.
+Both stay at their defaults. Next: trace where the claim waits (the copy
+fence, WGC delivery, or the session thread busy in `QueryOutput`), which is
+what the sender-thread and AMF-poll work would change.
+
+Artifacts: `bench-rc21\lp-*`, `rt-*`, `pc-*`.
+
 ## October 5 rc.3 release continuation
 
 The user approved WGC compute by default for the next test release after
