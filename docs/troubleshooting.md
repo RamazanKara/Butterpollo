@@ -223,6 +223,10 @@ Install [ViGEmBus from nefarius](https://github.com/nefarius/ViGEmBus/releases) 
 
 Automatic can choose DS4 for a client with motion sensors or a touchpad, including Steam Deck. PlayStation clients get the VHF DualSense when that driver is installed too. Select **Xbox 360 (ViGEmBus)** (`gamepad = x360`) explicitly if you need the Xbox 360 path and do not need motion or touchpad input. Disconnect and reconnect after changing the setting. Check Butterpollo's logs for `backend="ViGEmBus"` and `profile="x360"`, and Steam's `logs/controller.txt` for the new arrival. An explicit VHF choice continues to use VHF even when ViGEmBus is installed. An explicit Xbox 360 or DualShock 4 (ViGEmBus) choice without ViGEmBus installed uses the VHF Xbox One or DualShock 4 pad and shows a warning on the stream; install ViGEmBus or choose Automatic to remove it.
 
+## A Steam Deck has no gyro or trackpads
+
+The host only follows what Moonlight announces when a controller connects. With Steam Input on for the Moonlight shortcut, Steam usually gives Moonlight an emulated Xbox 360 controller, which has no gyro or trackpads. Disable Steam Input in the shortcut's controller properties, then reconnect. In Butterpollo's logs, a Deck that Moonlight sees directly connects as a DualShock 4 (or DualSense with only VHF); the pad's profile is named for each connected controller. If `motion_as_ds4` and `touchpad_as_ds4` are both off, a Deck stays an Xbox pad and loses them again. The left and right trackpads share the pad's one touch surface, the right one on its right half, and the back grips (L4, R4, L5, R5) are not passed on. See [Controllers](configuration.md#controllers).
+
 ## An update stays queued
 
 In **Maintenance → Updates**, read the current phase and any error. Installation needs the installed Windows service and one minute without streams, pending connections, remote monitors or host apps. Quit a retained Desktop/game session as well as disconnecting its video. A new connection defers the update.

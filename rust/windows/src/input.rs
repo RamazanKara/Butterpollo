@@ -124,8 +124,10 @@ pub fn capabilities(config: &butterpollo_core::config::Config) -> u32 {
         )
     {
         // Moonlight has one general controller-touch feature bit; there is
-        // no separate host bit for dual touchpads. Only pad 0 is supported by
-        // the current virtual gamepad protocol; apply() filters other pads.
+        // no separate host bit for dual touchpads. The virtual DualShock 4 and
+        // DualSense have one touch surface, so a client's second touchpad
+        // (a Steam Deck's right trackpad) is placed on its right half; apply()
+        // ignores any other touchpad.
         flags |= 2;
     }
     flags
@@ -291,14 +293,21 @@ impl Gamepads {
                     .motion(self.slot(u16::from(*id))?, *kind, xyz)?;
             }
             Event::ControllerTouch { id, touchpad, .. } => {
-                // Protocol 2 exposes one PlayStation touch surface with two
-                // contacts, not two surfaces. Never reinterpret pad 1 as pad 0.
-                if *touchpad != 0 {
+                // The driver exposes one PlayStation touch surface with two
+                // contacts. A client that announced two touchpads gets them
+                // side by side on it; a second touchpad that was not announced
+                // is never reinterpreted as the first.
+                let dual = self
+                    .arrivals
+                    .get(&u16::from(*id))
+                    .is_some_and(|(_, capabilities)| capabilities & CCAP_DUAL_TOUCHPAD != 0);
+                if *touchpad > u8::from(dual) {
                     if self.unsupported_touchpads.insert(*id) {
                         tracing::warn!(
                             controller = id,
                             touchpad,
-                            "controller touchpad ignored: the virtual gamepad driver supports only touchpad 0"
+                            dual,
+                            "controller touchpad ignored: the virtual gamepad driver has one touch surface, shared by two touchpads only when the client announced both"
                         );
                     }
                     return Ok(());
@@ -309,7 +318,8 @@ impl Gamepads {
                 ) else {
                     return Ok(());
                 };
-                if let Some(b) = gamepad_touch_request(&self.pointers, profile, global, event) {
+                if let Some(b) = gamepad_touch_request(&self.pointers, profile, global, event, dual)
+                {
                     self.backend.touch(u32::from(global), &b)?;
                     b.submitted(&mut self.pointers);
                 }
@@ -490,11 +500,18 @@ impl GamepadTouchRequest {
         }
     }
 }
+/// Moonlight's `LI_CCAP_DUAL_TOUCHPAD` controller capability.
+const CCAP_DUAL_TOUCHPAD: u16 = 0x100;
+
+/// Maps a controller touch onto the driver's single touch surface. With
+/// `dual`, touchpad 0 covers the left half of that surface and touchpad 1 the
+/// right half, and a finger is told apart by its touchpad as well as its id.
 fn gamepad_touch_request(
     pointers: &BTreeMap<(u8, u32), u8>,
     profile: u16,
     global: u16,
     input: &Event,
+    dual: bool,
 ) -> Option<GamepadTouchRequest> {
     let Event::ControllerTouch {
         id,
@@ -508,7 +525,7 @@ fn gamepad_touch_request(
     else {
         return None;
     };
-    if *touchpad != 0 || !matches!(profile, 5 | 6 | VIGEM_DS4) {
+    if *touchpad > u8::from(dual) || !matches!(profile, 5 | 6 | VIGEM_DS4) {
         return None;
     }
     let event = match event {
@@ -517,7 +534,9 @@ fn gamepad_touch_request(
         7 => 5,
         _ => return None,
     };
-    let key = (*id, *pointer);
+    // Finger ids are small; the top bit tells the second touchpad's apart.
+    let pointer = (*pointer & 0x7fff_ffff) | (u32::from(*touchpad) << 31);
+    let key = (*id, pointer);
     let slot = if event == 5 {
         0
     } else if let Some(slot) = pointers.get(&key) {
@@ -533,15 +552,20 @@ fn gamepad_touch_request(
     };
     let mut b = request(22, Some(u32::from(global)));
     b.extend_from_slice(&[slot, event]);
-    for f in [*x, *y, *pressure] {
+    let x = if dual {
+        x.clamp(0., 1.) / 2. + f32::from(*touchpad) / 2.
+    } else {
+        *x
+    };
+    for f in [x, *y, *pressure] {
         b.extend_from_slice(&((f.clamp(0., 1.) * 65535.) as u16).to_le_bytes());
     }
     b.extend_from_slice(&[0, 0]);
     Some(GamepadTouchRequest {
         packet: b,
-        position: [*x, *y],
+        position: [x, *y],
         id: *id,
-        pointer: *pointer,
+        pointer,
         slot,
         event,
     })
@@ -2293,7 +2317,17 @@ mod tests {
         global: u16,
         input: &Event,
     ) -> Option<Vec<u8>> {
-        let update = gamepad_touch_request(pointers, profile, global, input)?;
+        submit_touch_on(pointers, profile, global, input, false)
+    }
+
+    fn submit_touch_on(
+        pointers: &mut BTreeMap<(u8, u32), u8>,
+        profile: u16,
+        global: u16,
+        input: &Event,
+        dual: bool,
+    ) -> Option<Vec<u8>> {
+        let update = gamepad_touch_request(pointers, profile, global, input, dual)?;
         let packet = update.packet.clone();
         update.submitted(pointers);
         Some(packet)
@@ -2302,11 +2336,11 @@ mod tests {
     #[test]
     fn failed_touch_submission_does_not_acquire_or_release_contact_slots() {
         let mut pointers = BTreeMap::new();
-        drop(gamepad_touch_request(&pointers, 6, 2, &touch(2, 0, 1, 17)).unwrap());
+        drop(gamepad_touch_request(&pointers, 6, 2, &touch(2, 0, 1, 17), false).unwrap());
         assert!(pointers.is_empty());
         submit_touch(&mut pointers, 6, 2, &touch(2, 0, 1, 17)).unwrap();
         for event in [2, 4, 6, 7] {
-            drop(gamepad_touch_request(&pointers, 6, 2, &touch(2, 0, event, 17)).unwrap());
+            drop(gamepad_touch_request(&pointers, 6, 2, &touch(2, 0, event, 17), false).unwrap());
             assert_eq!(pointers, BTreeMap::from([((2, 17), 0)]));
         }
     }
@@ -2322,6 +2356,47 @@ mod tests {
         assert_eq!(pointers.len(), 2);
         submit_touch(&mut pointers, VIGEM_DS4, 2, &touch(2, 0, 7, 17)).unwrap();
         assert!(pointers.is_empty());
+    }
+
+    #[test]
+    fn two_announced_touchpads_share_the_surface_side_by_side() {
+        let mut pointers = BTreeMap::new();
+        // A Steam Deck's trackpads: the same finger id on each, both down.
+        let left = submit_touch_on(&mut pointers, 6, 5, &touch(2, 0, 1, 0), true).unwrap();
+        let right = submit_touch_on(&mut pointers, 6, 5, &touch(2, 1, 1, 0), true).unwrap();
+        assert_eq!(&left[12..14], &[0, 1]);
+        assert_eq!(&right[12..14], &[1, 1]);
+        // x = 0.25 of each half is 1/8 of the surface and 5/8 of it.
+        assert_eq!(&left[14..16], &(8191u16).to_le_bytes());
+        assert_eq!(&right[14..16], &(40959u16).to_le_bytes());
+        assert_eq!(pointers.len(), 2);
+        // Lifting one finger frees only its contact.
+        let up = submit_touch_on(&mut pointers, 6, 5, &touch(2, 1, 2, 0), true).unwrap();
+        assert_eq!(&up[12..14], &[1, 2]);
+        assert_eq!(pointers, BTreeMap::from([((2, 0), 0)]));
+        let moved = submit_touch_on(&mut pointers, 6, 5, &touch(2, 0, 3, 0), true).unwrap();
+        assert_eq!(&moved[12..14], &[0, 3]);
+        // Neither a third finger nor a third touchpad finds a slot or a place.
+        submit_touch_on(&mut pointers, 6, 5, &touch(2, 1, 1, 1), true).unwrap();
+        assert!(submit_touch_on(&mut pointers, 6, 5, &touch(2, 0, 1, 1), true).is_none());
+        assert!(submit_touch_on(&mut pointers, 6, 5, &touch(2, 2, 1, 2), true).is_none());
+        // Cancelling clears both touchpads' contacts.
+        submit_touch_on(&mut pointers, 6, 5, &touch(2, 0, 7, 0), true).unwrap();
+        assert!(pointers.is_empty());
+    }
+
+    #[test]
+    fn the_right_touchpad_stays_ignored_when_the_client_did_not_announce_two() {
+        let mut pointers = BTreeMap::new();
+        assert!(submit_touch_on(&mut pointers, VIGEM_DS4, 2, &touch(2, 1, 1, 0), false).is_none());
+        let full = submit_touch_on(&mut pointers, VIGEM_DS4, 2, &touch(2, 0, 1, 0), false).unwrap();
+        // A single touchpad keeps the whole surface.
+        assert_eq!(&full[14..16], &(16383u16).to_le_bytes());
+        assert_eq!(pointers.len(), 1);
+        // Pads without a touch surface take no touch even when announced dual.
+        for profile in [3, 4, 7, VIGEM_X360] {
+            assert!(submit_touch_on(&mut pointers, profile, 2, &touch(2, 1, 1, 5), true).is_none());
+        }
     }
 
     fn touch(id: u8, touchpad: u8, event: u8, pointer: u32) -> Event {

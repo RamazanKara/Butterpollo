@@ -187,12 +187,13 @@ fn primary_multitouch_and_secondary_isolation_match_native_hid_reports() -> Resu
     for (profile, product, height) in [(5, 0x09cc, 942u16), (6, 0x0ce6, 1080)] {
         let before = hid_paths()?;
         let mut pads = Gamepads::open(profile)?;
-        // The client advertises two surfaces, but the virtual device only has
-        // one. Explicit profile selection exercises both supported HID layouts.
+        // The client announces one touchpad, so events for a second one must
+        // not touch the device's only surface. Explicit profile selection
+        // exercises both supported HID layouts.
         pads.apply(&Event::Arrival {
             id: 15,
             kind: 4,
-            capabilities: 0x108,
+            capabilities: 0x08,
             buttons: 0,
         })?;
         let (path, hid) = new_hid(&before, product, &library)?;
@@ -244,16 +245,82 @@ fn primary_multitouch_and_secondary_isolation_match_native_hid_reports() -> Resu
 
         drop(hid);
         drop(pads);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while hid_paths()?.contains(&path) {
-            ensure!(
-                Instant::now() < deadline,
-                "owned HID remained after controller drop"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        wait_removed(&path)?;
         println!(
             "profile={profile}: two contacts, secondary isolation, move/release/reuse/cancel, and removal verified"
+        );
+    }
+    Ok(())
+}
+
+fn wait_removed(path: &str) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while hid_paths()?.contains(path) {
+        ensure!(
+            Instant::now() < deadline,
+            "owned HID remained after controller drop"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "creates temporary neutral VHF controllers; requires the installed signed driver and a coordinated idle input session"]
+fn two_announced_touchpads_share_one_native_surface_side_by_side() -> Result<()> {
+    let system = std::env::var("SystemRoot").context("SystemRoot is missing")?;
+    let library = unsafe { libloading::Library::new(format!("{system}\\System32\\hid.dll"))? };
+    for (profile, product, height) in [(5, 0x09cc, 942u16), (6, 0x0ce6, 1080)] {
+        let before = hid_paths()?;
+        let mut pads = Gamepads::open(profile)?;
+        // A Steam Deck announces both trackpads.
+        pads.apply(&Event::Arrival {
+            id: 15,
+            kind: 4,
+            capabilities: 0x108,
+            buttons: 0,
+        })?;
+        let (path, hid) = new_hid(&before, product, &library)?;
+
+        // The same finger id on each touchpad is two contacts: the left
+        // touchpad's corner is the surface's left edge, the right one's
+        // opposite corner its right edge.
+        send(&mut pads, 0, 1, 7, 0.0, 0.0)?;
+        send(&mut pads, 1, 1, 7, 1.0, 1.0)?;
+        let two = contacts(&hid, &library, profile)?;
+        assert!(two.iter().all(|point| point.active));
+        assert_ne!(two[0].tracking, two[1].tracking);
+        assert_eq!((two[0].x, two[0].y), (0, 0));
+        assert_eq!((two[1].x, two[1].y), (1919, height - 1));
+
+        // Each touchpad's inner edge meets the surface's middle.
+        send(&mut pads, 0, 3, 7, 1.0, 0.5)?;
+        send(&mut pads, 1, 3, 7, 0.0, 0.5)?;
+        let inner = contacts(&hid, &library, profile)?;
+        assert!(inner.iter().all(|point| point.active));
+        for point in &inner {
+            assert!((950..=970).contains(&point.x), "inner edge at {}", point.x);
+        }
+        assert_eq!(inner[0].tracking, two[0].tracking);
+        assert_eq!(inner[1].tracking, two[1].tracking);
+
+        // Lifting the right finger leaves the left one alone.
+        send(&mut pads, 1, 2, 7, 0.0, 0.5)?;
+        let lifted = contacts(&hid, &library, profile)?;
+        assert_eq!(lifted[0], inner[0]);
+        assert!(!lifted[1].active);
+        send(&mut pads, 1, 7, 0, 0.0, 0.0)?;
+        assert!(
+            contacts(&hid, &library, profile)?
+                .iter()
+                .all(|point| !point.active)
+        );
+
+        drop(hid);
+        drop(pads);
+        wait_removed(&path)?;
+        println!(
+            "profile={profile}: two announced touchpads land on the left and right halves, and removal verified"
         );
     }
     Ok(())
