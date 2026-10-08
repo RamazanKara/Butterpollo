@@ -95,9 +95,17 @@ pub fn run(program: &str, args: &[&str], timeout: Duration) -> Result<(i32, Stri
 /// Windows Installer: as an administrator, the display driver's health
 /// check cannot open the driver and needlessly reinstalls it.
 pub fn run_as_system(program: &str, args: &[&str], timeout: Duration) -> Result<(i32, String)> {
-    static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let work = program_data().join("Butterpollo").join("setup-tasks");
-    std::fs::create_dir_all(&work)?;
+    run_as_system_in(&work, program, args, timeout)
+}
+fn run_as_system_in(
+    work: &Path,
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<(i32, String)> {
+    static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    std::fs::create_dir_all(work)?;
     let id = format!(
         "ButterpolloSetup-{}-{}",
         std::process::id(),
@@ -160,7 +168,10 @@ pub fn run_as_system(program: &str, args: &[&str], timeout: Duration) -> Result<
     let _ = std::fs::remove_file(&log);
     result
 }
-fn task_definition(script: &Path) -> String {
+/// The task file for schtasks /XML: UTF-16 with a byte order mark, as Task
+/// Scheduler exports tasks. schtasks refuses UTF-8 ("unable to switch the
+/// encoding"), which kept rc.22 to rc.25 from installing the drivers.
+fn task_definition(script: &Path) -> Vec<u8> {
     let escape = |value: &str| {
         value
             .replace('&', "&amp;")
@@ -171,15 +182,20 @@ fn task_definition(script: &Path) -> String {
     let command = escape(&system32("cmd.exe"));
     let arguments = escape(&format!("/D /S /C \"\"{}\"\"", script.display()));
     // With no timer, a task left by interrupted setup cannot install drivers later.
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
+    let text = format!(
+        r#"<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <Triggers />
   <Principals><Principal id="System"><UserId>S-1-5-18</UserId><RunLevel>HighestAvailable</RunLevel></Principal></Principals>
   <Settings><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT0S</ExecutionTimeLimit></Settings>
   <Actions Context="System"><Exec><Command>{command}</Command><Arguments>{arguments}</Arguments></Exec></Actions>
 </Task>"#
-    )
+    );
+    [0xfeff_u16]
+        .into_iter()
+        .chain(text.encode_utf16())
+        .flat_map(u16::to_le_bytes)
+        .collect()
 }
 fn task_script(program: &str, args: &[&str], log: &Path) -> String {
     let quote = |value: &str| format!("\"{}\"", value.replace('%', "%%"));
@@ -914,7 +930,8 @@ mod tests {
         std::fs::write(
             &check,
             r#"param([string]$Definition)
-[xml]$task = Get-Content -LiteralPath $Definition -Raw -Encoding UTF8
+$task = [xml]::new()
+$task.Load($Definition)
 if ($task.Task.Triggers.HasChildNodes) { exit 1 }
 if ($task.Task.Principals.Principal.UserId -ne 'S-1-5-18') { exit 2 }
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
@@ -939,6 +956,25 @@ Write-Output $task.Task.Actions.Exec.Arguments
             output.contains(&format!("/D /S /C \"\"{}\"\"", script.display())),
             "{output}"
         );
+        Ok(())
+    }
+    #[test]
+    fn system_tasks_run_from_folders_with_spaces_and_unicode() -> Result<()> {
+        // Creating a SYSTEM task needs an administrator, as setup and CI are.
+        if !elevated() {
+            return Ok(());
+        }
+        let root = tempfile::tempdir()?;
+        let work = root.path().join("Çağrı & Müller setup");
+        let (code, output) = run_as_system_in(
+            &work,
+            &system32("whoami.exe"),
+            &["/user"],
+            Duration::from_secs(60),
+        )?;
+        assert_eq!(code, 0, "{output}");
+        assert!(output.contains("S-1-5-18"), "{output}");
+        assert_eq!(std::fs::read_dir(&work)?.count(), 0);
         Ok(())
     }
 
