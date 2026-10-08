@@ -1860,6 +1860,8 @@ impl Media {
         let _com = ComGuard::new()?;
         let _priority = Priority::input();
         let mut peers: HashMap<PeerID, ControlPeer> = HashMap::new();
+        // Active sessions without a control peer, since when.
+        let mut unattended: HashMap<String, Instant> = HashMap::new();
         let input_timer = butterpollo_windows::timing::Timer::new()?;
         let mut feedback_at = Instant::now();
         while !h.stop.load(Ordering::Acquire) {
@@ -1881,6 +1883,7 @@ impl Media {
                         let candidates: Vec<_> = sessions
                             .active
                             .values()
+                            .filter(|s| !s.stopping())
                             .map(|s| &s.launch)
                             .chain(sessions.pending.values())
                             .filter(|l| l.peer == address.ip().to_canonical())
@@ -1901,6 +1904,12 @@ impl Media {
                                 peer.disconnect_now(0);
                                 continue;
                             }
+                            // ENet's own peer timeout (about 5 s) would end a
+                            // stream on a Wi-Fi drop the session itself
+                            // tolerates; let ping_timeout decide instead.
+                            let timeout =
+                                u32::try_from(ping_timeout.as_millis()).unwrap_or(u32::MAX);
+                            peer.set_timeout(32, timeout, timeout.max(30_000));
                             peers.insert(
                                 peer.id(),
                                 ControlPeer {
@@ -2205,6 +2214,30 @@ impl Media {
             drop(disconnected);
             for peer in remove {
                 peers.remove(&peer);
+            }
+            // A session whose client never connected control, or whose peer
+            // this worker lost when it restarted, would otherwise hold the
+            // encoder, capture and display forever (Sunshine times it out).
+            let active: Vec<_> = h
+                .sessions
+                .lock()
+                .unwrap()
+                .active
+                .iter()
+                .map(|(id, s)| (id.clone(), s.clone()))
+                .collect();
+            unattended.retain(|id, _| active.iter().any(|(active, _)| active == id));
+            for (id, s) in active {
+                if s.stopping() || peers.values().any(|p| p.id == id) {
+                    unattended.remove(&id);
+                    continue;
+                }
+                let since = *unattended.entry(id).or_insert_with(Instant::now);
+                if since.elapsed() > ping_timeout {
+                    tracing::warn!(client=%s.launch.client.name,"session has no control connection; ending it");
+                    s.fail();
+                    s.stop();
+                }
             }
             host.flush();
             // Wake as soon as input arrives; otherwise within a millisecond for
