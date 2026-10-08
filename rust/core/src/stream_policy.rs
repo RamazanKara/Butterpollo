@@ -204,6 +204,8 @@ pub struct Pacer {
     source_phase: Option<SourcePhase>,
     /// The least time between two claims, in periods.
     spacing: f64,
+    /// The source presents faster than the stream rate.
+    faster: bool,
 }
 impl Pacer {
     /// Credit above one frame absorbs arrival jitter of a source at the stream rate.
@@ -217,6 +219,7 @@ impl Pacer {
             prediction: true,
             source_phase: None,
             spacing: 0.75,
+            faster: false,
         }
     }
     /// VRR: the display follows each frame, so a game's uneven frame times
@@ -260,9 +263,13 @@ impl Pacer {
     /// the stream rate refills what each claim spends, so a deficit left by a
     /// startup burst would otherwise delay every following claim for the rest
     /// of the session; with the margin it is repaid within about a second.
+    /// A faster source always has a frame for the next slot, so it refills at
+    /// exactly the stream rate: with the margin, a 240 Hz display streamed at
+    /// 120 fps was claimed 121.2 times a second.
     const REFILL: f64 = 1.01;
     fn credit(&self, now: Instant) -> f64 {
-        let earned = now.saturating_duration_since(self.credit_at).as_secs_f64() * Self::REFILL
+        let refill = if self.faster { 1. } else { Self::REFILL };
+        let earned = now.saturating_duration_since(self.credit_at).as_secs_f64() * refill
             / self.period.as_secs_f64();
         (self.credit + earned).min(Self::CREDIT_CAP)
     }
@@ -317,11 +324,12 @@ impl Pacer {
     /// Decide for the newest unclaimed frame, presented at `presented`, given
     /// the source's recent frame interval as seen by the capture worker.
     pub fn decide(
-        &self,
+        &mut self,
         now: Instant,
         presented: Instant,
         source_interval: Option<Duration>,
     ) -> Pace {
+        self.faster = source_interval.is_some_and(|i| i < self.period.mul_f64(0.95));
         let allowed = self.allowed_at(now);
         if now >= allowed {
             return Pace::Claim;
