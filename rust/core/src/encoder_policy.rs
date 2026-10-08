@@ -255,7 +255,10 @@ pub fn amf(config: &Config, stream: &Negotiated) -> Result<Vec<Property>> {
             crate::config::invalid("amd_qvbr_quality_level", &q.to_string());
         }
     }
-    if let Some(on) = tristate(config, "amd_vbaq", Some(true)) {
+    // On by default for HEVC and AV1. For H.264 it cost 1.0 and 9.4 VMAF at
+    // 1440p120 and 20 Mbps on two game clips, at equal encode time, so it is
+    // off there unless asked for (PERFORMANCE_WORK.md, October 8).
+    if let Some(on) = tristate(config, "amd_vbaq", Some(codec != 0)) {
         let on = on && rc != Some(0);
         if codec == 2 {
             add("Av1AQMode".into(), Value::Integer(i64::from(on)), true);
@@ -854,6 +857,23 @@ mod tests {
         assert!(
             av1.iter()
                 .any(|p| p.name == "Av1EncodingLatencyMode" && p.value == Value::Integer(3))
+        );
+        // Adaptive quantization defaults on for HEVC and AV1, off for H.264.
+        for (codec, name, on) in [(0, "EnableVBAQ", false), (1, "HevcEnableVBAQ", true)] {
+            stream.codec = codec;
+            assert!(
+                amf(&Config::default(), &stream)
+                    .unwrap()
+                    .iter()
+                    .any(|p| p.name == name && p.value == Value::Boolean(on))
+            );
+        }
+        stream.codec = 2;
+        assert!(
+            amf(&Config::default(), &stream)
+                .unwrap()
+                .iter()
+                .any(|p| p.name == "Av1AQMode" && p.value == Value::Integer(1))
         );
         let auto = amf(
             &Config::parse("amd_quality=auto\namd_vbaq=auto\n").unwrap(),
