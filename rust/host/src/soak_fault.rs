@@ -1,16 +1,87 @@
 //! Faults for the isolated debug host used by the release soak. Never compiled
 //! into a release binary or enabled without an explicit test-owned directory.
-use anyhow::Result;
-use std::{path::Path, sync::OnceLock};
+use anyhow::{Context, Result};
+use butterpollo_windows::encoder::Encoded;
+use std::{
+    path::{Path, PathBuf},
+    sync::OnceLock,
+    time::{Duration, Instant},
+};
+
+fn directory() -> Option<&'static Path> {
+    static DIRECTORY: OnceLock<Option<PathBuf>> = OnceLock::new();
+    DIRECTORY
+        .get_or_init(|| std::env::var_os("BUTTERPOLLO_TEST_FAULT_DIR").map(PathBuf::from))
+        .as_deref()
+}
 
 pub fn check(kind: &str) -> Result<()> {
-    static DIRECTORY: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
-    if let Some(directory) = DIRECTORY.get_or_init(|| {
-        std::env::var_os("BUTTERPOLLO_TEST_FAULT_DIR").map(std::path::PathBuf::from)
-    }) {
+    if let Some(directory) = directory() {
         check_at(directory, kind)?;
     }
     Ok(())
+}
+
+/// Withhold completed output at the session's encoder boundary. Held frames
+/// count as backlog; recreating the encoder discards them but not the fault.
+pub struct EncoderStall {
+    directory: Option<PathBuf>,
+    until: Option<Instant>,
+    pub held: Vec<Encoded>,
+}
+impl Default for EncoderStall {
+    fn default() -> Self {
+        Self::new(directory().map(Path::to_path_buf))
+    }
+}
+impl EncoderStall {
+    pub fn new(directory: Option<PathBuf>) -> Self {
+        Self {
+            directory,
+            until: None,
+            held: vec![],
+        }
+    }
+    pub fn output(&mut self, output: Vec<Encoded>, now: Instant) -> Result<Vec<Encoded>> {
+        let Some(directory) = &self.directory else {
+            return Ok(output);
+        };
+        let request = directory.join("encoder stall");
+        match std::fs::read_to_string(&request) {
+            Ok(duration) => {
+                let duration = Duration::from_millis(
+                    duration
+                        .trim()
+                        .parse()
+                        .context("encoder stall must contain milliseconds")?,
+                );
+                self.until = Some(
+                    now.checked_add(duration)
+                        .context("encoder stall duration too large")?,
+                );
+                std::fs::remove_file(request)?;
+                tracing::info!(
+                    duration_ms = duration.as_millis(),
+                    "soak injected encoder stall"
+                );
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        if directory.join("encoder stall.persistent").exists()
+            || self.until.is_some_and(|until| now < until)
+        {
+            self.held.extend(output);
+            return Ok(vec![]);
+        }
+        self.until = None;
+        if self.held.is_empty() {
+            return Ok(output);
+        }
+        let mut resumed = std::mem::take(&mut self.held);
+        resumed.extend(output);
+        Ok(resumed)
+    }
 }
 
 fn check_at(directory: &Path, kind: &str) -> Result<()> {

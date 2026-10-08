@@ -921,6 +921,11 @@ impl Encoder {
             _ => 0,
         }
     }
+    pub fn log_stall(&self) {
+        if let Self::Amf(encoder) = self {
+            encoder.log_stall();
+        }
+    }
     /// A GPU encoder, rather than FFmpeg's software codecs.
     pub fn hardware(&self) -> bool {
         match self {

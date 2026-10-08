@@ -854,6 +854,34 @@ impl Converter {
     pub fn compute(&self) -> &Arc<Compute> {
         &self.compute
     }
+    pub(crate) fn log_stall(&self) {
+        // SAFETY: These live devices and fences are only queried, never waited on.
+        let (completed, removed) = unsafe {
+            (
+                self.compute.fence.GetCompletedValue(),
+                self.compute.device.GetDeviceRemovedReason(),
+            )
+        };
+        tracing::warn!(
+            priority = self.compute.priority,
+            conversion_submitted = self.slots.iter().map(|slot| slot.fence).max().unwrap_or(0),
+            conversion_completed = completed,
+            d3d12_removed = ?removed,
+            "AMF compute progress at stall"
+        );
+        for (index, target) in self.targets.iter().enumerate() {
+            // SAFETY: `target` owns this live fence; the query does not wait.
+            let completed = unsafe { target.fence.GetCompletedValue() };
+            tracing::warn!(
+                index,
+                conversion_value = target.value,
+                amf_value = ?crate::amf::gpu::fence_value(&target.fence),
+                completed,
+                owners = Arc::strong_count(&target.texture),
+                "AMF surface fence at stall"
+            );
+        }
+    }
     /// A free output texture's index.
     fn target(&mut self) -> Result<usize> {
         for (index, target) in self.targets.iter().enumerate() {

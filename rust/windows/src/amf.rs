@@ -81,6 +81,9 @@ pub struct Encoder {
     hdr_metadata: Option<butterpollo_core::hdr::Metadata>,
     /// Conversion on a D3D12 compute queue, with AMF on D3D12.
     compute: Option<Box<ComputeInput>>,
+    last_query: Option<AMF_RESULT>,
+    last_submit: Option<AMF_RESULT>,
+    input_full: u64,
 }
 struct ComputeInput {
     converter: crate::compute::Converter,
@@ -256,6 +259,9 @@ impl Encoder {
                 luminance: [100., 1.],
                 hdr_metadata: None,
                 compute,
+                last_query: None,
+                last_submit: None,
+                input_full: 0,
             };
             let mut properties = butterpollo_core::encoder_policy::amf(options, config)?;
             guard_smart_access_video(&mut properties);
@@ -704,11 +710,50 @@ impl Encoder {
                 settings.push(format!("{name}={value}"));
             }
         }
+        let gpu_priority = self
+            ._device
+            .device
+            .cast::<windows::Win32::Graphics::Dxgi::IDXGIDevice>()
+            .and_then(|device| unsafe { device.GetGPUThreadPriority() });
         tracing::info!(
             settings = %settings.join(" "),
             client_max_reference_frames = self.config.references,
+            input_memory = if self.compute.is_some() { "D3D12" } else { "D3D11/host" },
+            compute_priority = ?self.compute.as_ref().map(|input| input.converter.compute().priority),
+            d3d11_gpu_priority = ?gpu_priority,
             "AMF encoder settings"
         );
+    }
+    /// Snapshot only at failure/recreation, before dropping the driver state.
+    pub fn log_stall(&self) {
+        let oldest = self.in_flight.front();
+        let removed = unsafe { self._device.device.GetDeviceRemovedReason() };
+        let result_name = |code| match code {
+            Some(AMF_RESULT_AMF_OK) => "AMF_OK",
+            Some(AMF_RESULT_AMF_REPEAT) => "AMF_REPEAT",
+            Some(AMF_RESULT_AMF_EOF) => "AMF_EOF",
+            Some(AMF_RESULT_AMF_NEED_MORE_INPUT) => "AMF_NEED_MORE_INPUT",
+            Some(AMF_RESULT_AMF_INPUT_FULL) => "AMF_INPUT_FULL",
+            Some(_) => "other",
+            None => "not called",
+        };
+        tracing::warn!(
+            last_submit = ?self.last_submit,
+            last_query = ?self.last_query,
+            submit_result = result_name(self.last_submit),
+            query_result = result_name(self.last_query),
+            input_full = self.input_full,
+            in_flight = self.in_flight.len(),
+            retained = self.ownership.retained(),
+            oldest_pts = ?oldest.map(|s| s.pts),
+            oldest_ms = ?oldest.map(|s| s.started.elapsed().as_millis()),
+            next_pts = self.index,
+            d3d11_removed = ?removed,
+            "AMF stall snapshot"
+        );
+        if let Some(input) = &self.compute {
+            input.converter.log_stall();
+        }
     }
     fn property(&mut self, name: &str, value: AMFVariantStruct) -> Result<()> {
         let prefix = match self.codec {
@@ -1008,6 +1053,7 @@ impl Encoder {
             }
             let mut data = ptr::null_mut();
             let code = ((*(*self.component).pVtbl).QueryOutput.unwrap())(self.component, &mut data);
+            self.last_query = Some(code);
             if code == AMF_RESULT_AMF_REPEAT
                 || code == AMF_RESULT_AMF_EOF
                 || code == AMF_RESULT_AMF_NEED_MORE_INPUT
@@ -1158,7 +1204,9 @@ impl Encoder {
                     self.component,
                     surface as *mut AMFData,
                 );
+                self.last_submit = Some(result);
                 if result == AMF_RESULT_AMF_INPUT_FULL {
+                    self.input_full += 1;
                     match self.poll() {
                         Ok(frames) => output.extend(frames),
                         Err(e) => {
@@ -1362,10 +1410,12 @@ impl Encoder {
                     self.component,
                     surface.0.cast(),
                 );
+                self.last_submit = Some(result);
                 if result != AMF_RESULT_AMF_INPUT_FULL {
                     check(result)?;
                     break;
                 }
+                self.input_full += 1;
                 output.extend(self.poll()?);
                 if Instant::now() >= deadline {
                     bail!("AMF GPU input queue failed to drain");

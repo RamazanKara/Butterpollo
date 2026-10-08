@@ -10,7 +10,7 @@ mod pyrowave_send;
 mod remote_display;
 mod rtsp_server;
 mod runtime;
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, test))]
 mod soak_fault;
 mod state;
 mod steam;

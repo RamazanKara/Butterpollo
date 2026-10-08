@@ -282,6 +282,115 @@ Not measured: the RX 9070 XT is not available, and the RX 7900 XT has not
 reproduced the stall. The debug soak's encoder-failure fault exercises the
 encode-error path, not this one; a stall injection is still to be written.
 
+October 9 follow-up: the debug soak fault directory now accepts `encoder
+stall`, containing a duration in milliseconds (for example `300`), or an
+empty `encoder stall.persistent`, which withholds output until removed.
+The finite request is consumed once. The fault holds completed frames at
+the session's encoder boundary, counts them as backlog, and survives
+recreation; pictures from the old encoder are discarded on recreation.
+It is compiled only with debug assertions or tests, uses the existing
+`BUTTERPOLLO_TEST_FAULT_DIR`, and has no release setting or CLI switch.
+
+GPU-free tests in `host/src/stream/encoder_tests.rs` use a mock at the
+encoder-output trait boundary, a virtual clock, the session's actual
+recovery helpers and IDR request, and a packetized frame sink. They cover
+300 ms of silence followed by a keyframe and more packets, a permanent
+stall, the 250/500/1000/2000 ms recreation waits (then capped at 2000), a
+short stall released by polling, resetting backoff for a later failure,
+and output progress with an unchanged backlog. The 20 s budget starts at
+the first recovery attempt, not at the start of the fault. Polling normally
+ends it with `the encoder did not produce a frame during recovery`; if the
+stall deadline check runs first, the existing message is `the encoder
+stopped returning frames`. Both paths are tested, including the failed
+session's `0x80004005` termination reason. The sink verifies packet delivery
+resumes; this does not exercise a real GPU, network stream or decoder.
+
+Code and local SDK audit (AMF headers version 1.5.2 in
+`%BUTTERPOLLO_FFMPEG_ROOT%/include/AMF`; `third-party/` has no AMF docs in
+this worktree):
+
+- `amf.rs::poll` calls `QueryOutput` once while an input is outstanding,
+  handing one completed frame to the sender immediately. REPEAT, EOF,
+  NEED_MORE_INPUT and OK with null data produce no output; it never drains
+  a running encoder. `QueryTimeout` is requested as 1 ms (failure ignored;
+  the effective settings line shows the actual value). The session polls
+  pending output at 100 us where pacing permits, and stops submitting at
+  two outstanding pictures. AMF independently drops tracked submissions
+  older than two seconds and requests an IDR. These are separate limits.
+  At the capped two-second wait, that expiry can lower the backlog first
+  and reset the backlog timer; it does not reset the no-output recovery
+  budget. Actual recreation spacing also includes initialization and
+  refilling the queue: `wait_ms` reports the stall threshold.
+- The SDK's `VideoEncoderHEVC.h` documents `HevcInputQueueSize` default 16
+  and `HevcQueryTimeout` in milliseconds. `amd_input_queue_size=0` leaves
+  the driver queue alone; a positive setting requests 1–32. That is not
+  the session's two-picture backlog or the native eight-surface ownership
+  limit. Both CPU and GPU SubmitInput loops poll and yield on INPUT_FULL,
+  failing after 100 ms; the GPU capacity wait has its own 100 ms limit.
+  INPUT_FULL therefore normally gives an **encoding error**, distinct from
+  successfully accepted input that never produces output.
+- Defaults remain ultra-low-latency **usage**, speed and latency VBR;
+  `LowLatencyInternal` is a separate optional setting. PA is normally off
+  (quality rate controls can enable it with one-frame lookahead); pre-encode
+  can depend on the driver's usage preset. Forced low latency plus explicitly
+  enabled SmartAccess Video is already guarded. None of these settings was
+  changed. The existing `AMF encoder settings` log reads back queue size,
+  timeout, usage, PA/pre-encode, SAV, LTR and hardware-instance count.
+- `compute.rs` normally converts RGB to NV12/P010 on D3D12 compute, asking
+  for high priority, then normal if denied (global realtime is opt-in).
+  Its queue waits for the capture-ready fence before conversion. AMF gets
+  the texture in COMMON and a per-texture fence via the GUID contract in
+  `core/D3D12AMF.h`. The D3D11 fallback uses the graphics context. Only a
+  second *separate* encoder failure disables compute, as before. The host
+  requests DXGI thread priority 7 and WDDM process scheduling class 5,
+  falling back to 4; these are not an AMF VCN-priority or reserved-capacity
+  setting. No encoder-priority property is set by this path.
+
+The SDK contracts agree with AMD's [asynchronous encoder guide](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/wiki/Guide-for-Video-CODEC-Encoder-App-Developers)
+and [HEVC header](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/blob/master/amf/public/include/components/VideoEncoderHEVC.h).
+Ranked hypotheses below are inferences, not an RX 9070 XT reproduction:
+
+| Rank | Hypothesis | Evidence that would distinguish it |
+|---|---|---|
+| 1 | AMF/driver or D3D12 handoff wedges under contention after accepting input. Healthy timings followed by abrupt silence fit better than a steady throughput limit. | `submit_result=AMF_OK`, repeated REPEAT/OK-null with two old inputs, healthy devices, conversion fences completed but AMF's surface fence/ownership not advancing. If all fences complete, the wedge is farther inside AMF/output processing. A WPR/GPUView trace and driver-version comparison are needed to separate these. |
+| 2 | Capture-copy or colour-conversion work is starved by the 99% game load, so VCN has no ready input. High queue priority still shares GPU execution/memory resources. | `conversion_completed < conversion_submitted` or a surface's `completed < conversion_value`. Trace the capture fence dependency and compute scheduling with GPUView; a ready conversion weakens this hypothesis. D3D11 input instead needs a graphics-queue trace. |
+| 3 | A queue/latency/analysis configuration exposes driver buffering or a driver bug. A two-picture host cap can also conflict with a mode needing more input. | Compare effective InputQueueSize, Usage, LowLatencyInternal, SAV, PA/lookahead, pre-encode and LTR against defaults. Repeated NEED_MORE_INPUT/EOF is distinct from ordinary REPEAT. INPUT_FULL with the explicit 100 ms submit error identifies submission backpressure. The earlier forced-queue RDNA4 report is a lead, not proof about this reporter's settings. |
+| 4 | The single VCN is delayed by scheduling, another encoder, or expensive recovery keyframes/pre-encode. | All input fences ready, devices healthy, output eventually resumes as the waits grow. Correlate VCN engine occupancy/other sessions in GPUView and the first recovered IDR; collect under-load encode latency. The pre-stall 4.6 ms mean weakens sustained 4K60 throughput exhaustion. One hardware instance leaves no second instance for split-frame relief. |
+| 5 | Device removal/TDR, or surface retention/accounting failure. | Non-success `d3d11_removed`/`d3d12_removed`, a fence completed value of `u64::MAX`, Windows display-driver reset events, or native eight-surface capacity errors. `retained` far above `in_flight` and completed surface fences with excess owners suggest retention; correlate with `encoder_dropped` and queue-drain errors. |
+
+New diagnostics, only on startup, failure/recreation or recovered output:
+
+- `AMF encoder settings` additionally reports `input_memory`,
+  `compute_priority` and the read-back `d3d11_gpu_priority`.
+- `encoder stall recovery`: `wait_ms`, `recreation`, `recovery_ms`.
+- `AMF stall snapshot`: last SubmitInput/QueryOutput numeric codes and
+  symbolic `submit_result`/`query_result`, lifetime `input_full` retry count,
+  `in_flight`, `retained`, oldest PTS/age, next PTS and D3D11 device status.
+  A nonzero lifetime count alone does not locate the current failure.
+- `AMF compute progress at stall`: compute priority, last conversion
+  submission/completion fence values and D3D12 device status.
+- `AMF surface fence at stall`: at most eight target rows with conversion,
+  AMF and completed fence values plus texture owner counts. These are
+  observations at different instants, not an atomic GPU snapshot.
+- `encoder output resumed`: elapsed recovery time. The finite debug
+  injection also logs `soak injected encoder stall` with `duration_ms`.
+
+The release frame path only retains AMF result codes and a retry counter
+for these snapshots; it adds no timer reads, GPU waits, property writes or per-frame
+logs. Timing, queue limits, defaults and recovery decisions remain unchanged.
+The software deadlines still require AMF calls to return: a driver blocking
+inside QueryOutput, SubmitInput, Init or Terminate can overrun them. If logs
+stop entirely, capture the streaming thread's stack/ETW trace; the synthetic
+output fault does not simulate a hung driver call. No hardware/ignored tests,
+streams or installed-service changes were used for this investigation.
+
+Validation: `cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets --locked -j 2 -- -D warnings` and
+`cargo test --workspace --locked -j 2` all passed through
+`C:\src\cargo-one.ps1`, using `D:\bp-build\stall-target`.
+Workspace result: 546 passed, 0 failed, 44 ignored; all six new stall tests
+passed. No ignored tests were run.
+
 ## October 8 rc.22 baseline at the owner's settings
 
 The goal is now a finished product measured at the owner's own settings

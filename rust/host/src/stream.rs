@@ -1,5 +1,7 @@
 use crate::state::{Launch, Session, Shared};
 mod capture;
+#[cfg(test)]
+mod encoder_tests;
 use anyhow::{Context, Result};
 use butterpollo_core::{
     config::Config,
@@ -30,37 +32,137 @@ fn encoder_progress(
     now: Instant,
 ) -> Result<()> {
     if produced_frame {
+        if let Some(since) = *failing {
+            tracing::info!(
+                recovery_ms = now.duration_since(since).as_millis(),
+                "encoder output resumed"
+            );
+        }
         *failing = None;
     } else if failing.is_some_and(|since| now.duration_since(since) >= ENCODER_RECOVERY) {
         anyhow::bail!("the encoder did not produce a frame during recovery");
     }
     Ok(())
 }
-/// Output the encoder has finished. An encoder that fails to deliver it is
-/// dropped, so the next frame recreates it and asks for a keyframe, as after
-/// a failed submission; only failures lasting [`ENCODER_RECOVERY`] end the stream.
-fn collect(
-    encoder: &mut Option<Encoder>,
-    failing: &mut Option<Instant>,
-    warnings: &butterpollo_core::session::Warnings,
-) -> Result<Vec<butterpollo_windows::encoder::Encoded>> {
-    let Some(active) = encoder.as_mut() else {
-        return Ok(vec![]);
-    };
-    match active.poll() {
-        Ok(output) => {
-            encoder_progress(failing, !output.is_empty(), Instant::now())?;
-            Ok(output)
+// Keep recovery testable without constructing a GPU or an AMF runtime.
+trait EncoderOutput {
+    fn poll(&mut self) -> Result<Vec<butterpollo_windows::encoder::Encoded>>;
+    fn pending(&self) -> bool;
+    fn backlog(&self) -> usize;
+    fn log_stall(&self);
+}
+impl EncoderOutput for Encoder {
+    fn poll(&mut self) -> Result<Vec<butterpollo_windows::encoder::Encoded>> {
+        self.poll()
+    }
+    fn pending(&self) -> bool {
+        self.pending()
+    }
+    fn backlog(&self) -> usize {
+        self.backlog()
+    }
+    fn log_stall(&self) {
+        self.log_stall();
+    }
+}
+#[derive(Default)]
+struct EncoderRecovery {
+    failing: Option<Instant>,
+    backlog_since: Option<Instant>,
+    recreations: u32,
+    #[cfg(any(debug_assertions, test))]
+    stall: crate::soak_fault::EncoderStall,
+}
+impl EncoderRecovery {
+    fn pending(&self, encoder: &impl EncoderOutput) -> bool {
+        #[cfg(any(debug_assertions, test))]
+        if !self.stall.held.is_empty() {
+            return true;
         }
-        Err(error) => {
-            let since = *failing.get_or_insert_with(Instant::now);
-            if since.elapsed() >= ENCODER_RECOVERY {
-                return Err(error.context("the encoder kept failing"));
+        encoder.pending()
+    }
+    fn backlog(&self, encoder: &impl EncoderOutput) -> usize {
+        let backlog = encoder.backlog();
+        #[cfg(any(debug_assertions, test))]
+        let backlog = backlog + self.stall.held.len();
+        backlog
+    }
+    fn output(
+        &mut self,
+        output: Vec<butterpollo_windows::encoder::Encoded>,
+        now: impl Fn() -> Instant,
+    ) -> Result<Vec<butterpollo_windows::encoder::Encoded>> {
+        #[cfg(any(debug_assertions, test))]
+        let output = self.stall.output(output, now())?;
+        encoder_progress(&mut self.failing, !output.is_empty(), now())?;
+        Ok(output)
+    }
+    /// A recreated codec cannot send pictures retained from its predecessor.
+    fn recreated(&mut self, session: &Session) {
+        #[cfg(any(debug_assertions, test))]
+        self.stall.held.clear();
+        session.request_idr();
+    }
+    /// Output the encoder has finished. Only failures lasting the recovery
+    /// budget end the stream; the next frame recreates a dropped encoder.
+    fn collect(
+        &mut self,
+        encoder: &mut Option<impl EncoderOutput>,
+        warnings: &butterpollo_core::session::Warnings,
+        now: impl Fn() -> Instant,
+    ) -> Result<Vec<butterpollo_windows::encoder::Encoded>> {
+        let Some(active) = encoder.as_mut() else {
+            return Ok(vec![]);
+        };
+        match active.poll() {
+            Ok(output) => self.output(output, now),
+            Err(error) => {
+                let since = *self.failing.get_or_insert_with(&now);
+                if now().duration_since(since) >= ENCODER_RECOVERY {
+                    return Err(error.context("the encoder kept failing"));
+                }
+                warnings.set("encoder_recovery", format!("Encoder output failed ({error:#}); recreating the same encoder while the picture freezes. Lower game GPU load or update the graphics driver if this repeats."));
+                active.log_stall();
+                *encoder = None;
+                Ok(vec![])
             }
-            warnings.set("encoder_recovery", format!("Encoder output failed ({error:#}); recreating the same encoder while the picture freezes. Lower game GPU load or update the graphics driver if this repeats."));
-            *encoder = None;
-            Ok(vec![])
         }
+    }
+    fn poll_full(
+        &mut self,
+        encoder: &mut Option<impl EncoderOutput>,
+        warnings: &butterpollo_core::session::Warnings,
+        now: impl Fn() -> Instant,
+    ) -> Result<Option<Vec<butterpollo_windows::encoder::Encoded>>> {
+        if self.failing.is_none() {
+            self.recreations = 0;
+        }
+        let limit = butterpollo_core::stream_policy::encoder_stall_limit(self.recreations);
+        let backlog_since = *self.backlog_since.get_or_insert_with(&now);
+        if now().duration_since(backlog_since) >= limit {
+            self.backlog_since = None;
+            let since = *self.failing.get_or_insert_with(&now);
+            if now().duration_since(since) >= ENCODER_RECOVERY {
+                anyhow::bail!("the encoder stopped returning frames");
+            }
+            warnings.set("encoder_recovery", format!("The encoder returned no frame for {} ms; recreating the same encoder while the picture freezes. Lower game GPU load or update the graphics driver if this repeats.", limit.as_millis()));
+            tracing::warn!(
+                wait_ms = limit.as_millis(),
+                recreation = self.recreations + 1,
+                recovery_ms = now().duration_since(since).as_millis(),
+                "encoder stall recovery"
+            );
+            encoder.as_ref().unwrap().log_stall();
+            self.recreations += 1;
+            *encoder = None;
+            return Ok(None);
+        }
+        let output = self.collect(encoder, warnings, now)?;
+        // Output is progress even when the in-flight count did not drop.
+        if !output.is_empty() {
+            self.backlog_since = None;
+        }
+        Ok(Some(output))
     }
 }
 /// Backoff only after reopening fails; resource release is acknowledged.
@@ -1070,7 +1172,7 @@ impl Media {
                     let mut live_at = due;
                     let mut rebuild_encoder = false;
                     // Since when encoding has failed without a frame getting through.
-                    let mut encoder_failing: Option<Instant> = None;
+                    let mut recovery = EncoderRecovery::default();
                     // Separate encoder failures in this session, each counted once.
                     let (mut failures, mut counted_failure) = (0u32, None);
                     let mut runtime_config = c.clone();
@@ -1109,10 +1211,6 @@ impl Media {
                     // The first pacing decision for the newest fresh frame, kept
                     // for the per-claim trace.
                     let mut first_seen: Option<(usize, Instant, Option<Duration>, Option<Instant>)> = None;
-                    // Since when a full encoder has returned nothing.
-                    let mut backlog_since: Option<Instant> = None;
-                    // Backlog recreations since a frame last got through.
-                    let mut stall_recreations = 0u32;
                     let mut video_qos = Tagged::default();
                     let mut batch = butterpollo_windows::net::Batch::default();
                     let mut network_pacer = butterpollo_core::network_pacing::Pacer::new(Instant::now());
@@ -1329,9 +1427,9 @@ impl Media {
                             let due = cadence.deadline();
                             if !arrival_pacing && now < due {
                                 while Instant::now() < due {
-                                    if encoder.as_ref().is_some_and(Encoder::pending) {
-                                        send_frames(collect(&mut encoder, &mut encoder_failing, &s.launch.warnings)?, peer, Duration::ZERO)?;
-                                        if encoder.as_ref().is_some_and(Encoder::pending) {
+                                    if encoder.as_ref().is_some_and(|e| recovery.pending(e)) {
+                                        send_frames(recovery.collect(&mut encoder, &s.launch.warnings, Instant::now)?, peer, Duration::ZERO)?;
+                                        if encoder.as_ref().is_some_and(|e| recovery.pending(e)) {
                                             timer.until(
                                                 (Instant::now() + OUTPUT_POLL)
                                                     .min(due),
@@ -1383,12 +1481,12 @@ impl Media {
                                 }
                                 // A poll can block for the encoder's 1 ms query
                                 // timeout; close to the claim it would overshoot.
-                                if encoder.as_ref().is_some_and(Encoder::pending)
+                                if encoder.as_ref().is_some_and(|e| recovery.pending(e))
                                     && deadline.saturating_duration_since(Instant::now()) >= Duration::from_millis(1)
                                 {
-                                    send_frames(collect(&mut encoder, &mut encoder_failing, &s.launch.warnings)?, peer, Duration::ZERO)?;
+                                    send_frames(recovery.collect(&mut encoder, &s.launch.warnings, Instant::now)?, peer, Duration::ZERO)?;
                                 }
-                                let until = if encoder.as_ref().is_some_and(Encoder::pending) {
+                                let until = if encoder.as_ref().is_some_and(|e| recovery.pending(e)) {
                                     deadline.min(Instant::now() + OUTPUT_POLL)
                                 } else {
                                     deadline
@@ -1416,8 +1514,8 @@ impl Media {
                                     .is_some_and(|previous| Arc::ptr_eq(previous, &image))
                                 && Instant::now() < repeat_due
                             {
-                                if encoder.as_ref().is_some_and(Encoder::pending) { send_frames(collect(&mut encoder, &mut encoder_failing, &s.launch.warnings)?, peer, Duration::ZERO)?; }
-                                let wait = if encoder.as_ref().is_some_and(Encoder::pending) { OUTPUT_POLL } else { period };
+                                if encoder.as_ref().is_some_and(|e| recovery.pending(e)) { send_frames(recovery.collect(&mut encoder, &s.launch.warnings, Instant::now)?, peer, Duration::ZERO)?; }
+                                let wait = if encoder.as_ref().is_some_and(|e| recovery.pending(e)) { OUTPUT_POLL } else { period };
                                 latest.wait_if_current(&timer, &capture_wake, &image, Instant::now() + wait.min(repeat_due.saturating_duration_since(Instant::now())))?;
                                 continue;
                             }
@@ -1425,38 +1523,19 @@ impl Media {
                             // waits in its queue: take its output first, then
                             // claim the newest picture.
                             if !rebuild_encoder
-                                && encoder.as_ref().is_some_and(|e| e.backlog() >= ENCODER_BACKLOG)
+                                && encoder.as_ref().is_some_and(|e| recovery.backlog(e) >= ENCODER_BACKLOG)
                             {
                                 // An encoder that returns nothing for 250 ms is
                                 // recreated, as a queue that never drained was;
                                 // a shorter stall on a saturated GPU only makes the
                                 // stream choppy. A recreated one that is still
                                 // silent gets longer each time.
-                                if encoder_failing.is_none() {
-                                    stall_recreations = 0;
+                                if let Some(output) = recovery.poll_full(&mut encoder, &s.launch.warnings, Instant::now)? {
+                                    send_frames(output, peer, Duration::ZERO)?;
                                 }
-                                let limit = butterpollo_core::stream_policy::encoder_stall_limit(stall_recreations);
-                                if backlog_since.get_or_insert_with(Instant::now).elapsed() >= limit {
-                                    backlog_since = None;
-                                    let since = *encoder_failing.get_or_insert_with(Instant::now);
-                                    if since.elapsed() >= ENCODER_RECOVERY {
-                                        anyhow::bail!("the encoder stopped returning frames");
-                                    }
-                                    s.launch.warnings.set("encoder_recovery", format!("The encoder returned no frame for {} ms; recreating the same encoder while the picture freezes. Lower game GPU load or update the graphics driver if this repeats.", limit.as_millis()));
-                                    stall_recreations += 1;
-                                    encoder = None;
-                                    continue;
-                                }
-                                let output = collect(&mut encoder, &mut encoder_failing, &s.launch.warnings)?;
-                                // A frame out means the encoder is alive, even if
-                                // its count of frames in flight has not dropped.
-                                if !output.is_empty() {
-                                    backlog_since = None;
-                                }
-                                send_frames(output, peer, Duration::ZERO)?;
                                 continue;
                             }
-                            backlog_since = None;
+                            recovery.backlog_since = None;
                             if use_truehdr && Instant::now() >= profile_due {
                                 profile_due = Instant::now() + Duration::from_millis(250);
                                 let (active, owned) = {
@@ -1492,7 +1571,7 @@ impl Media {
                                 // failure (a game holding the GPU, a driver reset) must
                                 // not cost the rest of the session the slower path,
                                 // 6-9 ms a frame beside a GPU-bound game.
-                                if let Some(since) = encoder_failing
+                                if let Some(since) = recovery.failing
                                     && counted_failure != Some(since)
                                 {
                                     counted_failure = Some(since);
@@ -1517,7 +1596,7 @@ impl Media {
                                         encoder = Some(created);
                                     },
                                     Err(error) => {
-                                        let since = *encoder_failing.get_or_insert_with(Instant::now);
+                                        let since = *recovery.failing.get_or_insert_with(Instant::now);
                                         if since.elapsed() >= ENCODER_RECOVERY {
                                             return Err(error.context("the encoder could not be recreated"));
                                         }
@@ -1533,7 +1612,7 @@ impl Media {
                                     None
                                 };
                                 truehdr_staging = None;
-                                s.request_idr();
+                                recovery.recreated(&s);
                                 rebuild_encoder = false;
                             }
                             let active = encoder
@@ -1636,18 +1715,18 @@ impl Media {
                             })();
                             let output = match encoded {
                                 Ok(output) => {
-                                    encoder_progress(&mut encoder_failing, !output.is_empty(), Instant::now())?;
-                                    output
+                                    recovery.output(output, Instant::now)?
                                 }
                                 Err(error) => {
                                     // A stalled or reset GPU costs these frames and a
                                     // keyframe; the rebuild requests it. Only failures
                                     // that keep coming end the session.
-                                    let since = *encoder_failing.get_or_insert_with(Instant::now);
+                                    let since = *recovery.failing.get_or_insert_with(Instant::now);
                                     if since.elapsed() >= ENCODER_RECOVERY {
                                         return Err(error.context("the encoder kept failing"));
                                     }
                                     s.launch.warnings.set("encoder_recovery", format!("Encoding failed ({error:#}); recreating the same encoder while the picture freezes. Lower game GPU load or update the graphics driver if this repeats."));
+                                    active.log_stall();
                                     rebuild_encoder = true;
                                     continue;
                                 }
