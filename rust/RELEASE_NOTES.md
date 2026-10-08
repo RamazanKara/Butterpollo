@@ -1,10 +1,10 @@
-# Butterpollo 2.0.0-rc.23 release candidate for Windows
+# Butterpollo 2.0.0-rc.24 release candidate for Windows
 
 [Documentation](../docs/README.md) · [Install and migrate](../docs/getting-started.md) · [Configuration](../docs/configuration.md) · [Compatibility](PARITY.md)
 
 **Release history:** [rc.24](#new-in-rc24) · [rc.23](#new-in-rc23) · [rc.22](#new-in-rc22) · [rc.21](#new-in-rc21) · [rc.20](#new-in-rc20) · [rc.19](#new-in-rc19) · [rc.18](#new-in-rc18) · [rc.17](#new-in-rc17) · [rc.16](#new-in-rc16) · [rc.15](#new-in-rc15) · [rc.14](#new-in-rc14) · [rc.13](#new-in-rc13) · [rc.12](#new-in-rc12) · [rc.11](#new-in-rc11) · [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
 
-Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.23 installer is named `butterpollo-setup-2.0.0-rc.23.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.24 installer is named `butterpollo-setup-2.0.0-rc.24.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
 
 ## New in rc.24
 
@@ -16,6 +16,8 @@ Butterpollo's host, native helpers, service and setup are written in Rust, with 
   - **"No gyro" explained.** With Steam Input on, Moonlight only sees a virtual Xbox controller. When a device named Steam Deck connects that way, the stream card says to disable Steam Input for Moonlight.
   - Checked with unit tests only: no real Steam Deck has been tried. [Steam Deck](../docs/configuration.md#steam-deck) has the setup.
 - **Input a device isn't allowed to send is no longer dropped silently.** Devices paired after the first start view-only, as in Apollo and Vibepollo, so their controller, touch, pen, mouse and keyboard input was ignored without a word. The stream card now names the permission to turn on under **Devices**.
+- **Launching again after a stream that is slow to close.** When a stream had not finished releasing its encoder, capture and display within 5 s, for example because the graphics driver was slow to close the encoder, the old session stayed listed as running, and every later launch failed with "previous game session is still releasing" until the host restarted. The old session now leaves the list before those are released, and the log warns when a teardown outlasts the launch wait. A session whose stream fails to start is removed too, and restoring the frame limiter (RTSS) when a launch expires no longer holds up other clients' input. Checked with unit tests and the reconnect soak on the RX 7900 XT host: 66 of 67 runs passed, and the one failure is the HEVC 120 fps run under uncapped GPU load that fails on rc.23 as well. A real driver hang has not been reproduced.
+- **Smaller fixes from a code audit:** a Vulkan layer check could write past a 4-byte buffer after a failed registry read, two Windows network helpers read lists through too narrow a pointer, and the AMF D3D12 context was released through a wrongly typed call. None is on the frame path. The old C++ host sources are gone from the repository.
 
 ## New in rc.23
 
@@ -328,8 +330,8 @@ Current automated validation: 263 ordinary tests passed, with 27 environment-dep
 
 ## Install
 
-- `butterpollo-setup-2.0.0-rc.23.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
-- For a portable copy, extract `butterpollo-rust-2.0.0-rc.23-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
+- `butterpollo-setup-2.0.0-rc.24.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
+- For a portable copy, extract `butterpollo-rust-2.0.0-rc.24-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
 - These are unsigned test builds. Keep a copy of your configuration and the previous installer for rollback.
 
 ## Lower latency

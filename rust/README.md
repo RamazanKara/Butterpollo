@@ -4,7 +4,7 @@
 
 The Windows host, protocol implementation, native helpers, service and setup are written in Rust. The browser console is Svelte. The Rust executables do not link the previous C++ host; codec libraries, GPU SDKs and Windows drivers are external dependencies.
 
-The workspace version is **2.0.0-rc.23**. This guide covers development and isolated validation. For feature status and exact hardware evidence, use [PARITY.md](PARITY.md) and [PERFORMANCE.md](PERFORMANCE.md).
+The workspace version is **2.0.0-rc.24**. This guide covers development and isolated validation. For feature status and exact hardware evidence, use [PARITY.md](PARITY.md) and [PERFORMANCE.md](PERFORMANCE.md).
 
 ## Start streaming
 
@@ -97,7 +97,7 @@ The strict AMD AV1 raw-bitstream geometry test retains its known failure at some
 
 The Rust host imports the Vibepollo/Apollo profile format and implements the Windows feature set recorded in [PARITY.md](PARITY.md). Application overrides take precedence over client overrides; display recovery restores host-owned changes that the user has not subsequently altered.
 
-The earlier C++ host, its CMake build and installer were removed after 2.0.0-rc.23; [that tag](https://github.com/RamazanKara/Butterpollo/tree/2.0.0-rc.23) and its [archived references](https://github.com/RamazanKara/Butterpollo/blob/2.0.0-rc.23/docs/legacy/README.md) keep them for migration research. The released Rust package is built through [build.ps1](build.ps1).
+The earlier C++ host, its CMake build and installer were removed after 2.0.0-rc.24; [that tag](https://github.com/RamazanKara/Butterpollo/tree/2.0.0-rc.24) and its [archived references](https://github.com/RamazanKara/Butterpollo/blob/2.0.0-rc.24/docs/legacy/README.md) keep them for migration research. The released Rust package is built through [build.ps1](build.ps1).
 
 An optional [Moonlight 6.2.0 source patch](compatibility/moonlight-6.2.0/README.md) addresses cold-cache CSV artwork shutdown. Its focused Qt validation is recorded separately from the official Windows client's streaming checks.
 
