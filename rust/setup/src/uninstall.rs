@@ -117,7 +117,7 @@ pub fn uninstall(options: &Options, progress: &Progress) -> Result<()> {
         );
         use std::os::windows::process::CommandExt;
         let _ = std::process::Command::new(system::system32("cmd.exe"))
-            .args(["/D", "/C", &command])
+            .raw_arg(system::cmd_line(&command))
             .creation_flags(0x0800_0000 | 0x0000_0008)
             .spawn();
     } else {

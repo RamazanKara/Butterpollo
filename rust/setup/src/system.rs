@@ -29,8 +29,27 @@ pub fn wide(text: &str) -> Vec<u16> {
 /// still running at `timeout` is killed.
 pub fn run(program: &str, args: &[&str], timeout: Duration) -> Result<(i32, String)> {
     line(format!("> {program} {}", args.join(" ")));
-    let mut child = Command::new(program)
-        .args(args)
+    let mut command = Command::new(program);
+    command.args(args);
+    finish(command, program, timeout)
+}
+/// Run `cmd.exe /D /S /C "<line>"` with `line` passed through untouched, so
+/// the quoted paths inside it reach cmd as written. `run` escapes embedded
+/// quotes as `\"`, which cmd does not understand.
+pub fn run_cmd(line_text: &str, timeout: Duration) -> Result<(i32, String)> {
+    let program = system32("cmd.exe");
+    line(format!("> {program} /D /S /C \"{line_text}\""));
+    let mut command = Command::new(&program);
+    command.raw_arg(cmd_line(line_text));
+    finish(command, &program, timeout)
+}
+/// The arguments of `cmd.exe /D /S /C`: with /S, cmd removes only the outer
+/// quotes and runs the rest as typed.
+pub fn cmd_line(line_text: &str) -> String {
+    format!("/D /S /C \"{line_text}\"")
+}
+fn finish(mut command: Command, program: &str, timeout: Duration) -> Result<(i32, String)> {
+    let mut child = command
         // A PowerShell 7 parent (a script running setup) leaves its module
         // path behind, and Windows PowerShell 5.1 then fails to load its own
         // modules: the driver scripts could not check signatures.
@@ -881,6 +900,34 @@ pub fn program_files() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cmd_lines_keep_quoted_paths_with_spaces() -> Result<()> {
+        // The shape of an NSIS QuietUninstallString under Program Files, and
+        // the uninstaller's own delayed self-deletion.
+        let root = tempfile::tempdir()?;
+        let folder = root.path().join("Sunshine Test");
+        std::fs::create_dir(&folder)?;
+        let uninstaller = folder.join("uninstall.cmd");
+        let marker = folder.join("ran.txt");
+        std::fs::write(&uninstaller, "@echo %1> \"%~dp0ran.txt\"\r\n")?;
+        let (code, _) = run_cmd(
+            &format!("\"{}\" /S", uninstaller.display()),
+            Duration::from_secs(30),
+        )?;
+        assert_eq!(code, 0);
+        assert_eq!(std::fs::read_to_string(&marker)?.trim(), "/S");
+        let (code, _) = run_cmd(
+            &format!(
+                "del /f /q \"{}\" & del /f /q \"{}\"",
+                marker.display(),
+                uninstaller.display()
+            ),
+            Duration::from_secs(30),
+        )?;
+        assert_eq!(code, 0);
+        assert!(!marker.exists() && !uninstaller.exists());
+        Ok(())
+    }
     #[test]
     fn driver_task_scripts_preserve_unicode_paths_and_literal_arguments() -> Result<()> {
         let root = tempfile::tempdir()?;

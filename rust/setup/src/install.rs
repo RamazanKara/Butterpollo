@@ -168,6 +168,9 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
     let staging = system::program_data().join("Butterpollo").join("setup");
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging)?;
+    // The staged host runs elevated below (settings import) and loads DLLs
+    // from its own folder: lock the folder down before anything lands in it.
+    system::restrict(&staging, false)?;
     payload.extract(&staging)?;
     let entries = payload::verify(&staging)?;
 
@@ -676,11 +679,7 @@ fn remove_legacy(product: &crate::detect::Product) -> Result<()> {
         .clone()
         .or_else(|| product.uninstall.clone().map(|u| format!("{u} /S")))
         .context("no uninstall command")?;
-    let (code, _) = system::run(
-        &system::system32("cmd.exe"),
-        &["/D", "/S", "/C", &format!("\"{command}\"")],
-        Duration::from_secs(300),
-    )?;
+    let (code, _) = system::run_cmd(&command, Duration::from_secs(300))?;
     if code != 0 {
         bail!("its uninstaller exited with {code}");
     }
