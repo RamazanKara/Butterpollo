@@ -28,3 +28,6 @@ tempfile = "3.23"
 
 [build-dependencies]
 embed-resource = "3.0.12"
+
+[lints]
+workspace = true
