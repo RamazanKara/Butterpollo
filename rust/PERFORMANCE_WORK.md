@@ -133,6 +133,38 @@ what the sender-thread and AMF-poll work would change.
 
 Artifacts: `bench-rc21\lp-*`, `rt-*`, `pc-*`.
 
+### First remote client: the laptop over Wi-Fi
+
+Moonlight-qt 6.1.0 on a Radeon 780M laptop (driver 32.0.31035.1003, D3D11VA,
+panel not HDR) on 5 GHz Wi-Fi, against the installed rc.22 host on Ethernet,
+October 8 07:04-07:12 UTC. Desktop app, `motion_probe` drawing on the
+streamed display for every run, client "lap" on the Extended layout so the
+owner's monitor stays on. Moonlight's whole-session statistics, one 35 s run
+per row (averages only, startup included):
+
+| Run | Received fps | Host processing min / max / avg | Decode |
+|---|---|---|---|
+| 1968×2184 AV1 HDR 120 fps, 80 Mbps | 121.2 | 2.6 / 4.5 / 2.9 ms | 0.37 ms |
+| 1968×2184 HEVC HDR 120 fps, 80 Mbps | 121.0 | 3.1 / 13.9 / 3.5 ms | 0.38 ms |
+| 2560×1440 HEVC HDR 120 fps, 50 Mbps | 121.0 | 2.8 / 14.9 / 3.0 ms | 0.51 ms |
+| 2560×1440 AV1 HDR 120 fps, 50 Mbps | 121.2 | 2.4 / 4.3 / 2.6 ms | 0.62 ms |
+| 1920×1080 HEVC HDR 60 fps, 20 Mbps | 59.5 | 1.9 avg, 9.2 max | |
+| 1920×1080 AV1 HDR 60 fps, 20 Mbps | 59.8 | 1.6 avg, 8.5 max | |
+
+Network jitter drops stayed at or below 0.13% at 120 fps. The HEVC maxima of
+14-15 ms are each stream's first frames, not a steady-state difference
+between the codecs: in the host's own 5 s windows during these runs HEVC
+peaked at 4.1-4.7 ms native and 3.4-3.8 ms at 1440p, with p99 3.3-4.2 ms, as
+AV1. In the 18 loopback runs above, the first keyframe took 12.7-17.7 ms on
+both codecs and frames 2-5 sometimes 7-17 ms; after that no frame exceeded
+6 ms. Warming the encoder before the first frame would only shorten stream
+start. A first 1080p60 pair overlapped the owner changing his monitor mode
+(one 48.7 ms frame) and was repeated.
+
+Render-to-decode delay over the network is not measured yet: the
+independent client must launch from the laptop's own paired identity, since
+the host ties a session to the address that launched it.
+
 ## October 5 rc.3 release continuation
 
 The user approved WGC compute by default for the next test release after
