@@ -49,10 +49,10 @@ fn hdr10_metadata_and_range_reach_the_bitstream() -> Result<()> {
     let ffprobe =
         std::env::var_os("BUTTERPOLLO_TEST_FFPROBE").context("set BUTTERPOLLO_TEST_FFPROBE")?;
     let directory = tempfile::tempdir()?;
-    let (width, height) = (1920u32, 1080u32);
+    let (width, height) = (1968u32, 2184u32);
     let pixels = (0..width * height)
         .flat_map(|index| {
-            let value = half::f16::from_f32([0.05, 1., 6.][(index % width / 640) as usize]);
+            let value = half::f16::from_f32([0.05, 1., 6.][(index % width * 3 / width) as usize]);
             [value, value, value, half::f16::ONE]
         })
         .flat_map(|value| value.to_le_bytes())
@@ -68,102 +68,144 @@ fn hdr10_metadata_and_range_reach_the_bitstream() -> Result<()> {
             pixel: Pixel::RgbaF16,
         },
     )?;
-    let mut metadata = butterpollo_core::hdr::Metadata::display(1000., 0.005, 400.);
+    source.readback(&mut None)?;
+    let mut metadata = butterpollo_core::hdr::Metadata::display(1015., 0.005, 400.);
     metadata.max_cll = 1000;
     metadata.max_fall = 400;
     let options = butterpollo_core::config::Config::parse(
-        "amd_usage=ultralowlatency\namd_quality=speed\namd_smart_access_video=disabled\n",
+        "amd_usage=ultralowlatency\namd_quality=speed\namd_smart_access_video=disabled\namd_lowlatency_mode=enabled\namd_input_queue_size=4\namd_ltr_frames=4\n",
     )?;
     for codec in [1u8, 2] {
         for full_range in [false, true] {
             for compute in [false, true] {
-                let config = butterpollo_core::rtsp::Negotiated {
-                    width,
-                    height,
-                    codec,
-                    hdr: true,
-                    csc_mode: 4 | u8::from(full_range),
-                    fps: 120,
-                    bitrate_kbps: 40000,
-                    ..Default::default()
-                };
-                let queue = compute
-                    .then(|| crate::compute::Compute::for_device(&gpu.device))
-                    .transpose()?;
-                let mut encoder = Encoder::new_gpu(&config, gpu.clone(), &options, queue)?;
-                // As the stream does before its first frame.
-                encoder.set_hdr_metadata(metadata);
-                let mut output = vec![];
-                for frame in 0..4 {
-                    output.extend(encoder.encode_gpu(&source, frame == 0, config.bitrate_kbps)?);
-                }
-                let deadline = Instant::now() + Duration::from_secs(3);
-                while encoder.pending() {
-                    output.extend(encoder.poll()?);
-                    if Instant::now() >= deadline {
-                        bail!("HDR metadata probe output timed out");
+                for (references, metadata) in [
+                    (
+                        1,
+                        butterpollo_core::hdr::Metadata::display(1015., 0., 1015.),
+                    ),
+                    (
+                        4,
+                        butterpollo_core::hdr::Metadata::display(1015., 0., 1015.),
+                    ),
+                    (4, metadata),
+                ] {
+                    let config = butterpollo_core::rtsp::Negotiated {
+                        width,
+                        height,
+                        codec,
+                        hdr: true,
+                        csc_mode: 4 | u8::from(full_range),
+                        fps: 120,
+                        bitrate_kbps: 80000,
+                        references,
+                        ..Default::default()
+                    };
+                    let queue = compute
+                        .then(|| crate::compute::Compute::for_device(&gpu.device))
+                        .transpose()?;
+                    let mut encoder = Encoder::new_gpu(&config, gpu.clone(), &options, queue)?;
+                    assert_eq!(encoder.supports_invalidation(), references > 1);
+                    // As the stream does before its first frame.
+                    encoder.set_hdr_metadata(metadata);
+                    let mut output = vec![];
+                    for frame in 0..8 {
+                        if frame == 4 {
+                            encoder.set_hdr_metadata(metadata);
+                        }
+                        output.extend(encoder.encode_gpu(
+                            &source,
+                            frame == 0 || frame == 4,
+                            config.bitrate_kbps,
+                        )?);
                     }
-                    std::thread::sleep(Duration::from_millis(1));
+                    let deadline = Instant::now() + Duration::from_secs(3);
+                    while encoder.pending() {
+                        output.extend(encoder.poll()?);
+                        if Instant::now() >= deadline {
+                            bail!("HDR metadata probe output timed out");
+                        }
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    assert_eq!(output.len(), 8);
+                    for frame in [0, 4] {
+                        assert!(output[frame].idr);
+                        let name = format!(
+                            "codec{codec}-full{full_range}-compute{compute}-refs{references}-cll{}-frame{frame}",
+                            metadata.max_cll
+                        );
+                        let bitstream = directory.path().join(format!("{name}.bin"));
+                        // Decode each IDR separately: a decoder retains earlier SEI.
+                        // Moonlight's decode-unit dump strips HEVC prefix SEI, so inspect
+                        // the encoder output before client depacketization.
+                        std::fs::write(&bitstream, &output[frame].bytes)?;
+                        let probed = Command::new(&ffprobe)
+                            .args([
+                                "-v",
+                                "error",
+                                "-f",
+                                if codec == 1 { "hevc" } else { "obu" },
+                                "-i",
+                            ])
+                            .arg(&bitstream)
+                            .args(["-show_frames", "-of", "json"])
+                            .creation_flags(0x08000000)
+                            .output()?;
+                        assert!(
+                            probed.status.success(),
+                            "{}",
+                            String::from_utf8_lossy(&probed.stderr)
+                        );
+                        let probed: serde_json::Value = serde_json::from_slice(&probed.stdout)?;
+                        assert_eq!(probed["frames"].as_array().map(Vec::len), Some(1), "{name}");
+                        let first = &probed["frames"][0];
+                        assert_eq!(first["key_frame"], 1, "{name}: {first}");
+                        assert_eq!(
+                            first["color_range"],
+                            if full_range { "pc" } else { "tv" },
+                            "{name}: {first}"
+                        );
+                        assert_eq!(first["color_transfer"], "smpte2084", "{name}: {first}");
+                        // The matrix is left to the driver to derive from the colour
+                        // profile; a client converting with BT.709 would shift colours.
+                        assert_eq!(first["color_primaries"], "bt2020", "{name}: {first}");
+                        assert_eq!(first["color_space"], "bt2020nc", "{name}: {first}");
+                        let side = first["side_data_list"]
+                            .as_array()
+                            .with_context(|| format!("{name}: no side data in {first}"))?;
+                        let mastering = side
+                            .iter()
+                            .find(|s| s["side_data_type"] == "Mastering display metadata")
+                            .with_context(|| format!("{name}: no mastering display metadata"))?;
+                        // 1015 nits and BT.2020 red (0.708) in each codec's units.
+                        let (luminance, minimum, red) = if codec == 1 {
+                            (
+                                "10150000/10000",
+                                format!("{}/10000", metadata.minimum),
+                                "35400/50000",
+                            )
+                        } else {
+                            (
+                                "259840/256",
+                                format!("{}/16384", u32::from(metadata.minimum) * 16384 / 10000),
+                                "46399/65536",
+                            )
+                        };
+                        assert_eq!(mastering["max_luminance"], luminance, "{name}: {mastering}");
+                        assert_eq!(mastering["min_luminance"], minimum, "{name}: {mastering}");
+                        assert_eq!(mastering["red_x"], red, "{name}: {mastering}");
+                        let light = side
+                            .iter()
+                            .find(|s| s["side_data_type"] == "Content light level metadata");
+                        if metadata.max_cll == 0 {
+                            assert!(light.is_none(), "{name}: unexpected content light level");
+                        } else {
+                            let light =
+                                light.with_context(|| format!("{name}: no content light level"))?;
+                            assert_eq!(light["max_content"], 1000, "{name}");
+                            assert_eq!(light["max_average"], 400, "{name}");
+                        }
+                    }
                 }
-                let name = format!("codec{codec}-full{full_range}-compute{compute}");
-                let bitstream = directory.path().join(format!("{name}.bin"));
-                std::fs::write(
-                    &bitstream,
-                    output
-                        .iter()
-                        .flat_map(|packet| packet.bytes.iter().copied())
-                        .collect::<Vec<_>>(),
-                )?;
-                let probed = Command::new(&ffprobe)
-                    .args([
-                        "-v",
-                        "error",
-                        "-f",
-                        if codec == 1 { "hevc" } else { "obu" },
-                        "-i",
-                    ])
-                    .arg(&bitstream)
-                    .args(["-show_frames", "-of", "json"])
-                    .creation_flags(0x08000000)
-                    .output()?;
-                assert!(
-                    probed.status.success(),
-                    "{}",
-                    String::from_utf8_lossy(&probed.stderr)
-                );
-                let probed: serde_json::Value = serde_json::from_slice(&probed.stdout)?;
-                let first = &probed["frames"][0];
-                assert_eq!(
-                    first["color_range"],
-                    if full_range { "pc" } else { "tv" },
-                    "{name}: {first}"
-                );
-                assert_eq!(first["color_transfer"], "smpte2084", "{name}: {first}");
-                // The matrix is left to the driver to derive from the colour
-                // profile; a client converting with BT.709 would shift colours.
-                assert_eq!(first["color_primaries"], "bt2020", "{name}: {first}");
-                assert_eq!(first["color_space"], "bt2020nc", "{name}: {first}");
-                let side = first["side_data_list"]
-                    .as_array()
-                    .with_context(|| format!("{name}: no side data in {first}"))?;
-                let mastering = side
-                    .iter()
-                    .find(|s| s["side_data_type"] == "Mastering display metadata")
-                    .with_context(|| format!("{name}: no mastering display metadata"))?;
-                // 1000 nits and BT.2020 red (0.708) in each codec's units.
-                let (luminance, red) = if codec == 1 {
-                    ("10000000/10000", "35400/50000")
-                } else {
-                    ("256000/256", "46399/65536")
-                };
-                assert_eq!(mastering["max_luminance"], luminance, "{name}: {mastering}");
-                assert_eq!(mastering["red_x"], red, "{name}: {mastering}");
-                let light = side
-                    .iter()
-                    .find(|s| s["side_data_type"] == "Content light level metadata")
-                    .with_context(|| format!("{name}: no content light level"))?;
-                assert_eq!(light["max_content"], 1000, "{name}");
-                assert_eq!(light["max_average"], 400, "{name}");
             }
         }
     }

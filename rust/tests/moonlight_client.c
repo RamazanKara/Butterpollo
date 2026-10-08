@@ -195,6 +195,8 @@ static int video_frame(PDECODE_UNIT unit){
     if(offset!=unit->fullLength)complete=0;
     // Optional first access-unit dump runs before the steady measurement window.
     // It allows an independent bitstream parser to diagnose driver geometry.
+    // Moonlight removes H.264/HEVC AUD and prefix SEI before this callback;
+    // missing HDR SEI here does not mean it was absent from the host bitstream.
     const char *dump=getenv("BUTTERPOLLO_TEST_FIRST_FRAME");
     if(dump&&atomic_load(&frames)==0){FILE *file=fopen(dump,"wb");if(!file||fwrite(packet->data,1,packet->size,file)!=(size_t)packet->size)atomic_fetch_add(&failures,1);if(file)fclose(file);}
     int received=AVERROR(EAGAIN);
