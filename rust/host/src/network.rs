@@ -1,5 +1,5 @@
 use crate::state::Shared;
-use anyhow::{Result, bail};
+use anyhow::Result;
 use butterpollo_core::config::{Config, Ports};
 use igd_next::{
     PortMappingProtocol as Protocol,
@@ -251,23 +251,35 @@ fn mappings(config: &Config, ports: Ports) -> Vec<Mapping> {
     }
     mappings
 }
-async fn entries<P: Provider>(gateway: &Gateway<P>) -> Result<Vec<igd_next::PortMappingEntry>> {
+/// The router's mapping table, and whether it was read to the end. Routers
+/// answer the index past the end with 713, but some hide their table (606),
+/// answer 714, 402 or 501, or time out: that ends the list without stopping
+/// the host from adding its own mappings.
+async fn entries<P: Provider>(gateway: &Gateway<P>) -> (Vec<igd_next::PortMappingEntry>, bool) {
     let mut entries = Vec::new();
     for index in 0..4096 {
         match tokio::time::timeout(
             Duration::from_secs(3),
             gateway.get_generic_port_mapping_entry(index),
         )
-        .await?
+        .await
         {
-            Ok(entry) => entries.push(entry),
-            Err(igd_next::GetGenericPortMappingEntryError::SpecifiedArrayIndexInvalid) => {
-                return Ok(entries);
+            Ok(Ok(entry)) => entries.push(entry),
+            Ok(Err(igd_next::GetGenericPortMappingEntryError::SpecifiedArrayIndexInvalid)) => {
+                return (entries, true);
             }
-            Err(error) => return Err(error.into()),
+            Ok(Err(error)) => {
+                tracing::debug!(%error, index, "UPnP router stopped listing its mappings");
+                return (entries, false);
+            }
+            Err(_) => {
+                tracing::debug!(index, "UPnP router timed out listing its mappings");
+                return (entries, false);
+            }
         }
     }
-    bail!("router mapping table exceeds its limit")
+    tracing::debug!("UPnP router mapping table exceeds its limit");
+    (entries, false)
 }
 fn owned(entry: &igd_next::PortMappingEntry, local: IpAddr, description: &str) -> bool {
     entry.internal_client.parse::<IpAddr>().ok() == Some(local)
@@ -280,7 +292,7 @@ async fn apply<P: Provider>(
     wanted: &[Mapping],
     description: &str,
 ) -> Result<Vec<Mapping>> {
-    let entries = entries(gateway).await?;
+    let (entries, _) = entries(gateway).await;
     // The stable host description lets a restarted host reclaim its own
     // permanent leases, including ports removed from a later configuration.
     let mut applied: Vec<_> = entries
@@ -347,13 +359,18 @@ async fn remove<P: Provider>(
     applied: &[Mapping],
     description: &str,
 ) -> Result<()> {
-    let entries = entries(gateway).await?;
+    let (entries, complete) = entries(gateway).await;
     for mapping in applied {
-        if entries.iter().any(|entry| {
-            entry.protocol == mapping.protocol
-                && entry.external_port == mapping.port
-                && owned(entry, local, description)
-        }) {
+        let entry = entries.iter().find(|entry| {
+            entry.protocol == mapping.protocol && entry.external_port == mapping.port
+        });
+        // A mapping this host added that an unreadable table cannot show is
+        // still removed; one the table shows under another owner is not.
+        let ours = match entry {
+            Some(entry) => owned(entry, local, description),
+            None => !complete,
+        };
+        if ours {
             tokio::time::timeout(
                 Duration::from_secs(3),
                 gateway.remove_port(mapping.protocol, mapping.port),
