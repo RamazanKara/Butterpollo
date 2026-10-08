@@ -1,4 +1,3 @@
-
 #[test]
 fn large_conventional_frames_report_the_wire_fec_cutoff() {
     assert_eq!(super::conventional_fec(848, 20, 0), (4, 20));
