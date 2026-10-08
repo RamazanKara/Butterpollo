@@ -327,6 +327,7 @@ dependencies = [
  "reqwest",
  "rustls",
  "rustls-pemfile",
+ "rustls-webpki",
  "rusty_enet",
  "serde",
  "serde_json",

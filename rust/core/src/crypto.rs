@@ -205,6 +205,14 @@ pub fn certificate_der(pem_text: &str) -> Result<Vec<u8>> {
     }
     Ok(b.into_contents())
 }
+/// The SubjectPublicKeyInfo of a DER certificate of any X.509 version.
+/// Moonlight for webOS (moonlight-tv) makes a v2 certificate, which webpki,
+/// and so rustls's own signature checks, refuse.
+pub fn subject_public_key_info(der: &[u8]) -> Result<&[u8]> {
+    let (_, cert) = x509_parser::parse_x509_certificate(der)
+        .map_err(|_| anyhow::anyhow!("invalid X.509 certificate"))?;
+    Ok(cert.tbs_certificate.subject_pki.raw)
+}
 pub fn public_key(pem_text: &str) -> Result<RsaPublicKey> {
     let der = certificate_der(pem_text)?;
     let (_, cert) = x509_parser::parse_x509_certificate(&der)
@@ -237,6 +245,14 @@ mod tests {
         let (mut t, b) = gcm_seal(&[3; 16], &[4; 12], b"authenticated input").unwrap();
         t[0] ^= 1;
         assert!(gcm_open(&[3; 16], &[4; 12], &t, &b).is_err());
+    }
+    #[test]
+    fn moonlight_tv_v2_certificate_has_a_readable_key() {
+        // Made by moonlight-tv's mkcert.c (mbedtls) as X.509 v2.
+        let pem = include_str!("../testdata/moonlight-tv-client.pem");
+        let der = certificate_der(pem).unwrap();
+        let spki = subject_public_key_info(&der).unwrap();
+        assert!(RsaPublicKey::from_public_key_der(spki).is_ok());
     }
     #[test]
     fn legacy_nonce_and_audio_round_trip() {
