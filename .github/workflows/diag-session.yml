@@ -1,0 +1,62 @@
+name: diag-session
+on:
+  push:
+    branches: [claude/project-thread-lk2ngh]
+jobs:
+  crash:
+    runs-on: windows-2022
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e
+        id: msys
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-clang
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-vulkan-headers
+            mingw-w64-ucrt-x86_64-opus
+            mingw-w64-ucrt-x86_64-libvpl
+      - name: Rust toolchains
+        run: rustup toolchain install 1.98.1-x86_64-pc-windows-gnu --profile minimal
+      - uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: |
+            ~/AppData/Local/ButterpolloRust/sdk
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: rust-sdk-v3-ffmpeg-2026.516.30821-pyro-186f0393-patched-ngx-1.1.0
+      - name: Crash tests, repeated
+        run: |
+          $msys = '${{ steps.msys.outputs.msys2-location }}'
+          $sdk = "$env:LOCALAPPDATA\ButterpolloRust\sdk"
+          Get-ChildItem $sdk | Select-Object Name
+          $env:PATH = "$msys\ucrt64\bin;$env:USERPROFILE\.cargo\bin;" + $env:PATH
+          $env:LIBCLANG_PATH = "$msys\ucrt64\bin"
+          $env:BUTTERPOLLO_SYSTEM_LIBS = "$msys\ucrt64\lib"
+          $env:BUTTERPOLLO_VULKAN_INCLUDE = "$msys\ucrt64\include"
+          $env:BUTTERPOLLO_FFMPEG_ROOT = (Get-ChildItem -LiteralPath "$sdk\ffmpeg-v2026.516.30821" -Filter avcodec.h -Recurse | Select-Object -First 1).Directory.Parent.Parent.FullName
+          $env:BUTTERPOLLO_PYROWAVE_ROOT = "$sdk\pyrowave-186f0393"
+          $env:CARGO_TARGET_DIR = "$env:RUNNER_TEMP\t"
+          cargo +1.98.1-x86_64-pc-windows-gnu test -p butterpollo-windows --lib --no-run
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $fail = 0
+          for ($i = 1; $i -le 30; $i++) {
+            $out = cargo +1.98.1-x86_64-pc-windows-gnu test -p butterpollo-windows --lib crash::tests 2>&1 | Out-String
+            if ($LASTEXITCODE) { $fail++; Write-Output "== crash-only run $i FAILED"; $out -split "`n" | Select-String 'panicked|minidump|crash::tests' | ForEach-Object { $_.Line } }
+          }
+          Write-Output "crash-only failures: $fail / 30"
+          $fail = 0
+          for ($i = 1; $i -le 8; $i++) {
+            $out = cargo +1.98.1-x86_64-pc-windows-gnu test -p butterpollo-windows --lib 2>&1 | Out-String
+            if ($LASTEXITCODE) { $fail++; Write-Output "== full run $i FAILED"; $out -split "`n" | Select-String 'panicked|minidump|FAILED|failures:' | ForEach-Object { $_.Line } }
+          }
+          Write-Output "full-suite failures: $fail / 8"
