@@ -479,7 +479,7 @@ mod tests {
             .collect();
         assert_eq!(limits, [100, 200, 400, 800, 800, 800]);
         assert_eq!(encoder_stall_limit(u32::MAX), Duration::from_millis(800));
-        // Four escalating attempts still fit the stream's 5 s recovery budget.
+        // Four escalating attempts fit well inside the stream's recovery budget.
         assert!(limits[..4].iter().sum::<u64>() < 5_000);
     }
     #[test]

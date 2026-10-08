@@ -21,6 +21,15 @@ Change: the first stall still recreates after 100 ms; each further
 recreation without a frame doubles the wait (200, 400, 800 ms), and any frame
 out resets the stall timer even if the in-flight count did not drop. The
 5 s budget is unchanged and streams without stalls take the same path.
+Follow-up: a stuck encoder now steps to safer settings instead of being
+recreated unchanged until the stream ends. The second recreation in one
+failure (or a second failure in the session) converts colour on the
+graphics queue, as before only after a second failure; the third switches
+AMF to its conservative profile for the rest of the session (low-latency
+usage, no SmartAccess Video, LTR, forced queue, LowLatencyInternal or
+pre-analysis), the settings tied to RDNA4 stalls in foundation-sunshine#666.
+The stream card says so. The give-up budget is 10 s instead of 5 s, so a
+driver reset (Windows allows about 2 s plus recovery) no longer ends it.
 Not measured: the RX 9070 XT is not available, and the RX 7900 XT has not
 reproduced the stall. The debug soak's encoder-failure fault exercises the
 encode-error path, not this one; a stall injection is still to be written.
