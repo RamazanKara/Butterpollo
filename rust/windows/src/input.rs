@@ -2740,6 +2740,20 @@ mod tests {
         injector.inject = record;
         injector
     }
+    #[test]
+    fn rumble_feedback_obeys_forward_rumble_and_client_haptics() {
+        let mut injector = recording();
+        for forward in [false, true] {
+            injector.policy.forward_rumble = forward;
+            for haptics in [false, true] {
+                injector.apply(&Event::Haptics(haptics)).unwrap();
+                for kind in [0x010b, 0x5500, 0x5503] {
+                    assert_eq!(injector.feedback_allowed(kind), forward && haptics);
+                }
+                assert!(injector.feedback_allowed(0x5502));
+            }
+        }
+    }
     fn describe(input: &INPUT) -> String {
         unsafe {
             if input.r#type == INPUT_KEYBOARD {

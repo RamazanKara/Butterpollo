@@ -14,14 +14,14 @@ impl Drop for DeviceSet {
     }
 }
 
-struct HidHandle(HANDLE);
+pub(super) struct HidHandle(pub(super) HANDLE);
 impl Drop for HidHandle {
     fn drop(&mut self) {
         let _ = unsafe { CloseHandle(self.0) };
     }
 }
 
-fn hid_paths() -> Result<BTreeSet<String>> {
+pub(super) fn hid_paths() -> Result<BTreeSet<String>> {
     unsafe {
         let set = DeviceSet(SetupDiGetClassDevsW(
             Some(&HID_INTERFACE),
@@ -64,9 +64,11 @@ fn hid_paths() -> Result<BTreeSet<String>> {
     }
 }
 
-fn new_hid(
+pub(super) fn new_hid(
     before: &BTreeSet<String>,
+    vendor: u16,
     product: u16,
+    access: u32,
     library: &libloading::Library,
 ) -> Result<(String, HidHandle)> {
     #[repr(C)]
@@ -86,11 +88,10 @@ fn new_hid(
         // not contain the USB VID/PID spelling. Identify via HID attributes.
         for path in paths.difference(before) {
             let wide: Vec<_> = path.encode_utf16().chain([0]).collect();
-            // GetInputReport needs a handle, not write access to any HID output.
             let Ok(handle) = (unsafe {
                 CreateFileW(
                     PCWSTR(wide.as_ptr()),
-                    GENERIC_READ.0,
+                    access,
                     FILE_SHARE_READ | FILE_SHARE_WRITE,
                     None,
                     OPEN_EXISTING,
@@ -108,7 +109,7 @@ fn new_hid(
                 version: 0,
             };
             if unsafe { get(handle.0, &mut attributes) } != 0
-                && attributes.vendor == 0x054c
+                && attributes.vendor == vendor
                 && attributes.product == product
             {
                 candidates.push((path.clone(), handle));
@@ -123,7 +124,7 @@ fn new_hid(
         }
         ensure!(
             Instant::now() < deadline,
-            "owned controller HID did not enumerate with VID 054c / PID {product:04x}; newly enumerated paths: {:?}",
+            "owned controller HID did not enumerate with VID {vendor:04x} / PID {product:04x}; newly enumerated paths: {:?}",
             paths.difference(before).collect::<Vec<_>>()
         );
         std::thread::sleep(Duration::from_millis(20));
@@ -196,7 +197,7 @@ fn primary_multitouch_and_secondary_isolation_match_native_hid_reports() -> Resu
             capabilities: 0x08,
             buttons: 0,
         })?;
-        let (path, hid) = new_hid(&before, product, &library)?;
+        let (path, hid) = new_hid(&before, 0x054c, product, GENERIC_READ.0, &library)?;
         assert!(
             contacts(&hid, &library, profile)?
                 .iter()
@@ -253,7 +254,7 @@ fn primary_multitouch_and_secondary_isolation_match_native_hid_reports() -> Resu
     Ok(())
 }
 
-fn wait_removed(path: &str) -> Result<()> {
+pub(super) fn wait_removed(path: &str) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(5);
     while hid_paths()?.contains(path) {
         ensure!(
@@ -280,7 +281,7 @@ fn two_announced_touchpads_share_one_native_surface_side_by_side() -> Result<()>
             capabilities: 0x108,
             buttons: 0,
         })?;
-        let (path, hid) = new_hid(&before, product, &library)?;
+        let (path, hid) = new_hid(&before, 0x054c, product, GENERIC_READ.0, &library)?;
 
         // The same finger id on each touchpad is two contacts: the left
         // touchpad's corner is the surface's left edge, the right one's

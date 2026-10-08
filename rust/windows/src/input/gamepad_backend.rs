@@ -28,7 +28,12 @@ impl Backend {
     pub(super) fn name(&self) -> &'static str {
         "VHF"
     }
-    fn ioctl(&mut self, function: u32, data: &[u8], output: usize) -> Result<Vec<u8>> {
+    fn ioctl(
+        &mut self,
+        function: u32,
+        data: &[u8],
+        output: usize,
+    ) -> windows::core::Result<Vec<u8>> {
         unsafe {
             let mut result = vec![0; output];
             let mut n = 0;
@@ -96,17 +101,27 @@ impl Backend {
         Ok(())
     }
     pub(super) fn feedback(&mut self, slot: u32) -> Result<Option<(u16, Vec<u8>)>> {
-        let b = self.ioctl(0x804, &request(12, Some(slot)), 48)?;
-        if b.len() == 48 {
-            let kind = u16::from_le_bytes(b[12..14].try_into().unwrap());
-            let len = u16::from_le_bytes(b[14..16].try_into().unwrap()) as usize;
-            if kind != 0 && len <= 32 {
-                return Ok(Some((kind, b[16..16 + len].to_vec())));
-            }
-        }
-        Ok(None)
+        decode_feedback(self.ioctl(0x804, &request(12, Some(slot)), 48))
     }
 }
+
+fn decode_feedback(result: windows::core::Result<Vec<u8>>) -> Result<Option<(u16, Vec<u8>)>> {
+    let b = match result {
+        // libvirtualgamepad's poll_feedback consumes one pending event, or
+        // returns STATUS_NO_MORE_ENTRIES. An empty queue is normal at 125 Hz.
+        Err(error) if error.code() == ERROR_NO_MORE_ITEMS.to_hresult() => return Ok(None),
+        result => result?,
+    };
+    if b.len() == 48 {
+        let kind = u16::from_le_bytes(b[12..14].try_into().unwrap());
+        let len = u16::from_le_bytes(b[14..16].try_into().unwrap()) as usize;
+        if kind != 0 && len <= 32 {
+            return Ok(Some((kind, b[16..16 + len].to_vec())));
+        }
+    }
+    Ok(None)
+}
+
 impl Drop for Backend {
     fn drop(&mut self) {
         unsafe {
@@ -114,3 +129,7 @@ impl Drop for Backend {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "feedback_tests.rs"]
+mod tests;

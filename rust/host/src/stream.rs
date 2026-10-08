@@ -2244,9 +2244,10 @@ impl Media {
                     }
                     for (kind, payload) in messages {
                         if let Ok(message) = p.encrypt(&s, kind, &payload) {
-                            let _ = host
-                                .peer_mut(*peer_id)
-                                .send(1, &Packet::new(message, PacketKind::Reliable));
+                            let _ = host.peer_mut(*peer_id).send(
+                                FEEDBACK_CHANNEL,
+                                &Packet::new(message, PacketKind::Reliable),
+                            );
                         }
                     }
                 } else if !pending || p.seen.elapsed() > ping_timeout {
@@ -2332,6 +2333,9 @@ const MOTION_EVENT_REQUEST: u16 = 0x5501;
 const RUMBLE_TRIGGER_DATA: u16 = 0x5500;
 const RUMBLE_DATA: u16 = 0x010b;
 const RUMBLE_MARKER: u32 = 0x00c0ffee;
+// Channel 0 is available even when an older Moonlight peer negotiates only
+// one channel. Sending on channel 1 then fails with InvalidChannel.
+const FEEDBACK_CHANNEL: u8 = 0;
 
 /// Ask the client for an arrived pad's accelerometer (kind 1) and gyroscope
 /// (kind 2) at 200 Hz, when it has them.
@@ -2423,6 +2427,96 @@ mod tests {
         );
         // Reports of no known kind send nothing.
         assert!(feedback_packets(2, 3, &[255; 8]).is_empty());
+    }
+    #[test]
+    fn vhf_rumble_and_stop_keep_the_strengths_in_moonlight_packets() {
+        for (kind, size) in [(4, 8), (5, 32)] {
+            for strengths in [[0x00, 0x80, 0x00, 0x40], [0; 4]] {
+                let mut data = vec![0; size];
+                data[..4].copy_from_slice(&strengths);
+                let packets = feedback_packets(0, kind, &data);
+                assert_eq!(packets[0].0, RUMBLE_DATA);
+                assert_eq!(RUMBLE_DATA, 0x010b);
+                assert_eq!(&packets[0].1[..4], &RUMBLE_MARKER.to_le_bytes());
+                assert_eq!(&packets[0].1[4..], &[&[0, 0][..], &strengths].concat());
+            }
+        }
+    }
+    #[test]
+    fn rumble_reaches_a_single_channel_moonlight_peer() {
+        let settings = || HostSettings {
+            peer_limit: 1,
+            channel_limit: 1,
+            ..Default::default()
+        };
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let address = socket.local_addr().unwrap();
+        let mut host = Host::new(ControlSocket::new(socket), settings()).unwrap();
+        let mut client = Host::new(UdpSocket::bind("127.0.0.1:0").unwrap(), settings()).unwrap();
+        client.connect(address, 1, 0).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !host.peer(PeerID(0)).connected() || !client.peer(PeerID(0)).connected() {
+            host.service().unwrap();
+            client.service().unwrap();
+            assert!(Instant::now() < deadline, "ENet connect timed out");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(host.peer(PeerID(0)).channel_count(), 1);
+        // The previous channel silently discarded every feedback message.
+        assert_eq!(
+            host.peer_mut(PeerID(0))
+                .send(1, &Packet::new(&[][..], PacketKind::Reliable)),
+            Err(rusty_enet::error::PeerSendError::InvalidChannel)
+        );
+        let key = [0x42; 16];
+        for v2 in [false, true] {
+            for strengths in [[0x00, 0x80, 0x00, 0x40], [0; 4]] {
+                let mut data = vec![0; 8];
+                data[..4].copy_from_slice(&strengths);
+                let (kind, payload) = feedback_packets(2, 4, &data).remove(0);
+                let message =
+                    butterpollo_core::packet::encrypted_control(&key, 7, kind, &payload, v2)
+                        .unwrap();
+                host.socket_mut().hold();
+                host.peer_mut(PeerID(0))
+                    .send(
+                        FEEDBACK_CHANNEL,
+                        &Packet::new(message, PacketKind::Reliable),
+                    )
+                    .unwrap();
+                host.flush();
+                host.socket_mut().release().unwrap();
+                let deadline = Instant::now() + Duration::from_secs(2);
+                let received = loop {
+                    host.service().unwrap();
+                    if let Some(Event::Receive {
+                        channel_id, packet, ..
+                    }) = client.service().unwrap()
+                    {
+                        assert_eq!(channel_id, 0);
+                        break packet;
+                    }
+                    assert!(Instant::now() < deadline, "rumble delivery timed out");
+                    std::thread::sleep(Duration::from_millis(1));
+                };
+                let bytes = received.data();
+                let mut iv = vec![0; if v2 { 12 } else { 16 }];
+                iv[0] = 7;
+                if v2 {
+                    iv[10..].copy_from_slice(b"HC");
+                }
+                let plain =
+                    butterpollo_core::crypto::gcm_open(&key, &iv, &bytes[8..24], &bytes[24..])
+                        .unwrap();
+                // Moonlight's decrypted V2 header, marker, controller ID,
+                // then the low- and high-frequency strengths, all LE.
+                assert_eq!(
+                    &plain[..10],
+                    &[0x0b, 0x01, 10, 0, 0xee, 0xff, 0xc0, 0, 2, 0]
+                );
+                assert_eq!(&plain[10..], &strengths);
+            }
+        }
     }
     #[test]
     fn an_override_the_host_cannot_use_is_skipped_and_the_rest_apply() {
