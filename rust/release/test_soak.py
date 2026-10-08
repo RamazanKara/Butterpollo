@@ -1,9 +1,46 @@
 import copy, csv, pathlib, tempfile, unittest
 from soak_result import audio_windows, fault_outcome, load_limit, resource_growth, video_windows
 from soak import cases
+from e2e_host import stage_fault_host
 
 
 class SoakMeasurements(unittest.TestCase):
+    def test_fault_host_stages_packaged_audio_runtime_without_changing_sources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            package, debug = root / 'package', root / 'debug'
+            package.mkdir(); debug.mkdir()
+            (package / 'butterpollo.exe').write_bytes(b'release')
+            (package / 'libopus-0.dll').write_bytes(b'opus')
+            (package / 'dependency.dll').write_bytes(b'dependency')
+            (package / 'other.txt').write_text('unrelated')
+            binary = debug / 'butterpollo.exe'
+            binary.write_bytes(b'debug')
+            staged = stage_fault_host(package, binary, root / 'fault-host')
+            self.assertEqual(staged.read_bytes(), b'debug')
+            self.assertEqual((staged.parent / 'libopus-0.dll').read_bytes(), b'opus')
+            self.assertEqual((staged.parent / 'dependency.dll').read_bytes(), b'dependency')
+            self.assertEqual(len(list(staged.parent.iterdir())), 3)
+            self.assertEqual(list(debug.iterdir()), [binary])
+            self.assertEqual((package / 'butterpollo.exe').read_bytes(), b'release')
+
+    def test_missing_csv_schema_differs_from_no_decoded_samples(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for name, read, header in (
+                    ('video.csv', lambda p: video_windows(p, 60),
+                     'wire_frame,arrival_ms,host_ms,decode_ms,render_frame,render_qpc,picture_age_ms,first_packet_us,assembled_us,presentation_us,frame_type\n'),
+                    ('audio.csv', audio_windows, 'arrival_ms,samples,min_rms,max_rms\n')):
+                with self.subTest(channel=name):
+                    path = root / name
+                    with self.assertRaisesRegex(ValueError, 'receiver did not emit time-series'):
+                        read(path)
+                    path.write_text(header.replace('arrival_ms,', ''))
+                    with self.assertRaisesRegex(ValueError, 'missing time-series fields: arrival_ms; rebuild'):
+                        read(path)
+                    path.write_text(header)
+                    self.assertEqual(read(path), [])
+
     def test_long_cases_retain_all_codecs_and_alternate_load(self):
         streams = cases('long')[:6]
         self.assertEqual([s['load'] for s in streams], [False, True, True, False, False, True])

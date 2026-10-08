@@ -21,6 +21,9 @@ if ($LASTEXITCODE) { throw 'Moonlight-common-c build failed' }
 if ($LASTEXITCODE) { throw 'Moonlight decoding fixture build failed' }
 & gcc -O2 (Join-Path $PSScriptRoot 'moonlight_client_test.c') "-I$MoonlightRoot/src" "-I$MsysRoot/ucrt64/include" "$build/libmoonlight-common-c.a" "$build/enet/libenet.a" "-L$MsysRoot/ucrt64/lib" -lavcodec -lavutil -lopus -lssl -lcrypto -lws2_32 -lwinmm -o "$build/moonlight-client-test.exe"
 if ($LASTEXITCODE) { throw 'Moonlight fixture test build failed' }
-& "$build/moonlight-client-test.exe"
-if ($LASTEXITCODE) { throw 'Moonlight fixture tests failed' }
+Push-Location -LiteralPath $build
+try {
+    & "$build/moonlight-client-test.exe"
+    if ($LASTEXITCODE) { throw 'Moonlight fixture tests failed' }
+} finally { Pop-Location }
 Write-Output "Independent client: $ArtifactDirectory\moonlight-client.exe"

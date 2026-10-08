@@ -7,6 +7,18 @@ def percentile(values, percent):
     return values[(len(values) - 1) * percent // 100] if values else None
 
 
+def measurement_rows(path, fields):
+    if not path.is_file():
+        raise ValueError(f'{path.name} is missing; receiver did not emit time-series measurements')
+    with path.open(newline='') as stream:
+        reader = csv.DictReader(stream)
+        missing = sorted(set(fields) - set(reader.fieldnames or []))
+        if missing:
+            raise ValueError(f'{path.name} missing time-series fields: {", ".join(missing)}; rebuild the receiver')
+        for row in reader:
+            yield {key: float(value) for key, value in row.items()}
+
+
 def video_windows(path, fps, warmup=3):
     windows = []
     bucket, start, previous, last_picture = [], None, None, 0
@@ -24,21 +36,19 @@ def video_windows(path, fps, warmup=3):
                             arrival_stutters=sum(r['interval_ms'] > 2000 / fps for r in rows),
                             idr_frames=sum(r['frame_type'] == 1 for r in rows)))
 
-    with path.open(newline='') as stream:
-        for row in csv.DictReader(stream):
-            row = {key: float(value) for key, value in row.items()}
-            if start is None:
-                start = row['arrival_ms']
-            row['interval_ms'] = (row['assembled_us'] - previous) / 1000 if previous is not None else 0
-            previous = row['assembled_us']
-            row['fresh'] = row['render_frame'] != 0 and row['render_frame'] != last_picture
-            last_picture = row['render_frame']
-            if row['arrival_ms'] < start + warmup * 1000:
-                continue
-            if bucket and row['arrival_ms'] - bucket[0]['arrival_ms'] >= 10000:
-                finish(bucket)
-                bucket = []
-            bucket.append(row)
+    for row in measurement_rows(path, ('arrival_ms', 'assembled_us', 'decode_ms', 'picture_age_ms', 'render_frame', 'frame_type')):
+        if start is None:
+            start = row['arrival_ms']
+        row['interval_ms'] = (row['assembled_us'] - previous) / 1000 if previous is not None else 0
+        previous = row['assembled_us']
+        row['fresh'] = row['render_frame'] != 0 and row['render_frame'] != last_picture
+        last_picture = row['render_frame']
+        if row['arrival_ms'] < start + warmup * 1000:
+            continue
+        if bucket and row['arrival_ms'] - bucket[0]['arrival_ms'] >= 10000:
+            finish(bucket)
+            bucket = []
+        bucket.append(row)
     if bucket:
         finish(bucket)
     return windows
@@ -59,17 +69,15 @@ def audio_windows(path):
                             min_rms=low, max_rms=high,
                             continuous=bool(checked) and low >= high * .5 and high > .001))
 
-    with path.open(newline='') as stream:
-        for values in csv.DictReader(stream):
-            row = {key: float(value) for key, value in values.items()}
-            if start is None:
-                start = row['arrival_ms']
-            row['gap'] = row['arrival_ms'] - previous if previous is not None else 0
-            previous = row['arrival_ms']
-            if bucket and row['arrival_ms'] - bucket[0]['arrival_ms'] >= 10000:
-                finish(bucket)
-                bucket = []
-            bucket.append(row)
+    for row in measurement_rows(path, ('arrival_ms', 'samples', 'min_rms', 'max_rms')):
+        if start is None:
+            start = row['arrival_ms']
+        row['gap'] = row['arrival_ms'] - previous if previous is not None else 0
+        previous = row['arrival_ms']
+        if bucket and row['arrival_ms'] - bucket[0]['arrival_ms'] >= 10000:
+            finish(bucket)
+            bucket = []
+        bucket.append(row)
     if bucket:
         finish(bucket)
     return windows

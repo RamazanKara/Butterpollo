@@ -5,7 +5,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from types import SimpleNamespace
 import requests, urllib3
-from e2e_host import INSTALLED_LOG, installed_idle, prepare, receiver_environment
+from e2e_host import INSTALLED_LOG, installed_idle, prepare, receiver_environment, stage_fault_host
 from e2e_result import evaluate
 from soak_result import audio_windows, fault_outcome, load_limit, resource_growth, video_windows
 
@@ -214,6 +214,7 @@ def main():
                     report['skipped'].append(dict(name=case['name'], reason='build the debug host for isolated fault injection'))
                     write(run / 'result.json', report)
                     continue
+                debug_host = stage_fault_host(args.package, debug_host, run / 'fault-host')
                 stop(host)
                 fault_dir.mkdir()
                 host = start_host(debug_host, dict(env, BUTTERPOLLO_TEST_FAULT_DIR=str(fault_dir)), 'fault-host.stdout.log')
@@ -339,8 +340,10 @@ def main():
                         result['failures'].extend(measured['failures'])
                     if any('ERROR' in line for line in result['host_messages']):
                         result['passed'] = False; result['failures'].append('host logged an error')
-                if not result['video_windows'] or not result['audio_windows']:
-                    result['passed'] = False; result['failures'].append('missing time-series measurements; rebuild the receiver')
+                for channel in ('video', 'audio'):
+                    if not result[channel + '_windows']:
+                        result['passed'] = False
+                        result['failures'].append(f'no decoded {channel} samples; check receiver and host logs')
                 for window in result['video_windows']:
                     if not case.get('fault') and window['seconds'] >= 5 and (window['fresh_fps'] < fps * .9 or window['picture_coverage'] < .95):
                         result['passed'] = False; result['failures'].append('a video window lost fresh pictures')

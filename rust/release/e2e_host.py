@@ -1,10 +1,21 @@
 """Isolated release fixture setup, shared by e2e and the soak runner."""
-import hashlib, json, os, pathlib, subprocess
+import hashlib, json, os, pathlib, shutil, subprocess
 import xml.etree.ElementTree as ET
 import requests
 from e2e_result import active_clients
 
 INSTALLED_LOG = pathlib.Path(r'C:\ProgramData\Butterpollo\config\logs\butterpollo.log')
+
+def stage_fault_host(package, binary, directory):
+    # Opus is loaded beside the executable, so PATH alone cannot supply the
+    # debug host's runtime. Keep the staged copy inside this test's artifacts.
+    directory.mkdir()
+    staged = directory / binary.name
+    shutil.copy2(binary, staged)
+    for library in package.glob('*.dll'):
+        shutil.copy2(library, directory / library.name)
+    return staged
+
 
 def installed_idle():
     assert not active_clients(INSTALLED_LOG.read_text(errors='replace')), 'the installed host log has an active stream'
