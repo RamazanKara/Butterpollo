@@ -17,8 +17,10 @@ use std::collections::BTreeSet;
 /// Device, width, height, refresh and desktop position.
 type Timing = (String, u32, u32, u32, i32, i32);
 
+/// Sorted by device: Windows may list the same displays in another order
+/// after one arrives.
 fn timings(skip: impl Fn(&Monitor) -> bool) -> Result<Vec<Timing>> {
-    monitors()?
+    let mut timings = monitors()?
         .iter()
         .filter(|m| !skip(m))
         .map(|m| {
@@ -33,7 +35,9 @@ fn timings(skip: impl Fn(&Monitor) -> bool) -> Result<Vec<Timing>> {
                 position.y,
             ))
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    timings.sort();
+    Ok(timings)
 }
 
 fn active_ids() -> Result<Vec<String>> {
