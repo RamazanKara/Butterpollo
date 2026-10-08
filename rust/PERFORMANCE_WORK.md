@@ -236,6 +236,23 @@ are the same, but the gains were not measured there), two clips upscaled
 from 720p and 1080p, and VMAF's default model. A 1 to 2 VMAF difference is
 barely visible; the H.264 row at 20 Mbps is the one a viewer would notice.
 
+The same probe then ran in 10-bit HDR (`--hdr 1`, `run-quality-hdr.ps1`):
+the clips become linear light with SDR white at 203 nits, are uploaded as
+scRGB FP16 like a captured HDR desktop, and the stream's encoder writes PQ
+BT.2020; the reference is FFmpeg's zscale conversion of the same frames.
+HEVC and AV1 at 1968×2184 (30 and 80 Mbps) and 2560×1440 (20 Mbps), 120 fps,
+both clips, 48 encodes. Defaults reach VMAF 95.8-98.8.
+
+| HDR, against the default | HEVC ΔVMAF | AV1 ΔVMAF | p99 frame size |
+|---|---|---|---|
+| `amd_vbaq=disabled` | -0.30 to +0.90 | -0.03 to +0.31 | -5% to +5% |
+| `amd_quality=balanced` | -0.40 to -0.13 | -0.07 to +0.29 | same |
+| `amd_rc=cbr` | -0.23 to +0.48 | -0.11 to +0.36 | +10% to +42% |
+
+Encode time did not change with any of them (native HEVC 5.5 ms mean, AV1
+4.9 ms). No change is consistent in HDR either, so HEVC and AV1 keep their
+defaults; VBAQ stays on for both.
+
 ### rc.23 against rc.22
 
 Main at `bad6076c` (`c4a2d51393496851`) against the installed rc.22, the

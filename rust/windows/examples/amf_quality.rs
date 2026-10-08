@@ -57,6 +57,12 @@ fn main() -> anyhow::Result<()> {
             "av1" => 2,
             other => bail!("unknown codec {other}"),
         },
+        hdr: option("--hdr").is_some_and(|v| v == "1"),
+        csc_mode: if option("--hdr").is_some_and(|v| v == "1") {
+            4
+        } else {
+            0
+        },
         ..Default::default()
     };
     let frames = number("--frames", 300)?;
@@ -68,22 +74,42 @@ fn main() -> anyhow::Result<()> {
     let _com = ComGuard::new()?;
     let _priority = Priority::new();
     let device = Device::new("")?;
-    let size = config.width as usize * config.height as usize * 4;
+    let pixels = config.width as usize * config.height as usize;
+    // HDR input is FFmpeg's planar linear-light gbrpf32le with SDR white at
+    // 1.0; the capture format is scRGB FP16, where 1.0 is 80 nits. Scaling
+    // by 203/80 puts SDR white at the 203 nits of ITU-R BT.2408.
+    let size = if config.hdr { pixels * 12 } else { pixels * 4 };
     let mut input = std::io::stdin().lock();
     let mut read = |index: u32| -> anyhow::Result<GpuImage> {
         let mut bytes = vec![0; size];
         input
             .read_exact(&mut bytes)
             .with_context(|| format!("stdin ended before frame {index}"))?;
+        let (bytes, stride, pixel) = if config.hdr {
+            let plane = |p: usize, i: usize| {
+                let at = (p * pixels + i) * 4;
+                f32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) * (203. / 80.)
+            };
+            let mut rgba = Vec::with_capacity(pixels * 8);
+            for i in 0..pixels {
+                // gbrp: planes in G, B, R order.
+                for value in [plane(2, i), plane(0, i), plane(1, i), 1.] {
+                    rgba.extend_from_slice(&half::f16::from_f32(value).to_le_bytes());
+                }
+            }
+            (rgba, config.width as usize * 8, Pixel::RgbaF16)
+        } else {
+            (bytes, config.width as usize * 4, Pixel::Bgra8)
+        };
         let image = GpuImage::upload(
             &device,
             &Image {
                 width: config.width,
                 height: config.height,
-                stride: config.width as usize * 4,
+                stride,
                 bytes,
                 captured: Instant::now(),
-                pixel: Pixel::Bgra8,
+                pixel,
             },
         )?;
         // An uploaded texture has no fence for the encoder's queues to
