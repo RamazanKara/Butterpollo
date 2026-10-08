@@ -1,3 +1,5 @@
+//! How decoded input is applied: gamepad backend and profile selection,
+//! per-session input permissions and the back-button mapping.
 use crate::{config::Config, input::Input};
 use anyhow::Result;
 use std::{collections::BTreeMap, time::Duration};

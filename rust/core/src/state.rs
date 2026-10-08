@@ -1,3 +1,5 @@
+//! The host's durable state: paired clients, credentials, apps and their
+//! preparation commands, written atomically as JSON in the profile.
 use crate::{config::Config, crypto};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};

@@ -1,4 +1,16 @@
-//! Moonlight protocol and durable host state. No Windows or vendor SDK dependencies.
+//! Portable core of the Butterpollo host.
+//!
+//! The Moonlight protocol (pairing, RTSP, packet framing, FEC, input decoding),
+//! the host's durable state and configuration, and the policy that decides
+//! what the host does: encoder settings, capture pacing, display planning,
+//! frame generation, library sync for Steam and Playnite, and updates.
+//!
+//! Nothing here calls a vendor SDK, so the crate builds and is tested on any
+//! OS. `butterpollo-windows` applies these decisions on Windows and the
+//! `butterpollo` host crate wires both into its servers. The only Windows
+//! calls are the few file operations that need `MoveFileExW`, behind
+//! `cfg(windows)`.
+#![warn(clippy::print_stdout, clippy::print_stderr)]
 pub mod audio;
 pub mod auth;
 pub mod bitstream;

@@ -1,102 +1,68 @@
-//! Native Windows capture, input, audio, display and codec integrations.
-#[cfg(windows)]
+//! Windows platform layer of the Butterpollo host.
+//!
+//! Everything that calls Win32, Direct3D, Windows Graphics Capture or a GPU
+//! vendor SDK lives here: capture, Radeon compute colour conversion, the AMF,
+//! NVENC, FFmpeg and PyroWave encoders, display and virtual display control,
+//! input injection, audio, process and service management.
+//!
+//! The workspace is layered: `butterpollo-core` holds the portable protocol
+//! and policy code and is tested on any OS; this crate turns those decisions
+//! into Windows calls; the `butterpollo` host crate runs the servers and wires
+//! the two together. The crate is empty on other targets.
+#![cfg(windows)]
+#![warn(clippy::print_stdout, clippy::print_stderr)]
+
 pub mod amf;
-#[cfg(windows)]
 mod amf_gpu;
-#[cfg(windows)]
 pub mod audio;
-#[cfg(windows)]
 pub mod audio_route;
-#[cfg(windows)]
 pub mod capture;
-#[cfg(windows)]
 pub mod clipboard;
-#[cfg(windows)]
 pub mod codec_probe;
-#[cfg(windows)]
 pub mod color;
-#[cfg(windows)]
 pub mod compute;
-#[cfg(windows)]
 pub mod crash;
-#[cfg(windows)]
 mod cursor;
-#[cfg(windows)]
 pub mod display;
-#[cfg(windows)]
 pub mod display_arrangement;
-#[cfg(windows)]
 pub mod display_recovery;
-#[cfg(windows)]
 pub mod encoder;
-#[cfg(windows)]
 mod ffmpeg_gpu;
-#[cfg(windows)]
 pub mod files;
-#[cfg(windows)]
 pub mod firewall;
-#[cfg(windows)]
 pub mod foreground;
-#[cfg(windows)]
 mod gpu_color;
-#[cfg(windows)]
 pub mod gpu_priority;
-#[cfg(windows)]
 pub mod hdr_profile;
-#[cfg(windows)]
 pub mod hotkey;
-#[cfg(windows)]
 pub mod image;
-#[cfg(windows)]
 pub mod input;
-#[cfg(windows)]
 mod ipc;
-#[cfg(windows)]
 mod keylayout;
-#[cfg(windows)]
 pub mod launcher;
-#[cfg(windows)]
 pub mod limiter;
-#[cfg(windows)]
 pub mod lossless;
-#[cfg(windows)]
 pub mod net;
-#[cfg(windows)]
 mod nvapi;
-#[cfg(windows)]
 pub mod nvenc;
-#[cfg(windows)]
 mod nvenc_cuda;
-#[cfg(windows)]
 pub mod playnite;
-#[cfg(windows)]
 pub mod present_timing;
-#[cfg(windows)]
 pub mod process;
-#[cfg(windows)]
 pub mod pyrowave;
-#[cfg(windows)]
 pub mod rtss;
-#[cfg(windows)]
 pub mod rtx_profiles;
-#[cfg(windows)]
 pub mod service;
-#[cfg(windows)]
 pub mod steam;
 // Full-frame GPU comparison remains a native test diagnostic until its
 // completion/readback overhead is shown to improve real stream latency.
-#[cfg(all(windows, test))]
+#[cfg(test)]
 mod texture_compare;
-#[cfg(windows)]
 pub mod timing;
-#[cfg(windows)]
 pub mod tray;
-#[cfg(windows)]
 pub mod truehdr;
-#[cfg(windows)]
 pub mod vulkan;
 
-#[cfg(windows)]
 #[allow(
     non_camel_case_types,
     non_snake_case,
@@ -107,7 +73,6 @@ pub mod vulkan;
 pub(crate) mod ff {
     include!(concat!(env!("OUT_DIR"), "/ffmpeg.rs"));
 }
-#[cfg(windows)]
 #[allow(
     non_camel_case_types,
     non_snake_case,
@@ -120,7 +85,6 @@ pub(crate) mod nvenc_abi {
     include!(concat!(env!("OUT_DIR"), "/nvenc.rs"));
     include!(concat!(env!("OUT_DIR"), "/nvenc_guids.rs"));
 }
-#[cfg(windows)]
 #[allow(
     non_camel_case_types,
     non_snake_case,
@@ -132,7 +96,6 @@ pub(crate) mod nvenc_abi {
 pub(crate) mod cuda_abi {
     include!(concat!(env!("OUT_DIR"), "/cuda.rs"));
 }
-#[cfg(windows)]
 #[allow(
     non_camel_case_types,
     non_snake_case,
@@ -144,7 +107,6 @@ pub(crate) mod cuda_abi {
 pub(crate) mod amf_abi {
     include!(concat!(env!("OUT_DIR"), "/amf.rs"));
 }
-#[cfg(windows)]
 #[allow(
     non_camel_case_types,
     non_snake_case,

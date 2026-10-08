@@ -1,3 +1,5 @@
+//! RTSP message parsing and responses, and the stream parameters a client
+//! negotiates in its `ANNOUNCE`/`SETUP` exchange.
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

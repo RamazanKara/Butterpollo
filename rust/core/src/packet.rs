@@ -1,3 +1,6 @@
+//! Moonlight's wire framing: video packetization with Reed-Solomon FEC,
+//! PyroWave FEC, audio packets, encrypted control packets and replay
+//! protection.
 use anyhow::{Context, Result, bail};
 
 use crate::crypto;

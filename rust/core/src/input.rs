@@ -1,3 +1,5 @@
+//! Decoding Moonlight's input packets (keyboard, mouse, pen, touch, gamepad
+//! and haptics) into [`Input`] events.
 use anyhow::{Result, bail};
 
 #[derive(Debug, Clone, PartialEq)]

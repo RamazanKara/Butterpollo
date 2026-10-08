@@ -1,3 +1,5 @@
+//! When NVIDIA RTX HDR conversion applies and which driver tuning values
+//! it uses.
 use crate::config::Config;
 use std::collections::BTreeMap;
 pub fn marker(key: &str) -> String {

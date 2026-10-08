@@ -1,3 +1,6 @@
+//! The host configuration: `sunshine.conf`-compatible `key = value` settings,
+//! typed accessors with Vibepollo's defaults, per-app and per-client overrides,
+//! and the port layout derived from the base port.
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::{

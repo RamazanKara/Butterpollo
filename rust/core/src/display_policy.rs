@@ -1,3 +1,6 @@
+//! Display decisions that do not need Windows: whether a session gets a
+//! virtual display, which mode to report, stable virtual display identities,
+//! render sizes, letterboxing and display arrangements.
 use crate::topology::{Node, Position};
 use anyhow::{Result, bail};
 

@@ -1,3 +1,6 @@
+//! Cryptographic primitives the Moonlight protocol needs: hashing, the
+//! pairing PIN key, AES-ECB/GCM/CBC, the host's RSA identity and X.509
+//! certificate helpers.
 use aes::{
     Aes128,
     cipher::{Block, BlockDecrypt, BlockEncrypt, KeyInit},

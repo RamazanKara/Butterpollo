@@ -1,3 +1,5 @@
+//! The Moonlight pairing handshake: PIN-derived key, challenge and response,
+//! and the in-progress pairings keyed by client.
 use crate::crypto;
 use anyhow::{Result, bail};
 use std::{

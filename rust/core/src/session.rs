@@ -1,3 +1,5 @@
+//! Stream sessions: launches, live sessions and their statistics, and the
+//! user-facing warnings a session raises.
 use crate::{rtsp::Negotiated, state::Client};
 use anyhow::{Result, bail};
 use serde::Serialize;
