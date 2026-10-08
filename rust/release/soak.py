@@ -97,7 +97,8 @@ def cases(mode):
         rows.append(dict(name=f'churn-{index + 1:02}', codec='hevc', mode='1920x1080x60', seconds=3,
                          churn=True, resume=index % 2 == 1))
     for fault in ('wgc-helper', 'DXGI_ERROR_ACCESS_LOST', 'encoder failure', 'encoder failure.persistent'):
-        rows.append(dict(name='fault-' + fault.replace(' ', '-'), codec='hevc', mode='1920x1080x60', seconds=20, fault=fault))
+        rows.append(dict(name='fault-' + fault.replace(' ', '-'), codec='hevc', mode='1920x1080x60',
+                         seconds=40 if fault.endswith('.persistent') else 20, fault=fault))
     return rows
 
 
@@ -307,13 +308,17 @@ def main():
                 text = (folder / 'client.log').read_text(errors='replace')
                 host_text = host_log.read_bytes()[log_start:].decode(errors='replace')
                 result['host_messages'] = [line for line in host_text.splitlines() if re.search(r'\b(WARN|ERROR)\b', line)]
+                result['video_windows'] = video_windows(folder / 'video.csv', fps, .5 if case.get('churn') else 3)
+                result['audio_windows'] = audio_windows(folder / 'audio.csv')
                 if case.get('fault'):
                     if injected_at is None:
                         raise RuntimeError('receiver ended before fault injection')
-                    result.update(fault_outcome(samples, injected_at, receiver.returncode, host_text + '\n' + text))
+                    result.update(fault_outcome(samples, injected_at, receiver.returncode, host_text + '\n' + text,
+                                                result['video_windows'], fps))
                     if not result['passed']:
                         result['failures'].append(result['outcome'])
-                    if case['fault'] == 'encoder failure' and not any(s.get('warning') for sample in samples for s in sample.get('sessions', [])):
+                    if case['fault'] == 'encoder failure' and not any(w['code'] == 'encoder_compute_recovery'
+                            for sample in samples for s in sample.get('sessions', []) for w in s.get('warnings', [])):
                         result['passed'] = False; result['failures'].append('repeated encoder fallback was not surfaced to the console')
                 else:
                     measured = evaluate(text + ('\nINTEROPERABILITY PASS\n' if receiver.returncode == 0 else ''),
@@ -331,8 +336,6 @@ def main():
                         result['failures'].extend(measured['failures'])
                     if any('ERROR' in line for line in result['host_messages']):
                         result['passed'] = False; result['failures'].append('host logged an error')
-                result['video_windows'] = video_windows(folder / 'video.csv', fps, .5 if case.get('churn') else 3)
-                result['audio_windows'] = audio_windows(folder / 'audio.csv')
                 if not result['video_windows'] or not result['audio_windows']:
                     result['passed'] = False; result['failures'].append('missing time-series measurements; rebuild the receiver')
                 for window in result['video_windows']:

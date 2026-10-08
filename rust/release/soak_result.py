@@ -93,15 +93,20 @@ def resource_growth(samples):
     return dict(passed=not failures, failures=failures, measurements=growth)
 
 
-def fault_outcome(samples, injected_at, client_exit, log):
+def fault_outcome(samples, injected_at, client_exit, log, windows, fps):
     before = [s for s in samples if s['elapsed_seconds'] <= injected_at and s.get('sessions')]
-    after = [s for s in samples if s['elapsed_seconds'] >= injected_at + 5 and s.get('sessions')]
     if not before:
         return dict(passed=False, outcome='fault did not interrupt an established stream')
-    warning = any(message in log for message in ('capture restarting', 'encoding failed', 'session failed'))
-    if (len(after) > 1 and after[-1]['elapsed_seconds'] - after[0]['elapsed_seconds'] >= 3
-            and after[-1]['sessions'][0]['frames_sent'] > after[0]['sessions'][0]['frames_sent'] + 30 and warning):
-        return dict(passed=True, outcome='recovered', recovery_observed_seconds=after[0]['elapsed_seconds'] - injected_at)
+    warning = re.search(r'\bcode="(?:capture_recovery|encoder_recovery|encoder_compute_recovery)"', log)
+    warning = warning or re.search(r'capture restarting|encoding failed', log, re.IGNORECASE)
+    # The host allows 20 seconds to recover; a complete ten-second receiver
+    # window must confirm fresh pictures by 30 seconds after the fault.
+    for window in windows:
+        observed = window['elapsed_seconds'] + window['seconds'] - injected_at
+        if (warning and injected_at <= window['elapsed_seconds'] <= injected_at + 20
+                and window['seconds'] >= 5 and observed <= 30
+                and window['fresh_fps'] >= fps * .9 and window['picture_coverage'] >= .95):
+            return dict(passed=True, outcome='recovered', recovery_observed_seconds=observed)
     if client_exit not in (None, 0) and 'session failed' in log and re.search(r'TERMINATED error=-?[1-9]\d*', log):
         return dict(passed=True, outcome='explicit stream error')
     return dict(passed=False, outcome='no bounded recovery or explicit stream error')

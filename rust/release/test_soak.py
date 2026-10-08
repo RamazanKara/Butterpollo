@@ -10,6 +10,8 @@ class SoakMeasurements(unittest.TestCase):
         self.assertTrue(all(1200 <= s['seconds'] <= 1800 for s in streams))
         self.assertEqual(sum(s.get('churn', False) for s in cases('short')), 52)
         self.assertTrue(any(s.get('resume') for s in cases('short')))
+        persistent = next(s for s in cases('short') if s.get('fault') == 'encoder failure.persistent')
+        self.assertEqual(persistent['seconds'], 40)
 
     def test_windows_detect_a_late_freeze_beyond_the_old_receiver_limit(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -53,17 +55,41 @@ class SoakMeasurements(unittest.TestCase):
         self.assertEqual(len(result['failures']), 3)
         self.assertFalse(resource_growth(stable[:5])['passed'])
 
-    def test_fault_requires_sustained_progress_or_explicit_error(self):
+    def test_fault_requires_fresh_pictures_or_explicit_error(self):
         def sample(seconds, frames):
             return dict(elapsed_seconds=seconds, sessions=[dict(frames_sent=frames)])
         before = [sample(5, 300)]
-        frozen = before + [sample(12, 360), sample(17, 360)]
-        self.assertFalse(fault_outcome(frozen, 7, 0, 'capture restarting')['passed'])
         good = before + [sample(12, 600), sample(17, 900)]
-        self.assertTrue(fault_outcome(good, 7, 0, 'capture restarting')['passed'])
-        self.assertFalse(fault_outcome(good, 7, 0, '')['passed'])
-        self.assertTrue(fault_outcome(before, 7, 1, 'session failed\nTERMINATED error=-1')['passed'])
-        self.assertFalse(fault_outcome(before, 7, 1, 'session failed\nTERMINATED error=0')['passed'])
+        window = dict(elapsed_seconds=12, seconds=5, fresh_fps=60, picture_coverage=1)
+        self.assertFalse(fault_outcome(good, 7, 0, 'capture restarting', [], 60)['passed'])
+        self.assertTrue(fault_outcome(good, 7, 0, 'capture restarting', [window], 60)['passed'])
+        self.assertFalse(fault_outcome(good, 7, 0, '', [window], 60)['passed'])
+        for change in (dict(fresh_fps=0), dict(picture_coverage=.9), dict(seconds=1),
+                       dict(elapsed_seconds=3), dict(elapsed_seconds=28), dict(seconds=26)):
+            with self.subTest(change=change):
+                self.assertFalse(fault_outcome(good, 7, 0, 'capture restarting', [window | change], 60)['passed'])
+        self.assertTrue(fault_outcome(before, 7, 1, 'session failed\nTERMINATED error=-1', [], 60)['passed'])
+        self.assertFalse(fault_outcome(before, 7, 1, 'session failed\nTERMINATED error=0', [], 60)['passed'])
+
+    def test_rc23_recovery_warning_and_next_video_window_pass(self):
+        samples = [dict(elapsed_seconds=3.8371067, sessions=[dict(frames_sent=201, warnings=[])]),
+                   dict(elapsed_seconds=12.8325853, sessions=[dict(frames_sent=726, warnings=[])]),
+                   dict(elapsed_seconds=16.6674114, sessions=[dict(frames_sent=956, warnings=[])])]
+        windows = [dict(elapsed_seconds=3.002728, seconds=9.9840329, frames=584,
+                        fresh_fps=58.1929172, picture_coverage=1.0, arrival_stutters=1, idr_frames=1),
+                   dict(elapsed_seconds=13.0033206, seconds=6.6929036, frames=406,
+                        fresh_fps=60.5118532, picture_coverage=1.0, arrival_stutters=0, idr_frames=0)]
+        for code in ('capture_recovery', 'encoder_recovery', 'encoder_compute_recovery'):
+            with self.subTest(code=code):
+                log = f'2026-10-08T12:04:34.039415Z  WARN butterpollo_core::session: Capture interrupted; reopening capture. code="{code}"'
+                result = fault_outcome(samples, 8.5164757, 0, log, windows, 60)
+                self.assertTrue(result['passed'])
+                self.assertEqual(result['outcome'], 'recovered')
+                self.assertAlmostEqual(result['recovery_observed_seconds'], 11.1797485)
+                self.assertFalse(fault_outcome(samples, 8.5164757, 0, log, windows[:1], 60)['passed'])
+                self.assertFalse(fault_outcome(samples, 8.5164757, 0, log, windows, 120)['passed'])
+        self.assertFalse(fault_outcome(samples, 8.5164757, 0, 'code="audio_stopped"', windows, 60)['passed'])
+        self.assertFalse(fault_outcome([], 8.5164757, 0, 'code="capture_recovery"', windows, 60)['passed'])
 
 
 if __name__ == '__main__':
