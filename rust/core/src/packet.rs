@@ -226,7 +226,14 @@ impl VideoPacketizer {
         }
         let block_size = self.packet_size + 16;
         let slice = block_size - 32;
-        if payload.is_empty() || payload.len() > slice * 4092 - 8 {
+        if payload.is_empty() {
+            bail!("encoded frame is empty");
+        }
+        if payload.len() > slice * 4092 - 8 {
+            // The dropped frame still takes its index: Moonlight notices a
+            // lost frame only from the gap, and would otherwise decode the
+            // next frames against a picture it never received.
+            self.frame = self.frame.wrapping_add(1);
             bail!("encoded frame exceeds Moonlight packet limit");
         }
         let total = payload.len() + 8;
@@ -322,6 +329,7 @@ impl VideoPacketizer {
             let percentage = planned.percentage;
             let mut fec = (count * percentage).div_ceil(100);
             let mut effective = percentage;
+            let minimum = crate::pyrowave::minimum_parity(count, minimum);
             if percentage > 0 && fec < minimum {
                 fec = minimum;
                 effective = 100 * fec / count;

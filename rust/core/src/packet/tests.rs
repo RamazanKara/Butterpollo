@@ -470,3 +470,49 @@ fn encrypted_video_matches_independent_per_packet_sealing_across_fec_and_wraps()
         }
     }
 }
+fn frame_index(packet: &[u8]) -> u32 {
+    u32::from_le_bytes(packet[20..24].try_into().unwrap())
+}
+#[test]
+fn a_frame_beyond_the_packet_limit_still_takes_its_frame_index() {
+    // Moonlight sees a lost frame only from a gap in the frame index.
+    let mut p = VideoPacketizer {
+        sequence: 0,
+        iv_counter: 0,
+        frame: 1,
+        packet_size: 1392,
+        fec_percent: 20,
+        min_fec: 2,
+        key: None,
+    };
+    let first = p.encode(&[1; 5000], true, 0, 0).unwrap();
+    assert_eq!(frame_index(&first[0]), 1);
+    assert!(p.encode(&vec![2; 1376 * 4092], false, 1500, 0).is_err());
+    let third = p.encode(&[3; 5000], false, 3000, 0).unwrap();
+    assert_eq!(frame_index(&third[0]), 3);
+}
+#[test]
+fn a_large_minimum_parity_fits_the_fec_percentage_field() {
+    for min_fec in [2, 3, 10, 255] {
+        let mut p = VideoPacketizer {
+            sequence: 0,
+            iv_counter: 0,
+            frame: 1,
+            packet_size: 1392,
+            fec_percent: 20,
+            min_fec,
+            key: None,
+        };
+        let packets = p.encode(&[1; 10], false, 0, 0).unwrap();
+        for (index, packet) in packets.iter().enumerate() {
+            let info = u32::from_le_bytes(packet[28..32].try_into().unwrap());
+            let (shard, data, percentage) = ((info >> 12) & 0x3ff, info >> 22, (info >> 4) & 0xff);
+            assert_eq!(shard as usize, index, "min_fec {min_fec}");
+            // moonlight-common-c derives the parity count from the percentage.
+            assert_eq!(
+                ((data * percentage).div_ceil(100) + data) as usize,
+                packets.len()
+            );
+        }
+    }
+}

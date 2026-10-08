@@ -312,8 +312,16 @@ pub fn parity(data: usize, percentage: usize, minimum: usize) -> usize {
     if percentage == 0 {
         0
     } else {
-        (data * percentage).div_ceil(100).max(minimum)
+        (data * percentage)
+            .div_ceil(100)
+            .max(minimum_parity(data, minimum))
     }
+}
+/// A client's minimum parity, capped where the 8-bit FEC percentage that
+/// carries it can still describe it: 3 parity shards for 1 data shard would
+/// need 300% and spill into the shard index bits.
+pub fn minimum_parity(data: usize, minimum: usize) -> usize {
+    minimum.min(data * 255 / 100)
 }
 fn split(blocks: &mut Vec<FecBlock>, data: usize, slots: usize) {
     if data == 0 {
