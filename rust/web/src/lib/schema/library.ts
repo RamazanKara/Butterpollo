@@ -260,7 +260,7 @@ export const settings: Setting[] = [
       'LosslessScaling.exe or its folder, for apps that use Lossless Scaling. Empty finds it in Steam libraries and the usual folders.',
     category: 'library',
     group: 'Lossless Scaling',
-    control: { kind: 'text', placeholder: 'Found automatically', mono: true },
+    control: { kind: 'text', placeholder: 'Found automatically', mono: true, browse: 'executable' },
     default: '',
   },
   {

@@ -32,6 +32,10 @@
     image: 'M4 5h16v14H4zM4 16l5-5 4 4 2-2 5 5M15.5 9.5h.01',
     upload: 'M12 16V5M7 10l5-5 5 5M5 20h14',
     copy: 'M9 9h11v11H9zM5 15H4V4h11v1',
+    folder: 'M3 6h6l2 2h10v11H3z',
+    file: 'M6 3h8l4 4v14H6zM14 3v4h4',
+    drive: 'M3 13h18v6H3zM3 13l3-8h12l3 8M17 16h.01',
+    up: 'M12 19V5M6 11l6-6 6 6',
   } as const;
   export type IconName = keyof typeof paths;
 </script>

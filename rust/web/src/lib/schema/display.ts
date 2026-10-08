@@ -404,7 +404,7 @@ export const settings: Setting[] = [
     description: 'Where RivaTuner Statistics Server is installed. Empty looks for it in Program Files.',
     category: 'frame-limiting',
     group: 'RTSS',
-    control: { kind: 'text', placeholder: 'C:\\Program Files (x86)\\RivaTuner Statistics Server', mono: true },
+    control: { kind: 'text', placeholder: 'C:\\Program Files (x86)\\RivaTuner Statistics Server', mono: true, browse: 'directory' },
     default: '',
     visibleWhen: rtss,
   },

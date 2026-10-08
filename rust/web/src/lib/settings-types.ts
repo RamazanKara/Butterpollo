@@ -1,5 +1,5 @@
 // The shape of the settings schema. The data lives in settings-schema.ts.
-import type { ConfigValue } from './api';
+import type { BrowseType, ConfigValue } from './api';
 
 export type CategoryId =
   | 'general'
@@ -30,7 +30,8 @@ export type Control =
   | { kind: 'toggle' }
   | { kind: 'select'; options: Option[] }
   | { kind: 'number'; min?: number; max?: number; step?: number; unit?: string }
-  | { kind: 'text'; placeholder?: string; mono?: boolean }
+  /** `browse` adds a picker for a program, file or folder on the host. */
+  | { kind: 'text'; placeholder?: string; mono?: boolean; browse?: BrowseType }
   /** A string list, stored as a JSON array of strings. */
   | { kind: 'list'; placeholder?: string }
   /** Any JSON value, edited as text and validated. */

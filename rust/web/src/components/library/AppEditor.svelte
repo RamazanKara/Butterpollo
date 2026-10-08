@@ -6,6 +6,7 @@
   import Icon from '../Icon.svelte';
   import PageHeader from '../PageHeader.svelte';
   import Panel from '../Panel.svelte';
+  import PathPicker from '../PathPicker.svelte';
   import Toggle from '../Toggle.svelte';
   import CoverPicker from './CoverPicker.svelte';
   import DetachedList from './DetachedList.svelte';
@@ -18,7 +19,8 @@
   import { api, type App, type SessionStatus } from '../../lib/api';
   import { confirm, failed, notify } from '../../lib/feedback.svelte';
   import { link, navigate } from '../../lib/router.svelte';
-  import { closeApp, confirmClose, launchApp, runningName } from './app';
+  import { commandFor, coverKey } from '../../lib/paths';
+  import { closeApp, confirmClose, coverPath, launchApp, runningName } from './app';
   import { AppDraft, type FlagKey } from './draft.svelte';
 
   let {
@@ -106,11 +108,22 @@
     saving = true;
     const record = draft.record();
     const created = !record.uuid;
+    // A new cover for a Playnite game goes to Playnite too, or its sync
+    // would bring back the old one.
+    const playniteId = record['playnite-id'];
+    const key = coverPath(record) !== coverPath(draft.saved) ? coverKey(coverPath(record)) : '';
     try {
       const result = await api.apps.save(record);
       const id = record.uuid ?? result.uuid;
       draft.markSaved({ ...record, uuid: id });
       notify(`Saved ${record.name.trim()}.`, 'ok');
+      if (typeof playniteId === 'string' && playniteId && key) {
+        try {
+          await api.playnite.setCover(playniteId, key);
+        } catch (error) {
+          failed('Setting the cover in Playnite failed', error);
+        }
+      }
       await onsaved(id, created);
     } catch (error) {
       failed('Saving the app failed', error);
@@ -237,22 +250,30 @@
               ? 'Empty: Playnite starts the game.'
               : 'Empty streams the desktop.'}
           >
-            <input
-              id="{uid}-cmd"
-              class="input mono"
-              autocomplete="off"
-              spellcheck="false"
-              bind:value={draft.app.cmd}
-            />
+            <PathPicker kind="executable" value={draft.app.cmd} onpick={(path) => (draft.app.cmd = commandFor(path))}>
+              <input
+                id="{uid}-cmd"
+                class="input mono"
+                autocomplete="off"
+                spellcheck="false"
+                bind:value={draft.app.cmd}
+              />
+            </PathPicker>
           </Field>
           <Field label="Working directory" id="{uid}-dir" hint="Empty uses the program’s folder.">
-            <input
-              id="{uid}-dir"
-              class="input mono"
-              autocomplete="off"
-              spellcheck="false"
-              bind:value={draft.app['working-dir']}
-            />
+            <PathPicker
+              kind="directory"
+              value={draft.app['working-dir']}
+              onpick={(path) => (draft.app['working-dir'] = path)}
+            >
+              <input
+                id="{uid}-dir"
+                class="input mono"
+                autocomplete="off"
+                spellcheck="false"
+                bind:value={draft.app['working-dir']}
+              />
+            </PathPicker>
           </Field>
           <DetachedList id="{uid}-detached" bind:rows={draft.detached} />
           {#if uuid}

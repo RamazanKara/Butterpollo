@@ -2,6 +2,7 @@
   import { tick, untrack } from 'svelte';
   import Button from '../Button.svelte';
   import Icon from '../Icon.svelte';
+  import PathPicker from '../PathPicker.svelte';
   import Toggle from '../Toggle.svelte';
   import type { ConfigValue, PrepCommand } from '../../lib/api';
   import type { Option, Setting } from '../../lib/settings-types';
@@ -242,17 +243,24 @@
   </div>
   {#if rangeError}<p class="error" id="{id}-range">{rangeError}</p>{/if}
 {:else if control.kind === 'text'}
-  <input
-    {id}
-    class="input"
-    class:mono={control.mono}
-    type="text"
-    autocomplete="off"
-    spellcheck={control.mono ? 'false' : undefined}
-    placeholder={control.placeholder ?? (toText(setting.default) || undefined)}
-    value={current}
-    oninput={(event) => onchange(event.currentTarget.value)}
-  />
+  {#snippet text()}
+    <input
+      {id}
+      class="input"
+      class:mono={control.mono}
+      type="text"
+      autocomplete="off"
+      spellcheck={control.mono ? 'false' : undefined}
+      placeholder={control.placeholder ?? (toText(setting.default) || undefined)}
+      value={current}
+      oninput={(event) => onchange(event.currentTarget.value)}
+    />
+  {/snippet}
+  {#if control.browse}
+    <PathPicker kind={control.browse} value={current} onpick={onchange} children={text} />
+  {:else}
+    {@render text()}
+  {/if}
 {:else if control.kind === 'list'}
   <div class="rows" {id} bind:this={rowsElement}>
     {#each items as item, index}

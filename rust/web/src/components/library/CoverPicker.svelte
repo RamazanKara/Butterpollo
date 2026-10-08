@@ -28,6 +28,7 @@
   const savedPath = $derived(coverPath(draft.saved));
   const preview = $derived(chosen && chosen.path === path ? chosen.src : undefined);
   const name = $derived(draft.app.name.trim());
+  const playnite = $derived(typeof draft.app['playnite-id'] === 'string' && draft.app['playnite-id'] !== '');
 
   // Search 300 ms after the last keystroke.
   $effect(() => {
@@ -121,7 +122,11 @@
     />
   </div>
   {#if path !== savedPath}
-    <p class="change">{path ? 'New cover. Save to keep it.' : 'Cover removed. Save to keep the change.'}</p>
+    <p class="change">
+      {path
+        ? `New cover. Save to keep it${playnite ? ' and to set it in Playnite' : ''}.`
+        : 'Cover removed. Save to keep the change.'}
+    </p>
   {:else if !path}
     <p class="muted change">No cover. Devices show the host’s default image.</p>
   {/if}

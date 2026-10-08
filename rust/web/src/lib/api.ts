@@ -411,6 +411,20 @@ export interface UpdatesState {
   error?: string | null;
   last_install?: { version: string; phase: string; error?: string } | null;
 }
+export interface BrowseEntry {
+  name: string;
+  path: string;
+  type: 'directory' | 'file';
+}
+export interface BrowseListing {
+  /** The folder listed; empty for the list of drives. */
+  path: string;
+  /** Empty at a drive's root, which goes back to the drives. */
+  parent: string;
+  entries: BrowseEntry[];
+}
+/** Which files a listing includes; folders are always listed. */
+export type BrowseType = 'executable' | 'file' | 'directory';
 export interface LogChunk {
   status: true;
   /** Byte offset to ask for next. */
@@ -447,6 +461,9 @@ export const api = {
     }) => post<Ok>('/api/password', body),
   },
   metadata: () => get<Metadata>('/api/metadata'),
+  /** List a folder of the host; an empty path lists the drives. */
+  browse: (path: string, type: BrowseType) =>
+    get<BrowseListing>(`/api/browse?path=${encodeURIComponent(path)}&type=${type}`),
   config: {
     get: () => get<Config>('/api/config'),
     /** Merge keys; null or "" resets a key to its default. */
@@ -479,6 +496,10 @@ export const api = {
     status: () => get<PlayniteStatus>('/api/playnite/status'),
     sync: () => post<{ status: true; changed: boolean; game_count: number }>('/api/playnite/force_sync', {}),
     install: () => post<{ status: true; path: string; restart_required: boolean }>('/api/playnite/install', {}),
+    /** Make a saved cover (by its key) the game's cover in Playnite. */
+    setCover: (playniteId: string, coverKey: string) =>
+      post<{ status: true; path: string }>('/api/playnite/cover', { playnite_id: playniteId, cover_key: coverKey }),
+    launch: () => post<Ok>('/api/playnite/launch'),
   },
   clients: {
     list: () => get<{ status: true; clients: Client[] }>('/api/clients/list'),
