@@ -309,12 +309,6 @@ fn check(directory: &Path) -> Result<()> {
     }
     catalog::assign(&mut apps, &mut aliases, directory)
 }
-pub fn default_directory() -> Result<PathBuf> {
-    Ok(
-        PathBuf::from(std::env::var_os("LOCALAPPDATA").context("LOCALAPPDATA is unavailable")?)
-            .join("ButterpolloRust/config"),
-    )
-}
 #[cfg(test)]
 mod tests {
     use super::*;

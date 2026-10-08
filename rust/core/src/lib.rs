@@ -35,6 +35,7 @@ pub mod network_pacing;
 pub mod nvenc;
 pub mod packet;
 pub mod pairing;
+pub mod paths;
 pub mod performance;
 pub mod playnite;
 pub mod present_timing;

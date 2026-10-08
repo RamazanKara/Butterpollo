@@ -120,10 +120,7 @@ fn supervise() -> Result<()> {
         .parent()
         .context("service directory unavailable")?
         .join("butterpollo.exe");
-    let config = std::path::PathBuf::from(
-        std::env::var_os("PROGRAMDATA").unwrap_or_else(|| "C:\\ProgramData".into()),
-    )
-    .join("Butterpollo/config");
+    let config = butterpollo_core::paths::installed_profile();
     // Interfaces come from bind_address and address_family (IPv4 by default).
     let args = vec![
         OsString::from("--config-dir"),

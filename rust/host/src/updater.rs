@@ -99,9 +99,7 @@ pub fn client(timeout: Duration) -> Result<reqwest::Client> {
 }
 
 fn supported(h: &Shared) -> bool {
-    let profile =
-        PathBuf::from(std::env::var_os("PROGRAMDATA").unwrap_or_else(|| "C:\\ProgramData".into()))
-            .join("Butterpollo/config");
+    let profile = butterpollo_core::paths::installed_profile();
     butterpollo_windows::process::is_system()
         && std::fs::canonicalize(&h.directory)
             .ok()

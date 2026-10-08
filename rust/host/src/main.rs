@@ -180,15 +180,17 @@ async fn main() -> Result<()> {
     });
     if let Some(creds) = &args.creds {
         // The service's profile, unless another one is named.
-        let directory = args.config_dir.clone().unwrap_or_else(|| {
-            let installed = PathBuf::from(std::env::var_os("PROGRAMDATA").unwrap_or_default())
-                .join("Butterpollo/config");
-            if installed.join("sunshine.conf").is_file() {
-                installed
-            } else {
-                default_directory()
+        let directory = match args.config_dir.clone() {
+            Some(directory) => directory,
+            None => {
+                let installed = butterpollo_core::paths::installed_profile();
+                if installed.join("sunshine.conf").is_file() {
+                    installed
+                } else {
+                    butterpollo_core::paths::portable_profile()?
+                }
             }
-        });
+        };
         let h = state::Host::load(directory, assets, args.port)?;
         let credentials = butterpollo_core::state::Credentials::new(creds[0].clone(), &creds[1])?;
         // As with a password change in the console, signed-in browsers sign
@@ -205,7 +207,10 @@ async fn main() -> Result<()> {
     let supervised = args.service_stop_source.is_some();
     let stop_signal =
         butterpollo_windows::process::StopSignal::new(args.service_stop_source.as_deref())?;
-    let directory = args.config_dir.unwrap_or_else(default_directory);
+    let directory = match args.config_dir {
+        Some(directory) => directory,
+        None => butterpollo_core::paths::portable_profile()?,
+    };
     let h = state::Host::load(directory, assets, args.port)?;
     // Crash reporting must not keep the host from starting, e.g. when the
     // reporter process is blocked.
@@ -407,11 +412,6 @@ async fn main() -> Result<()> {
         }
     }
     outcome
-}
-/// A portable host's profile.
-fn default_directory() -> PathBuf {
-    PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default())
-        .join("ButterpolloRust/config")
 }
 fn smoke(args: &Args) -> Result<()> {
     let _com = butterpollo_windows::capture::ComGuard::new()?;

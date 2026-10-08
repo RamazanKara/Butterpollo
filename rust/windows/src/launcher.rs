@@ -107,16 +107,13 @@ fn service_profile() -> Result<Option<PathBuf>> {
                 "The Butterpollo service is installed but stopped. Start Butterpollo Rust in Windows Services, then open Start Butterpollo.exe again."
             );
         }
-        return Ok(Some(
-            PathBuf::from(std::env::var_os("PROGRAMDATA").context("PROGRAMDATA is unavailable")?)
-                .join("Butterpollo/config"),
-        ));
+        return Ok(Some(butterpollo_core::paths::installed_profile()));
     }
     Ok(None)
 }
 pub fn run() -> Result<()> {
     let mut args = std::env::args_os().skip(1);
-    let mut directory = migration::default_directory()?;
+    let mut directory = butterpollo_core::paths::portable_profile()?;
     let mut import = None;
     let mut interactive = true;
     while let Some(arg) = args.next() {

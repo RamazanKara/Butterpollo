@@ -91,7 +91,7 @@ mod tests {
         .unwrap();
         // Either the firewall is off on this network, or nothing allows the probe.
         assert!(problems.len() <= 1);
-        let installed = std::path::Path::new(r"C:\Program Files\ButterpolloRust\butterpollo.exe");
+        let installed = std::path::Path::new(r"C:\Program Files\Butterpollo\butterpollo.exe");
         if installed.exists() {
             // The installer's rule allows the installed host.
             assert_eq!(super::problems(installed).unwrap(), Vec::<String>::new());
