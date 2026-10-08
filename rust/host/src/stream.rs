@@ -2335,6 +2335,11 @@ impl ControlPeer {
         )
     }
 }
+const MOTION_EVENT_REQUEST: u16 = 0x5501;
+const RUMBLE_TRIGGER_DATA: u16 = 0x5500;
+const RUMBLE_DATA: u16 = 0x010b;
+const RUMBLE_MARKER: u32 = 0x00c0ffee;
+
 /// Ask the client for an arrived pad's accelerometer (kind 1) and gyroscope
 /// (kind 2) at 200 Hz, when it has them.
 fn motion_requests(id: u8, capabilities: u16) -> Vec<(u16, Vec<u8>)> {
@@ -2345,19 +2350,22 @@ fn motion_requests(id: u8, capabilities: u16) -> Vec<(u16, Vec<u8>)> {
             let mut payload = u16::from(id).to_le_bytes().to_vec();
             payload.extend_from_slice(&200u16.to_le_bytes());
             payload.push(kind);
-            (0x5501, payload)
+            (MOTION_EVENT_REQUEST, payload)
         })
         .collect()
 }
 fn feedback_packets(id: u16, kind: u16, data: &[u8]) -> Vec<(u16, Vec<u8>)> {
     let mut result = vec![];
     if matches!(kind, 4 | 5) && data.len() >= 8 {
-        let mut rumble = 0x00c0ffeeu32.to_le_bytes().to_vec();
+        let mut rumble = RUMBLE_MARKER.to_le_bytes().to_vec();
         rumble.extend_from_slice(&id.to_le_bytes());
         rumble.extend_from_slice(&data[..4]);
-        result.push((0x010b, rumble));
+        result.push((RUMBLE_DATA, rumble));
         if kind == 4 {
-            result.push((0x5500, [&id.to_le_bytes()[..], &data[4..8]].concat()));
+            result.push((
+                RUMBLE_TRIGGER_DATA,
+                [&id.to_le_bytes()[..], &data[4..8]].concat(),
+            ));
         } else if kind == 5 && data[7] & 1 != 0 {
             result.push((0x5502, [&id.to_le_bytes()[..], &data[4..7]].concat()));
         }
@@ -2400,10 +2408,19 @@ mod tests {
     }
     #[test]
     fn pad_feedback_forwards_rumble_and_each_family_extra() {
-        let rumble = (0x010b, vec![0xee, 0xff, 0xc0, 0, 2, 0, 255, 255, 128, 128]);
+        let rumble = (
+            RUMBLE_DATA,
+            vec![0xee, 0xff, 0xc0, 0, 2, 0, 255, 255, 128, 128],
+        );
         // Xbox pads add trigger rumble.
         let xbox = feedback_packets(2, 4, &[255, 255, 128, 128, 1, 2, 3, 4]);
-        assert_eq!(xbox, vec![rumble.clone(), (0x5500, vec![2, 0, 1, 2, 3, 4])]);
+        assert_eq!(
+            xbox,
+            vec![
+                rumble.clone(),
+                (RUMBLE_TRIGGER_DATA, vec![2, 0, 1, 2, 3, 4])
+            ]
+        );
         // PlayStation pads add the lightbar only when the report sets it.
         let ds4 = feedback_packets(2, 5, &[255, 255, 128, 128, 12, 34, 56, 1]);
         assert_eq!(ds4, vec![rumble.clone(), (0x5502, vec![2, 0, 12, 34, 56])]);
@@ -2532,7 +2549,7 @@ mod tests {
         let mut expected = vec![1, 0, 0x0c, 0x21, 0x26];
         expected.extend(1..=20);
         assert_eq!(trigger, &expected);
-        assert!(packets.iter().any(|(kind, _)| *kind == 0x010b));
+        assert!(packets.iter().any(|(kind, _)| *kind == RUMBLE_DATA));
     }
     #[test]
     fn held_control_datagrams_go_out_in_order_once_released() {
@@ -2571,11 +2588,14 @@ mod tests {
         assert_eq!(
             motion_requests(3, 0x30),
             [
-                (0x5501, vec![3, 0, 200, 0, 1]),
-                (0x5501, vec![3, 0, 200, 0, 2])
+                (MOTION_EVENT_REQUEST, vec![3, 0, 200, 0, 1]),
+                (MOTION_EVENT_REQUEST, vec![3, 0, 200, 0, 2])
             ]
         );
-        assert_eq!(motion_requests(1, 0x20), [(0x5501, vec![1, 0, 200, 0, 2])]);
+        assert_eq!(
+            motion_requests(1, 0x20),
+            [(MOTION_EVENT_REQUEST, vec![1, 0, 200, 0, 2])]
+        );
         assert!(motion_requests(1, 0x0f).is_empty());
     }
 }
