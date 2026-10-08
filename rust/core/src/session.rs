@@ -174,12 +174,51 @@ mod tests {
         slow.created = Instant::now() - Duration::from_secs(90);
         slow.preparing.store(true, Ordering::Release);
         sessions.pending.insert(slow.id.clone(), slow.clone());
-        sessions.expire();
+        drop(sessions.expire());
         assert!(sessions.pending.contains_key("slow"));
         // Prepared: the client's 30 s count from then.
         slow.preparing.store(false, Ordering::Release);
-        sessions.expire();
+        drop(sessions.expire());
         assert!(!sessions.pending.contains_key("slow"));
+    }
+    #[test]
+    fn expired_launches_restore_resources_after_unlocking_sessions() {
+        use std::sync::{Mutex, Weak};
+        struct Restore {
+            sessions: Weak<Mutex<Sessions>>,
+            restored: Arc<AtomicBool>,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                assert!(self.sessions.upgrade().unwrap().try_lock().is_ok());
+                self.restored.store(true, Ordering::Release);
+            }
+        }
+        let sessions = Arc::new(Mutex::new(Sessions::default()));
+        let restored = Arc::new(AtomicBool::new(false));
+        let mut expired = launch("expired", Role::Stream);
+        expired.created = Instant::now() - Duration::from_secs(31);
+        *expired.preparation.lock().unwrap() = Some(Box::new(Restore {
+            sessions: Arc::downgrade(&sessions),
+            restored: restored.clone(),
+        }));
+        let expired = {
+            let mut locked = sessions.lock().unwrap();
+            locked.pending.insert(expired.id.clone(), expired);
+            let live = launch("live", Role::InputOnly);
+            locked.queue(live.clone()).unwrap();
+            assert_eq!(locked.pending_for_peer(live.peer).unwrap().id, "live");
+            assert_eq!(locked.rtsp_for_peer(live.peer).len(), 1);
+            let expired = locked.expire();
+            assert_eq!(expired.len(), 1);
+            assert_eq!(expired[0].id, "expired");
+            assert!(locked.pending.contains_key("live"));
+            assert!(!restored.load(Ordering::Acquire));
+            expired
+        };
+        assert!(!restored.load(Ordering::Acquire));
+        drop(expired);
+        assert!(restored.load(Ordering::Acquire));
     }
     #[test]
     fn pending_launches_and_streams_keep_sessions_busy_until_they_expire_or_end() {
@@ -519,8 +558,18 @@ pub struct Sessions {
     pub teardown: usize,
 }
 impl Sessions {
-    pub fn expire(&mut self) {
-        self.pending.retain(|_, p| p.live());
+    #[must_use = "drop expired launches after releasing the sessions lock"]
+    pub fn expire(&mut self) -> Vec<Launch> {
+        let expired: Vec<_> = self
+            .pending
+            .iter()
+            .filter(|(_, p)| !p.live())
+            .map(|(id, _)| id.clone())
+            .collect();
+        expired
+            .iter()
+            .filter_map(|id| self.pending.remove(id))
+            .collect()
     }
     /// Withdraw a client's launches and streams in one role. Moonlight starts a
     /// stream only after abandoning its previous one, which may never have
@@ -542,28 +591,26 @@ impl Sessions {
     }
     /// Queue a launch, replacing the same client's earlier launch in its role.
     pub fn queue(&mut self, launch: Launch) -> Result<()> {
-        self.expire();
         self.supersede(&launch.client.uuid, launch.role);
         let streaming = self.active.values().filter(|s| !s.stopping()).count();
-        if self.pending.len() + streaming >= 16 {
+        if self.pending.values().filter(|p| p.live()).count() + streaming >= 16 {
             bail!("session limit reached");
         }
         self.pending.insert(launch.id.clone(), launch);
         Ok(())
     }
-    pub fn pending_for_peer(&mut self, peer: IpAddr) -> Result<Launch> {
-        self.expire();
-        let mut found = self.pending.values().filter(|p| p.peer == peer);
+    pub fn pending_for_peer(&self, peer: IpAddr) -> Result<Launch> {
+        let mut found = self.pending.values().filter(|p| p.peer == peer && p.live());
         let p = found.next().cloned();
         if found.next().is_some() {
             bail!("ambiguous pending session identity");
         }
         p.ok_or_else(|| anyhow::anyhow!("no authorized launch for RTSP peer"))
     }
-    pub fn rtsp_for_peer(&mut self, peer: IpAddr) -> Vec<Launch> {
-        self.expire();
+    pub fn rtsp_for_peer(&self, peer: IpAddr) -> Vec<Launch> {
         self.pending
             .values()
+            .filter(|p| p.live())
             .chain(
                 self.active
                     .values()

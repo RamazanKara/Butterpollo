@@ -240,11 +240,14 @@ async fn serverinfo(
     let local = connection.peer.ip().to_canonical().is_loopback();
     let (session_count, pending_count) = if local {
         let mut sessions = h.sessions.lock().unwrap();
-        sessions.expire();
-        (
+        let expired = sessions.expire();
+        let counts = (
             sessions.active.len().to_string(),
             sessions.pending.len().to_string(),
-        )
+        );
+        drop(sessions);
+        drop(expired);
+        counts
     } else {
         (String::new(), String::new())
     };

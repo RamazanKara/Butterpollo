@@ -102,20 +102,22 @@ async fn connection(
     configs: Arc<Mutex<HashMap<String, Negotiated>>>,
 ) -> Result<()> {
     socket.set_nodelay(true)?;
-    let launches = h.sessions.lock().unwrap().rtsp_for_peer(peer.ip());
-    if launches.is_empty() {
-        bail!("no authorized RTSP launch");
-    }
-    let ids: std::collections::HashSet<_> = {
+    let (launches, ids, expired) = {
         let mut sessions = h.sessions.lock().unwrap();
-        sessions.expire();
-        sessions
+        let expired = sessions.expire();
+        let launches = sessions.rtsp_for_peer(peer.ip());
+        let ids: std::collections::HashSet<_> = sessions
             .pending
             .keys()
             .chain(sessions.active.keys())
             .cloned()
-            .collect()
+            .collect();
+        (launches, ids, expired)
     };
+    drop(expired);
+    if launches.is_empty() {
+        bail!("no authorized RTSP launch");
+    }
     configs.lock().unwrap().retain(|id, _| ids.contains(id));
 
     {

@@ -183,7 +183,8 @@ pub async fn maintain(
             h.stop.store(true, Ordering::Release);
             break;
         }
-        h.sessions.lock().unwrap().expire();
+        let expired = h.sessions.lock().unwrap().expire();
+        drop(expired);
         h.reap_paused_display();
         hotkey.poll(&h);
         if Instant::now() >= steam_at {
