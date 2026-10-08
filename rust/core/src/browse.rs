@@ -9,14 +9,19 @@ pub enum Filter {
     Any,
     File,
     Executable,
+    /// Folders only.
+    None,
 }
 impl Filter {
-    /// The `type` query value: `file`, `executable`, else everything.
-    pub fn parse(value: &str) -> Self {
+    /// The `type` query value, as in Vibepollo: missing or `any` lists
+    /// everything, `file` and `executable` those files, any other value
+    /// (such as `directory`) folders only.
+    pub fn parse(value: Option<&str>) -> Self {
         match value {
-            "file" => Self::File,
-            "executable" => Self::Executable,
-            _ => Self::Any,
+            None | Some("any") => Self::Any,
+            Some("file") => Self::File,
+            Some("executable") => Self::Executable,
+            Some(_) => Self::None,
         }
     }
 }
@@ -66,6 +71,7 @@ pub fn listing(path: &Path, filter: Filter) -> Result<Value, String> {
                     Filter::Any => true,
                     Filter::File => metadata.is_file(),
                     Filter::Executable => metadata.is_file() && executable(&path),
+                    Filter::None => false,
                 };
             let name = entry.file_name().to_string_lossy().into_owned();
             included.then(|| {
@@ -143,9 +149,16 @@ mod tests {
                 pair("start.bat", "file"),
             ]
         );
-        assert_eq!(Filter::parse("executable"), Filter::Executable);
-        assert_eq!(Filter::parse("file"), Filter::File);
-        assert_eq!(Filter::parse("folders"), Filter::Any);
+        let folders = listing(d.path(), Filter::None).unwrap();
+        assert_eq!(
+            names(&folders),
+            [pair("apps", "directory"), pair("Games", "directory")]
+        );
+        assert_eq!(Filter::parse(Some("executable")), Filter::Executable);
+        assert_eq!(Filter::parse(Some("file")), Filter::File);
+        assert_eq!(Filter::parse(None), Filter::Any);
+        assert_eq!(Filter::parse(Some("any")), Filter::Any);
+        assert_eq!(Filter::parse(Some("directory")), Filter::None);
     }
     #[test]
     fn a_file_or_a_missing_path_lists_the_nearest_folder() {

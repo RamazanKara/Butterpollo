@@ -777,9 +777,7 @@ pub(crate) async fn api(
             url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes())
                 .into_owned()
                 .collect();
-        let filter = butterpollo_core::browse::Filter::parse(
-            query.get("type").map(String::as_str).unwrap_or(""),
-        );
+        let filter = butterpollo_core::browse::Filter::parse(query.get("type").map(String::as_str));
         let requested = query.get("path").cloned().unwrap_or_default();
         // Listing a folder waits on the disk, or on the network for a share.
         let result = tokio::task::spawn_blocking(move || {
@@ -1097,7 +1095,7 @@ pub(crate) async fn api(
             ("POST", "/api/updates/install") => { crate::updater::queue(&h, false)?; json!({"status":true}) },
             ("POST", "/api/updates/cancel") => { crate::updater::cancel(&h)?; json!({"status":true}) },
             ("POST", "/api/updates/check") => {
-                crate::maintenance::trigger_update(&h);
+                crate::maintenance::trigger_update(&h, false);
                 json!({"status":true})
             }
             ("GET", "/api/health/crashdump") => crate::maintenance::crash_status(&h)?,
