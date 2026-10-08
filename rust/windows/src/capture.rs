@@ -540,6 +540,7 @@ impl Duplication {
         let desc = unsafe { duplicate.GetDesc() };
         tracing::info!(api, output = %gpu.display.display_name,
             width = desc.ModeDesc.Width, height = desc.ModeDesc.Height,
+            x = gpu.display.x, y = gpu.display.y, rotation = desc.Rotation.0,
             format = desc.ModeDesc.Format.0, "Desktop Duplication opened");
         Ok(Self {
             gpu,

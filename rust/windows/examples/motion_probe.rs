@@ -16,7 +16,10 @@ fn main() -> anyhow::Result<()> {
 mod probe {
     use anyhow::{Context, Result, bail};
     use butterpollo_windows::capture::{ComGuard, displays, enable_dpi_awareness};
-    use std::time::{Duration, Instant};
+    use std::{
+        sync::atomic::{AtomicBool, Ordering},
+        time::{Duration, Instant},
+    };
     use windows::{
         Win32::{
             Foundation::*,
@@ -78,12 +81,17 @@ float4 picture(float4 p : SV_Position) : SV_Target {
             }
         }
     }
+    static DISPLAY_CHANGED: AtomicBool = AtomicBool::new(false);
+
     unsafe extern "system" fn window(
         hwnd: HWND,
         message: u32,
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
+        if message == WM_DISPLAYCHANGE {
+            DISPLAY_CHANGED.store(true, Ordering::Relaxed);
+        }
         unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
     }
     unsafe fn compile(entry: &'static [u8], target: &'static [u8]) -> Result<Vec<u8>> {
@@ -144,7 +152,7 @@ float4 picture(float4 p : SV_Position) : SV_Target {
         }
         enable_dpi_awareness();
         let _com = ComGuard::new()?;
-        let display = displays()?
+        let mut display = displays()?
             .into_iter()
             .find(|d| d.display_name.eq_ignore_ascii_case(&display_name))
             .context("explicitly selected display is not active")?;
@@ -152,7 +160,7 @@ float4 picture(float4 p : SV_Position) : SV_Target {
         if !(128..=display.height).contains(&window_height) {
             bail!("window height must be 128..display height");
         }
-        let window_y = display.y + (display.height - window_height) as i32;
+        let mut window_y = display.y + (display.height - window_height) as i32;
         let source_mode = butterpollo_windows::display::mode(&display.display_name)?;
         let timer = butterpollo_windows::timing::Timer::new()?;
         let interval = animation_hz.map(|hz| Duration::from_secs_f64(1.0 / f64::from(hz)));
@@ -306,6 +314,30 @@ float4 picture(float4 p : SV_Position) : SV_Target {
                     }
                     let _ = TranslateMessage(&message);
                     DispatchMessageW(&message);
+                }
+                if DISPLAY_CHANGED.swap(false, Ordering::Relaxed)
+                    && let Some(current) = displays()?
+                        .into_iter()
+                        .find(|d| d.display_name == display.display_name)
+                {
+                    if (current.width, current.height) != (display.width, display.height) {
+                        bail!("the motion probe's selected display changed size");
+                    }
+                    // A layout change can move the output without moving this
+                    // popup, leaving its barcode outside the captured desktop.
+                    if (current.x, current.y) != (display.x, display.y) {
+                        window_y = current.y + (current.height - window_height) as i32;
+                        SetWindowPos(
+                            window.0,
+                            None,
+                            current.x,
+                            window_y,
+                            0,
+                            0,
+                            SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSIZE,
+                        )?;
+                        display = current;
+                    }
                 }
                 let mut ticks = 0;
                 QueryPerformanceCounter(&mut ticks)?;
