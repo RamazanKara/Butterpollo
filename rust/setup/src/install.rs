@@ -787,6 +787,13 @@ pub fn repair_drivers(progress: &Progress) -> Result<bool> {
     }
     Ok(restart)
 }
+/// Whether setup ran with --no-display-driver.
+pub(crate) fn display_driver_declined() -> bool {
+    std::fs::read(profile().join(REPAIR_RECORD))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .is_some_and(|record| record["declined"] == true)
+}
 fn repair_skipped(record: Option<&[u8]>, version: &str, now: u64) -> Option<&'static str> {
     let record: serde_json::Value = serde_json::from_slice(record?).ok()?;
     if record["declined"] == true {

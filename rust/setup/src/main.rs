@@ -154,7 +154,7 @@ fn main() {
                     let mut notes = Vec::new();
                     install::install_drivers(
                         &system::win32_path(&folder)?,
-                        true,
+                        !install::display_driver_declined(),
                         true,
                         &progress,
                         &mut notes,
