@@ -667,3 +667,113 @@ fn configured_wire_budget_deducts_fec_and_audio_after_warp_and_ceiling() {
     apply(&mut pyro, 120000, &Config::default());
     assert_eq!(pyro.bitrate_kbps, 799308); // audio/control, without generic 20% FEC
 }
+/// Claims (ms, true present ms) for a source pacing on the given stamps, as
+/// the host paces WGC: `arrival` stamps each frame when it was detected, as
+/// `qpc_timestamps_at` does for the many WGC stamps still in the future.
+fn simulate_stamped(period: f64, interval: f64, seconds: f64, arrival: bool) -> Vec<(f64, f64)> {
+    let start = Instant::now();
+    let at = |ms: f64| start + Duration::from_secs_f64(ms / 1000.);
+    let ms = |instant: Instant| instant.duration_since(start).as_secs_f64() * 1000.;
+    let mut pacer = Pacer::new(start, Duration::from_secs_f64(period / 1000.))
+        .with_prediction(true)
+        .with_source_phase(true)
+        .with_spacing(0.75);
+    let mut seed = 42u64;
+    let mut jitter = || {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let present = source(interval, seconds, |_| 0.);
+    // Detected 0.1-1.1 ms after presentation, as the polled WGC helper.
+    let detected: Vec<f64> = present.iter().map(|p| p + 0.1 + jitter()).collect();
+    let stamp = if arrival { &detected } else { &present };
+    let mut claims = vec![];
+    let mut newest: Option<usize> = None;
+    let mut deadline: Option<f64> = None;
+    let mut source_interval: Option<Duration> = None;
+    let mut evaluate = |now: f64,
+                        newest: &mut Option<usize>,
+                        deadline: &mut Option<f64>,
+                        pacer: &mut Pacer,
+                        source_interval: Option<Duration>| {
+        if let Some(i) = *newest {
+            pacer.observe_source(at(stamp[i]));
+            match pacer.decide(at(now), at(stamp[i]), source_interval) {
+                Pace::Claim => {
+                    pacer.claimed(at(now));
+                    claims.push((now, present[i]));
+                    *newest = None;
+                    *deadline = None;
+                }
+                Pace::WaitUntil(t) => *deadline = Some(ms(t).max(now + 0.001)),
+            }
+        }
+    };
+    for i in 0..present.len() {
+        while let Some(t) = deadline.filter(|t| *t < detected[i]) {
+            evaluate(t, &mut newest, &mut deadline, &mut pacer, source_interval);
+            if deadline == Some(t) {
+                break;
+            }
+        }
+        let recent = &stamp[i.saturating_sub(16)..=i];
+        let mut intervals: Vec<f64> = recent.windows(2).map(|w| w[1] - w[0]).collect();
+        intervals.sort_by(f64::total_cmp);
+        source_interval = (intervals.len() >= 4)
+            .then(|| Duration::from_secs_f64(intervals[intervals.len() / 2] / 1000.));
+        newest = Some(i);
+        evaluate(
+            detected[i],
+            &mut newest,
+            &mut deadline,
+            &mut pacer,
+            source_interval,
+        );
+    }
+    claims
+}
+fn steady_rate(claims: &[(f64, f64)]) -> f64 {
+    let steady = &claims[claims.len() / 10..];
+    (steady.len() - 1) as f64 * 1000. / (steady[steady.len() - 1].0 - steady[0].0)
+}
+fn steady_age_p99(claims: &[(f64, f64)]) -> f64 {
+    let mut ages: Vec<f64> = claims[claims.len() / 10..]
+        .iter()
+        .map(|(claim, presented)| claim - presented)
+        .collect();
+    ages.sort_by(f64::total_cmp);
+    ages[ages.len() * 99 / 100]
+}
+#[test]
+fn a_faster_source_is_claimed_at_the_stream_rate_not_above_it() {
+    // A 165 Hz game, and the default 2x virtual display, at 120 and 60 fps.
+    // The 1% refill margin used to set the claim rate: 121.2 and 60.6 a
+    // second, as measured on the host.
+    for (period, interval, limit) in [
+        (PERIOD, 1000. / 165., 120.2),
+        (PERIOD, 1000. / 240., 120.2),
+        (1000. / 60., 1000. / 120., 60.1),
+    ] {
+        for arrival in [false, true] {
+            let claims = simulate_stamped(period, interval, 30., arrival);
+            let rate = steady_rate(&claims);
+            assert!(
+                rate <= limit,
+                "{rate:.2} claims/s for a {:.0} Hz source (arrival stamps: {arrival})",
+                1000. / interval
+            );
+        }
+        if interval * 2. != period {
+            continue;
+        }
+        // On the 2x display, every other source frame lands on the claim.
+        let exact = steady_age_p99(&simulate_stamped(period, interval, 30., false));
+        let arrival = steady_age_p99(&simulate_stamped(period, interval, 30., true));
+        assert!(
+            arrival <= exact + 0.2,
+            "picture age p99 {arrival:.2} ms against {exact:.2} ms"
+        );
+    }
+}
