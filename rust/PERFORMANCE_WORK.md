@@ -181,6 +181,41 @@ at 3.82-3.93 ms (p99 3.36-3.81 ms), and the HEVC session's at 4.51-4.53 ms.
 A first keyframe's time varies from start to start (12.7-17.7 ms in the
 loopback runs), so one start does not show a regression.
 
+### rc.24 against Vibepollo 2.0 on the same GPU
+
+The loopback fixture with the pinned Vibepollo 2.0 build
+(`day-work-20261002\vibepollo-baseline-build`, `VIBEPOLLO_ISOLATED_BENCHMARK`)
+and the installed rc.24, alternating in one batch on October 8 (16:40-16:57
+local), two runs per cell, identical settings: native AMF at ultra-low
+latency, WGC capture for Butterpollo, a virtual HDR display, Extended layout,
+hardware decoding in the client. The owner's monitor now runs at 2560×1440
+120 Hz, and the virtual display came up at 120 Hz instead of twice the stream
+rate in every run of both hosts, so the source drew at 120 fps; these numbers
+compare only with each other. The monitor's mode was checked before and after
+(2560×1440 at 120 Hz both times); Vibepollo's display recovery changed nothing
+this time.
+
+| Picture age mean / p95 / p99 (ms), host latency | rc.24 | Vibepollo 2.0 |
+|---|---|---|
+| 1968×2184 HEVC HDR 120 fps, 80 Mbps | **17.81 / 18.94 / 19.56**, 3.50 ms | 19.97 / 20.43 / 20.87, 4.04 ms |
+| 1968×2184 AV1 HDR 120 fps, 80 Mbps | **17.42 / 18.10 / 18.62**, 3.20 ms | 18.88 / 19.54 / 19.90, 3.89 ms |
+| 2560×1440 HEVC HDR 120 fps, 50 Mbps | 17.09 / 17.99 / 18.46, 3.08 ms | 17.19 / 17.68 / 17.93, 3.52 ms |
+| 1920×1080 HEVC HDR 60 fps, 20 Mbps | **14.67 / 15.50 / 15.82**, 2.46 ms | 21.05 / 21.25 / 21.43, 1.30 ms (one run) |
+
+At the owner's native size rc.24 delivers the picture 1.5-2.2 ms sooner at
+every percentile, with 0.5-0.7 ms less host latency; at 1440p the two are
+equal. At 1080p60 one Vibepollo run's renderer never started and the other
+was 6.4 ms slower, although Vibepollo reports less host latency there
+(its host latency excludes part of the path Butterpollo's includes). Every
+run delivered all source pictures except one rc.24 AV1 run: 9.5 s in, WGC's
+shared texture failed (`0x887A0026`, keyed mutex abandoned), capture
+reopened after a 258 ms gap, and afterwards the client read only 53% of the
+pictures while the host still sent 119 fps. Its picture age (17.41 ms) is
+from the pictures it did read. That recovery path needs a look: the picture
+after reopening may not have been the virtual display's.
+
+Artifacts: `bench-rc21\vp-*`, `displays-before-vibepollo.json`.
+
 ### AV1 at 1968×2184: padding, and why the render-size rewrite is not shipped
 
 The RX 7900 XT (driver 32.0.31041.1004) encodes a 1968×2184 AV1 stream as
