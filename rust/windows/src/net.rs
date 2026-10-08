@@ -395,8 +395,10 @@ pub fn routed_link(peer: SocketAddr) -> Link {
         if GetIfStackTable(&mut table).0 != 0 {
             return Link::default();
         }
-        let stack =
-            std::slice::from_raw_parts((*table).Table.as_ptr(), (*table).NumEntries as usize);
+        let stack = std::slice::from_raw_parts(
+            (&raw const (*table).Table).cast(),
+            (*table).NumEntries as usize,
+        );
         let link = underlying_link(index, stack, |index| {
             let mut row = MIB_IF_ROW2 {
                 InterfaceIndex: index,

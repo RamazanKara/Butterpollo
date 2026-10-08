@@ -327,7 +327,7 @@ fn wifi_streaming_mode() -> Option<usize> {
             return None;
         }
         let interfaces = std::slice::from_raw_parts(
-            (*list).InterfaceInfo.as_ptr(),
+            (&raw const (*list).InterfaceInfo).cast::<WLAN_INTERFACE_INFO>(),
             (*list).dwNumberOfItems as usize,
         );
         let enabled = windows::core::BOOL::from(true);

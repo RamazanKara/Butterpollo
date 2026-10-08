@@ -1,4 +1,6 @@
 //! Per-user Vulkan layer registration and reference-counted HDR activation.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use crate::text::to_wide;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
@@ -28,11 +30,14 @@ pub fn manifest() -> Result<PathBuf> {
 pub fn installed(path: &Path) -> bool {
     let name = to_wide(&path.to_string_lossy());
     let key = to_wide(KEY);
-    let (mut data, mut size) = (0u32, 4u32);
+    let mut data = 0u32;
+    // SAFETY: `key` and `name` are NUL-terminated and outlive the calls, and `data` is the 4-byte
+    // buffer `size` names. `size` is reset per root because a failed query overwrites it.
     unsafe {
         [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE]
             .into_iter()
             .any(|root| {
+                let mut size = 4u32;
                 RegGetValueW(
                     root,
                     PCWSTR(key.as_ptr()),
@@ -59,6 +64,8 @@ pub fn register(enabled: bool) -> Result<()> {
     }
     let key = to_wide(KEY);
     let name = to_wide(&path.to_string_lossy());
+    // SAFETY: `key`, `name` and `value` outlive the calls, and `handle` is closed once, only after
+    // it was opened successfully.
     unsafe {
         let mut handle = HKEY::default();
         RegCreateKeyExW(
@@ -102,10 +109,14 @@ struct Events {
     handles: Vec<HANDLE>,
 }
 // Named kernel events are thread safe; ownership and refcounts use the mutex.
+// SAFETY: Events owns its handles, closes them only in Drop, and is reached only through the EVENTS
+// mutex; kernel event handles may be used from any thread.
 unsafe impl Send for Events {}
 impl Drop for Events {
     fn drop(&mut self) {
         for handle in &self.handles {
+            // SAFETY: Each handle came from CreateEventW, is owned by Events, and is closed once,
+            // here.
             unsafe {
                 let _ = CloseHandle(*handle);
             }
@@ -127,6 +138,8 @@ impl Lease {
             let descriptor_text =
                 to_wide("D:P(A;;GA;;;OW)(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00100000;;;WD)");
             let mut descriptor = PSECURITY_DESCRIPTOR::default();
+            // SAFETY: `descriptor_text` is NUL-terminated and outlives the call; `descriptor`
+            // receives a LocalAlloc'd descriptor that is freed below.
             unsafe {
                 ConvertStringSecurityDescriptorToSecurityDescriptorW(
                     PCWSTR(descriptor_text.as_ptr()),
@@ -145,12 +158,15 @@ impl Lease {
                 "Local\\ButterpolloRustVirtualHdrActive",
             ] {
                 let name = to_wide(name);
-                if let Ok(handle) =
-                    unsafe { CreateEventW(Some(&security), true, false, PCWSTR(name.as_ptr())) }
-                {
+                // SAFETY: `security` points at the live descriptor and `name` is NUL-terminated;
+                // both outlive the call.
+                let created =
+                    unsafe { CreateEventW(Some(&security), true, false, PCWSTR(name.as_ptr())) };
+                if let Ok(handle) = created {
                     events.handles.push(handle);
                 }
             }
+            // SAFETY: `descriptor` was allocated by the conversion above and is no longer used.
             unsafe {
                 let _ = LocalFree(Some(HLOCAL(descriptor.0)));
             }
@@ -160,6 +176,7 @@ impl Lease {
         }
         if events.users == 0 {
             for handle in &events.handles {
+                // SAFETY: The handle is owned by Events, which the held lock keeps alive and open.
                 unsafe {
                     SetEvent(*handle)?;
                 }
@@ -176,6 +193,8 @@ impl Drop for Lease {
             events.users -= 1;
             if events.users == 0 {
                 for handle in &events.handles {
+                    // SAFETY: The handle is owned by Events, which the held lock keeps alive and
+                    // open.
                     unsafe {
                         let _ = ResetEvent(*handle);
                     }
