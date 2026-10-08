@@ -206,7 +206,7 @@ impl Sender {
                                 critical_percentage,
                                 detail_percentage,
                                 wire_budget,
-                                ipv6: peer.is_ipv6(),
+                                ipv6: peer.ip().to_canonical().is_ipv6(),
                             },
                         );
                         let Some((packet_count, fec_limited, blocks)) = dropped.prepared(
@@ -228,7 +228,7 @@ impl Sender {
                             packet_count,
                             current.config.packet_size,
                             current.config.encryption & 2 != 0,
-                            peer.is_ipv6(),
+                            peer.ip().to_canonical().is_ipv6(),
                             current.config.fps_millihz(),
                         );
                         let bps = butterpollo_core::network_pacing::pyrowave_rate_bps(
@@ -269,7 +269,7 @@ impl Sender {
                                     Instant::now(),
                                     bytes,
                                     if bytes > 0 { count } else { 0 },
-                                    peer.is_ipv6(),
+                                    peer.ip().to_canonical().is_ipv6(),
                                     bps,
                                 );
                                 current

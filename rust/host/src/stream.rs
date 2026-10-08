@@ -1145,7 +1145,7 @@ impl Media {
                                     butterpollo_windows::net::Batch::count(remaining, budget);
                                 let bytes = batch.send(&m.video, &remaining[..count], peer)?;
                                 remaining = &remaining[count..];
-                                network_pacer.sent(Instant::now(), bytes, if bytes > 0 { count } else { 0 }, peer.is_ipv6(), bps);
+                                network_pacer.sent(Instant::now(), bytes, if bytes > 0 { count } else { 0 }, peer.ip().to_canonical().is_ipv6(), bps);
                                 s.stats.packets.fetch_add(count as u64, Ordering::Relaxed);
                                 s.stats.bytes.fetch_add(bytes as u64, Ordering::Relaxed);
                             }
