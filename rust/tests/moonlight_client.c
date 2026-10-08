@@ -218,6 +218,14 @@ static int video_frame(PDECODE_UNIT unit){
             }
             av_frame_unref(decoded);
         }else av_frame_move_ref(frame,decoded);
+        // AMD AV1 surfaces can include alignment padding outside the stream.
+        // Crop before sampling pixels, the bottom barcode or a picture dump.
+        if((requested_format&VIDEO_FORMAT_MASK_AV1)&&
+           frame->width>=requested_width&&frame->width<=requested_width+64&&
+           frame->height>=requested_height&&frame->height<=requested_height+16){
+            frame->width=requested_width;frame->height=requested_height;
+        }
+        if(frame->width!=requested_width||frame->height!=requested_height)atomic_fetch_add(&failures,1);
         unsigned low=65535,high=0;
         for(int y=1;y<8;y++)for(int x=1;x<12;x++){
             unsigned value=luma_sample(frame,frame->width*x/12,frame->height*y/8);
@@ -225,7 +233,6 @@ static int video_frame(PDECODE_UNIT unit){
         }
         const AVPixFmtDescriptor *pixel=av_pix_fmt_desc_get(frame->format);
         if(pixel&&high>low+(16u<<(pixel->comp[0].depth>8?pixel->comp[0].depth-8:0)))atomic_fetch_add(&detailed_frames,1);
-        if(frame->width!=requested_width||frame->height!=requested_height)atomic_fetch_add(&failures,1);
         /* The SDK's CPU readback is eight-bit even for HDR. Its stream mode is
          * checked above; full-precision HDR quality has a separate GPU test. */
 #ifdef BUTTERPOLLO_PYROWAVE
