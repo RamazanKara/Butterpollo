@@ -50,7 +50,7 @@ if ($FetchDependencies) {
         $PyrowaveRoot = Join-Path $Dependencies 'pyrowave-186f0393'
         $cygpath = "$MsysRoot\usr\bin\cygpath.exe"
         $prefix = & $cygpath -u $PyrowaveRoot
-        $buildScript = & $cygpath -u (Join-Path $repo 'scripts\build_pyrowave.sh')
+        $buildScript = & $cygpath -u (Join-Path $repo 'rust\tools\build_pyrowave.sh')
         $env:PYROWAVE_WORKDIR = & $cygpath -u (Join-Path $Dependencies 'pyrowave-work')
         $env:MSYSTEM = 'UCRT64'
         & "$MsysRoot\usr\bin\bash.exe" $buildScript '186f0393b77f7755953b5ecde994bb1cec2e4155' $prefix
@@ -171,8 +171,8 @@ try {
         New-Item -ItemType Directory -Path "$distribution\vulkan-layer" -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $output 'butterpollo_vulkan_layer.dll') -Destination "$distribution\vulkan-layer"
         Copy-Item -LiteralPath (Join-Path $repo 'rust\vulkan-layer\VkLayer_butterpollo_hdr.json') -Destination "$distribution\vulkan-layer"
-        Get-ChildItem -LiteralPath (Join-Path $repo 'src_assets\common\assets') -File | Where-Object { $_.Extension -in '.png','.ico' } | Copy-Item -Destination "$distribution\assets"
-        Copy-Item -LiteralPath (Join-Path $repo 'src_assets\common\assets\remote-session') -Destination "$distribution\assets\remote-session" -Recurse -Force
+        Get-ChildItem -LiteralPath (Join-Path $repo 'rust\assets\package') -File | Where-Object { $_.Extension -in '.png','.ico' } | Copy-Item -Destination "$distribution\assets"
+        Copy-Item -LiteralPath (Join-Path $repo 'rust\assets\package\remote-session') -Destination "$distribution\assets\remote-session" -Recurse -Force
         # The web console, built in a copy: node_modules made by a WSL checkout
         # holds Linux binaries.
         $webBuild = Join-Path $TargetDirectory 'web-build'

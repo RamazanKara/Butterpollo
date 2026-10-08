@@ -2,7 +2,7 @@
 # Build and install the PyroWave C API (libpyrowave-shared-0.dll) with MSYS2 UCRT64 MinGW-w64.
 #
 # Usage (MSYS2 UCRT64 shell):
-#   scripts/build_pyrowave.sh [commit] [prefix]
+#   rust/tools/build_pyrowave.sh [commit] [prefix]
 #     commit  full SHA of https://github.com/Themaister/pyrowave
 #             (default: the commit pinned below; its bitstream matches the PyroWave
 #             Moonlight clients)
@@ -80,7 +80,7 @@ if [[ "$GRANITE_SHA" != "$GRANITE_COMMIT" ]]; then
 fi
 echo "Granite: $GRANITE_SHA"
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-PATCH_DIR=$SCRIPT_DIR/../rust/codec-patches/pyrowave
+PATCH_DIR=$SCRIPT_DIR/../codec-patches/pyrowave
 for patch in "$PATCH_DIR"/*.patch; do
 	git -C "$SRC" apply --check "$patch"
 	git -C "$SRC" apply "$patch"

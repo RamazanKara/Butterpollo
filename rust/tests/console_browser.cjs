@@ -110,7 +110,7 @@ assert(output && password, 'Set test artifact directory and test password');
     assert.equal(saved['rtx-hdr'],null); assert.equal(saved['rtx-hdr-contrast'],null);
     assert.deepEqual(saved['migration-field'],{preserve:true});
     localeRestore = (await api('GET','/api/config')).locale ?? null;
-    const german = JSON.parse(fs.readFileSync(path.join(__dirname,'../../src_assets/common/assets/web/public/assets/locale/de.json'),'utf8'));
+    const german = JSON.parse(fs.readFileSync(path.join(__dirname,'../assets/locale/de.json'),'utf8'));
     await api('POST','/api/apps',{...saved,name:'Settings'});
     await api('PATCH','/api/config',{locale:'de'});
     await page.goto(base+'/library');

@@ -25,7 +25,7 @@ $files = @(
 $encoding = [Text.UTF8Encoding]::new($false)
 foreach ($entry in $files) {
     $relative, $expected = $entry
-    $source = if ($relative.StartsWith('third-party/nanors/')) { Join-Path $NanorsDirectory $relative.Substring('third-party/nanors/'.Length) } else { Join-Path $repo $relative }
+    $source = if ($relative.StartsWith('third-party/nanors/')) { Join-Path $NanorsDirectory $relative.Substring('third-party/nanors/'.Length) } else { Join-Path $PSScriptRoot "fec-reference\$(Split-Path -Leaf $relative)" }
     $text = [IO.File]::ReadAllText($source).Replace("`r`n", "`n")
     $sha = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($encoding.GetBytes($text))).ToLowerInvariant()
     if ($sha -ne $expected) { throw "Reference source differs from the pinned C++ baseline: $relative" }

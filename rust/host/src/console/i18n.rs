@@ -10,7 +10,7 @@ macro_rules! catalogues {
     ($($locale:literal),* $(,)?) => {
         const CATALOGUES: &[(&str, &str)] = &[$((
             $locale,
-            include_str!(concat!("../../../../src_assets/common/assets/web/public/assets/locale/", $locale, ".json"))
+            include_str!(concat!("../../../assets/locale/", $locale, ".json"))
         )),*];
     };
 }
