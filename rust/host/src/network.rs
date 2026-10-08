@@ -123,6 +123,35 @@ pub fn tcp(address: SocketAddr) -> Result<tokio::net::TcpListener> {
     socket.listen(128)?;
     Ok(tokio::net::TcpListener::from_std(socket.into())?)
 }
+/// Accepts the next connection. A failed accept belongs to one connection
+/// (a client resetting mid-handshake) or is transient (out of handles), so
+/// it never ends the listener, which would shut the host and its game down.
+pub async fn accept(listener: &tokio::net::TcpListener) -> (tokio::net::TcpStream, SocketAddr) {
+    loop {
+        match listener.accept().await {
+            Ok((socket, peer)) => {
+                return (
+                    socket,
+                    SocketAddr::new(peer.ip().to_canonical(), peer.port()),
+                );
+            }
+            Err(error) if per_connection(&error) => {
+                tracing::debug!(%error, "connection closed before it was accepted");
+            }
+            Err(error) => {
+                tracing::warn!(%error, "accepting a connection failed; retrying");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+    }
+}
+fn per_connection(error: &std::io::Error) -> bool {
+    use std::io::ErrorKind::*;
+    matches!(
+        error.kind(),
+        ConnectionReset | ConnectionAborted | ConnectionRefused | Interrupted | WouldBlock
+    )
+}
 pub struct Discovery(ServiceDaemon);
 impl Discovery {
     pub fn start(config: &Config, bind: IpAddr) -> Result<Option<Self>> {

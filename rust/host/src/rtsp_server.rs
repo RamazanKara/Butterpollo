@@ -20,8 +20,7 @@ pub async fn serve(address: SocketAddr, h: Shared, media: Arc<crate::stream::Med
     let configurations = Arc::new(Mutex::new(HashMap::new()));
     tracing::info!(%address,"RTSP listener ready");
     loop {
-        let (socket, peer) = listener.accept().await?;
-        let peer = SocketAddr::new(peer.ip().to_canonical(), peer.port());
+        let (socket, peer) = crate::network::accept(&listener).await;
         let h = h.clone();
         let media = media.clone();
         let configs = configurations.clone();

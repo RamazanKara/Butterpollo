@@ -105,10 +105,14 @@ pub async fn serve(
     let listener = crate::network::tcp(address)?;
     tracing::info!(%address,tls=acceptor.is_some(),"HTTP listener ready");
     loop {
-        let (socket, peer) = listener.accept().await?;
-        let peer = SocketAddr::new(peer.ip().to_canonical(), peer.port());
-        socket.set_nodelay(true)?;
-        let local = socket.local_addr()?;
+        let (socket, peer) = crate::network::accept(&listener).await;
+        if let Err(error) = socket.set_nodelay(true) {
+            tracing::debug!(%peer, %error, "could not disable Nagle's algorithm");
+        }
+        let Ok(local) = socket.local_addr() else {
+            tracing::debug!(%peer, "connection closed before it was served");
+            continue;
+        };
         let local = SocketAddr::new(local.ip().to_canonical(), local.port());
         let router = router.clone();
         let acceptor = acceptor.clone();
