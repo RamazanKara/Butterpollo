@@ -68,6 +68,22 @@ For a build without TrueHDR:
 .\rust\build.ps1 -FetchDependencies -SkipTrueHdr -Package
 ```
 
+## SDK environment
+
+Cargo alone cannot build the Windows crates: their build scripts generate bindings from pinned SDK headers and link pinned codec libraries. The build script sets these variables for the session it runs in; set them yourself to run `cargo` in another shell.
+
+| Variable | Read by | Points at |
+| --- | --- | --- |
+| `BUTTERPOLLO_FFMPEG_ROOT` | `rust/windows/build.rs` | The pinned FFmpeg SDK (`include/` with the AMF headers, and `lib/`). |
+| `BUTTERPOLLO_PYROWAVE_ROOT` | `rust/windows/build.rs` | The pinned PyroWave SDK built by `rust/tools/build_pyrowave.sh`. |
+| `BUTTERPOLLO_VULKAN_INCLUDE` | `rust/windows/build.rs` | Vulkan 1.4 headers, `C:\msys64\ucrt64\include` in MSYS2. |
+| `BUTTERPOLLO_SYSTEM_LIBS` | `rust/windows/build.rs` | MSYS2's `ucrt64\lib`, for libvpl and the C++ runtime. |
+| `LIBCLANG_PATH` | bindgen | MSYS2's `ucrt64\bin`, which holds `libclang.dll`. |
+| `NV_RTX_VIDEO_SDK` | `rust/truehdr-runtime/build.rs` | NVIDIA's RTX Video SDK, only for the optional TrueHDR adapter. |
+| `BUTTERPOLLO_MSVC_ROOT`, `BUTTERPOLLO_DRIVER_ROOT` | `rust/build.ps1` | Defaults for `-MsvcSdk` and `-DriverRoot`. |
+
+`butterpollo-core` needs none of them and builds and tests on any OS with plain `cargo test -p butterpollo-core`.
+
 ## Development checks
 
 After the build script has configured the SDK paths in the same PowerShell session, the ordinary Rust checks are:

@@ -6,7 +6,7 @@ fn main() {
         return;
     }
     println!("cargo:rerun-if-env-changed=BUTTERPOLLO_FFMPEG_ROOT");
-    let root=PathBuf::from(env::var("BUTTERPOLLO_FFMPEG_ROOT").expect("set BUTTERPOLLO_FFMPEG_ROOT to the pinned FFmpeg SDK (include/ and lib/); see rust/README.md"));
+    let root=PathBuf::from(env::var("BUTTERPOLLO_FFMPEG_ROOT").expect("set BUTTERPOLLO_FFMPEG_ROOT to the pinned FFmpeg SDK (include/ and lib/); see docs/building.md"));
     let include = root.join("include");
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
     shaders::compile(&out);

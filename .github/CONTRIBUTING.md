@@ -1,74 +1,54 @@
-# Contributing Guidelines
+# Contributing to Butterpollo
 
-Thank you for your interest in contributing to this project! We welcome contributions from the community and appreciate your efforts to make this project better.
+Butterpollo is a Windows Moonlight host built for AMD Radeon. Changes that make streaming faster, smoother or more reliable on Radeon are the priority; for NVIDIA-first work, [Vibepollo](https://github.com/Nonary/Vibepollo) is the better home.
 
-## How to Contribute
+## Reporting problems
 
-### Reporting Issues
+Search the existing issues first, then use the bug or crash form. Attach the support bundle from the console (**Logs → Download support bundle**); it holds the logs and diagnostics needed to reproduce most problems. [Troubleshooting](../docs/troubleshooting.md) covers the common cases.
 
-- Use the GitHub issue tracker to report bugs or request features
-- Before creating a new issue, please search existing issues to avoid duplicates
-- Provide clear, detailed descriptions with steps to reproduce bugs
-- Include relevant system information and logs when applicable
+## Layout
 
-### Code Contributions
+| Path | What it is |
+| --- | --- |
+| `rust/core` | Portable protocol, state and policy. No vendor SDKs; builds and tests on any OS. |
+| `rust/windows` | Windows platform layer: capture, Radeon compute, AMF/NVENC/FFmpeg/PyroWave encoders, displays, input, audio. |
+| `rust/host` | The `butterpollo` executables: HTTP, RTSP and stream servers, sessions and the console API. |
+| `rust/setup` | The installer. |
+| `rust/vulkan-layer` | The Vulkan layer that offers HDR formats on virtual displays. |
+| `rust/web` | The Svelte web console. |
+| `rust/tests`, `rust/release` | Hand-run harnesses (independent Moonlight client, soak, release checks). |
 
-#### Getting Started
+[Architecture](../docs/architecture.md) follows a frame through these pieces. `cargo doc --workspace --no-deps --open` builds the API reference.
 
-1. Fork the repository
-2. Create a new branch for your feature or bugfix: `git checkout -b feature/your-feature-name`
-3. Make your changes
-4. Test your changes thoroughly
-5. Commit your changes with clear, descriptive messages
-6. Push your branch to your fork
-7. Create a pull request
+## Building and checking
 
-#### Code Standards
+[Build Butterpollo](../docs/building.md) lists the prerequisites and the SDK environment. The first build fetches and verifies the pinned SDKs:
 
-- Follow the existing code style and formatting conventions
-- Write clear, readable code with appropriate comments
-- Ensure all changes are sound
-- Keep commits focused and atomic
+```powershell
+.\rust\build.ps1 -FetchDependencies -SkipTrueHdr
+```
 
-#### Pull Request Guidelines
+Before sending a change, run the checks CI runs, in the same shell:
 
-- Provide a clear description of what your PR does
-- Reference any related issues using keywords like "Fixes #123"
-- Include screenshots or examples if your changes affect the UI
-- Be responsive to feedback and suggestions during code review
+```powershell
+cargo +1.98.1-x86_64-pc-windows-gnu fmt --all -- --check
+cargo +1.98.1-x86_64-pc-windows-gnu clippy --workspace --all-targets --locked -- -D warnings
+cargo +1.98.1-x86_64-pc-windows-gnu test --workspace --locked
+```
 
-## Important Rules
+For console changes, also run `npm ci` and `npm run check` in `rust/web`. Changes confined to `rust/core` can be checked anywhere with `cargo test -p butterpollo-core`.
 
-### AI-Generated Code Policy
+## Expectations for a change
 
-**AI-generated code is acceptable, but please make sure you have thoroughly reviewed and understand what it does.**
+- **Measure latency changes.** Anything on the frame path (capture, colour conversion, encoding, packetization, send) needs before and after numbers from real hardware, recorded in [PERFORMANCE.md](../rust/PERFORMANCE.md). A change does not ship on reasoning alone.
+- **Hardware tests are opt-in.** Tests that need a GPU, a display or a controller are `#[ignore]` with a reason; run them with `--ignored` on a suitable machine. Passing ordinary tests is not a hardware result.
+- **Never test against the installed service.** Run a development host with `--config-dir` on its own profile and port, as the [Rust guide](../rust/README.md) shows.
+- **Keep the crates layered.** Decisions that do not need Windows go in `core`, where Linux CI tests them; Windows calls go in `windows`; `host` wires them together and has no `unsafe`.
+- **Document unsafe code.** Each `unsafe` block says which invariant it relies on in a `// SAFETY:` comment.
+- **Update the docs with the behaviour.** User-visible changes update `docs/` and the current section of [RELEASE_NOTES.md](../rust/RELEASE_NOTES.md); feature coverage lives in [PARITY.md](../rust/PARITY.md). Versions change only through `rust/release/bump.py`.
 
-When using AI tools to generate code:
-- Review every line of generated code carefully
-- Understand the logic and potential implications
-- Test the code thoroughly in your environment
-- Ensure it follows project conventions and best practices
-- Take responsibility for any issues that may arise from the generated code
+AI-assisted changes are welcome on the same terms: you understand every line, and the tests and measurements above back the claims.
 
-***IMPORTANT: Don't trust AI generated tests. Test each modifications manually.***
+## Pull requests
 
-### Code Review Process
-
-- All contributions must go through code review
-- Maintainers will review your pull request and provide feedback
-- Address all feedback before the PR can be merged
-- Be patient and respectful during the review process
-
-## Development Setup
-
-Please refer to the README.md file for instructions on setting up your development environment.
-
-## Questions?
-
-If you have questions about contributing, feel free to:
-- Open an issue for discussion
-- Contact the maintainers
-- Check existing documentation
-
-Thank you for contributing!
-
+Keep each pull request to one change with a clear description of what a user would notice, link the issue it fixes, and include screenshots for console changes. Contributions are GPL-3.0-only, like the rest of the project.

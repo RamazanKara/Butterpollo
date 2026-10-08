@@ -66,7 +66,7 @@ curl.exe --fail-with-body --silent --show-error --cacert $certificate --user adm
 curl.exe --fail-with-body --silent --show-error --cacert $certificate --user admin https://localhost:47990/api/token/routes
 ```
 
-`/api/metadata` reports the host version, codec probe status, configured capture backend, displays, audio endpoints and virtual-display capabilities. Results are cached for up to five seconds; reading them does not start a codec probe. Codec state is `checking`, `ready` or `failed`.
+`/api/metadata` (also served as `/api/meta`) reports the host version, codec probe status, configured capture backend, displays, audio endpoints and virtual-display capabilities. Results are cached for up to five seconds; reading them does not start a codec probe. Codec state is `checking`, `ready` or `failed`.
 
 `/api/session/status` includes `activeSessions`, `appRunning`, `appName`, `paused` and `running`. An app can remain running after its stream disconnects, so these fields describe different states.
 
@@ -77,7 +77,7 @@ The routes below are implemented by the Rust host. JSON requests use `Content-Ty
 | Area | Read | Change |
 | --- | --- | --- |
 | Host settings | `GET /api/config`, `GET /api/metadata`, `GET /api/configLocale` | `POST` or `PATCH /api/config` |
-| Applications | `GET /api/apps`, `GET /api/apps/{id}/cover`, `GET /api/apps/{uuid}/icon` | `POST /api/apps`, `DELETE /api/apps/{id}`, `POST /api/apps/reorder`, `POST /api/apps/launch`, `POST /api/apps/close` |
+| Applications | `GET /api/apps`, `GET /api/apps/{id}/cover`, `GET /api/apps/{uuid}/icon` | `POST /api/apps`, `DELETE /api/apps/{id}` (or `POST /api/apps/delete` with `{"uuid": ...}`), `POST /api/apps/reorder`, `POST /api/apps/launch`, `POST /api/apps/close` |
 | Paired devices | `GET /api/clients/list`, `GET /api/clients/pending` | `POST /api/pin`, `POST /api/otp`, `POST /api/clients/update`, `POST /api/clients/disconnect`, `POST /api/clients/unpair`, `POST /api/clients/unpair-all` |
 | Active sessions | `GET /api/session/status`, `GET /api/rtsp/sessions` | Use the application or device controls above. |
 | Displays | `GET /api/display-devices`, `GET /api/clients/display-layout`, `GET /api/clients/hdr-profiles`, `GET /api/display/golden_status` | `PUT /api/clients/display-layout`, `POST /api/display/export_golden`, `POST /api/display/restore_golden`, `DELETE /api/display/golden`, `POST /api/display/terminate_virtual`, `POST /api/reset-display-device-persistence` |
