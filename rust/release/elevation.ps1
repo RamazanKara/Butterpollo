@@ -1,13 +1,13 @@
 <#
 .SYNOPSIS
-One-time setup so release.ps1 no longer needs a UAC prompt.
+One-time setup so check.ps1 no longer needs a UAC prompt.
 
 .DESCRIPTION
 Run once from an elevated PowerShell. It copies elevated.ps1 and
 elevated-task.ps1 to C:\ProgramData\ButterpolloRelease, where only
 administrators and SYSTEM can change them, and registers the on-demand task
 "ButterpolloReleaseElevated" that runs them for you with highest privileges.
-release.ps1 starts that task instead of asking for elevation, as long as the
+check.ps1 starts that task instead of asking for elevation, as long as the
 installed scripts match the ones in the checkout; after they change, it asks
 once more and tells you to run this again.
 
@@ -48,4 +48,4 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
     -ExecutionTimeLimit (New-TimeSpan -Minutes 30) -MultipleInstances IgnoreNew
 Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Settings $settings `
     -Description 'Butterpollo release: display self-test and install (rust/release/elevation.ps1)' | Out-Null
-"Installed $task for $env:USERDOMAIN\$env:USERNAME. release.ps1 now installs and self-tests without a UAC prompt."
+"Installed $task for $env:USERDOMAIN\$env:USERNAME. check.ps1 now installs and self-tests without a UAC prompt."

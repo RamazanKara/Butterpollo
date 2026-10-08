@@ -3,16 +3,59 @@ permissions: {}
 on:
   push:
     branches: [main]
-    # A release tag gets its own run, which later pushes to main cannot cancel.
+    # A release tag publishes the GitHub release (tag and publish below).
     tags: ['2.*']
   pull_request:
     paths: ['rust/**', 'Cargo.*', 'rust-toolchain.toml', '.cargo/**', 'scripts/build_pyrowave.sh', 'src_assets/common/assets/*.png', 'src_assets/common/assets/*.ico', 'src_assets/common/assets/web/public/assets/locale/**', '.github/workflows/rust-windows.yml']
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Release the version in Cargo.toml (main only); tags it like a pushed tag would
+        type: boolean
+        default: false
 concurrency:
-  group: butterpollo-rust-${{ github.ref }}
+  # A release run is never cancelled by a later push to main.
+  group: butterpollo-rust-${{ github.ref }}-${{ inputs.publish && 'publish' || 'ci' }}
   cancel-in-progress: true
 jobs:
+  # A tag must match Cargo.toml and have its release notes. When main's run
+  # already built and tested the commit, the release reuses that build.
+  tag:
+    if: startsWith(github.ref, 'refs/tags/') || (inputs.publish && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      run: ${{ steps.built.outputs.run }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - id: version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version=$GITHUB_REF_NAME
+          else
+            version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+            if [ -n "$(git ls-remote --tags origin "refs/tags/$version")" ]; then
+              echo "::error::$version is already tagged; bump the version first"
+              exit 1
+            fi
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          python3 rust/release/notes.py "$version" --out "$RUNNER_TEMP/body.md"
+      - id: built
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run=$(gh run list -R "$GITHUB_REPOSITORY" --workflow rust-windows.yml --branch main --commit "$GITHUB_SHA" \
+            --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          if [ -n "$run" ]; then echo "::notice::reusing the build of $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run"; fi
   windows:
+    needs: tag
+    if: ${{ !cancelled() && needs.tag.result != 'failure' && !needs.tag.outputs.run }}
     runs-on: windows-2022
     timeout-minutes: 30
     permissions:
@@ -75,3 +118,39 @@ jobs:
             ${{ runner.temp }}/butterpollo-rust-target/butterpollo-setup-*.exe
           if-no-files-found: error
           retention-days: 30
+  publish:
+    needs: [tag, windows]
+    if: ${{ !cancelled() && needs.tag.result == 'success' && (needs.tag.outputs.run || needs.windows.result == 'success') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.tag.outputs.version }}
+      BUILD: ${{ needs.tag.outputs.run || github.run_id }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Publish the release
+        run: |
+          if gh release view "$VERSION" > /dev/null 2>&1; then
+            echo "::notice::$VERSION is already published"
+            exit 0
+          fi
+          python3 rust/release/notes.py "$VERSION" --out body.md --run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$BUILD"
+          gh run download "$BUILD" -n butterpollo-rust-windows-x64 -D build
+          mkdir out
+          mv "build/butterpollo-setup-$VERSION.exe" out/
+          mv build/butterpollo-rust-release.zip "out/butterpollo-rust-$VERSION-windows-x64.zip"
+          (cd out && sha256sum * > SHA256SUMS)
+          # The demo film the release text shows travels with every release,
+          # so deleting older releases leaves the page intact.
+          for tag in $(gh release list --exclude-drafts --limit 10 --json tagName --jq '.[].tagName'); do
+            gh release download "$tag" -D out -p 'butterpollo-launch-film.*' && break
+          done
+          test -f out/butterpollo-launch-film.gif -a -f out/butterpollo-launch-film.mp4
+          flags=()
+          if [[ $VERSION == *-* ]]; then flags+=(--prerelease); fi
+          gh release create "$VERSION" --target "$GITHUB_SHA" --title "Butterpollo $VERSION" --notes-file body.md "${flags[@]}" out/*
+          echo "::notice::published $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$VERSION"

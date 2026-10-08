@@ -37,16 +37,12 @@ class ReleaseMeasurements(unittest.TestCase):
         self.assertEqual(active_clients(log), [])
         self.assertEqual(active_clients(log + 'INFO butterpollo::stream: CLIENT CONNECTED client=tv\n'), ['tv'])
 
-    def test_finalizer_requires_1080p60_for_both_pyrowave_modes(self):
+    def test_validation_requires_1080p60_for_both_pyrowave_modes(self):
         with tempfile.TemporaryDirectory() as folder:
             root = pathlib.Path(folder)
-            out, work = root / 'out', root / 'work'
-            out.mkdir()
-            for name, document in (('VALIDATION.json', dict(version='test', assets=[])),
-                                   ('BUILD_PROVENANCE.json', {}), ('SOURCE-MANIFEST.json', {})):
-                (out / name).write_text(json.dumps(document))
-            changes = root / 'changes.txt'
-            changes.write_text('')
+            work, package = root / 'work', root / 'package'
+            package.mkdir()
+            (package / 'butterpollo.exe').write_bytes(b'host')
             protocol = work / 'protocol'
             protocol.mkdir(parents=True)
             (protocol / 'result.json').write_text(json.dumps(dict(passed=True, checks=[])))
@@ -57,8 +53,8 @@ class ReleaseMeasurements(unittest.TestCase):
                 case.mkdir()
                 text = PYROWAVE.replace('hdr_frames=0', 'hdr_frames=1800') if '-hdr' in codec else PYROWAVE
                 (case / 'result.json').write_text(json.dumps(evaluate(text, 0, codec, '1920x1080x60', vrr)))
-            command = [sys.executable, str(pathlib.Path(__file__).with_name('finalize.py')),
-                       '--out', str(out), '--work', str(work), '--changes', str(changes)]
+            command = [sys.executable, str(pathlib.Path(__file__).with_name('validation.py')), '--version', 'test',
+                       '--package', str(package), '--work', str(work), '--out', str(root / 'VALIDATION.json')]
             result = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             for codec in ('pyrowave', 'pyrowave-hdr-444'):
