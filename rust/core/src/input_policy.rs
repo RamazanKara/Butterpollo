@@ -11,6 +11,19 @@ pub const VHF_AUTO: u16 = 10;
 pub const VIGEM_PROFILES: u32 = (1 << (VIGEM_X360 - 1)) | (1 << (VIGEM_DS4 - 1));
 /// The VHF driver's DualSense, the only virtual pad with adaptive triggers.
 pub const VHF_DUALSENSE: u16 = 6;
+pub const VHF_XBOX_ONE: u16 = 3;
+pub const VHF_DS4: u16 = 5;
+
+/// The VHF pad of the same family that stands in for an explicit ViGEm choice
+/// when ViGEmBus cannot be opened, as the C++ host mapped them: a stream with
+/// an Xbox One or DualShock 4 pad beats one with no controller at all.
+pub fn vhf_stand_in(profile: u16) -> u16 {
+    match profile {
+        VIGEM_X360 => VHF_XBOX_ONE,
+        VIGEM_DS4 => VHF_DS4,
+        other => other,
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum GamepadBackend {
@@ -319,15 +332,22 @@ mod tests {
                 policy.controller_profile(0, 2, caps, both),
                 Some(VHF_DUALSENSE)
             );
-            // An explicit ViGEm choice is not replaced.
-            assert_eq!(
-                policy.controller_profile(VIGEM_DS4, 2, caps, both),
-                Some(VIGEM_DS4)
-            );
-            assert_eq!(
-                policy.controller_profile(VIGEM_X360, 2, caps, both),
-                Some(VIGEM_X360)
-            );
+        }
+        // An explicit ViGEm choice is never replaced, for any client type and
+        // whatever drivers are open.
+        for available in [both, VIGEM_PROFILES] {
+            for kind in 0..=4 {
+                for caps in [0, 8, 0x10, 0x20, 0x38, 0xff] {
+                    assert_eq!(
+                        policy.controller_profile(VIGEM_DS4, kind, caps, available),
+                        Some(VIGEM_DS4)
+                    );
+                    assert_eq!(
+                        policy.controller_profile(VIGEM_X360, kind, caps, available),
+                        Some(VIGEM_X360)
+                    );
+                }
+            }
         }
         // Everyone else is exactly what ViGEmBus alone gives them: a Steam
         // Deck reporting motion keeps its DualShock 4.
@@ -367,6 +387,36 @@ mod tests {
         let vhf = (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6);
         assert_eq!(policy.controller_profile(0, 2, 0, vhf), Some(VHF_DUALSENSE));
         assert_eq!(policy.controller_profile(0, 1, 0, vhf), Some(4));
+    }
+    #[test]
+    fn an_explicit_vigem_choice_without_vigembus_gets_a_vhf_pad_of_its_family() {
+        let policy = Policy::resolve(&Config::default()).unwrap();
+        let vhf = (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6);
+        assert_eq!(vhf_stand_in(VIGEM_X360), VHF_XBOX_ONE);
+        assert_eq!(vhf_stand_in(VIGEM_DS4), VHF_DS4);
+        for profile in [0, 3, 4, 5, 6, 7, VHF_AUTO] {
+            assert_eq!(vhf_stand_in(profile), profile);
+        }
+        // Whatever the client is, including an Android one with no motion or
+        // touchpad and one that sends no arrival at all.
+        for kind in 0..=4 {
+            for caps in [0, 8, 0x30, 0x38] {
+                assert_eq!(
+                    policy.controller_profile(vhf_stand_in(VIGEM_X360), kind, caps, vhf),
+                    Some(VHF_XBOX_ONE)
+                );
+                assert_eq!(
+                    policy.controller_profile(vhf_stand_in(VIGEM_DS4), kind, caps, vhf),
+                    Some(VHF_DS4)
+                );
+            }
+        }
+        // A VHF driver without the Xbox One profile still gives an Xbox pad.
+        let series_only = 1 << 3;
+        assert_eq!(
+            policy.controller_profile(vhf_stand_in(VIGEM_X360), 1, 0, series_only),
+            Some(4)
+        );
     }
     #[test]
     fn independent_controllers_match_client_type_and_available_driver_profiles() {

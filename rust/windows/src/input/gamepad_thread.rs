@@ -42,6 +42,10 @@ pub(super) trait Pads {
     fn motion_supported(&self, id: u16) -> bool;
     /// Whether any pad is plugged in, and so feedback needs polling.
     fn plugged(&self) -> bool;
+    /// What to tell the user about the pads just opened, if anything.
+    fn notice(&self) -> Option<String> {
+        None
+    }
 }
 impl Pads for Gamepads {
     fn apply(&mut self, event: &Event) -> Result<()> {
@@ -58,6 +62,9 @@ impl Pads for Gamepads {
     }
     fn plugged(&self) -> bool {
         !self.active.is_empty()
+    }
+    fn notice(&self) -> Option<String> {
+        self.notice.clone()
     }
 }
 
@@ -224,6 +231,10 @@ fn run<P: Pads>(
                 match open() {
                     Ok(opened) => {
                         shared.warnings.clear("input_gamepad");
+                        match opened.notice() {
+                            Some(notice) => shared.warnings.set("input_gamepad_stand_in", notice),
+                            None => shared.warnings.clear("input_gamepad_stand_in"),
+                        }
                         pads = Some(opened);
                     }
                     Err(error) => {
@@ -324,6 +335,7 @@ mod tests {
         log: Arc<Mutex<Vec<String>>>,
         plugged: bool,
         feedback: Vec<(u16, u16, Vec<u8>)>,
+        notice: Option<String>,
     }
     impl Pads for Fake {
         fn apply(&mut self, event: &Event) -> Result<()> {
@@ -345,6 +357,9 @@ mod tests {
         fn plugged(&self) -> bool {
             self.plugged
         }
+        fn notice(&self) -> Option<String> {
+            self.notice.clone()
+        }
     }
     impl Drop for Fake {
         fn drop(&mut self) {
@@ -363,6 +378,7 @@ mod tests {
                         log: log.clone(),
                         plugged: false,
                         feedback: vec![(0, 1, vec![1, 2, 3, 4, 0, 0, 0, 0])],
+                        notice: None,
                     })
                 }
             },
@@ -396,6 +412,37 @@ mod tests {
                 .message
                 .contains("keyboard and mouse remain available")
         );
+    }
+
+    #[test]
+    fn a_stand_in_pad_is_announced_and_still_gets_input() {
+        let warnings = Arc::new(butterpollo_core::session::Warnings::default());
+        let gate = Arc::new(Gate::default());
+        gate.open();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let pads = GamepadThread::spawn_reported(
+            {
+                let (gate, log) = (gate.clone(), log.clone());
+                move || {
+                    Ok(Fake {
+                        gate: gate.clone(),
+                        log: log.clone(),
+                        plugged: false,
+                        feedback: vec![],
+                        notice: Some("VHF Xbox One in place of Xbox 360".into()),
+                    })
+                }
+            },
+            warnings.clone(),
+        )
+        .unwrap();
+        pads.send(state(0, 1, 0, 0));
+        gate.wait_until(|| !log.lock().unwrap().is_empty());
+        let entries = warnings.snapshot();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].code, "input_gamepad_stand_in");
+        assert!(entries[0].message.contains("in place of Xbox 360"));
+        assert_eq!(*log.lock().unwrap(), logged(&[state(0, 1, 0, 0)]));
     }
 
     #[test]

@@ -42,7 +42,24 @@ impl Backend {
         if matches!(profile, 0 | VIGEM_X360 | VIGEM_DS4) {
             let client = vigem::Client::open();
             match gamepad_backend(profile, client.is_ok()) {
-                GamepadBackend::Vigem => return Ok((Self::Vigem(client?), VIGEM_PROFILES)),
+                GamepadBackend::Vigem => match client {
+                    Ok(client) => return Ok((Self::Vigem(client), VIGEM_PROFILES)),
+                    // An explicit ViGEm choice without ViGEmBus: `Gamepads`
+                    // gives the clients the VHF pad of the same family and
+                    // says so, rather than leaving the stream without one.
+                    Err(error) => {
+                        tracing::warn!(
+                            error = format!("{error:#}"),
+                            profile,
+                            "ViGEmBus unavailable for the chosen controller; using a VHF pad instead"
+                        );
+                        return Self::open_vhf(0).map_err(|vhf| {
+                            anyhow::anyhow!(
+                                "ViGEmBus is unavailable ({error:#}) and the VHF gamepad driver cannot stand in for it ({vhf:#})"
+                            )
+                        });
+                    }
+                },
                 GamepadBackend::Mixed => {
                     let vigem = Self::Vigem(client?);
                     // PlayStation-type clients get the VHF DualSense, which has

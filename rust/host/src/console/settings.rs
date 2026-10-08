@@ -183,7 +183,7 @@ pub const APP: &[Setting] = settings! {
         "exclude-global-state-cmd", "Exclude global pause and resume commands", Bool;
         "state-cmd", "Application resume and pause commands", Json;
         "output", "Application log path (null discards output)", Text;
-        "gamepad", "Controller profile override (x360/ds4 use ViGEmBus; vhf_* use VHF)", Choice(&["auto","x360","ds4","vhf_xbox","vhf_xbox_one","vhf_ds4","vhf_ds5","vhf_switch"]);
+        "gamepad", "Controller profile override (x360/ds4 use ViGEmBus, or a VHF Xbox One/DualShock 4 without it; vhf_* use VHF)", Choice(&["auto","x360","ds4","vhf_xbox","vhf_xbox_one","vhf_ds4","vhf_ds5","vhf_switch"]);
     ]
     "Application display and frame generation" => [
         "display-output", "Display override (sunshine:virtual_display selects a virtual display)", Text;

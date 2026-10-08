@@ -1,6 +1,8 @@
 use anyhow::{Context, Result, bail};
 use butterpollo_core::input::Input as Event;
-use butterpollo_core::input_policy::{VHF_AUTO, VIGEM_DS4, VIGEM_X360, gamepad_profile};
+use butterpollo_core::input_policy::{
+    VHF_AUTO, VIGEM_DS4, VIGEM_X360, gamepad_profile, vhf_stand_in,
+};
 use std::{
     collections::{BTreeMap, BTreeSet},
     mem::size_of,
@@ -89,6 +91,9 @@ pub struct Gamepads {
     /// The last feedback report forwarded for each controller.
     last_feedback: BTreeMap<u16, (u16, Vec<u8>)>,
     feedback_failures: BTreeMap<u16, FeedbackFailure>,
+    /// Set when an explicit ViGEm choice runs on a VHF pad because ViGEmBus
+    /// could not be opened.
+    notice: Option<String>,
 }
 #[derive(Default)]
 struct FeedbackFailure {
@@ -134,6 +139,19 @@ impl Gamepads {
     }
     fn open_options(profile: u16, policy: butterpollo_core::input_policy::Policy) -> Result<Self> {
         let (backend, available) = gamepad_backend::Backend::open(profile)?;
+        let chosen = profile;
+        let profile = if matches!(backend, gamepad_backend::Backend::Vhf(_)) {
+            vhf_stand_in(profile)
+        } else {
+            profile
+        };
+        let notice = (profile != chosen).then(|| {
+            format!(
+                "ViGEmBus is not installed or could not be opened, so controllers use {} in place of {}. Install ViGEmBus, or choose Automatic, to change this.",
+                profile_label(profile),
+                profile_label(chosen)
+            )
+        });
         Ok(Self {
             backend,
             active: BTreeMap::new(),
@@ -148,6 +166,7 @@ impl Gamepads {
             unsupported_touchpads: BTreeSet::new(),
             last_feedback: BTreeMap::new(),
             feedback_failures: BTreeMap::new(),
+            notice,
         })
     }
     fn ensure(&mut self, id: u16) -> Result<()> {
@@ -424,6 +443,19 @@ fn poll_feedback(
     // failure must not flood the log. Unplugging starts a fresh pad lifetime.
     failures.retain(|id, _| active.contains_key(id));
     output
+}
+/// The profile as the console's Controller type list names it.
+fn profile_label(profile: u16) -> &'static str {
+    match profile {
+        VIGEM_X360 => "Xbox 360 (ViGEmBus)",
+        VIGEM_DS4 => "DualShock 4 (ViGEmBus)",
+        3 => "Xbox One (VHF)",
+        4 => "Xbox Series (VHF)",
+        5 => "DualShock 4 (VHF)",
+        6 => "DualSense (VHF)",
+        7 => "Switch Pro (VHF)",
+        _ => "Automatic",
+    }
 }
 fn profile_name(profile: u16) -> &'static str {
     match profile {

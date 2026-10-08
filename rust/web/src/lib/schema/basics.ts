@@ -530,7 +530,7 @@ const input: Setting[] = [
     key: 'gamepad',
     label: 'Controller type',
     description:
-      'Automatic uses ViGEmBus when installed for Xbox-type controllers: DualShock 4 for enabled motion/touchpad input, Xbox 360 otherwise. This Xbox 360 avoids Steam detecting one VHF Xbox pad twice. PlayStation controllers get the VHF DualSense, with adaptive triggers, when that driver is installed too, and a ViGEmBus DualShock 4 otherwise. Without ViGEmBus, Automatic uses VHF: DualSense for PlayStation, Switch Pro for Nintendo, and Xbox Series otherwise, with motion/touchpad preferences for other types. Explicit choices use the named driver.',
+      'Automatic uses ViGEmBus when installed for Xbox-type controllers: DualShock 4 for enabled motion/touchpad input, Xbox 360 otherwise. This Xbox 360 avoids Steam detecting one VHF Xbox pad twice. PlayStation controllers get the VHF DualSense, with adaptive triggers, when that driver is installed too, and a ViGEmBus DualShock 4 otherwise. Without ViGEmBus, Automatic uses VHF: DualSense for PlayStation, Switch Pro for Nintendo, and Xbox Series otherwise, with motion/touchpad preferences for other types. Explicit choices use the named driver; Xbox 360 and DualShock 4 (ViGEmBus) fall back to the VHF Xbox One or DualShock 4 pad when ViGEmBus is not installed.',
     category: 'input',
     group: 'Controllers',
     control: {
