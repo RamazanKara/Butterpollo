@@ -10,9 +10,9 @@ The Windows host, Moonlight protocol implementation, native helpers, service and
 
 | Component | Responsibility |
 | --- | --- |
-| [Core](../rust/core) | Pairing, encryption, RTSP/SDP, error correction, input parsing, permissions and durable state. |
+| [Core](../rust/core) | Pairing, encryption, RTSP/SDP, error correction, input parsing, permissions, configuration and durable state, and the encoder, pacing and display policies the host applies. Builds and is tested on any OS. |
 | [Windows integration](../rust/windows) | Capture, colour conversion, native encoders, audio, input, displays, frame limiting and Windows service integration. |
-| [Host](../rust/host) | HTTP/TLS, Moonlight endpoints, control and media transport, scheduling and session lifecycle. |
+| [Host](../rust/host) | HTTP/TLS, Moonlight endpoints, the console API, control and media transport, scheduling and session lifecycle. |
 | [Setup](../rust/setup) | Installation, upgrades and package recovery. |
 | [Web console](../rust/web) | Devices, games, settings, stream statistics, logs and maintenance. |
 | [TrueHDR runtime](../rust/truehdr-runtime) and [Vulkan layer](../rust/vulkan-layer) | Native HDR integration for their supported paths. |
@@ -42,7 +42,7 @@ Texture pools and native encoder queues are bounded. Texture ownership and per-f
 
 The service starts a hidden capture worker as the signed-in user, giving WGC access to the user's Windows capture broker. Three shared GPU textures transfer frames to the host; a local pipe carries bounded metadata and checks the participating process identities. The worker belongs to the capture session and closes with it.
 
-WGC startup failures select Desktop Duplication. The implementation also falls back for lock/UAC desktops and retries WGC on return to the normal desktop; secure-desktop transitions have their own [hardware validation status](../rust/PARITY.md#feature-by-feature).
+WGC startup failures select Desktop Duplication. The implementation also falls back for lock/UAC desktops and retries WGC on return to the normal desktop. While Windows is locked, the stream's display is set up, kept and restored from the lock screen's desktop; secure-desktop transitions have their own [hardware validation status](../rust/PARITY.md#feature-by-feature).
 
 WGC requests an explicit zero minimum update interval where Windows supports it. Guarded source-phase pacing waits briefly for a predicted fresh update when capture history is stable and faster than the stream target. Irregular or slower sources use ordinary pacing. [Capture settings](configuration.md) expose the diagnostic overrides.
 
@@ -57,6 +57,8 @@ The native HDR path captures FP16 scRGB, resizes in linear light and converts to
 The code also includes native NVIDIA NVENC, Intel Quick Sync imports and software compatibility paths. Native NVENC supports capability-gated reference recovery and GPU-only CUDA interop for ten-bit 4:4:4; Quick Sync imports D3D11 frames. The published measurements focus on AMD hardware. [Compatibility](../rust/PARITY.md) records implemented paths and which ones have native hardware evidence.
 
 ## Recovery and updates
+
+An encoder that returns no frame is recreated with the same encoder settings after 250 ms, then 500 ms, 1 s and 2 s; the session ends after 20 s without output. After a second encoder failure in one session, colour conversion moves to the graphics queue for the rest of it. A session that hears nothing from its client for the ping timeout (10 s by default) ends as a disconnect does.
 
 Display recovery journals host-owned changes and preserves later user changes. Virtual-display startup uses a short guard for unexpectedly reactivated displays, ending after startup or an observed competing layout change.
 
