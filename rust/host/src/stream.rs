@@ -803,10 +803,113 @@ impl Media {
         Ok(latest)
     }
     pub fn start(self: &Arc<Self>, h: Shared, s: Arc<Session>) {
+        let result = self.spawn_session(&h, &s);
+        if let Err(e) = result {
+            h.sessions.lock().unwrap().fail_start(&s);
+            tracing::error!(error=%e,"could not start session worker");
+        }
+    }
+    fn open_session_capture<'a>(
+        &self,
+        s: &Session,
+        c: &Config,
+        prepared: &Arc<crate::display_session::Ready>,
+        latest: &'a mut Option<Arc<Source>>,
+    ) -> Result<(&'a mut Arc<Source>, Arc<capture::Consumer>)> {
+        let latest = latest.insert(self.capture(
+            &prepared.capture(),
+            s.config.hdr,
+            c,
+            butterpollo_core::framegen::Rate(s.config.fps_millihz()),
+            &s.launch.id,
+            prepared.clone(),
+        )?);
+        *s.capture_warnings.write().unwrap() = latest.warnings.clone();
+        let capture_wake = latest.subscribe()?;
+        Ok((latest, capture_wake))
+    }
+    fn configure_encoder(
+        s: &Session,
+        c: &Config,
+        first: &GpuImage,
+        prepared: &crate::display_session::Ready,
+        encoder: &mut Option<Encoder>,
+    ) -> Result<Option<&'static str>> {
+        *encoder = Some(Encoder::new_gpu_reported(
+            &s.config,
+            c.get("encoder", "auto"),
+            first,
+            c,
+            &s.launch.warnings,
+        )?);
+        *s.encoder.write().unwrap() = encoder.as_ref().unwrap().backend().into();
+        // A rebuilt encoder keeps the hardware family the stream
+        // started with: while a GPU recovers, "auto" would fall
+        // through to a software encoder and stay there.
+        let pinned_backend = encoder
+            .as_ref()
+            .filter(|e| e.hardware())
+            .map(Encoder::backend);
+        let source_refresh_hz = butterpollo_windows::display::mode(&first.gpu.display.display_name)
+            .ok()
+            .map(|mode| mode.dmDisplayFrequency);
+        tracing::info!(width=s.config.width,height=s.config.height,fps=f64::from(s.config.fps_millihz())/1000.,codec=s.config.codec,hdr=s.config.hdr,full_range=s.config.full_range(),color_matrix=s.config.color_matrix(),vrr=s.config.vrr_low_latency,requested_capture=%prepared.capture(),requested_encoder=c.get("encoder","auto"),encoder=encoder.as_ref().unwrap().backend(),adapter=%first.gpu.display.adapter,source_width=first.width,source_height=first.height,source_refresh_hz,source_pixel=?first.pixel,"stream configured");
+        let minimum = butterpollo_core::pyrowave::minimum_kbps(
+            s.config.width,
+            s.config.height,
+            s.config.fps_millihz(),
+        );
+        let recommended = butterpollo_core::pyrowave::recommended_kbps(
+            s.config.width,
+            s.config.height,
+            s.config.fps_millihz(),
+        );
+        let bitrate = s.bitrate.load(Ordering::Relaxed);
+        if s.config.codec == 3 && bitrate < minimum {
+            tracing::warn!(
+                bitrate_kbps = bitrate,
+                minimum_kbps = minimum,
+                recommended_kbps = recommended,
+                "PyroWave bitrate is too low: severe detail loss is likely. Raise the bitrate in Moonlight with network headroom, or use HEVC or AV1"
+            );
+        } else if s.config.codec == 3 && bitrate < recommended {
+            tracing::warn!(
+                bitrate_kbps = bitrate,
+                minimum_kbps = minimum,
+                recommended_kbps = recommended,
+                "PyroWave bitrate is below recommended: text and textures may lose detail. Quality depends on the picture; raise the bitrate in Moonlight with network headroom, or use HEVC or AV1"
+            );
+        }
+        let metadata = first.gpu.hdr_metadata();
+        *s.hdr_metadata.write().unwrap() = metadata;
+        if let Some(encoder) = encoder.as_mut() {
+            encoder.set_hdr_metadata(metadata);
+        }
+        Ok(pinned_backend)
+    }
+    fn spawn_audio(
+        self: &Arc<Self>,
+        h: &Shared,
+        s: &Arc<Session>,
+    ) -> std::io::Result<thread::JoinHandle<()>> {
+        let audio_m = self.clone();
+        let audio_h = h.clone();
+        let audio_s = s.clone();
+        thread::Builder::new().name("audio".into()).spawn(move || {
+            if let Err(e) = audio_m.audio(audio_h, audio_s.clone()) {
+                audio_s.launch.warnings.set("audio_stopped", format!("Audio stopped ({e:#}); video is still running without sound. Check the playback device and network, then reconnect."));
+            }
+        })
+    }
+    fn spawn_session(
+        self: &Arc<Self>,
+        h: &Shared,
+        s: &Arc<Session>,
+    ) -> std::io::Result<thread::JoinHandle<()>> {
         let m = self.clone();
         let worker_h = h.clone();
         let worker_s = s.clone();
-        let result = thread::Builder::new()
+        thread::Builder::new()
             .name("session".into())
             .spawn(move || {
                 let h = worker_h;
@@ -900,16 +1003,7 @@ impl Media {
                     let output = prepared.output();
                     *s.output.write().unwrap() = output.clone();
                     let mut use_truehdr = s.config.hdr && rtx_enabled(&c);
-                    let latest = latest.insert(m.capture(
-                        &prepared.capture(),
-                        s.config.hdr,
-                        &c,
-                        butterpollo_core::framegen::Rate(s.config.fps_millihz()),
-                        &s.launch.id,
-                        prepared.clone(),
-                    )?);
-                    *s.capture_warnings.write().unwrap() = latest.warnings.clone();
-                    let mut capture_wake = latest.subscribe()?;
+                    let (latest, mut capture_wake) = m.open_session_capture(&s, &c, &prepared, &mut latest)?;
                     let first = {
                         let deadline = Instant::now() + Duration::from_secs(10);
                         loop {
@@ -925,37 +1019,7 @@ impl Media {
                             if let Some(image) = latest.wait_for_frame(&timer, &capture_wake, (Instant::now() + Duration::from_millis(50)).min(deadline))? { break image; }
                         }
                     };
-                    encoder = Some(Encoder::new_gpu_reported(
-                        &s.config,
-                        c.get("encoder", "auto"),
-                        &first,
-                        &c,
-                        &s.launch.warnings,
-                    )?);
-                    *s.encoder.write().unwrap() = encoder.as_ref().unwrap().backend().into();
-                    // A rebuilt encoder keeps the hardware family the stream
-                    // started with: while a GPU recovers, "auto" would fall
-                    // through to a software encoder and stay there.
-                    let pinned_backend = encoder
-                        .as_ref()
-                        .filter(|e| e.hardware())
-                        .map(Encoder::backend);
-                    let source_refresh_hz = butterpollo_windows::display::mode(&first.gpu.display.display_name)
-                        .ok().map(|mode| mode.dmDisplayFrequency);
-                    tracing::info!(width=s.config.width,height=s.config.height,fps=f64::from(s.config.fps_millihz())/1000.,codec=s.config.codec,hdr=s.config.hdr,full_range=s.config.full_range(),color_matrix=s.config.color_matrix(),vrr=s.config.vrr_low_latency,requested_capture=%prepared.capture(),requested_encoder=c.get("encoder","auto"),encoder=encoder.as_ref().unwrap().backend(),adapter=%first.gpu.display.adapter,source_width=first.width,source_height=first.height,source_refresh_hz,source_pixel=?first.pixel,"stream configured");
-                    let minimum = butterpollo_core::pyrowave::minimum_kbps(s.config.width, s.config.height, s.config.fps_millihz());
-                    let recommended = butterpollo_core::pyrowave::recommended_kbps(s.config.width, s.config.height, s.config.fps_millihz());
-                    let bitrate = s.bitrate.load(Ordering::Relaxed);
-                    if s.config.codec == 3 && bitrate < minimum {
-                        tracing::warn!(bitrate_kbps = bitrate, minimum_kbps = minimum, recommended_kbps = recommended, "PyroWave bitrate is too low: severe detail loss is likely. Raise the bitrate in Moonlight with network headroom, or use HEVC or AV1");
-                    } else if s.config.codec == 3 && bitrate < recommended {
-                        tracing::warn!(bitrate_kbps = bitrate, minimum_kbps = minimum, recommended_kbps = recommended, "PyroWave bitrate is below recommended: text and textures may lose detail. Quality depends on the picture; raise the bitrate in Moonlight with network headroom, or use HEVC or AV1");
-                    }
-                    let metadata = first.gpu.hdr_metadata();
-                    *s.hdr_metadata.write().unwrap() = metadata;
-                    if let Some(encoder) = encoder.as_mut() {
-                        encoder.set_hdr_metadata(metadata);
-                    }
+                    let pinned_backend = Self::configure_encoder(&s, &c, &first, &prepared, &mut encoder)?;
                     let mut truehdr = if use_truehdr {
                         truehdr_filter(&first, &c, &s.launch.warnings)
                     } else {
@@ -964,14 +1028,7 @@ impl Media {
                     drop(first);
                     let mut truehdr_staging = None;
                     client_commands = Some(crate::process::ClientCommands::start(&h, &s)?);
-                    let audio_m = m.clone();
-                    let audio_h = h.clone();
-                    let audio_s = s.clone();
-                    audio = Some(thread::Builder::new().name("audio".into()).spawn(move || {
-                        if let Err(e) = audio_m.audio(audio_h, audio_s.clone()) {
-                            audio_s.launch.warnings.set("audio_stopped", format!("Audio stopped ({e:#}); video is still running without sound. Check the playback device and network, then reconnect."));
-                        }
-                    })?);
+                    audio = Some(m.spawn_audio(&h, &s)?);
                     let requested_fec = c.integer("fec_percentage", 20);
                     if requested_fec != requested_fec.clamp(0, 100) {
                         s.launch.warnings.set("network_fec_config", format!("FEC percentage {requested_fec} is outside 0-100; using {}%. Correct fec_percentage in Network settings.", requested_fec.clamp(0, 100)));
@@ -1651,11 +1708,7 @@ impl Media {
                 }
                 h.sessions.lock().unwrap().teardown.remove(&s.launch.id);
                 tracing::info!(client=%s.launch.client.name,"CLIENT DISCONNECTED");
-            });
-        if let Err(e) = result {
-            h.sessions.lock().unwrap().fail_start(&s);
-            tracing::error!(error=%e,"could not start session worker");
-        }
+            })
     }
     fn audio(&self, h: Shared, s: Arc<Session>) -> Result<()> {
         let _com = ComGuard::new()?;
