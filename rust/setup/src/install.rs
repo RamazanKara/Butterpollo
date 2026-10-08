@@ -396,6 +396,28 @@ fn updates_in_place(service_install: Option<&Path>, install: &Path) -> Result<bo
     }
     Ok(true)
 }
+/// Canonicalizes the deepest existing ancestor and appends the rest, so a
+/// folder that does not exist yet compares with canonical ones even when it
+/// was given through an 8.3 short name (`C:\Users\RUNNER~1\...`).
+fn canonical_prefix(path: &Path) -> PathBuf {
+    let mut existing = path;
+    let mut missing = Vec::new();
+    loop {
+        if let Ok(canonical) = existing.canonicalize() {
+            return missing
+                .iter()
+                .rev()
+                .fold(canonical, |path, name| path.join(name));
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                missing.push(name.to_owned());
+                existing = parent;
+            }
+            _ => return path.to_owned(),
+        }
+    }
+}
 fn migration_source(
     found: &detect::Found,
     profile: &Path,
@@ -423,13 +445,9 @@ fn migration_source(
         };
         let root = system::win32_path(&root)?;
         let root_path = root.to_string_lossy().to_lowercase();
-        let install_path = system::win32_path(
-            &install
-                .canonicalize()
-                .unwrap_or_else(|_| install.to_owned()),
-        )?
-        .to_string_lossy()
-        .to_lowercase();
+        let install_path = system::win32_path(&canonical_prefix(install))?
+            .to_string_lossy()
+            .to_lowercase();
         if install_path == root_path || install_path.starts_with(&format!("{root_path}\\")) {
             bail!(
                 "Choose an installation folder outside {}; removing the previous host could delete Butterpollo's files",
