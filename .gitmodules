@@ -1,40 +1,8 @@
-[submodule "third-party/googletest"]
-	path = third-party/googletest
-	url = https://github.com/google/googletest.git
-	branch = main
-[submodule "third-party/libdisplaydevice"]
-	path = third-party/libdisplaydevice
-	url = https://github.com/Nonary/libdisplaydevice.git
-	branch = display_rework_v2
 [submodule "third-party/nanors"]
 	path = third-party/nanors
 	url = https://github.com/sleepybishop/nanors.git
-	branch = master
-[submodule "third-party/nv-codec-headers"]
-	path = third-party/nv-codec-headers
-	url = https://github.com/FFmpeg/nv-codec-headers.git
-	branch = master
-[submodule "third-party/nvapi"]
-	path = third-party/nvapi
-	url = https://github.com/NVIDIA/nvapi.git
-	branch = main
-[submodule "third-party/Simple-Web-Server"]
-	path = third-party/Simple-Web-Server
-	url = https://github.com/LizardByte-infrastructure/Simple-Web-Server.git
 	branch = master
 [submodule "third-party/moonlight-common-c"]
 	path = third-party/moonlight-common-c
 	url = https://github.com/moonlight-stream/moonlight-common-c.git
 	branch = master
-[submodule "third-party/tray"]
-	path = third-party/tray
-	url = https://github.com/Nonary/tray
-	branch = master
-[submodule "third-party/libvirtualdisplay"]
-	path = third-party/libvirtualdisplay
-	url = https://github.com/Nonary/libvirtualdisplay.git
-	branch = master
-[submodule "third-party/libvirtualgamepad"]
-	path = third-party/libvirtualgamepad
-	url = https://github.com/Nonary/libvirtualgamepad.git
-	branch = main

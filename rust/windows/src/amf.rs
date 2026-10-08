@@ -32,8 +32,8 @@ pub(crate) fn int(n: i64) -> AMFVariantStruct {
 }
 fn guard_smart_access_video(properties: &mut [butterpollo_core::encoder_policy::Property]) {
     use butterpollo_core::encoder_policy::Value;
-    // The legacy backend also excludes this combination after HEVC HDR runs
-    // wedged AMF and reset the GPU (src/amf/amf_lifecycle.h).
+    // The C++ backend also excluded this combination after HEVC HDR runs
+    // wedged AMF and reset the GPU (src/amf/amf_lifecycle.h at tag 2.0.0-rc.23).
     if properties.iter().any(|property| {
         property.name == "LowLatencyInternal" && property.value == Value::Boolean(true)
     }) && let Some(property) = properties.iter_mut().find(|property| {

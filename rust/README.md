@@ -97,7 +97,7 @@ The strict AMD AV1 raw-bitstream geometry test retains its known failure at some
 
 The Rust host imports the Vibepollo/Apollo profile format and implements the Windows feature set recorded in [PARITY.md](PARITY.md). Application overrides take precedence over client overrides; display recovery restores host-owned changes that the user has not subsequently altered.
 
-The old `src/`, CMake and installer tree is retained for migration research. Use the [archived C++ references](../docs/legacy/README.md) for that implementation. The released Rust package is built through [build.ps1](build.ps1).
+The earlier C++ host, its CMake build and installer were removed after 2.0.0-rc.23; [that tag](https://github.com/RamazanKara/Butterpollo/tree/2.0.0-rc.23) and its [archived references](https://github.com/RamazanKara/Butterpollo/blob/2.0.0-rc.23/docs/legacy/README.md) keep them for migration research. The released Rust package is built through [build.ps1](build.ps1).
 
 An optional [Moonlight 6.2.0 source patch](compatibility/moonlight-6.2.0/README.md) addresses cold-cache CSV artwork shutdown. Its focused Qt validation is recorded separately from the official Windows client's streaming checks.
 
