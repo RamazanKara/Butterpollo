@@ -20,6 +20,26 @@ use windows::Win32::{
 
 pub const PROCESSES: [&str; 2] = ["LosslessScaling.exe", "Lossless Scaling.exe"];
 
+/// Inputs to Vibepollo's CPU normalization and Windows-process penalty.
+pub fn scoring_environment() -> (u32, Option<String>) {
+    use windows::Win32::System::SystemInformation::{
+        GetSystemInfo, GetWindowsDirectoryW, SYSTEM_INFO,
+    };
+    let mut system = SYSTEM_INFO::default();
+    let mut directory = [0u16; 260];
+    // SAFETY: both output buffers are valid for the synchronous calls, and the directory slice
+    // carries its capacity.
+    let length = unsafe {
+        GetSystemInfo(&mut system);
+        GetWindowsDirectoryW(Some(&mut directory)) as usize
+    };
+    (
+        system.dwNumberOfProcessors.max(1),
+        (length > 0 && length < directory.len())
+            .then(|| String::from_utf16_lossy(&directory[..length])),
+    )
+}
+
 fn program_in(folder: &Path) -> Option<PathBuf> {
     let direct = PROCESSES
         .iter()

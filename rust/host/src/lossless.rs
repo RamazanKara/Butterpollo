@@ -6,7 +6,7 @@
 use anyhow::{Context, Result, bail};
 use butterpollo_core::lossless::{Options, Profile};
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -190,18 +190,163 @@ fn filter(folder: Option<&Path>, running: &[String]) -> String {
     names.into_iter().collect::<Vec<_>>().join(";")
 }
 
-const SHELLS: &[&str] = &[
-    "cmd.exe",
-    "conhost.exe",
-    "explorer.exe",
-    "steam.exe",
-    "steamwebhelper.exe",
-    "playnite.desktopapp.exe",
-    "playnite.fullscreenapp.exe",
-    "werfault.exe",
-    "losslessscaling.exe",
-    "lossless scaling.exe",
-];
+const OBSERVATION: Duration = Duration::from_secs(10);
+const POLL: Duration = Duration::from_millis(250);
+
+#[derive(Clone, Debug)]
+struct Sample {
+    process: butterpollo_core::steam::Process,
+    path: String,
+    cpu_time: u64,
+    working_set: u64,
+    windowed: bool,
+}
+impl Sample {
+    fn identity(&self) -> (u32, u64) {
+        (self.process.pid, self.process.started)
+    }
+}
+struct Candidate {
+    sample: Sample,
+    start_cpu: u64,
+    peak_working_set: u64,
+    first_seen: Duration,
+    last_seen: Duration,
+}
+fn normalized(path: &str) -> String {
+    path.replace('/', "\\").to_lowercase()
+}
+fn in_folder(path: &str, folder: Option<&str>) -> bool {
+    let Some(folder) = folder.filter(|folder| !folder.is_empty()) else {
+        return false;
+    };
+    let folder = normalized(folder);
+    let folder = folder.trim_end_matches('\\');
+    let path = normalized(path);
+    path == folder
+        || path
+            .strip_prefix(folder)
+            .is_some_and(|tail| tail.starts_with('\\'))
+}
+fn eligible(
+    sample: &Sample,
+    baseline: &HashSet<(u32, u64)>,
+    current: Option<&Sample>,
+    folder: Option<&str>,
+) -> bool {
+    if current.is_none() {
+        return !baseline.contains(&sample.identity());
+    }
+    let ignored = [
+        "losslessscaling.exe",
+        "lossless scaling.exe",
+        "playnite.desktopapp.exe",
+        "playnite.fullscreenapp.exe",
+    ];
+    sample.windowed
+        && !ignored
+            .iter()
+            .any(|name| sample.process.name.eq_ignore_ascii_case(name))
+        && (in_folder(&sample.path, folder)
+            || current.is_some_and(|game| normalized(&sample.path) == normalized(&game.path)))
+}
+fn observe(candidates: &mut BTreeMap<(u32, u64), Candidate>, samples: Vec<Sample>, now: Duration) {
+    let alive: HashSet<_> = samples.iter().map(Sample::identity).collect();
+    // An exited launcher must not beat its replacement; creation times also distinguish PID reuse.
+    candidates.retain(|identity, _| alive.contains(identity));
+    for sample in samples {
+        let candidate = candidates
+            .entry(sample.identity())
+            .or_insert_with(|| Candidate {
+                start_cpu: sample.cpu_time,
+                peak_working_set: 0,
+                first_seen: now,
+                last_seen: now,
+                sample: sample.clone(),
+            });
+        if candidate.start_cpu == 0 {
+            candidate.start_cpu = sample.cpu_time;
+        }
+        candidate.peak_working_set = candidate.peak_working_set.max(sample.working_set);
+        candidate.last_seen = now;
+        candidate.sample = sample;
+    }
+}
+fn select_game<'a>(
+    candidates: &'a BTreeMap<(u32, u64), Candidate>,
+    root_pid: u32,
+    folder: Option<&str>,
+    executable: Option<&str>,
+    windows: Option<&str>,
+    cpu_count: u32,
+) -> Option<&'a Sample> {
+    let scores: Vec<_> = candidates
+        .values()
+        .filter_map(|candidate| {
+            if candidate.start_cpu == 0
+                || candidate.sample.cpu_time < candidate.start_cpu
+                || candidate.last_seen <= candidate.first_seen
+                || candidate.sample.path.is_empty()
+            {
+                return None;
+            }
+            let elapsed = (candidate.last_seen - candidate.first_seen)
+                .as_secs_f64()
+                .max(0.1);
+            let cpu = (candidate.sample.cpu_time - candidate.start_cpu) as f64
+                / 10_000_000.
+                / (elapsed * f64::from(cpu_count));
+            let memory = candidate.peak_working_set as f64 / (1024. * 1024.);
+            Some((&candidate.sample, cpu, memory))
+        })
+        .collect();
+    let max_cpu = scores.iter().map(|(_, cpu, _)| *cpu).fold(0., f64::max);
+    let max_memory = scores
+        .iter()
+        .map(|(_, _, memory)| *memory)
+        .fold(0., f64::max);
+    let cpu_weight = if max_cpu < 0.08 { 0.5 } else { 0.7 };
+    let mut best = None;
+    let mut best_score = -1.;
+    for (sample, cpu, memory) in scores {
+        let cpu_norm = if max_cpu > 0. { cpu / max_cpu } else { 0. };
+        let memory_norm = if max_memory > 0. {
+            memory / max_memory
+        } else {
+            0.
+        };
+        let preferred = in_folder(&sample.path, folder);
+        let mut score = cpu_weight * cpu_norm + (1. - cpu_weight) * memory_norm;
+        if preferred {
+            score += 0.2;
+        }
+        if executable.is_some_and(|exe| normalized(exe) == normalized(&sample.path)) {
+            score += 0.25;
+        }
+        if sample.process.pid == root_pid {
+            score += if preferred { 0.05 } else { -0.05 };
+        }
+        score += cpu.min(1.) * 0.15;
+        if windows.is_some_and(|path| !path.is_empty()) {
+            if in_folder(&sample.path, windows) {
+                score -= 0.2;
+                if cpu < 0.02 && memory < 48. {
+                    score -= 0.05;
+                }
+            }
+        } else if cpu < 0.015 && memory < 32. {
+            score -= 0.05;
+        }
+        if score > best_score {
+            best_score = score;
+            best = Some(sample);
+        }
+    }
+    best
+}
+fn retarget<'a>(current: Option<&Sample>, selected: Option<&'a Sample>) -> Option<&'a Sample> {
+    selected.filter(|next| current.is_none_or(|game| game.identity() != next.identity()))
+}
 /// Lossless Scaling for one running app.
 pub struct Session {
     stop: Arc<AtomicBool>,
@@ -214,6 +359,7 @@ impl Session {
         options: Options,
         configured_program: String,
         baseline: Vec<butterpollo_core::steam::Process>,
+        root_pid: u32,
         folder: Box<dyn Fn() -> Option<String> + Send>,
     ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
@@ -223,7 +369,7 @@ impl Session {
             std::thread::Builder::new()
                 .name("lossless-scaling".into())
                 .spawn(move || {
-                    if let Err(error) = run(&options, &configured_program, &baseline, folder.as_ref(), &stop, &applied) {
+                    if let Err(error) = run(&options, &configured_program, &baseline, root_pid, folder.as_ref(), &stop, &applied) {
                         tracing::warn!(error = %format!("{error:#}"), "Lossless Scaling was not started");
                     }
                 })
@@ -275,81 +421,153 @@ fn lossless_processes() -> std::collections::BTreeMap<u32, u64> {
 fn close_lossless() {
     butterpollo_windows::process::stop_processes(&lossless_processes(), Duration::from_secs(4));
 }
+fn wait(stop: &AtomicBool, duration: Duration) -> bool {
+    let until = Instant::now() + duration;
+    while Instant::now() < until {
+        if stop.load(Ordering::Acquire) {
+            return false;
+        }
+        std::thread::sleep(
+            until
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(100)),
+        );
+    }
+    !stop.load(Ordering::Acquire)
+}
 fn run(
     options: &Options,
     configured_program: &str,
     baseline: &[butterpollo_core::steam::Process],
+    root_pid: u32,
     folder: &(dyn Fn() -> Option<String> + Send),
     stop: &AtomicBool,
     applied: &Mutex<Option<PathBuf>>,
 ) -> Result<()> {
-    let wait = |duration: Duration| {
-        let until = Instant::now() + duration;
-        while Instant::now() < until {
-            if stop.load(Ordering::Acquire) {
-                return false;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        true
-    };
     let program = butterpollo_windows::lossless::program(configured_program)
         .context("Lossless Scaling was not found; set its path in Settings")?;
     let settings = butterpollo_windows::lossless::settings_path().context("no signed-in user")?;
-    // The game: a new process with a window, inside the game's folder when
-    // that is known.
     let known: HashSet<(u32, u64)> = baseline.iter().map(|p| (p.pid, p.started)).collect();
-    let deadline = Instant::now() + Duration::from_secs(120);
-    let (game, folder) = loop {
-        if !wait(Duration::from_secs(1)) {
+    let (cpu_count, windows) = butterpollo_windows::lossless::scoring_environment();
+    let mut current: Option<Sample> = None;
+    loop {
+        let folder = folder().filter(|f| !f.trim().is_empty()).or_else(|| {
+            current
+                .as_ref()
+                .and_then(|game| Path::new(&game.path).parent())
+                .map(|path| path.to_string_lossy().into_owned())
+        });
+        let started = Instant::now();
+        let mut candidates = BTreeMap::new();
+        while started.elapsed() < OBSERVATION {
+            if stop.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            let samples = butterpollo_windows::process::processes()?
+                .into_iter()
+                .filter(|p| current.is_some() || !known.contains(&(p.pid, p.started)))
+                .filter_map(|process| {
+                    let path = butterpollo_windows::process::image_path(process.pid)?;
+                    let mut sample = Sample {
+                        windowed: true,
+                        process,
+                        path,
+                        cpu_time: 0,
+                        working_set: 0,
+                    };
+                    if !eligible(&sample, &known, current.as_ref(), folder.as_deref()) {
+                        return None;
+                    }
+                    if current.is_some() {
+                        sample.windowed =
+                            !butterpollo_windows::lossless::windows_of(sample.process.pid)
+                                .is_empty();
+                        if !sample.windowed {
+                            return None;
+                        }
+                    }
+                    let usage = butterpollo_windows::process::usage(sample.process.pid)?;
+                    if usage.started != sample.process.started {
+                        return None;
+                    }
+                    sample.cpu_time = usage.cpu_time;
+                    sample.working_set = usage.working_set;
+                    Some(sample)
+                })
+                .collect();
+            observe(&mut candidates, samples, started.elapsed());
+            if !wait(stop, POLL) {
+                return Ok(());
+            }
+        }
+        let selected = select_game(
+            &candidates,
+            current.as_ref().map_or(root_pid, |game| game.process.pid),
+            folder.as_deref(),
+            current.as_ref().map(|game| game.path.as_str()),
+            windows.as_deref(),
+            cpu_count,
+        )
+        .or_else(|| {
+            // The focus selector can still use a window when no CPU samples were usable.
+            current
+                .as_ref()
+                .and_then(|_| candidates.values().next().map(|c| &c.sample))
+        });
+        let Some(game) = retarget(current.as_ref(), selected).cloned() else {
+            continue;
+        };
+        if current.is_none() && !wait(stop, Duration::from_secs(options.launch_delay)) {
             return Ok(());
         }
-        let folder = folder().filter(|f| !f.trim().is_empty());
-        let inside = |pid: u32| {
-            folder.as_deref().is_none_or(|f| {
-                butterpollo_windows::process::image_path(pid).is_some_and(|path| {
-                    path.to_ascii_lowercase().starts_with(
-                        &f.replace('/', "\\")
-                            .trim_end_matches('\\')
-                            .to_ascii_lowercase(),
-                    )
-                })
-            })
-        };
-        let candidates: Vec<butterpollo_core::steam::Process> =
-            butterpollo_windows::process::processes()?
-                .into_iter()
-                .filter(|p| !known.contains(&(p.pid, p.started)))
-                .filter(|p| !SHELLS.contains(&p.name.to_ascii_lowercase().as_str()))
-                .filter(|p| !butterpollo_windows::lossless::windows_of(p.pid).is_empty())
-                .filter(|p| inside(p.pid))
-                .collect();
-        if let Some(game) = candidates.into_iter().next() {
-            break (game, folder);
+        if butterpollo_windows::process::creation_time(game.process.pid) != game.process.started {
+            continue;
         }
-        if Instant::now() > deadline {
-            bail!("no game window appeared");
-        }
-    };
-    tracing::info!(game = %game.name, delay = options.launch_delay, "starting Lossless Scaling for the game");
-    if !wait(Duration::from_secs(options.launch_delay)) {
+        tracing::info!(game = %game.process.name, pid = game.process.pid, "targeting Lossless Scaling at the game");
+        apply_game(
+            options,
+            &program,
+            &settings,
+            &game,
+            folder.as_deref(),
+            stop,
+            applied,
+        )?;
+        current = Some(game);
+    }
+}
+fn apply_game(
+    options: &Options,
+    program: &Path,
+    settings: &Path,
+    game: &Sample,
+    folder: Option<&str>,
+    stop: &AtomicBool,
+    applied: &Mutex<Option<PathBuf>>,
+) -> Result<()> {
+    close_lossless();
+    if stop.load(Ordering::Acquire) {
         return Ok(());
     }
-    close_lossless();
-    let text = std::fs::read_to_string(&settings)
+    let text = std::fs::read_to_string(settings)
         .with_context(|| format!("reading {}", settings.display()))?;
     let updated = with_profile(
         &text,
         &options.profile,
         &filter(
-            folder.as_deref().map(Path::new),
-            std::slice::from_ref(&game.name),
+            folder
+                .map(Path::new)
+                .or_else(|| Path::new(&game.path).parent()),
+            std::slice::from_ref(&game.process.name),
         ),
     )?;
-    butterpollo_core::state::atomic_write(&settings, updated.as_bytes())?;
-    *applied.lock().unwrap() = Some(settings.clone());
+    butterpollo_core::state::atomic_write(settings, updated.as_bytes())?;
+    *applied.lock().unwrap() = Some(settings.to_owned());
+    if stop.load(Ordering::Acquire) {
+        return Ok(());
+    }
     butterpollo_windows::process::Process::spawn_detached(
-        &program,
+        program,
         &[],
         butterpollo_windows::process::Target::User { elevated: false },
     )?;
@@ -360,11 +578,11 @@ fn run(
         {
             break Some(pid);
         }
-        if started.elapsed() > Duration::from_secs(10) || !wait(Duration::from_millis(200)) {
+        if started.elapsed() > Duration::from_secs(10) || !wait(stop, Duration::from_millis(200)) {
             break None;
         }
     };
-    if options.legacy_auto_detect {
+    if options.legacy_auto_detect || stop.load(Ordering::Acquire) {
         // Lossless Scaling scales the game by itself (AutoScale).
         return Ok(());
     }
@@ -375,14 +593,16 @@ fn run(
         bail!("Lossless Scaling has no usable hotkey");
     };
     for attempt in 1..=3 {
-        let focused = butterpollo_windows::lossless::focus(game.pid);
-        wait(Duration::from_millis(250));
+        let focused = butterpollo_windows::lossless::focus(game.process.pid);
+        if !wait(stop, Duration::from_millis(250)) {
+            break;
+        }
         let sent = butterpollo_windows::lossless::press(&modifiers, key);
         tracing::info!(attempt, focused, sent, "sent the Lossless Scaling hotkey");
         if focused && sent {
             break;
         }
-        if !wait(Duration::from_millis(500)) {
+        if !wait(stop, Duration::from_millis(500)) {
             break;
         }
     }
@@ -392,6 +612,301 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn sample(pid: u32, path: &str, cpu_time: u64, memory_mb: u64) -> Sample {
+        Sample {
+            process: butterpollo_core::steam::Process {
+                pid,
+                parent: 0,
+                started: 1,
+                name: path.rsplit(['/', '\\']).next().unwrap().into(),
+            },
+            path: path.into(),
+            cpu_time,
+            working_set: memory_mb * 1024 * 1024,
+            windowed: true,
+        }
+    }
+    fn observed(samples: Vec<Sample>) -> BTreeMap<(u32, u64), Candidate> {
+        let mut candidates = BTreeMap::new();
+        let first = samples
+            .iter()
+            .cloned()
+            .map(|mut sample| {
+                sample.cpu_time = 1;
+                sample
+            })
+            .collect();
+        observe(&mut candidates, first, Duration::ZERO);
+        observe(&mut candidates, samples, OBSERVATION);
+        candidates
+    }
+    #[test]
+    fn scoring_switches_from_equal_cpu_memory_weights_at_eight_percent() {
+        let mut processes = vec![
+            sample(1, r"C:\Games\launcher.exe", 16_000_001, 100),
+            sample(2, r"C:\Games\game.exe", 31_600_001, 10),
+        ];
+        let candidates = observed(processes.clone());
+        assert_eq!(
+            select_game(&candidates, 0, None, None, Some(r"C:\Windows"), 4)
+                .unwrap()
+                .process
+                .pid,
+            1
+        );
+        processes[1].cpu_time = 32_000_001;
+        let candidates = observed(processes);
+        assert_eq!(
+            select_game(&candidates, 0, None, None, Some(r"C:\Windows"), 4)
+                .unwrap()
+                .process
+                .pid,
+            2
+        );
+    }
+    #[test]
+    fn scoring_uses_peak_memory_and_each_processes_observed_lifetime() {
+        let mut candidates = BTreeMap::new();
+        observe(
+            &mut candidates,
+            vec![sample(1, r"C:\game.exe", 1, 1000)],
+            Duration::ZERO,
+        );
+        observe(
+            &mut candidates,
+            vec![
+                sample(1, r"C:\game.exe", 1, 1),
+                sample(2, r"C:\launcher.exe", 1, 100),
+            ],
+            Duration::from_secs(8),
+        );
+        observe(
+            &mut candidates,
+            vec![
+                sample(1, r"C:\game.exe", 1, 1),
+                sample(2, r"C:\launcher.exe", 1, 100),
+            ],
+            OBSERVATION,
+        );
+        assert_eq!(
+            select_game(&candidates, 0, None, None, None, 1)
+                .unwrap()
+                .process
+                .pid,
+            1
+        );
+        // The new game consumes less total CPU, but twice as much CPU per second observed.
+        observe(
+            &mut candidates,
+            vec![
+                sample(1, r"C:\game.exe", 10_000_001, 1),
+                sample(2, r"C:\launcher.exe", 4_000_001, 100),
+            ],
+            OBSERVATION,
+        );
+        assert_eq!(
+            select_game(&candidates, 0, None, None, None, 1)
+                .unwrap()
+                .process
+                .pid,
+            2
+        );
+    }
+    #[test]
+    fn folder_root_and_executable_bonuses_match_vibepollo() {
+        let candidates = observed(vec![
+            sample(1, r"C:\Games\Game2\launcher.exe", 10_000_001, 100),
+            sample(2, r"C:\Games\Game\game.exe", 10_000_001, 100),
+        ]);
+        assert_eq!(
+            select_game(&candidates, 1, None, None, None, 1)
+                .unwrap()
+                .process
+                .pid,
+            2
+        );
+        assert_eq!(
+            select_game(&candidates, 0, Some("c:/GAMES/game/"), None, None, 1)
+                .unwrap()
+                .process
+                .pid,
+            2
+        );
+        assert_eq!(
+            select_game(&candidates, 1, Some(r"C:\Games"), None, None, 1)
+                .unwrap()
+                .process
+                .pid,
+            1
+        );
+        assert_eq!(
+            select_game(
+                &candidates,
+                1,
+                Some(r"C:\Games"),
+                Some("c:/games/game/GAME.exe"),
+                None,
+                1
+            )
+            .unwrap()
+            .process
+            .pid,
+            2
+        );
+        assert!(!in_folder(
+            r"C:\Games\Game2\game.exe",
+            Some(r"C:\Games\Game")
+        ));
+    }
+    #[test]
+    fn windows_processes_and_small_idle_processes_are_penalized() {
+        let candidates = observed(vec![
+            sample(1, r"C:\Windows\helper.exe", 1_000_001, 40),
+            sample(2, r"C:\Game\game.exe", 1_000_001, 40),
+        ]);
+        // The system penalty outweighs the executable bonus for a small idle process.
+        assert_eq!(
+            select_game(
+                &candidates,
+                1,
+                None,
+                Some(r"C:\Windows\helper.exe"),
+                Some("c:/windows/"),
+                1
+            )
+            .unwrap()
+            .process
+            .pid,
+            2
+        );
+        let candidates = observed(vec![
+            sample(1, r"C:\Game\small.exe", 1_000_001, 31),
+            sample(2, r"C:\Game\game.exe", 1_000_001, 32),
+        ]);
+        assert_eq!(
+            select_game(&candidates, 0, Some(r"C:\Game\small.exe"), None, None, 1)
+                .unwrap()
+                .process
+                .pid,
+            1
+        );
+        assert_eq!(
+            select_game(&candidates, 0, None, None, None, 1)
+                .unwrap()
+                .process
+                .pid,
+            2
+        );
+    }
+    #[test]
+    fn invalid_or_single_samples_are_not_scored() {
+        let mut candidates = observed(vec![
+            sample(1, "", 100, 100),
+            sample(2, r"C:\zero.exe", 0, 100),
+        ]);
+        let backwards = candidates.get_mut(&(2, 1)).unwrap();
+        backwards.start_cpu = 100;
+        assert!(select_game(&candidates, 0, None, None, None, 1).is_none());
+        let mut candidates = BTreeMap::new();
+        observe(
+            &mut candidates,
+            vec![sample(1, r"C:\game.exe", 100, 100)],
+            Duration::ZERO,
+        );
+        assert!(select_game(&candidates, 0, None, None, None, 1).is_none());
+    }
+    #[test]
+    fn bootstrap_excludes_the_baseline_and_focus_requires_matching_game_windows() {
+        let game = sample(1, r"C:\Game\game.exe", 1, 100);
+        let baseline = HashSet::from([game.identity()]);
+        assert!(!eligible(&game, &baseline, None, None));
+        let mut restarted = game.clone();
+        restarted.process.started += 1;
+        assert!(eligible(&restarted, &baseline, None, None));
+        assert!(eligible(&game, &baseline, Some(&game), None));
+        for name in [
+            "LosslessScaling.exe",
+            "Lossless Scaling.exe",
+            "Playnite.DesktopApp.exe",
+            "Playnite.FullscreenApp.exe",
+        ] {
+            assert!(!eligible(
+                &sample(2, &format!(r"C:\Game\{name}"), 1, 100),
+                &baseline,
+                Some(&game),
+                Some(r"C:\Game")
+            ));
+        }
+        assert!(!eligible(
+            &sample(2, r"C:\Game2\unrelated.exe", 1, 100),
+            &baseline,
+            Some(&game),
+            Some(r"C:\Game")
+        ));
+        restarted.windowed = false;
+        assert!(!eligible(
+            &restarted,
+            &baseline,
+            Some(&game),
+            Some(r"C:\Game")
+        ));
+    }
+    #[test]
+    fn retargets_a_scored_launcher_replacement_and_restarts_but_not_an_unchanged_game() {
+        let launcher = sample(1, r"C:\Game\launcher.exe", 1_000_001, 10);
+        let game = sample(2, r"C:\Game\game.exe", 80_000_001, 1000);
+        let mut candidates = observed(vec![launcher.clone(), game.clone()]);
+        let selected = select_game(
+            &candidates,
+            1,
+            Some(r"C:\Game"),
+            Some(&launcher.path),
+            None,
+            1,
+        );
+        assert_eq!(
+            retarget(Some(&launcher), selected).unwrap().identity(),
+            game.identity()
+        );
+        assert!(retarget(Some(&game), selected).is_none());
+        assert_eq!(
+            retarget(None, selected).unwrap().identity(),
+            game.identity()
+        );
+        observe(&mut candidates, vec![], OBSERVATION + POLL);
+        assert!(
+            retarget(
+                Some(&game),
+                select_game(&candidates, 0, None, None, None, 1)
+            )
+            .is_none()
+        );
+        let mut restarted = game.clone();
+        restarted.process.started += 1;
+        candidates = observed(vec![restarted.clone()]);
+        let selected = select_game(&candidates, 2, Some(r"C:\Game"), Some(&game.path), None, 1);
+        assert_eq!(
+            retarget(Some(&game), selected).unwrap().identity(),
+            restarted.identity()
+        );
+    }
+    #[test]
+    fn dead_launchers_and_reused_pids_do_not_keep_their_old_scores() {
+        let mut candidates = observed(vec![sample(1, r"C:\Game\launcher.exe", 100_000_001, 1000)]);
+        let mut game = sample(1, r"C:\Game\game.exe", 1, 10);
+        game.process.started = 2;
+        observe(&mut candidates, vec![game.clone()], OBSERVATION + POLL);
+        assert_eq!(candidates.len(), 1);
+        assert!(select_game(&candidates, 0, None, None, None, 1).is_none());
+        game.cpu_time += 1_000_000;
+        observe(&mut candidates, vec![game.clone()], OBSERVATION + POLL * 2);
+        assert_eq!(
+            select_game(&candidates, 0, None, None, None, 1)
+                .unwrap()
+                .identity(),
+            game.identity()
+        );
+    }
     const SETTINGS: &str = "\u{feff}<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<Settings xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n  <Hotkey>S</Hotkey>\n  <HotkeyModifierKeys>Alt Control</HotkeyModifierKeys>\n  <GameProfiles>\n    <Profile>\n      <Title>Default</Title>\n      <ScalingType>Off</ScalingType>\n      <CaptureApi>DXGI</CaptureApi>\n    </Profile>\n    <Profile>\n      <Title>Elden Ring</Title>\n      <Path>eldenring.exe</Path>\n    </Profile>\n    <Profile>\n      <Title>Vibeshine</Title>\n      <Path>old.exe</Path>\n    </Profile>\n  </GameProfiles>\n</Settings>";
     #[test]
     fn the_profile_is_added_from_the_default_and_removed_again() {

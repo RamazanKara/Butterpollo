@@ -965,6 +965,54 @@ pub fn creation_time(pid: u32) -> u64 {
         u64::from(created.dwHighDateTime) << 32 | u64::from(created.dwLowDateTime)
     }
 }
+/// A process's sampled CPU and resident memory usage.
+pub struct Usage {
+    pub started: u64,
+    /// Kernel and user CPU time in 100 ns units.
+    pub cpu_time: u64,
+    pub working_set: u64,
+}
+/// CPU time and resident memory, with the creation time to reject reused IDs.
+pub fn usage(pid: u32) -> Option<Usage> {
+    use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    // SAFETY: the process handle is owned, and the time and memory buffers stay valid for each
+    // call. The memory buffer's size matches the type passed to GetProcessMemoryInfo.
+    unsafe {
+        let process = owned(
+            OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid)
+                .or_else(|_| OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid))
+                .ok()?,
+        );
+        let mut created = FILETIME::default();
+        let (mut exited, mut kernel, mut user) = (created, created, created);
+        GetProcessTimes(
+            raw(&process),
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+        .ok()?;
+        let mut memory = PROCESS_MEMORY_COUNTERS::default();
+        let got_memory = GetProcessMemoryInfo(
+            raw(&process),
+            &mut memory,
+            size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+        )
+        .is_ok();
+        let ticks =
+            |time: FILETIME| u64::from(time.dwHighDateTime) << 32 | u64::from(time.dwLowDateTime);
+        Some(Usage {
+            started: ticks(created),
+            cpu_time: ticks(kernel) + ticks(user),
+            working_set: if got_memory {
+                memory.WorkingSetSize as u64
+            } else {
+                0
+            },
+        })
+    }
+}
 /// Every running process with its parent, creation time and program name.
 pub fn processes() -> Result<Vec<butterpollo_core::steam::Process>> {
     use windows::Win32::System::Diagnostics::ToolHelp::*;

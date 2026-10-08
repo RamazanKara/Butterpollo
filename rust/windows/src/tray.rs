@@ -75,11 +75,16 @@ static APP: Mutex<Shown> = Mutex::new(Shown {
 /// Show the running app (None when none runs) in the tray: the icon's
 /// state, the tooltip and the menu's item that quits it.
 pub fn show_app(icon: Icon, app: Option<&str>, summary: Option<&str>) {
-    *APP.lock().unwrap() = Shown {
+    let mut shown = APP.lock().unwrap();
+    if shown.app.as_deref() != app {
+        NOTICE_ACTION.lock().unwrap().take();
+    }
+    *shown = Shown {
         icon,
         app: app.map(str::to_owned),
         summary: summary.map(str::to_owned),
     };
+    drop(shown);
     if let Some(window) = *SHOWN.lock().unwrap() {
         unsafe {
             let _ = PostMessageW(
@@ -206,6 +211,14 @@ unsafe extern "system" fn window(
             }
             if message == WM_APP + 1 {
                 match (lparam.0 & 0xffff) as u32 {
+                    NIN_BALLOONUSERCLICK => {
+                        if let Some(action) = NOTICE_ACTION.lock().unwrap().take() {
+                            let _ = s.sender.send(action);
+                        }
+                    }
+                    NIN_BALLOONTIMEOUT => {
+                        NOTICE_ACTION.lock().unwrap().take();
+                    }
                     WM_LBUTTONDBLCLK => {
                         let _ = s.sender.send(Action::Open);
                     }
@@ -434,8 +447,26 @@ impl Drop for Tray {
 }
 /// The tray icon's window while it is shown.
 static SHOWN: std::sync::Mutex<Option<isize>> = std::sync::Mutex::new(None);
+static NOTICE_ACTION: Mutex<Option<Action>> = Mutex::new(None);
 /// Show a notification from the tray icon, if there is one.
 pub fn notify(title: &str, text: &str) {
+    notify_with_action(title, text, None);
+}
+fn launch_error_notice(app: &str, code: u32) -> butterpollo_core::tray::Notice {
+    (
+        "Launch Error",
+        format!(
+            "Application {app} exited too fast with code {}. Click here to terminate the stream.",
+            code as i32
+        ),
+    )
+}
+/// Keep the detached stream open until the user chooses to end it.
+pub fn launch_error(app: &str, code: u32) {
+    let (title, text) = launch_error_notice(app, code);
+    notify_with_action(title, &text, Some(Action::QuitApp));
+}
+fn notify_with_action(title: &str, text: &str, action: Option<Action>) {
     let Some(window) = *SHOWN.lock().unwrap() else {
         return;
     };
@@ -453,10 +484,12 @@ pub fn notify(title: &str, text: &str) {
     };
     copy(&mut icon.szInfoTitle, title);
     copy(&mut icon.szInfo, text);
+    *NOTICE_ACTION.lock().unwrap() = action;
     unsafe {
         let _ = Shell_NotifyIconW(NIM_MODIFY, &icon);
     }
 }
+
 pub fn open_web(port: u16) -> Result<()> {
     if crate::process::is_system() {
         return crate::process::Process::spawn_detached(
@@ -482,4 +515,26 @@ pub fn open_web(port: u16) -> Result<()> {
         bail!("Windows could not open the web interface");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn launch_error_uses_vibepollos_wording_and_signed_exit_code() {
+        assert_eq!(
+            launch_error_notice("Game", 1),
+            (
+                "Launch Error",
+                "Application Game exited too fast with code 1. Click here to terminate the stream."
+                    .into()
+            )
+        );
+        assert!(
+            launch_error_notice("Game", 0xc0000005)
+                .1
+                .contains("code -1073741819.")
+        );
+    }
 }

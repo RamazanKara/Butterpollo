@@ -215,12 +215,12 @@ pub async fn maintain(
         }
         crate::updater::poll(&h);
         start_deferred(&h);
+        if actions.is_some() {
+            show_app(&h, &mut tray);
+        }
         if application_finished(&h) {
             h.sessions.lock().unwrap().stop_role(Role::Stream, None);
             h.stop_app();
-        }
-        if actions.is_some() {
-            show_app(&h, &mut tray);
         }
         if let Some(actions) = &actions {
             while let Ok(action) = actions.try_recv() {

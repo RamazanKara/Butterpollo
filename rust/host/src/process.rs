@@ -418,6 +418,7 @@ impl RunningApp {
                 &running.environment,
             )?);
         }
+        running.started = std::time::Instant::now();
         Ok(running)
     }
     pub fn stop(&mut self) {
@@ -501,15 +502,20 @@ impl RunningApp {
         let Some(child) = self.child.as_ref() else {
             return Ok(false);
         };
-        let Some(code) = child.exit_code()? else {
-            return Ok(false);
-        };
-        if self.auto_detach && code == 0 && self.started.elapsed() < Duration::from_secs(5) {
-            self.detached = true;
-            tracing::info!(app=%self.name,"application launcher exited; retaining its streaming session");
-            return Ok(false);
+        let code = child.exit_code()?;
+        let waiting = self.wait_all && child.active_processes()? != 0;
+        match exit_action(self.auto_detach, self.started.elapsed(), code, waiting) {
+            ExitAction::Running => Ok(false),
+            ExitAction::Detached(error) => {
+                self.detached = true;
+                tracing::info!(app=%self.name,"application launcher exited; retaining its streaming session");
+                if let Some(code) = error {
+                    butterpollo_windows::tray::launch_error(&self.name, code);
+                }
+                Ok(false)
+            }
+            ExitAction::Finished => Ok(true),
         }
-        Ok(!self.wait_all || child.active_processes()? == 0)
     }
     /// A fullscreen window on the stream's display belongs to process `pid`.
     /// A store client (Xbox, Epic, EA, Ubisoft, Battle.net) starts its games
@@ -563,6 +569,27 @@ impl RunningApp {
             let _ = events.send(connected);
         }
         false
+    }
+}
+#[derive(Debug, PartialEq, Eq)]
+enum ExitAction {
+    Running,
+    Detached(Option<u32>),
+    Finished,
+}
+fn exit_action(
+    auto_detach: bool,
+    elapsed: Duration,
+    code: Option<u32>,
+    waiting: bool,
+) -> ExitAction {
+    let Some(code) = code.filter(|_| !waiting) else {
+        return ExitAction::Running;
+    };
+    if auto_detach && elapsed < Duration::from_secs(5) {
+        ExitAction::Detached((code != 0).then_some(code))
+    } else {
+        ExitAction::Finished
     }
 }
 /// Whether a fullscreen `program`, created at `created`, is a game a store
@@ -927,7 +954,9 @@ pub fn launch(
                     .extra
                     .get("steam-install-dir")
                     .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned);
+                    .filter(|folder| !folder.trim().is_empty())
+                    .map(str::to_owned)
+                    .or_else(|| (!running.working.is_empty()).then(|| running.working.clone()));
                 Box::new(move || steam.clone())
             }
         };
@@ -935,6 +964,7 @@ pub fn launch(
             options,
             config.get("lossless_scaling_path", "").to_owned(),
             baseline,
+            running.child.as_ref().map_or(0, |child| child.pid),
             folder,
         ));
     }
@@ -955,6 +985,37 @@ impl Drop for RunningApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn early_exit_notification_requires_auto_detach_and_a_nonzero_exit_before_five_seconds() {
+        let early = Duration::from_millis(4999);
+        assert_eq!(
+            exit_action(true, early, Some(1), false),
+            ExitAction::Detached(Some(1))
+        );
+        assert_eq!(
+            exit_action(true, early, Some(0xc0000005), false),
+            ExitAction::Detached(Some(0xc0000005))
+        );
+        assert_eq!(
+            exit_action(true, early, Some(0), false),
+            ExitAction::Detached(None)
+        );
+        assert_eq!(
+            exit_action(false, early, Some(1), false),
+            ExitAction::Finished
+        );
+        assert_eq!(
+            exit_action(true, Duration::from_secs(5), Some(1), false),
+            ExitAction::Finished
+        );
+        assert_eq!(
+            exit_action(true, Duration::from_secs(6), Some(1), false),
+            ExitAction::Finished
+        );
+        assert_eq!(exit_action(true, early, None, false), ExitAction::Running);
+        assert_eq!(exit_action(true, early, Some(1), true), ExitAction::Running);
+        assert_eq!(exit_action(true, early, Some(0), true), ExitAction::Running);
+    }
     #[test]
     fn quitting_closes_a_store_launched_game_but_not_the_store_or_older_programs() {
         let launched = 1_000;
