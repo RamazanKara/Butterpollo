@@ -507,6 +507,8 @@ struct LaunchState {
     /// it to the front (`playnite_focus_*`).
     focus_game: bool,
     focus_menu: bool,
+    /// The phase is Exited because the game's processes ended.
+    game_ended: bool,
 }
 impl LaunchState {
     fn status(&mut self, id: &str, message: Message) {
@@ -626,6 +628,7 @@ impl LaunchState {
             }
         } else if missing >= EXIT_GRACE {
             self.phase = Phase::Exited;
+            self.game_ended = true;
         }
     }
     fn poll_fullscreen(&mut self, running: bool) {
@@ -638,15 +641,33 @@ impl LaunchState {
         self.fullscreen_seen = true;
         if self.phase == Phase::Exited {
             tracing::info!(id = %self.game_id, "Playnite game ended; keeping the fullscreen menu open");
-            self.phase = Phase::Starting;
-            self.game_id.clear();
-            self.install_dir.clear();
-            self.exe.clear();
-            self.stopped = false;
-            self.saw_process = false;
-            self.missing_since = None;
+            self.back_to_menu();
             self.focus_menu = true;
         }
+    }
+    /// In fullscreen mode, a game that ended while Playnite was closed (set
+    /// to quit when a game starts, or closed during the game) goes back to
+    /// the menu, as in Vibepollo: true when fullscreen mode has to start
+    /// again. Closing Playnite with no game running still ends the stream.
+    fn relaunch_menu(&mut self, running: bool) -> bool {
+        if !self.fullscreen || running || self.phase != Phase::Exited || !self.game_ended {
+            return false;
+        }
+        tracing::info!(id = %self.game_id, "Playnite game ended with Playnite closed; starting fullscreen mode again");
+        self.back_to_menu();
+        // Focus once the menu appears again.
+        self.fullscreen_seen = false;
+        true
+    }
+    fn back_to_menu(&mut self) {
+        self.phase = Phase::Starting;
+        self.game_id.clear();
+        self.install_dir.clear();
+        self.exe.clear();
+        self.stopped = false;
+        self.saw_process = false;
+        self.missing_since = None;
+        self.game_ended = false;
     }
 }
 /// A Playnite game or fullscreen menu started for a stream.
@@ -861,6 +882,7 @@ fn run(
             );
         }
         let mut reconnect = false;
+        let mut relaunch = false;
         if (state.verifying() || fullscreen) && checked.elapsed() >= Duration::from_secs(1) {
             checked = Instant::now();
             let previous = state.phase.clone();
@@ -878,6 +900,7 @@ fn run(
                         .iter()
                         .any(|p| p.name.eq_ignore_ascii_case("Playnite.FullscreenApp.exe"));
                     state.poll_fullscreen(fullscreen_running);
+                    relaunch = state.relaunch_menu(fullscreen_running);
                     reconnect = fullscreen
                         && fullscreen_running
                         && pipe.is_none()
@@ -910,6 +933,14 @@ fn run(
         }
         let (install_dir, exe) = (state.install_dir.clone(), state.exe.clone());
         drop(state);
+        if relaunch
+            && let Err(error) =
+                butterpollo_windows::playnite::launch(program, &["--startfullscreen"], environment)
+        {
+            tracing::error!(error = %format!("{error:#}"), "Playnite fullscreen mode could not start again; ending the stream");
+            shared.lock().unwrap().phase = Phase::Exited;
+            return;
+        }
         if let Some((menu, budget)) = &mut focus
             && budget.due(Instant::now())
         {
@@ -1168,6 +1199,33 @@ mod tests {
         state.poll(at + Duration::from_secs(1) + EXIT_GRACE, Some(false));
         state.poll_fullscreen(false);
         assert_eq!(state.phase, Phase::Exited);
+        // The game ended with Playnite closed: back to the menu.
+        assert!(state.relaunch_menu(false));
+        assert_eq!(state.phase, Phase::Starting);
+        assert!(state.game_id.is_empty());
+        assert!(!state.relaunch_menu(false));
+        state.poll_fullscreen(true);
+        assert!(state.focus_menu);
+    }
+
+    #[test]
+    fn closing_playnite_fullscreen_with_no_game_ends_the_stream() {
+        let mut state = LaunchState {
+            fullscreen: true,
+            ..Default::default()
+        };
+        state.poll_fullscreen(true);
+        state.status("", status("playniteExiting", ""));
+        assert_eq!(state.phase, Phase::Exited);
+        assert!(!state.relaunch_menu(false));
+        let mut desktop = launch_state();
+        desktop.status("game", status("gameStarted", "game"));
+        desktop.status("game", status("gameStopped", "game"));
+        let at = Instant::now();
+        desktop.poll(at, Some(false));
+        desktop.poll(at + EXIT_GRACE, Some(false));
+        assert_eq!(desktop.phase, Phase::Exited);
+        assert!(!desktop.relaunch_menu(false));
     }
 
     #[test]
