@@ -5,7 +5,40 @@ without reducing features or picture quality. Opus took over from Codex in the
 evening of October 2. Performance acceptance on the customer's own sessions is
 still open; the measured fixture results below are local loopback evidence.
 
-## October 8 repeats past the frame cap (PyroWave, VRR): needs a host A/B
+## October 8 repeats past the frame cap (PyroWave, VRR): host A/B
+
+Measured on the RX 7900 XT host on October 9 (01:05-01:16), A/B/A/B,
+`5e16d1c` (before; same Rust as `9cf57ce`) against `88d1dec` (after).
+Loopback with the independent receiver (decoder plus per-frame size in its
+timing CSV), not the laptop: an isolated extended virtual display at 200 Hz
+(2x the stream rate), 1920x1080 at 100 fps with VRR requested,
+`minimum_fps_target` unset, PyroWave at 400 Mb/s and AV1 at 50 Mb/s, motion
+probe at 90 Hz on the 200 Hz display (presents on a 5 ms grid, so 10 and
+15 ms gaps alternate), 35 s per run, 3 s warm-up dropped. Sent fps is counted
+per one-second window from client arrival times.
+
+| Case | Build | Sent fps p50 / max | New frames KB p5 / p50 | Picture age p50 / p95 / p99 ms | Worst gap ms |
+| --- | --- | --- | --- | --- | --- |
+| PyroWave, 90 Hz game | before r1 | 144 / 151 | 54.8 / 216.6 | 15.52 / 18.59 / 19.51 | 13.5 |
+| | before r2 | 150 / 151 | 63.9 / 130.4 | 15.06 / 17.09 / 17.93 | 13.1 |
+| | after r1 | 90 / 91 | 340.2 / 494.2 | 14.87 / 17.94 / 18.56 | 18.6 |
+| | after r2 | 90 / 91 | 377.5 / 494.2 | 14.67 / 16.90 / 17.63 | 15.9 |
+| PyroWave, still desktop | before r1 / r2 | 97 / 100, 97 / 101 | all 193 KB repeats | - | 20.1, 12.0 |
+| | after r1 / r2 | 20 / 67, 20 / 82 | all 193 KB repeats | - | 51.4, 51.3 |
+| AV1, 90 Hz game | before r1 / r2 | 90 / 91 | 1.3 / 4.4 | 10.76 / 13.83 / 14.74, 10.26 / 12.70 / 13.39 | 17.6, 15.5 |
+| | after r1 / r2 | 90 / 91 | 1.3 / 4.4 | 10.58 / 13.04 / 13.78, 10.47 / 12.92 / 13.64 | 15.8, 17.7 |
+
+Result: the report reproduces on the old build and is fixed. Before, a 90 fps
+game on a 100 fps PyroWave VRR stream went out at 144-151 fps, because about
+40% of the frames were repeats, and new frames were budgeted from the short
+gap after a repeat: median 130-217 KB against 494 KB after. After, exactly the
+game's 90 fps goes out, every frame new, at full size; picture age is the
+same or 0.3-0.7 ms lower. A still PyroWave desktop goes from 97 fps of repeats
+to the 20 fps minimum, so the worst gap there is now 51 ms by design (max 67
+and 82 fps are the first second, before the picture settles). AV1 is
+unchanged within noise, as expected: it already had a 20 fps minimum and no
+repeats while the game ran. Not measured: a real client over Wi-Fi (the
+laptop), and a real game.
 
 Report (a user, relayed by the owner; rc.25, PyroWave with VRR at 100 fps):
 motion windows at 105 to 136 fps. Saving a minimum frame rate of 30 brought
