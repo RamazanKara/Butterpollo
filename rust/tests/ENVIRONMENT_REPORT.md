@@ -5,7 +5,7 @@
 For an installed copy, open PowerShell in a writable folder and run:
 
 ```powershell
-powershell.exe -NoProfile -File "C:\Program Files\ButterpolloRust\tools\collect_environment.ps1"
+powershell.exe -NoProfile -File "C:\Program Files\Butterpollo\tools\collect_environment.ps1"
 ```
 
 For a portable copy, run from its extracted folder:

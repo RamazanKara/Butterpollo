@@ -337,7 +337,7 @@ Current automated validation: 263 ordinary tests passed, with 27 environment-dep
 - A new web console: overview with performance history, library with Steam and Playnite, devices, settings, logs, maintenance and API tokens.
 - Tray notifications for pairing requests and new versions; release checks that skip streams.
 
-Left out on purpose: WebRTC streaming, session history and host statistics pages, the ViGEm and SudoVDA fallbacks, and Linux and macOS hosting.
+Left out on purpose: WebRTC streaming, session history and host statistics pages, the SudoVDA fallback, and Linux and macOS hosting.
 
 ## Known limits
 
@@ -349,6 +349,6 @@ Left out on purpose: WebRTC streaming, session history and host statistics pages
 - WGC lock/UAC transitions remain unverified. Isolated helper and synthetic-load checks do not replace final-package service recovery or sustained gameplay validation. Earlier installed-service WGC and native HDR capture were confirmed on the RX 7900 XT; that does not establish the RX 9070 XT result.
 - AMD's AV1 encoder pads some sizes: 1968×2184 decodes as 1984×2186 ([AMF issue 423](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/issues/423)); Vibepollo has the same result. HEVC is exact.
 - Verified on an AMD RX 7900 XT. NVIDIA and Intel encoders, RTX HDR, a real Playnite and Lossless Scaling, the secure desktop during a stream and streaming the sign-in screen after a reboot are not yet verified on hardware. NVIDIA and Intel keep the graphics-queue capture path.
-- Still missing from Vibepollo: choosing the GPU that renders the virtual display, reclaiming virtual displays after a host restart, Playnite focus retries and fullscreen relaunch, `/api/browse`, `/api/apps/{uuid}/icon`, and tray app notifications and state icons.
+- Still missing from Vibepollo: choosing the GPU that renders the virtual display and reclaiming virtual displays after a host restart.
 
 Details: [PARITY.md](PARITY.md) for each feature and its evidence, [PERFORMANCE.md](PERFORMANCE.md) for measurements and how to reproduce them.
