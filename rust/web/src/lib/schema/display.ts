@@ -65,7 +65,7 @@ export const settings: Setting[] = [
     key: 'virtual_display_layout',
     label: 'Virtual display layout',
     description:
-      'How the virtual display joins the desktop. Exclusive turns the other monitors off while streaming; isolated places it far from them so the mouse cannot wander onto it.',
+      'How the virtual display joins the desktop. Exclusive turns the other monitors off while streaming; isolated places it far from them so the mouse cannot wander onto it. A Remote Monitor follows exclusive and primary; choose Extended to use it beside your monitors.',
     category: 'display',
     group: 'Streamed display',
     control: {

@@ -310,13 +310,26 @@ impl Prepared {
             self.revision = self.revision.wrapping_add(1);
             self.recovery.start(std::time::Instant::now());
         }
+        // A remote monitor's own lease recreates its display; the layout and
+        // HDR profile this stream applied follow the new one.
+        if let Some(retained) = &self._retained {
+            let (output, generation) = retained.capture_target();
+            if generation != self.revision {
+                self.output = output;
+                self.revision = generation;
+                self.recovery.start(std::time::Instant::now());
+            }
+        }
         if self.recovery.due(std::time::Instant::now()) {
-            butterpollo_windows::display::virtual_scale(
-                &self.output,
-                self.recovery_scale,
-                self.recovery_dimensions.0,
-                self.recovery_dimensions.1,
-            )?;
+            // A remote monitor's scale is set by its lease.
+            if self._retained.is_none() {
+                butterpollo_windows::display::virtual_scale(
+                    &self.output,
+                    self.recovery_scale,
+                    self.recovery_dimensions.0,
+                    self.recovery_dimensions.1,
+                )?;
+            }
             if let Some(arrangement) = &self._arrangement {
                 let retained = self
                     .host
@@ -633,6 +646,7 @@ impl Prepared {
             None
         };
         let activation = if !virtual_mode
+            && retained.is_none()
             && matches!(
                 config.get("dd_configuration_option", "verify_only"),
                 "ensure_active" | "ensure_primary" | "ensure_only_display"
@@ -697,7 +711,11 @@ impl Prepared {
                 height,
             )?;
         }
-        let selection = if virtual_mode {
+        // A remote monitor is a virtual display even when this device's
+        // streams otherwise use a physical one, so it follows the virtual
+        // display layout.
+        let virtual_layout = virtual_mode || retained.is_some();
+        let selection = if virtual_layout {
             launch
                 .client
                 .extra
@@ -720,25 +738,35 @@ impl Prepared {
         };
         // An unknown layout falls back to the default: exclusive for a
         // virtual display, verify only (no arrangement) for a physical one.
-        let parsed =
-            if launch.role != Role::Stream || matches!(selection, "disabled" | "verify_only") {
-                None
-            } else {
-                butterpollo_core::display_policy::Arrangement::parse(selection)
-                    .inspect_err(|_| {
-                        butterpollo_core::config::invalid(
-                            if virtual_mode {
-                                "virtual_display_layout"
-                            } else {
-                                "dd_configuration_option"
-                            },
-                            selection,
-                        )
-                    })
-                    .ok()
-                    .or(virtual_mode
-                        .then_some(butterpollo_core::display_policy::Arrangement::Exclusive))
-            };
+        // A remote monitor takes which displays stay on and which is primary
+        // from it; the remote monitor layout places it.
+        let parsed = if !matches!(launch.role, Role::Stream | Role::RemoteMonitor)
+            || matches!(selection, "disabled" | "verify_only")
+        {
+            None
+        } else {
+            butterpollo_core::display_policy::Arrangement::parse(selection)
+                .inspect_err(|_| {
+                    butterpollo_core::config::invalid(
+                        if virtual_layout {
+                            "virtual_display_layout"
+                        } else {
+                            "dd_configuration_option"
+                        },
+                        selection,
+                    )
+                })
+                .ok()
+                .or(virtual_layout
+                    .then_some(butterpollo_core::display_policy::Arrangement::Exclusive))
+                .and_then(|parsed| {
+                    if launch.role == Role::RemoteMonitor {
+                        parsed.for_remote_monitor()
+                    } else {
+                        Some(parsed)
+                    }
+                })
+        };
         let arrangement = match parsed {
             Some(parsed) => {
                 let retained: Vec<_> = h
@@ -748,13 +776,23 @@ impl Prepared {
                     .values()
                     .map(|m| m.current_output())
                     .collect();
-                Some(display_arrangement::Lease::acquire(
+                match display_arrangement::Lease::acquire(
                     &output,
                     parsed,
                     &retained,
                     virtual_mode && display.is_some(),
                     original,
-                )?)
+                ) {
+                    Ok(lease) => Some(lease),
+                    // The remote monitor still works where the remote monitor
+                    // layout put it.
+                    Err(error) if launch.role == Role::RemoteMonitor => {
+                        tracing::warn!(error = %format!("{error:#}"), layout = selection, "remote monitor layout could not be applied");
+                        launch.warnings.set("display_layout", format!("The virtual display layout ({selection}) could not be applied to this remote monitor ({error:#}), so the other displays stay as they are. Check Windows display settings and reconnect."));
+                        None
+                    }
+                    Err(error) => return Err(error),
+                }
             }
             _ => None,
         };
@@ -764,12 +802,14 @@ impl Prepared {
         }
         tracing::info!(
             client = %launch.client.name,
+            role = ?launch.role,
             client_virtual_display = ?client_virtual,
             virtual_display_mode = mode,
             output_override = ?output_override,
             virtual_display = virtual_mode,
             output = %output,
             layout = selection,
+            arrangement = ?parsed,
             requested_refresh_millihz = request.refresh.or(virtual_mode.then_some(rate.0)),
             limiter_rate = %framegen.rate,
             limiter_enabled = framegen.enabled,
@@ -798,6 +838,8 @@ impl Prepared {
             .as_ref()
             .map(|p| hdr_profile::Lease::acquire(&output, p))
             .transpose()?;
+        // A remote monitor's display has its own generation; see `feed`.
+        let revision = retained.as_ref().map_or(0, |r| r.capture_target().1);
         Ok((
             Self {
                 display,
@@ -810,7 +852,7 @@ impl Prepared {
                 _vulkan: vulkan,
                 _golden: golden,
                 mode: stream_mode(stream),
-                revision: 0,
+                revision,
                 recovery: Recovery::new(),
                 mode_report,
                 recovery_scale: config.integer("dd_virtual_display_scale", 0),

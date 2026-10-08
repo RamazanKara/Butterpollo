@@ -272,6 +272,18 @@ impl Arrangement {
             },
         )
     }
+    /// The layout a remote monitor's stream applies. Its position on the
+    /// desktop comes from the remote monitor layout, so it takes only which
+    /// displays stay on and which is primary: exclusive turns the others off,
+    /// the primary layouts make it primary, and the extended and isolated
+    /// placements leave it where the remote monitor layout put it.
+    pub const fn for_remote_monitor(self) -> Option<Self> {
+        match self {
+            Self::Exclusive => Some(Self::Exclusive),
+            Self::Primary | Self::PrimaryIsolated => Some(Self::Primary),
+            Self::Extended | Self::Isolated => None,
+        }
+    }
     pub fn compose(self, nodes: &[Node], target: &str, retained: &[String]) -> Result<Vec<Node>> {
         let target_node = nodes
             .iter()
@@ -660,5 +672,32 @@ mod tests {
             isolated[2].desired_position.x - isolated[0].desired_position.x,
             3840
         );
+    }
+    #[test]
+    fn remote_monitors_follow_which_displays_stay_on_but_keep_their_place() {
+        let layout = |value| Arrangement::parse(value).unwrap().for_remote_monitor();
+        assert_eq!(layout("exclusive"), Some(Arrangement::Exclusive));
+        assert_eq!(layout("extended_primary"), Some(Arrangement::Primary));
+        assert_eq!(
+            layout("extended_primary_isolated"),
+            Some(Arrangement::Primary)
+        );
+        assert_eq!(layout("extended"), None);
+        assert_eq!(layout("extended_isolated"), None);
+        // Exclusive on the remote monitor: the physical display goes off and
+        // the remote monitor becomes primary, with another device's remote
+        // monitor kept on beside it.
+        let nodes = vec![
+            node("physical", 0),
+            node("remote", 1920),
+            node("other", 3840),
+        ];
+        let exclusive = Arrangement::Exclusive
+            .compose(&nodes, "remote", &["other".into()])
+            .unwrap();
+        assert!(!exclusive[0].active && !exclusive[0].primary);
+        assert!(exclusive[1].active && exclusive[1].primary);
+        assert_eq!(exclusive[1].desired_position, Position { x: 0, y: 0 });
+        assert!(exclusive[2].active);
     }
 }
