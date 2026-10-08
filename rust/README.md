@@ -78,15 +78,7 @@ PyroWave shares D3D11/Vulkan planar textures and returns only the encoded bitstr
 
 ## Validation
 
-Within the configured Windows SDK environment:
-
-```powershell
-cargo fmt --all -- --check
-cargo test --workspace --locked
-cargo clippy --workspace --all-targets --locked -- -D warnings
-```
-
-The rc.10 ordinary validation recorded **263 passing tests**, with 27 environment-dependent tests excluded from that count. This is the release's recorded result, rather than a claim that documentation edits rerun native hardware fixtures.
+The ordinary checks (formatting, Clippy with warnings denied, workspace tests) and the SDK environment they need are listed in the [contributor guide](../.github/CONTRIBUTING.md#building-and-checking). CI runs them on every push through [build.ps1](build.ps1). The layers beyond them:
 
 | Validation layer | Entry points and scope |
 | --- | --- |
