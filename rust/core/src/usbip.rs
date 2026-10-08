@@ -33,6 +33,10 @@ const ECONNRESET: i32 = -104;
 const MAX_TRANSFER: usize = 65536;
 /// How long a client may take to ask for the device once connected.
 const IMPORT_WAIT: Duration = Duration::from_secs(5);
+/// How often a blocked read looks for [`Export`] being dropped. Windows
+/// does not wake a blocked receive when another thread shuts the socket
+/// down, so reads time out and look instead.
+const READ_SLICE: Duration = Duration::from_millis(100);
 /// A client that stops reading is dropped after this long, so the input
 /// thread never waits on it.
 const WRITE_WAIT: Duration = Duration::from_secs(1);
@@ -267,10 +271,41 @@ fn ret(command: u32, seqnum: u32, status: i32, data: Option<&[u8]>, length: usiz
     b
 }
 
-fn serve<D: Device>(shared: &Shared<D>, mut stream: TcpStream) -> io::Result<()> {
+/// Fills `buf`, giving up when the export stops or `deadline` passes.
+fn read_full<D: Device>(
+    shared: &Shared<D>,
+    mut stream: &TcpStream,
+    buf: &mut [u8],
+    deadline: Option<Instant>,
+) -> io::Result<()> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match stream.read(&mut buf[filled..]) {
+            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+            Ok(n) => filled += n,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                if shared.stop.load(Ordering::Acquire)
+                    || deadline.is_some_and(|d| Instant::now() >= d)
+                {
+                    return Err(e);
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+fn serve<D: Device>(shared: &Shared<D>, stream: TcpStream) -> io::Result<()> {
     stream.set_nodelay(true)?;
     stream.set_write_timeout(Some(WRITE_WAIT))?;
-    stream.set_read_timeout(Some(IMPORT_WAIT))?;
+    stream.set_read_timeout(Some(READ_SLICE))?;
     {
         let mut link = shared.link.lock().unwrap();
         if shared.stop.load(Ordering::Acquire) {
@@ -278,8 +313,11 @@ fn serve<D: Device>(shared: &Shared<D>, mut stream: TcpStream) -> io::Result<()>
         }
         link.stream = Some(stream.try_clone()?);
     }
+    let deadline = Some(Instant::now() + IMPORT_WAIT);
+    let read =
+        |buf: &mut [u8], deadline: Option<Instant>| read_full(shared, &stream, buf, deadline);
     let mut head = [0u8; 8];
-    stream.read_exact(&mut head)?;
+    read(&mut head, deadline)?;
     let code = u16::from_be_bytes([head[2], head[3]]);
     let describe = || shared.device.lock().unwrap().describe();
     match code {
@@ -291,20 +329,20 @@ fn serve<D: Device>(shared: &Shared<D>, mut stream: TcpStream) -> io::Result<()>
             for (class, subclass, protocol) in device.interfaces {
                 b.extend_from_slice(&[class, subclass, protocol, 0]);
             }
-            stream.write_all(&b)?;
+            (&stream).write_all(&b)?;
             return Ok(());
         }
         OP_REQ_IMPORT => {
             let mut busid = [0u8; 32];
-            stream.read_exact(&mut busid)?;
+            read(&mut busid, deadline)?;
             let len = busid.iter().position(|b| *b == 0).unwrap_or(32);
             if &busid[..len] != BUS_ID.as_bytes() {
-                stream.write_all(&op_reply(0x0003, 1))?;
+                (&stream).write_all(&op_reply(0x0003, 1))?;
                 return Ok(());
             }
             let mut b = op_reply(0x0003, 0);
             b.extend_from_slice(&describe().encode());
-            stream.write_all(&b)?;
+            (&stream).write_all(&b)?;
         }
         _ => {
             return Err(io::Error::other(format!(
@@ -312,12 +350,11 @@ fn serve<D: Device>(shared: &Shared<D>, mut stream: TcpStream) -> io::Result<()>
             )));
         }
     }
-    stream.set_read_timeout(None)?;
     shared.link.lock().unwrap().imported = true;
     tracing::debug!("USB/IP client attached the device");
     loop {
         let mut h = [0u8; 48];
-        stream.read_exact(&mut h)?;
+        read(&mut h, None)?;
         let (command, seqnum, direction, endpoint) =
             (be32(&h, 0), be32(&h, 4), be32(&h, 12), be32(&h, 16));
         match command {
@@ -331,11 +368,11 @@ fn serve<D: Device>(shared: &Shared<D>, mut stream: TcpStream) -> io::Result<()>
                 let mut data = vec![];
                 if direction == 0 {
                     data.resize(length, 0);
-                    stream.read_exact(&mut data)?;
+                    read(&mut data, None)?;
                 }
                 if (1..=1024).contains(&packets) {
                     // Isochronous: the device has no such endpoint.
-                    stream.read_exact(&mut vec![0; 16 * packets as usize])?;
+                    read(&mut vec![0; 16 * packets as usize], None)?;
                     let reply = ret(RET_SUBMIT, seqnum, EPIPE, None, 0);
                     shared.link.lock().unwrap().send(&reply);
                     continue;
@@ -591,8 +628,11 @@ mod tests {
         client.write_all(&unlink).unwrap();
         assert_eq!(reply(&mut client).2, 0);
 
-        // Dropping the export disconnects the client promptly.
+        // Dropping the export disconnects the client promptly, though the
+        // client keeps its end open.
+        let start = Instant::now();
         drop(export);
+        assert!(start.elapsed() < Duration::from_secs(2));
         let mut rest = vec![];
         match client.read_to_end(&mut rest) {
             Ok(_) => assert!(rest.is_empty()),
