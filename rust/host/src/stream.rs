@@ -646,9 +646,11 @@ impl Media {
                     // arriving for another client does this). The old capture is
                     // dropped and consumers acknowledge releasing their frames
                     // and encoders before the new device is made.
-                    // The capture, and whether it shows the primary display
-                    // in place of the stream's, which is gone.
-                    let reopen = |lost: Capture, target: &(String, u64)| -> Result<(Capture, bool)> {
+                    // The capture, whether it shows the primary display in
+                    // place of the stream's, which is gone, and the stream's
+                    // display it was opened for. The display can be recreated
+                    // while capture opens; the next check then sees that.
+                    let reopen = |lost: Capture, target: &(String, u64)| -> Result<(Capture, bool, (String, u64))> {
                         let recovery_started = Instant::now();
                         // Desktop Duplication reports the pointer's shape only
                         // when it changes; the new capture starts from this one.
@@ -701,7 +703,7 @@ impl Media {
                                         tracing::warn!(%error, "the pointer appears once it moves or changes");
                                     }
                                     tracing::info!(release_ms, elapsed_ms=recovery_started.elapsed().as_millis(), backend=recovered.backend(), "capture reopened after resource release");
-                                    return Ok((recovered, on == ReopenOn::Primary));
+                                    return Ok((recovered, on == ReopenOn::Primary, next));
                                 }
                                 Err(error) if Instant::now() >= deadline => return Err(error),
                                 Err(_) => thread::sleep(RECOVERY_RETRY),
@@ -728,13 +730,12 @@ impl Media {
                             let returned = on_primary && butterpollo_windows::capture::display_present(&next.0);
                             if next != target || return_to_wgc || returned {
                                 let lost = std::mem::replace(&mut capture, Capture::Closed);
-                                (capture, on_primary) = match reopen(lost, &next) {
+                                (capture, on_primary, target) = match reopen(lost, &next) {
                                     Ok(capture) => capture,
                                     Err(_) if worker_stop.load(Ordering::Acquire) => return Ok(()),
                                     Err(error) => return Err(error),
                                 };
                                 capture.set_claim_grid(worker_grid.clone(), aligned);
-                                target = prepared.capture_target();
                             }
                         }
                         // Reset before the helper's announcements are read: one
@@ -772,13 +773,12 @@ impl Media {
                             Err(e) => {
                                 capture_warnings.set("capture_recovery", format!("Capture interrupted ({e:#}); reopening capture, with a frozen picture until frames resume. If this repeats, keep the display mode stable and check the WGC helper and graphics driver."));
                                 let lost = std::mem::replace(&mut capture, Capture::Closed);
-                                (capture, on_primary) = match reopen(lost, &target) {
+                                (capture, on_primary, target) = match reopen(lost, &target) {
                                     Ok(capture) => capture,
                                     Err(_) if worker_stop.load(Ordering::Acquire) => return Ok(()),
                                     Err(error) => return Err(error),
                                 };
                                 capture.set_claim_grid(worker_grid.clone(), aligned);
-                                target = prepared.capture_target();
                             }
                         }
                     }

@@ -5,6 +5,38 @@ without reducing features or picture quality. Opus took over from Codex in the
 evening of October 2. Performance acceptance on the customer's own sessions is
 still open; the measured fixture results below are local loopback evidence.
 
+## October 8 user report: exclusive layout ignored, picture freezes
+
+Report (relayed by the owner): with the virtual display layout on exclusive
+and Remote Monitor chosen on the client, the first physical display stayed on
+and primary; and sometimes the picture stops while the stream and its audio
+go on. Code changes only; nothing here has run on a host yet.
+
+- Remote Monitor never applied the layout: the arrangement was taken for the
+  Stream role only (`display_session.rs`). It now follows which displays stay
+  on and which is primary (exclusive and the primary layouts), keeps the place
+  the remote monitor layout gives it, restores the layout when its stream ends,
+  and reapplies it when the monitor's lease recreates the display (`2180d8f`).
+- WGC capture could go silent for good: when the captured display leaves the
+  desktop even briefly (a layout change switching it off and on), its capture
+  item closes and WGC returns no frames and no error, while the host re-encodes
+  the last picture and audio continues. The capture item's `Closed` event and a
+  once-a-second monitor-handle check now raise an error, which reopens capture
+  on the display that is there now.
+- After a reopen, capture recorded the display identity read after opening,
+  so a display recreated during the reopen was never followed. It now records
+  the identity it opened.
+- A recovered virtual display was handed to capture only once its HDR and mode
+  were restored; while that kept failing, capture stayed on the old display.
+  Capture now follows at once and the restore is retried.
+
+To confirm on the host (never in exclusive mode on the owner's PC): a stream
+on a virtual display while another device's virtual display arrives and
+leaves, checking that `capture reopened` follows any `left the desktop` error
+and the client keeps fresh pictures. Not addressed: a session thread stuck in
+a driver call (encoder terminate or init) would also freeze the picture with
+audio running; there is no watchdog for it yet.
+
 ## October 8 real-client picture age over Wi-Fi (rc.24, laptop)
 
 First render-to-decode measurement from a second machine instead of loopback.

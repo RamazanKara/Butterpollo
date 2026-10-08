@@ -2380,6 +2380,8 @@ pub struct Guard {
     identity: String,
     generation: u64,
     hdr: Option<bool>,
+    /// A recovered display's HDR and mode still to be restored.
+    restore_pending: bool,
 }
 /// Every mode a display reports as (width, height, refresh Hz).
 fn supported_modes(output: &str) -> Vec<(u32, u32, u32)> {
@@ -2551,6 +2553,7 @@ impl Guard {
             hdr,
             virtual_display,
             identity: chosen.device_id.clone(),
+            restore_pending: false,
         };
         let result = (|| -> Result<()> {
             let mut all = SETTINGS.lock().unwrap();
@@ -2676,6 +2679,8 @@ impl Guard {
             display.lock().unwrap().apply_mode(stage);
         }
     }
+    /// True when the display was recovered, or a recovered display's HDR and
+    /// mode were restored late: capture and the stream's layout follow it.
     pub fn feed(&mut self) -> Result<bool> {
         if let Some(display) = &mut self.virtual_display {
             let mut display = display.lock().unwrap();
@@ -2688,56 +2693,79 @@ impl Guard {
                 // A display switched back on can have another desktop name,
                 // which the heartbeat's own lookup may not have caught.
                 display.name = chosen.display_name.clone();
-                let mut settings = SETTINGS.lock().unwrap();
-                if chosen.device_id != self.identity {
-                    if let Some(old) = settings.get_mut(&self.identity) {
-                        old.users -= 1;
-                        if old.users == 0 {
-                            settings.remove(&self.identity);
+                {
+                    let mut settings = SETTINGS.lock().unwrap();
+                    if chosen.device_id != self.identity {
+                        if let Some(old) = settings.get_mut(&self.identity) {
+                            old.users -= 1;
+                            if old.users == 0 {
+                                settings.remove(&self.identity);
+                            }
                         }
-                    }
-                    if !settings.contains_key(&self.identity) {
-                        crate::display_recovery::release(&self.identity)?;
-                    }
-                    settings
-                        .entry(chosen.device_id.clone())
-                        .or_insert(Settings {
-                            users: 0,
-                            mode: None,
-                            color: None,
-                        })
-                        .users += 1;
-                    self.identity = chosen.device_id.clone();
-                }
-                if let Some(hdr) = self.hdr {
-                    if let Some(color) = settings
-                        .get_mut(&self.identity)
-                        .and_then(|s| s.color.as_mut())
-                    {
-                        color.0 = chosen.clone();
-                    }
-                    if chosen.hdr_enabled != hdr {
-                        crate::display_recovery::hdr(
-                            &self.identity,
-                            &chosen.display_name,
-                            chosen.hdr_enabled,
-                            hdr,
-                        )?;
-                        let state = settings.get_mut(&self.identity).unwrap();
-                        if state.color.is_none() {
-                            state.color = Some((chosen.clone(), chosen.hdr_enabled, hdr));
+                        if !settings.contains_key(&self.identity) {
+                            crate::display_recovery::release(&self.identity)?;
                         }
-                        set_hdr(&chosen, hdr)?;
+                        settings
+                            .entry(chosen.device_id.clone())
+                            .or_insert(Settings {
+                                users: 0,
+                                mode: None,
+                                color: None,
+                            })
+                            .users += 1;
+                        self.identity = chosen.device_id.clone();
                     }
                 }
-                display.finish_hotplug("after recovery settings")?;
+                let restored = restore_recovered(&mut display, &self.identity, self.hdr);
+                // Capture moves to the display even when its HDR or mode
+                // cannot be restored yet: the old one shows nothing, so the
+                // picture would freeze until the restore succeeds.
                 self.output = display.name.clone();
                 self.generation = display.generation;
+                self.restore_pending = restored.is_err();
+                if let Err(error) = restored {
+                    tracing::warn!(error = %format!("{error:#}"), output = %self.output, "recovered display's HDR and mode will be restored on the next heartbeat");
+                }
+                return Ok(true);
+            }
+            if self.restore_pending {
+                restore_recovered(&mut display, &self.identity, self.hdr)?;
+                self.restore_pending = false;
+                self.output = display.name.clone();
                 return Ok(true);
             }
         }
         Ok(false)
     }
+}
+/// Bring a recovered virtual display's HDR state and mode back to the
+/// stream's: Windows recalls what it saved for the display when it returns.
+fn restore_recovered(
+    display: &mut VirtualDisplay,
+    identity: &str,
+    hdr: Option<bool>,
+) -> Result<()> {
+    if let Some(hdr) = hdr {
+        let chosen = monitors()?
+            .into_iter()
+            .find(|m| display.owns_monitor(m))
+            .context("recovered display unavailable")?;
+        let mut settings = SETTINGS.lock().unwrap();
+        if let Some(color) = settings.get_mut(identity).and_then(|s| s.color.as_mut()) {
+            color.0 = chosen.clone();
+        }
+        if chosen.hdr_enabled != hdr {
+            crate::display_recovery::hdr(identity, &chosen.display_name, chosen.hdr_enabled, hdr)?;
+            let state = settings
+                .get_mut(identity)
+                .context("recovered display has no settings lease")?;
+            if state.color.is_none() {
+                state.color = Some((chosen.clone(), chosen.hdr_enabled, hdr));
+            }
+            set_hdr(&chosen, hdr)?;
+        }
+    }
+    display.finish_hotplug("after recovery settings")
 }
 impl Drop for Guard {
     fn drop(&mut self) {

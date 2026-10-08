@@ -979,6 +979,14 @@ pub struct Wgc {
     color_space: Option<DXGI_COLOR_SPACE_TYPE>,
     color_check: Instant,
     drain_to_newest: bool,
+    /// The captured display. When it leaves the desktop, even for a moment
+    /// (a layout change switching it off and on), its capture item closes and
+    /// WGC delivers no more frames, without an error.
+    item: GraphicsCaptureItem,
+    /// Its HMONITOR, kept as a number so the capture can move threads.
+    monitor: usize,
+    closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    closed_token: Option<i64>,
 }
 pub(crate) fn qpc_frequency() -> i64 {
     *std::sync::OnceLock::get_or_init(&QPC_FREQUENCY, || {
@@ -1085,6 +1093,15 @@ impl Wgc {
             let item: GraphicsCaptureItem = interop
                 .CreateForMonitor(d.Monitor)
                 .context("Windows Graphics Capture cannot capture this display")?;
+            let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let flag = closed.clone();
+            let closed_token = item
+                .Closed(&windows::Foundation::TypedEventHandler::new(move |_, _| {
+                    flag.store(true, std::sync::atomic::Ordering::Release);
+                    Ok(())
+                }))
+                .inspect_err(|error| tracing::warn!(%error, "WGC cannot report the display leaving; a capture that stops is found by its monitor check"))
+                .ok();
             let dxgi: IDXGIDevice = gpu.device.cast()?;
             let winrt: IDirect3DDevice = CreateDirect3D11DeviceFromDXGIDevice(&dxgi)?.cast()?;
             let size = item.Size()?;
@@ -1137,6 +1154,10 @@ impl Wgc {
                 color_space,
                 color_check: Instant::now() + Duration::from_secs(1),
                 drain_to_newest: false,
+                item,
+                monitor: d.Monitor.0 as usize,
+                closed,
+                closed_token,
             };
             // Own the pool/session before starting so failure closes them
             // just like normal capture teardown.
@@ -1237,6 +1258,9 @@ impl Wgc {
         result
     }
     fn next_native_frame(&self) -> Result<Option<Direct3D11CaptureFrame>> {
+        if self.closed.load(std::sync::atomic::Ordering::Acquire) {
+            bail!("the captured display left the desktop");
+        }
         newest_capture_frame(
             if self.drain_to_newest {
                 WGC_FRAME_POOL_CAPACITY
@@ -1285,6 +1309,23 @@ impl Wgc {
             return Ok(());
         }
         self.color_check = Instant::now() + Duration::from_secs(1);
+        // A display that returned has a new monitor handle; the old one's
+        // capture stays silent, so reopen on the display that is there now.
+        let mut info = windows::Win32::Graphics::Gdi::MONITORINFO {
+            cbSize: size_of::<windows::Win32::Graphics::Gdi::MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: `info` is a live local whose size is set; a stale handle only fails the call.
+        if !unsafe {
+            windows::Win32::Graphics::Gdi::GetMonitorInfoW(
+                windows::Win32::Graphics::Gdi::HMONITOR(self.monitor as *mut _),
+                &mut info,
+            )
+        }
+        .as_bool()
+        {
+            bail!("the captured display left the desktop");
+        }
         // SAFETY: `output` is a live IDXGIOutput1, and GetDesc1 returns an owned struct.
         let current = unsafe {
             self.gpu
@@ -1306,6 +1347,9 @@ impl Wgc {
         // An in-flight callback owns its own Arc to the event until it returns.
         if let Some((_, token)) = self.notifications.take() {
             let _ = self.pool.RemoveFrameArrived(token);
+        }
+        if let Some(token) = self.closed_token.take() {
+            let _ = self.item.RemoveClosed(token);
         }
         if let Some((frame, _, _, _)) = self.held.take() {
             let _ = frame.Close();

@@ -303,9 +303,10 @@ impl Prepared {
         )
     }
     fn feed(&mut self) -> Result<()> {
-        if let Some(display) = self.display.as_mut()
-            && display.feed()?
-        {
+        // A heartbeat step that keeps failing, such as restoring a recovered
+        // display's HDR, must not hold back the layout recovery below.
+        let fed = self.display.as_mut().map_or(Ok(false), Guard::feed);
+        if let (Ok(true), Some(display)) = (&fed, &self.display) {
             self.output = display.output.clone();
             self.revision = self.revision.wrapping_add(1);
             self.recovery.start(std::time::Instant::now());
@@ -357,7 +358,7 @@ impl Prepared {
             }
             self.recovery.finish();
         }
-        Ok(())
+        fed.map(|_| ())
     }
     fn create(
         h: &Shared,
