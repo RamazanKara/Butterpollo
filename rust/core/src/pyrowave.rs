@@ -65,6 +65,41 @@ pub fn budget(
     };
     ((f64::from(kbps) * 125. * interval.as_secs_f64()) as usize).min(limit) & !3
 }
+/// The time each frame's budget pays for: the gap since the previous encode.
+/// A new picture right after a repeat of the old one would get only that short
+/// gap, a blurred frame; it gets at least the time since the previous new
+/// picture, up to one stream period. Critical FEC keeps every frame within one
+/// period, as Vibepollo's stable frame size does.
+pub struct Interval {
+    nominal: Duration,
+    stable: bool,
+    previous: Option<Instant>,
+    fresh: Option<Instant>,
+}
+impl Interval {
+    pub fn new(nominal: Duration, stable: bool) -> Self {
+        Self {
+            nominal,
+            stable,
+            previous: None,
+            fresh: None,
+        }
+    }
+    pub fn next(&mut self, now: Instant, repeat: bool) -> Duration {
+        let nominal = self.nominal;
+        let since =
+            |at: Option<Instant>| at.map_or(nominal, |at| now.saturating_duration_since(at));
+        let mut interval = since(self.previous.replace(now));
+        if !repeat {
+            interval = interval.max(since(self.fresh.replace(now)).min(nominal));
+        }
+        if self.stable {
+            interval.min(nominal)
+        } else {
+            interval
+        }
+    }
+}
 pub fn container(bitstream: &[u8], packets: &[(usize, usize)]) -> Result<Vec<u8>> {
     if packets.is_empty() || packets.len() > u32::MAX as usize {
         bail!("invalid PyroWave packet count");
@@ -591,6 +626,30 @@ mod tests {
             budget(800000, Duration::from_secs_f64(1. / 120.), 1392, true, true),
             833332
         );
+    }
+    #[test]
+    fn a_new_picture_after_a_repeat_keeps_a_full_frame_budget() {
+        let ms = Duration::from_millis;
+        let start = Instant::now();
+        let mut interval = Interval::new(ms(10), false);
+        assert_eq!(interval.next(start, false), ms(10));
+        // A game at 50 fps: each picture pays for its whole gap, as before.
+        assert_eq!(interval.next(start + ms(20), false), ms(20));
+        // A still picture repeated at 20 fps pays for the time since the last encode.
+        assert_eq!(interval.next(start + ms(70), true), ms(50));
+        // The game's next picture 2 ms after the repeat gets a whole period, not 2 ms.
+        assert_eq!(interval.next(start + ms(72), false), ms(10));
+        // One period after the repeat it gets that period.
+        assert_eq!(interval.next(start + ms(122), true), ms(50));
+        assert_eq!(interval.next(start + ms(134), false), ms(12));
+        // Repeats close together stay small: they show nothing new.
+        assert_eq!(interval.next(start + ms(136), true), ms(2));
+
+        let mut stable = Interval::new(ms(10), true);
+        stable.next(start, false);
+        assert_eq!(stable.next(start + ms(50), true), ms(10));
+        assert_eq!(stable.next(start + ms(53), false), ms(10));
+        assert_eq!(stable.next(start + ms(58), false), ms(5));
     }
     #[test]
     fn aligned_records_keep_coarse_first_and_restart_after_loss() {

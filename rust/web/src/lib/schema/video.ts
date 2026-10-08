@@ -233,7 +233,7 @@ const video: Setting[] = [
     key: 'minimum_fps_target',
     label: 'Minimum frame rate',
     description:
-      'How often an unchanged picture is sent again; lower values save bandwidth on a still desktop. 0 uses a fifth of the stream rate, at least 10, and PyroWave streams resend at the full rate unless this is set.',
+      'How often an unchanged picture is sent again; lower values save bandwidth on a still desktop. Each resend counts toward the stream frame rate, so a value close to it makes late game frames wait. 0 uses a fifth of the stream rate, at least 10; with PyroWave, 0 resends at the full stream rate.',
     category: 'video',
     group: 'Frame pacing',
     control: { kind: 'number', min: 0, max: 1000, step: 0.1, unit: 'fps' },

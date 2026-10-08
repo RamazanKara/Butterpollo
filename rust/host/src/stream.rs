@@ -1026,8 +1026,12 @@ impl Media {
                     let mut profile_due = Instant::now();
                     let mut metadata_due = Instant::now() + Duration::from_secs(1);
                     let mut timing_due = Instant::now() + Duration::from_secs(5);
+                    // As in Vibepollo, an unset minimum is 20 for every codec,
+                    // PyroWave too: its old default of the full stream rate
+                    // repeated a still picture every period, and under VRR a
+                    // game frame a little late followed a repeat.
                     let minimum_fps = c
-                        .get("minimum_fps_target", if s.config.codec == 3 { "0" } else { "20" })
+                        .get("minimum_fps_target", "20")
                         .parse::<f64>()
                         .unwrap_or(20.);
                     let minimum_fps = if minimum_fps > 0. {
@@ -1549,8 +1553,9 @@ impl Media {
                                     .clamp(0, 100) as f32,
                                 scale,
                             );
+                            active.set_repeat(!fresh);
                             let mut presented_image = image.as_ref().clone();
-                            if last_image.as_ref().is_some_and(|previous| Arc::ptr_eq(previous,&image)) { presented_image.captured = Instant::now(); }
+                            if !fresh { presented_image.captured = Instant::now(); }
                             let transformed = if converted { truehdr.as_mut().map(|filter| filter.apply_gpu(&presented_image)).transpose() } else { Ok(None) };
                             let encoded = (|| -> Result<Vec<butterpollo_windows::encoder::Encoded>> {
                                 #[cfg(debug_assertions)]
@@ -1595,13 +1600,12 @@ impl Media {
                             // does not extend the interval between static frames.
                             encoded_at = begin;
                             if arrival_pacing {
-                                // Only a new picture spends pacing credit. A picture
-                                // encoded again (a keyframe the client asked for, a
-                                // static repeat) must not hold back the next game
-                                // frame, as the C++ host never does.
-                                if fresh {
-                                    pacer.claimed(begin);
-                                }
+                                // Every picture sent counts toward the stream rate,
+                                // a repeat of an unchanged one too: a repeat that
+                                // spent nothing let the game's next frame follow
+                                // it at once, so VRR streams went past the rate
+                                // whenever a frame came late.
+                                pacer.claimed(begin);
                                 latest.grid.lock().unwrap().anchor = pacer.allowed_at(begin);
                             } else {
                                 cadence.submitted(begin);

@@ -5,6 +5,43 @@ without reducing features or picture quality. Opus took over from Codex in the
 evening of October 2. Performance acceptance on the customer's own sessions is
 still open; the measured fixture results below are local loopback evidence.
 
+## October 8 repeats past the frame cap (PyroWave, VRR): needs a host A/B
+
+Report (a user, relayed by the owner; rc.25, PyroWave with VRR at 100 fps):
+motion windows at 105 to 136 fps. Saving a minimum frame rate of 30 brought
+motion to just under 100, a still screen toward 30 and a 34 ms worst gap.
+Latency-relevant code change for rc.27; nothing measured on a host yet.
+
+- An unset `minimum_fps_target` was the full stream rate for PyroWave, a
+  mis-port: Vibepollo's default of 20 applies to PyroWave as
+  min(20, stream rate), and only a saved 0 means the full rate. It is now 20
+  for every codec (`stream.rs`).
+- Arrival pacing (VRR, `frame_pacing=arrival`) now spends pacer credit on
+  every encode, static repeats and same-picture keyframes included. Only new
+  pictures did before, so a game frame that came just after a repeat went out
+  at once, past the cap. Grid pacing already counted repeats.
+- A new PyroWave picture is budgeted at least min(time since the previous new
+  picture, one period), never only the gap since a repeat
+  (`pyrowave::Interval`); repeats keep the gap since the last encode, and
+  critical FEC still caps every frame at one period.
+- Model (`repeats_count_toward_the_stream_rate`: a game at about 90 fps with
+  9 to 13 ms gaps on a 100 fps VRR stream): with the minimum at the stream
+  rate, 158 fps uncounted and 101 fps counted; counted, game frames after a
+  repeat wait up to 9.8 ms and 7 of 180 are replaced by a newer one. With the
+  20 fps default no repeat goes out while the game runs, so no frame waits.
+- Expected costs: after a stall of 50 ms or more, the first game frame can
+  wait up to half a period if a repeat just went out. A still PyroWave
+  desktop now sends 20 fps instead of the stream rate, so detail FEC
+  (`DetailFec`, parity for unchanged blocks when frames come slower than the
+  stream rate) now engages there, as in Vibepollo (inferred from the code).
+
+Host A/B to run (idle host, never exclusive display mode): PyroWave, VRR,
+100 fps to the laptop client with a renderer below the stream rate with
+uneven frame times, then a still desktop. Compare the commit before this
+change with this one: sent fps per one-second window (p50 and max), size of
+new frames (p5 and p50), picture age, and the worst gap on a still screen.
+Repeat once with AV1 for the counting change alone.
+
 ## October 8 user report: exclusive layout ignored, picture freezes
 
 Report (relayed by the owner): with the virtual display layout on exclusive

@@ -181,6 +181,69 @@ fn a_vrr_stream_claims_on_arrival_but_never_faster_than_the_stream_rate() {
             .all(|(claim, presented)| (claim - presented - 0.2).abs() < 1e-6)
     );
 }
+/// The host's VRR loop: a new frame is claimed through the pacer; an
+/// unchanged picture is sent again `repeat` ms after the last encode. Every
+/// encode counts toward the stream rate. Returns the encodes, the game frames
+/// claimed and the longest wait of a claimed game frame, in milliseconds.
+fn vrr_with_repeats(period: f64, frames: &[f64], repeat: f64) -> (usize, usize, f64) {
+    let start = Instant::now();
+    let at = |ms: f64| start + Duration::from_secs_f64(ms / 1000.);
+    let mut pacer = Pacer::new(start, Duration::from_secs_f64(period / 1000.))
+        .with_prediction(false)
+        .with_source_phase(false)
+        .with_spacing(0.5);
+    let (mut encodes, mut claimed, mut longest) = (0, 0, 0f64);
+    let (mut next, mut newest, mut encoded_at) = (0, None, 0.);
+    for step in 0..=((frames.last().unwrap() + period) * 20.) as usize {
+        let now = step as f64 / 20.;
+        while next < frames.len() && frames[next] <= now {
+            newest = Some(frames[next]);
+            next += 1;
+        }
+        let encode = match newest {
+            Some(presented) => pacer.decide(at(now), at(presented), None) == Pace::Claim,
+            None => now >= encoded_at + repeat,
+        };
+        if encode {
+            if let Some(presented) = newest.take() {
+                claimed += 1;
+                longest = longest.max(now - presented);
+            }
+            pacer.claimed(at(now));
+            encodes += 1;
+            encoded_at = now;
+        }
+    }
+    (encodes, claimed, longest)
+}
+#[test]
+fn repeats_count_toward_the_stream_rate() {
+    // A 100 fps VRR stream and a game at about 90 fps whose frames come
+    // unevenly, 9 to 13 ms apart.
+    let gaps = [9., 13., 10.5, 12.];
+    let frames: Vec<f64> = (0..180)
+        .scan(0., |t, i| {
+            *t += gaps[i % 4];
+            Some(*t)
+        })
+        .collect();
+    let seconds = frames.last().unwrap() / 1000.;
+    // The default minimum of 20 fps: no repeat while the game runs, every
+    // frame claimed the moment it arrives.
+    let (encodes, claimed, longest) = vrr_with_repeats(10., &frames, 50.);
+    assert_eq!((encodes, claimed), (frames.len(), frames.len()));
+    assert!(longest < 0.1, "{longest} ms");
+    // A minimum at the stream rate, PyroWave's old default, resends after
+    // every gap over 10 ms. Uncounted, those repeats took this stream to
+    // 158 fps. Counted, it stays at the stream rate; the game frames that
+    // follow a repeat wait for room instead, up to a period, and a few are
+    // replaced by the next before they go out.
+    let (encodes, claimed, longest) = vrr_with_repeats(10., &frames, 10.);
+    let fps = encodes as f64 / seconds;
+    assert!(fps <= 102., "{fps} fps");
+    assert!(claimed * 100 >= frames.len() * 95, "{claimed} claimed");
+    assert!(longest <= 10., "{longest} ms");
+}
 #[test]
 fn a_source_at_the_stream_rate_is_never_skipped_despite_jitter() {
     let frames = source(PERIOD, 2., |i| if i % 3 == 0 { 0.3 } else { -0.2 });

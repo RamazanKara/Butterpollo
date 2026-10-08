@@ -917,7 +917,7 @@ fn pyrowave_decoded_end_to_end() -> Result<()> {
                                     let Encoder::Pyrowave(native) = encoder else {
                                         unreachable!()
                                     };
-                                    native.previous = None;
+                                    native.restart_interval();
                                     let frames = encoder.encode_gpu(source, true, kbps)?;
                                     ensure!(frames.len() == 1, "encoder dropped the frame");
                                     let Encoder::Pyrowave(native) = encoder else {
@@ -1082,7 +1082,7 @@ fn quality_sweep(width: u32, height: u32, critical_fec: usize) -> Result<()> {
                                 let Encoder::Pyrowave(native) = &mut encoder else {
                                     unreachable!()
                                 };
-                                native.previous = None;
+                                native.restart_interval();
                                 let frames = encoder.encode_gpu(source, true, kbps)?;
                                 ensure!(frames.len() == 1, "encoder dropped the frame");
                                 let Encoder::Pyrowave(native) = &encoder else {

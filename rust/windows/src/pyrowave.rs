@@ -268,6 +268,12 @@ impl ComputePlanes {
         )
     }
 }
+fn interval(config: &Negotiated, critical_fec: bool) -> pyrowave::Interval {
+    pyrowave::Interval::new(
+        butterpollo_core::framegen::Rate(config.fps_millihz()).period(),
+        critical_fec,
+    )
+}
 pub struct Encoder {
     warnings: Arc<butterpollo_core::session::Warnings>,
     api: Arc<Api>,
@@ -282,7 +288,9 @@ pub struct Encoder {
     interop: Vec<Interop>,
     config: Negotiated,
     critical_fec: bool,
-    previous: Option<Instant>,
+    interval: pyrowave::Interval,
+    /// The next picture repeats the last one encoded.
+    pub(crate) repeat: bool,
     pub(crate) luminance: [f32; 2],
     bitstream: Vec<u8>,
     packets: Vec<p::pyrowave_packet>,
@@ -310,6 +318,8 @@ impl Encoder {
         let mut luid = p::pyrowave_luid { luid: [0; 8] };
         luid.luid[..4].copy_from_slice(&desc.AdapterLuid.LowPart.to_le_bytes());
         luid.luid[4..].copy_from_slice(&desc.AdapterLuid.HighPart.to_le_bytes());
+        let critical_fec =
+            config.pyrowave_records && tuning.integer("pyrowave_critical_fec_percentage", 20) > 0;
         let mut s = Self {
             warnings,
             api,
@@ -322,9 +332,9 @@ impl Encoder {
             source: None,
             interop: vec![],
             config: config.clone(),
-            critical_fec: config.pyrowave_records
-                && tuning.integer("pyrowave_critical_fec_percentage", 20) > 0,
-            previous: None,
+            critical_fec,
+            interval: interval(config, critical_fec),
+            repeat: false,
             luminance: [100., 1.],
             bitstream: vec![],
             packets: vec![],
@@ -362,6 +372,11 @@ impl Encoder {
     }
     pub fn accepts_gpu_device(&self, image: &GpuImage) -> bool {
         self.d3d.device.as_raw() == image.gpu.device.as_raw()
+    }
+    /// The next encode gets a first frame's budget, one stream period.
+    #[cfg(test)]
+    pub(crate) fn restart_interval(&mut self) {
+        self.interval = interval(&self.config, self.critical_fec);
     }
     pub fn encode(&mut self, image: &Image, idr: bool, kbps: u32) -> Result<Vec<Encoded>> {
         self.encode_gpu(&GpuImage::upload(&self.d3d, image)?, idr, kbps)
@@ -402,17 +417,7 @@ impl Encoder {
             self.converter = Some(converter);
             self.source = Some(source);
         }
-        let nominal = butterpollo_core::framegen::Rate(self.config.fps_millihz()).period();
-        let interval = self
-            .previous
-            .replace(begin)
-            .map(|previous| begin.saturating_duration_since(previous))
-            .unwrap_or(nominal);
-        let interval = if self.critical_fec {
-            interval.min(nominal)
-        } else {
-            interval
-        };
+        let interval = self.interval.next(begin, std::mem::take(&mut self.repeat));
         let budget = pyrowave::budget(
             kbps,
             interval,
