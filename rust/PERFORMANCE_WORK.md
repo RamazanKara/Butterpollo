@@ -5,6 +5,32 @@ without reducing features or picture quality. Opus took over from Codex in the
 evening of October 2. Performance acceptance on the customer's own sessions is
 still open; the measured fixture results below are local loopback evidence.
 
+## October 9 pacer claims at the stream rate (bug hunt item 1): host A/B
+
+`stream_policy.rs` refilled pacing credit at 1.01x the stream rate, so a
+source faster than the stream (the default 2x virtual display, a 165 Hz game)
+was claimed at 121.2 fps on a 120 fps stream and 60.6 on 60. `3309053` (on
+main as `75414f78`) refills at exactly 1.0 when the source interval is under
+0.95 periods. A/B/A/B on the RX 7900 XT host, October 9 01:24-01:31,
+`0b1967d` against `3309053`: loopback with the hardware-decoding receiver,
+isolated extended virtual display at 2x the stream rate with the motion probe
+at 2x, DDX, HEVC, 35 s per run, `minimum_fps_target` unset.
+
+| Case | Build | Receiver steady fps | Host fps | Picture age mean / p95 / p99 ms | claim_wait p95 ms | Dropped |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1968x2184 HDR 120, 80 Mb/s | before r1 / r2 | 121.09 / 121.00 | 120.75 / 120.79 | 12.96 / 13.95 / 17.05, 12.94 / 13.90 / 17.12 | 1.04 / 0.99 | 0 / 0 |
+| | after r1 / r2 | 120.02 / 120.00 | 119.72 / 119.79 | 13.07 / 13.72 / 17.14, 12.94 / 15.18 / 17.11 | 0.96 / 0.97 | 0 / 0 |
+| 1080p60, 20 Mb/s | before r1 / r2 | 60.52 / 60.30 | 60.32 / 59.97 | 7.95 / 12.10 / 19.76, 7.50 / 8.11 / 11.08 | 2.19 / 0.03 | 0 / 0 |
+| | after r1 / r2 | 60.00 / 60.00 | 59.56 / 59.65 | 7.62 / 8.26 / 8.75, 10.54 / 11.11 / 11.49 | 0.02 / 1.76 | 0 / 0 |
+
+Result: the stream now leaves at exactly the stream rate (120.0 and 60.0
+instead of 121.0 and 60.3-60.5); picture age is unchanged within run-to-run
+noise (the 1080p60 runs differ by phase, in both directions). Shipped for the
+rate: a client showing 120 Hz received 1.2 extra frames a second, which it has
+to drop or queue (Moonlight's 121.0-121.2 received fps in the laptop runs
+above). Not measured: Moonlight's own dropped-frame count on a real client
+after the change; the loopback receiver decodes but does not present.
+
 ## October 8 repeats past the frame cap (PyroWave, VRR): host A/B
 
 Measured on the RX 7900 XT host on October 9 (01:05-01:16), A/B/A/B,
