@@ -12,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
-use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_64KEY};
+use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
 
 pub struct Options {
     pub install_dir: Option<PathBuf>,
@@ -625,71 +625,8 @@ fn install_drivers(
             "virtual gamepad",
         );
     }
-    if options.gamepad_driver {
-        restart_needed |= install_vigembus(install, progress, notes);
-    }
+
     restart_needed
-}
-
-/// ViGEmBus's own signed setup, bundled for the Xbox 360 and DualShock 4
-/// pads; build.ps1 puts it here under this name.
-const VIGEMBUS_SETUP: &str = "drivers\\vigembus\\ViGEmBus_1.22.0_x64_x86_arm64.exe";
-
-/// Install ViGEmBus unless it is already installed: another program may own
-/// that copy, and an upgrade keeps the one it has. Returns whether Windows
-/// needs a restart.
-fn install_vigembus(install: &Path, progress: &Progress, notes: &mut Vec<String>) -> bool {
-    let setup = install.join(VIGEMBUS_SETUP);
-    if !setup.is_file() {
-        return false;
-    }
-    if vigembus_installed() {
-        line("ViGEmBus is already installed; leaving it as it is");
-        return false;
-    }
-    progress.set("Installing ViGEmBus for Xbox 360 and DualShock 4 controllers…");
-    // An Advanced Installer bootstrapper: no window of its own, a silent MSI,
-    // and never a restart.
-    match system::run(
-        &setup.display().to_string(),
-        &["/exenoui", "/qn", "/norestart"],
-        Duration::from_secs(600),
-    ) {
-        Ok((code, _)) => vigembus_result(code, notes),
-        Err(error) => {
-            line(format!("warning: {error:#}"));
-            notes.push(format!(
-                "ViGEmBus could not be installed ({error:#}). {VIGEMBUS_FALLBACK}"
-            ));
-            false
-        }
-    }
-}
-const VIGEMBUS_FALLBACK: &str = "Controllers set to Xbox 360 or DualShock 4 (ViGEmBus) use the VHF Xbox One or DualShock 4 pad instead; see the setup log.";
-fn vigembus_installed() -> bool {
-    let driver = Path::new(&std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into()))
-        .join("System32\\drivers\\ViGEmBus.sys");
-    system::open_key(
-        HKEY_LOCAL_MACHINE,
-        "SYSTEM\\CurrentControlSet\\Services\\ViGEmBus",
-        KEY_READ | KEY_WOW64_64KEY,
-    )
-    .is_some()
-        && driver.is_file()
-}
-/// Whether ViGEmBus's setup asks for a restart; a failure becomes a note.
-fn vigembus_result(code: i32, notes: &mut Vec<String>) -> bool {
-    match code {
-        // 1638: this or a newer version is already installed.
-        0 | 1638 => false,
-        3010 | 1641 => true,
-        _ => {
-            notes.push(format!(
-                "ViGEmBus could not be installed (exit code {code}). {VIGEMBUS_FALLBACK}"
-            ));
-            false
-        }
-    }
 }
 
 /// Run a Vibepollo driver script as SYSTEM. A failure is reported, not
@@ -888,19 +825,6 @@ mod tests {
         assert_eq!(notes.len(), 1);
         assert!(!driver_result(1, "failed", &mut notes, "gamepad"));
         assert_eq!(notes.len(), 2);
-    }
-    #[test]
-    fn vigembus_setup_results_ask_for_a_restart_or_explain_the_fallback() {
-        let mut notes = Vec::new();
-        assert!(!vigembus_result(0, &mut notes));
-        assert!(!vigembus_result(1638, &mut notes));
-        assert!(vigembus_result(3010, &mut notes));
-        assert!(vigembus_result(1641, &mut notes));
-        assert!(notes.is_empty());
-        assert!(!vigembus_result(1603, &mut notes));
-        assert_eq!(notes.len(), 1);
-        assert!(notes[0].contains("exit code 1603"));
-        assert!(notes[0].contains("VHF Xbox One or DualShock 4"));
     }
     #[test]
     fn setup_refuses_streams_pending_connections_and_apps() {

@@ -104,7 +104,7 @@ Without a usable ViGEmBus driver, Automatic keeps the VHF behavior: DualSense fo
 
 A Steam Deck's gyro and trackpads reach the host only if Moonlight sees the Deck itself. With Steam Input on for the Moonlight shortcut, Steam usually hands Moonlight an emulated Xbox 360 controller that has neither, and the host can only follow what the client announces. Disable Steam Input in the shortcut's controller properties and reconnect. The Deck then gets a DualShock 4 (a DualSense with only VHF) and its gyro works. If the client announces two touchpads, they share the pad's single touch surface: the left one is its left half and the right one its right half, so a game sees the touches side by side. The back grips (L4, R4, L5, R5) are not passed on, because none of the virtual pads has such buttons. The Steam button arrives as the PS button (Guide on Xbox 360), and a "…" button that the client sends as Moonlight's misc button becomes the touchpad click.
 
-[ViGEmBus from nefarius](https://github.com/nefarius/ViGEmBus/releases) is retired but widely used; it provides the Xbox 360 path that avoids this duplicate-controller issue. Setup installs ViGEmBus 1.22.0 with the gamepad driver unless a ViGEmBus is already installed, which it leaves as it is. It stays installed when Butterpollo is removed. Reconnect the stream after changing the controller setting.
+[ViGEmBus from nefarius](https://github.com/nefarius/ViGEmBus/releases) is retired but widely used. Installing it separately enables the Xbox 360 path that avoids this duplicate-controller issue. Butterpollo detects it; the installer does not bundle it. Reconnect the stream after changing the controller setting.
 
 ## Settings for one app or device
 

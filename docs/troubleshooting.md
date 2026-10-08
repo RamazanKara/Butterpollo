@@ -212,14 +212,14 @@ Up to rc.10, a launch failed with this error when Windows left the new virtual d
 Check the stream card in the console first.
 
 - **"…its device permissions do not allow it"**: the device lacks that input permission. Every device paired after the first starts view-only, as in Apollo and Vibepollo. Turn on **Controllers** (or Touch, Pen, Mouse, Keyboard) for it under **Devices**, then reconnect.
-- **"Virtual gamepad driver unavailable"**: neither ViGEmBus nor the VHF gamepad driver could be opened. Run setup again with the gamepad driver selected; it installs both.
-- **"…controllers use Xbox One (VHF) in place of Xbox 360 (ViGEmBus)"**: the controller works, on the VHF pad, because ViGEmBus is missing. Run setup again with the gamepad driver selected to install it.
+- **"Virtual gamepad driver unavailable"**: neither ViGEmBus nor the VHF gamepad driver could be opened. Run the installer again with the gamepad driver selected.
+- **"…controllers use Xbox One (VHF) in place of Xbox 360 (ViGEmBus)"**: the controller works, on the VHF pad; see below.
 
 ## Steam shows two controllers
 
-Some Steam builds can list one VHF Xbox controller twice. Steam's SDL controller discovery races its XInput and GameInput backends for the same device. Start+Select may then open both Xbox Game Bar and Steam's keyboard. SDL has an [upstream fix](https://github.com/libsdl-org/SDL/commit/c4cfb739), but a Steam build may not include it yet.
+Some Steam builds can list one VHF Xbox controller twice. Steam's SDL controller discovery races its XInput and GameInput backends for the same device. Start+Select may then open both Xbox Game Bar and Steam's keyboard. SDL has an [upstream fix](https://github.com/libsdl-org/SDL/commit/c4cfb739). Users report that the Steam beta, which includes it, lists the pad once; switch to it under Steam → Settings → Interface → Client Beta Participation. Once Steam's stable client has the fix, no extra driver is needed.
 
-Keep **Settings → Input → Controller type** on **Automatic** with ViGEmBus installed. Setup installs [ViGEmBus](https://github.com/nefarius/ViGEmBus/releases) with the gamepad driver; if it failed, the setup log says why, and running setup again retries. Butterpollo uses ViGEmBus for Xbox-type clients when available. Its USB-style Xbox 360 pad avoids that duplicate discovery path.
+Until then, on Steam's stable client, install [ViGEmBus from nefarius](https://github.com/nefarius/ViGEmBus/releases) separately and keep **Settings → Input → Controller type** on **Automatic**. Butterpollo uses ViGEmBus for Xbox-type clients when available. Its USB-style Xbox 360 pad avoids that duplicate discovery path. ViGEmBus is retired (no further updates) and installs its own updater, so Butterpollo does not bundle it; the VHF pads cover XInput games, rumble, motion, touchpads and adaptive triggers without it.
 
 Automatic can choose DS4 for a client with motion sensors or a touchpad, including Steam Deck. PlayStation clients get the VHF DualSense when that driver is installed too. Select **Xbox 360 (ViGEmBus)** (`gamepad = x360`) explicitly if you need the Xbox 360 path and do not need motion or touchpad input. Disconnect and reconnect after changing the setting. Check Butterpollo's logs for `backend="ViGEmBus"` and `profile="x360"`, and Steam's `logs/controller.txt` for the new arrival. An explicit VHF choice continues to use VHF even when ViGEmBus is installed. An explicit Xbox 360 or DualShock 4 (ViGEmBus) choice without ViGEmBus installed uses the VHF Xbox One or DualShock 4 pad and shows a warning on the stream; install ViGEmBus or choose Automatic to remove it.
 
