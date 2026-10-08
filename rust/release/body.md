@@ -2,10 +2,6 @@
 
 **[Download Windows x64 installer](https://github.com/RamazanKara/Butterpollo/releases/download/{version}/butterpollo-setup-{version}.exe)** · [Portable ZIP](https://github.com/RamazanKara/Butterpollo/releases/download/{version}/butterpollo-rust-{version}-windows-x64.zip)
 
-[![Watch the 60-second Butterpollo demo](https://github.com/RamazanKara/Butterpollo/releases/download/{version}/butterpollo-launch-film.gif)](https://github.com/RamazanKara/Butterpollo/releases/download/{version}/butterpollo-launch-film.mp4)
-
-[Watch the film with sound · 60 seconds](https://github.com/RamazanKara/Butterpollo/releases/download/{version}/butterpollo-launch-film.mp4)
-
 ### New in {label}
 
 {notes}

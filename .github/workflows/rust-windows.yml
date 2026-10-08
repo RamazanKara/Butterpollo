@@ -144,12 +144,6 @@ jobs:
           mv "build/butterpollo-setup-$VERSION.exe" out/
           mv build/butterpollo-rust-release.zip "out/butterpollo-rust-$VERSION-windows-x64.zip"
           (cd out && sha256sum * > SHA256SUMS)
-          # The demo film the release text shows travels with every release,
-          # so deleting older releases leaves the page intact.
-          for tag in $(gh release list --exclude-drafts --limit 10 --json tagName --jq '.[].tagName'); do
-            gh release download "$tag" -D out -p 'butterpollo-launch-film.*' && break
-          done
-          test -f out/butterpollo-launch-film.gif -a -f out/butterpollo-launch-film.mp4
           flags=()
           if [[ $VERSION == *-* ]]; then flags+=(--prerelease); fi
           gh release create "$VERSION" --target "$GITHUB_SHA" --title "Butterpollo $VERSION" --notes-file body.md "${flags[@]}" out/*
