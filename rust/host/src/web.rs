@@ -190,9 +190,12 @@ fn token_authenticated(h: &Shared, headers: &HeaderMap, path: &str, method: &str
 fn token_catalog() -> Vec<auth::Scope> {
     [
         ("/api/config", &["GET", "POST", "PATCH"][..]),
+        ("/api/configLocale", &["GET"][..]),
+        ("/api/meta", &["GET"][..]),
         ("/api/metadata", &["GET"][..]),
         ("/api/apps", &["GET", "POST"][..]),
         ("/api/apps/[^/]+", &["DELETE"][..]),
+        ("/api/apps/delete", &["POST"][..]),
         ("/api/apps/[^/]+/cover", &["GET"][..]),
         ("/api/apps/[^/]+/icon", &["GET"][..]),
         ("/api/apps/close", &["POST"][..]),

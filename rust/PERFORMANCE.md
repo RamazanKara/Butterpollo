@@ -2115,14 +2115,14 @@ October 4; the WGC row is rc.17's default capture.
 | Load, host latency | 5.79, 5.49, 5.68 ms | 5.20, 5.70, 5.53 ms | 1.87, 1.85, 1.86 ms |
 
 On the same capture path rc.17 delivers the picture when rc.2 did, idle
-(14.7 ms both) and beside the load (35.4 against 35.7 ms, within the
+(14.7 ms both) and beside the load (35.4 against 35.6 ms, within the
 spread of the runs). With its default WGC capture it delivers it 2.2 ms
-sooner beside the load than rc.2 (33.4 against 35.7 ms; 43.9 against
+sooner beside the load than rc.2 (33.4 against 35.6 ms; 43.9 against
 45.3 ms at the 95th percentile), and the host latency Moonlight reports
 falls from 5.7 to 1.9 ms. Idle, all three are equal; every idle run
 delivered 60 new pictures a second without a repeat.
 
-rc.2 measured 35.7 ms beside the load here against 42.3 ms on October 4,
+rc.2 measured 35.6 ms beside the load here against 42.4 ms on October 4,
 more than the difference between the versions: absolute values move
 between batches, so only compare rows measured together. Beside the load
 the probe rendered at 60-66 Hz instead of 120, as on October 4, so the

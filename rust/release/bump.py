@@ -52,20 +52,29 @@ current = re.compile(r'(?<=Download ){0}(?![\w])|(?<=For ){0}(?=,)'.format(re.es
 for name in ('README.md', 'docs/README.md', 'docs/getting-started.md', 'rust/README.md'):
     path = root / name
     text = path.read_text(encoding='utf-8')
-    path.write_text(current.sub(label(new), text.replace(old, new)), encoding='utf-8', newline='')
+    for link in (f'Download {label(old)}', 'release'):
+        text = text.replace(f'[{link}](https://github.com/RamazanKara/Butterpollo/releases/tag/{old})',
+                            f'[{link}](https://github.com/RamazanKara/Butterpollo/releases/tag/{new})')
+    text = text.replace(f'butterpollo-setup-{old}.exe', f'butterpollo-setup-{new}.exe')
+    text = text.replace(f'butterpollo-rust-{old}-windows-x64.zip', f'butterpollo-rust-{new}-windows-x64.zip')
+    text = text.replace(f'The workspace version is **{old}**', f'The workspace version is **{new}**')
+    path.write_text(current.sub(label(new), text), encoding='utf-8', newline='')
 
 notes = root / 'rust/RELEASE_NOTES.md'
 lines = notes.read_text(encoding='utf-8').split('\n')
 assert old in lines[0], lines[0]
 lines[0] = lines[0].replace(old, new)
 history = next(i for i, l in enumerate(lines) if l.startswith('**Release history:** '))
-lines[history] = lines[history].replace('**Release history:** ',
-                                        f'**Release history:** [{label(new)}]({anchor(new)}) · ', 1)
+entry = f'[{label(new)}]({anchor(new)})'
+if entry not in lines[history]:
+    lines[history] = lines[history].replace('**Release history:** ',
+                                            f'**Release history:** {entry} · ', 1)
 intro = next(i for i, l in enumerate(lines) if i > history and l.strip())
 lines[intro] = short.sub(label(new), lines[intro].replace(old, new))
-at = lines.index(f'## New in {label(old)}')
-body = args.notes.read_text(encoding='utf-8').strip().split('\n') if args.notes else ['- ']
-lines[at:at] = [f'## New in {label(new)}', '', *body, '']
+if f'## New in {label(new)}' not in lines:
+    at = lines.index(f'## New in {label(old)}')
+    body = args.notes.read_text(encoding='utf-8').strip().split('\n') if args.notes else ['- ']
+    lines[at:at] = [f'## New in {label(new)}', '', *body, '']
 text = '\n'.join(lines)
 text = text.replace(f'butterpollo-setup-{old}.exe` installs', f'butterpollo-setup-{new}.exe` installs')
 text = text.replace(f'butterpollo-rust-{old}-windows-x64.zip`', f'butterpollo-rust-{new}-windows-x64.zip`')

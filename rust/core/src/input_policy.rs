@@ -29,7 +29,7 @@ pub const BACK_GRIP_KEYS: [&str; 4] = [
 ];
 
 /// The stream-card hint for a back grip pressed while it is unmapped.
-pub const BACK_GRIP_HINT: &str = "A controller's back grips (a Steam Deck's L4, R4, L5 or R5) were pressed, but no virtual controller has them, so they do nothing. Choose what each one presses under Settings, Input, Controllers.";
+pub const BACK_GRIP_HINT: &str = "A controller's back grips (a Steam Deck's L4, R4, L5 or R5) were pressed, but no virtual controller has them, so they do nothing. Choose what each one presses under Settings, Input, Steam Deck and back grips.";
 
 /// The `steam_deck_controller` setting: what a Steam Deck client's
 /// controller becomes on the host.

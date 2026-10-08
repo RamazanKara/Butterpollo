@@ -731,11 +731,14 @@ const amd: Setting[] = [
     key: 'amd_vbaq',
     label: 'Variance-based adaptive quantization',
     description:
-      'Gives more bits to smooth areas, where artifacts are easiest to see, and fewer to busy textures. Not used with constant QP.',
+      'Gives more bits to smooth areas, where artifacts are easiest to see, and fewer to busy textures. When unset, off for H.264 and on for HEVC/AV1; not used with constant QP.',
     category: 'encoders',
     group: 'AMD AMF',
-    control: { kind: 'select', options: tristate },
-    default: 'enabled',
+    control: {
+      kind: 'select',
+      options: [{ value: '', label: 'Default (H.264 off; HEVC/AV1 on)' }, ...tristate],
+    },
+    default: '',
     visibleWhen: amf,
   },
   {

@@ -1098,7 +1098,7 @@ mod tests {
     }
     /// Needs the packaged FFmpeg libraries on PATH.
     #[test]
-    #[ignore]
+    #[ignore = "requires the packaged FFmpeg libraries on PATH"]
     fn native_software_converter_letterboxes_other_shapes() {
         let image = Image {
             width: 32,
