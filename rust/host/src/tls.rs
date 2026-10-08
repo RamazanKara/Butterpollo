@@ -9,9 +9,10 @@ use std::{net::SocketAddr, sync::Arc};
 use tokio_rustls::{
     TlsAcceptor,
     rustls::{
-        self, DigitallySignedStruct, DistinguishedName, Error, SignatureScheme,
+        self, CertificateError, DigitallySignedStruct, DistinguishedName, Error, PeerMisbehaved,
+        SignatureScheme,
         client::danger::HandshakeSignatureValid,
-        pki_types::{CertificateDer, UnixTime},
+        pki_types::{CertificateDer, SubjectPublicKeyInfoDer, UnixTime},
         server::danger::{ClientCertVerified, ClientCertVerifier},
     },
 };
@@ -28,6 +29,17 @@ pub struct Connection {
 #[derive(Debug)]
 struct ClientProof {
     provider: Arc<rustls::crypto::CryptoProvider>,
+}
+/// rustls's own signature checks parse the certificate with webpki, which
+/// takes only X.509 v3. Moonlight for webOS (moonlight-tv) sends a v2
+/// certificate, so its handshake failed before it could pair (issue #8);
+/// the signature needs only the public key, which any version carries.
+fn client_key<'a>(
+    certificate: &'a CertificateDer<'_>,
+) -> Result<SubjectPublicKeyInfoDer<'a>, Error> {
+    butterpollo_core::crypto::subject_public_key_info(certificate)
+        .map(SubjectPublicKeyInfoDer::from)
+        .map_err(|_| CertificateError::BadEncoding.into())
 }
 impl ClientCertVerifier for ClientProof {
     fn client_auth_mandatory(&self) -> bool {
@@ -53,12 +65,25 @@ impl ClientCertVerifier for ClientProof {
         cert: &CertificateDer<'_>,
         signature: &DigitallySignedStruct,
     ) -> std::result::Result<HandshakeSignatureValid, Error> {
-        rustls::crypto::verify_tls12_signature(
-            message,
-            cert,
-            signature,
-            &self.provider.signature_verification_algorithms,
-        )
+        let (_, algorithms) = self
+            .provider
+            .signature_verification_algorithms
+            .mapping
+            .iter()
+            .find(|(scheme, _)| *scheme == signature.scheme)
+            .ok_or(PeerMisbehaved::SignedHandshakeWithUnadvertisedSigScheme)?;
+        let spki = client_key(cert)?;
+        let key = webpki::RawPublicKeyEntity::try_from(&spki)
+            .map_err(|_| Error::from(CertificateError::BadEncoding))?;
+        // A TLS 1.2 ECDSA scheme leaves the curve open, as in rustls.
+        for algorithm in *algorithms {
+            match key.verify_signature(*algorithm, message, signature.signature()) {
+                Ok(()) => return Ok(HandshakeSignatureValid::assertion()),
+                Err(webpki::Error::UnsupportedSignatureAlgorithmForPublicKeyContext(_)) => {}
+                Err(_) => break,
+            }
+        }
+        Err(CertificateError::BadSignature.into())
     }
     fn verify_tls13_signature(
         &self,
@@ -66,9 +91,9 @@ impl ClientCertVerifier for ClientProof {
         cert: &CertificateDer<'_>,
         signature: &DigitallySignedStruct,
     ) -> std::result::Result<HandshakeSignatureValid, Error> {
-        rustls::crypto::verify_tls13_signature(
+        rustls::crypto::verify_tls13_signature_with_raw_key(
             message,
-            cert,
+            &client_key(cert)?,
             signature,
             &self.provider.signature_verification_algorithms,
         )
@@ -156,5 +181,105 @@ pub async fn serve(
                     .await;
             }
         });
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio_rustls::{
+        TlsConnector,
+        rustls::{
+            client::danger::{ServerCertVerified, ServerCertVerifier},
+            pki_types::ServerName,
+            sign::{CertifiedKey, SingleCertAndKey},
+        },
+    };
+    /// Trusts any host: only the host's view of the client is under test.
+    #[derive(Debug)]
+    struct AnyHost;
+    impl ServerCertVerifier for AnyHost {
+        fn verify_server_cert(
+            &self,
+            _: &CertificateDer<'_>,
+            _: &[CertificateDer<'_>],
+            _: &ServerName<'_>,
+            _: &[u8],
+            _: UnixTime,
+        ) -> std::result::Result<ServerCertVerified, Error> {
+            Ok(ServerCertVerified::assertion())
+        }
+        fn verify_tls12_signature(
+            &self,
+            _: &[u8],
+            _: &CertificateDer<'_>,
+            _: &DigitallySignedStruct,
+        ) -> std::result::Result<HandshakeSignatureValid, Error> {
+            Ok(HandshakeSignatureValid::assertion())
+        }
+        fn verify_tls13_signature(
+            &self,
+            _: &[u8],
+            _: &CertificateDer<'_>,
+            _: &DigitallySignedStruct,
+        ) -> std::result::Result<HandshakeSignatureValid, Error> {
+            Ok(HandshakeSignatureValid::assertion())
+        }
+        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+            rustls::crypto::ring::default_provider()
+                .signature_verification_algorithms
+                .supported_schemes()
+        }
+    }
+    /// Whether the host completes a handshake with a client that presents
+    /// `certificate` and signs with `key`, and then sees that certificate.
+    async fn accepts(
+        acceptor: &TlsAcceptor,
+        version: &'static rustls::SupportedProtocolVersion,
+        certificate: &[u8],
+        key: &str,
+    ) -> bool {
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let key = rustls_pemfile::private_key(&mut key.as_bytes())
+            .unwrap()
+            .unwrap();
+        let key = provider.key_provider.load_private_key(key).unwrap();
+        // CertifiedKey::new skips rustls's key check, which refuses v2 too.
+        let client = CertifiedKey::new(vec![CertificateDer::from(certificate.to_vec())], key);
+        let config = rustls::ClientConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[version])
+            .unwrap()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AnyHost))
+            .with_client_cert_resolver(Arc::new(SingleCertAndKey::from(client)));
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let host = ServerName::try_from("localhost").unwrap();
+        let (_, accepted) = tokio::join!(
+            TlsConnector::from(Arc::new(config)).connect(host, near),
+            acceptor.accept(far)
+        );
+        accepted.is_ok_and(|stream| {
+            stream
+                .get_ref()
+                .1
+                .peer_certificates()
+                .and_then(|chain| chain.first())
+                .is_some_and(|presented| presented.as_ref() == certificate)
+        })
+    }
+    #[tokio::test]
+    async fn moonlight_tv_v2_certificate_completes_the_handshake() {
+        // Made by moonlight-tv's libgamestream mkcert.c (mbedtls): X.509 v2.
+        let certificate = butterpollo_core::crypto::certificate_der(include_str!(
+            "../../core/testdata/moonlight-tv-client.pem"
+        ))
+        .unwrap();
+        let key = include_str!("../../core/testdata/moonlight-tv-client.key");
+        let identity = butterpollo_core::crypto::Identity::generate().unwrap();
+        let acceptor = acceptor(&identity, true).unwrap();
+        for version in [&rustls::version::TLS12, &rustls::version::TLS13] {
+            assert!(accepts(&acceptor, version, &certificate, key).await);
+            // The signature is still checked: the host's key is the wrong one.
+            assert!(!accepts(&acceptor, version, &certificate, &identity.private_pem).await);
+        }
     }
 }

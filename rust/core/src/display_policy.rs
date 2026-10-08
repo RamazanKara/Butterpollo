@@ -16,8 +16,18 @@ pub struct VirtualDisplayRequest<'a> {
     pub configured_output: &'a str,
 }
 impl VirtualDisplayRequest<'_> {
-    pub fn explicit(&self) -> bool {
-        self.client_requested || self.client_forced || self.app_requested
+    /// Whether the stream gets a virtual display. Without a usable driver a
+    /// request from the client, the app or the host settings streams the
+    /// physical display (the caller warns), as Apollo and Vibepollo do: an
+    /// Artemis client asked to proceed without the driver must still get a
+    /// stream. Only an output that names the virtual display itself has no
+    /// physical display to fall back to.
+    pub fn uses_virtual(
+        &self,
+        physical_only: bool,
+        driver_available: impl FnOnce() -> bool,
+    ) -> bool {
+        !physical_only && self.requested() && (self.output_virtual() || driver_available())
     }
     pub fn output_virtual(&self) -> bool {
         matches!(
@@ -412,6 +422,41 @@ impl Arrangement {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_requested_virtual_display_without_its_driver_streams_the_physical_display() {
+        use super::VirtualDisplayRequest;
+        let client = VirtualDisplayRequest {
+            client_requested: true,
+            ..Default::default()
+        };
+        assert!(client.uses_virtual(false, || true));
+        assert!(!client.uses_virtual(false, || false));
+        assert!(!client.uses_virtual(true, || true));
+        for request in [
+            VirtualDisplayRequest {
+                client_forced: true,
+                ..Default::default()
+            },
+            VirtualDisplayRequest {
+                app_requested: true,
+                ..Default::default()
+            },
+            VirtualDisplayRequest {
+                configured: true,
+                ..Default::default()
+            },
+        ] {
+            assert!(request.uses_virtual(false, || true));
+            assert!(!request.uses_virtual(false, || false));
+        }
+        let named = VirtualDisplayRequest {
+            configured_output: "virtual_display",
+            ..Default::default()
+        };
+        assert!(named.uses_virtual(false, || false));
+        let none = VirtualDisplayRequest::default();
+        assert!(!none.uses_virtual(false, || panic!("no request needs no driver check")));
+    }
     #[test]
     fn unapplied_display_modes_are_visible_and_recovery_clears_them() {
         let warnings = crate::session::Warnings::default();
