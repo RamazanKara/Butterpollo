@@ -211,9 +211,9 @@ Up to rc.10, a launch failed with this error when Windows left the new virtual d
 
 Some Steam builds can list one VHF Xbox controller twice. Steam's SDL controller discovery races its XInput and GameInput backends for the same device. Start+Select may then open both Xbox Game Bar and Steam's keyboard. SDL has an [upstream fix](https://github.com/libsdl-org/SDL/commit/c4cfb739), but a Steam build may not include it yet.
 
-Install [ViGEmBus from nefarius](https://github.com/nefarius/ViGEmBus/releases) separately and keep **Settings → Input → Controller type** on **Automatic**. Butterpollo prefers ViGEmBus when available. Its USB-style Xbox 360 pad avoids that duplicate discovery path. ViGEmBus is retired but widely used; Butterpollo does not bundle its installer.
+Install [ViGEmBus from nefarius](https://github.com/nefarius/ViGEmBus/releases) separately and keep **Settings → Input → Controller type** on **Automatic**. Butterpollo uses ViGEmBus for Xbox-type clients when available. Its USB-style Xbox 360 pad avoids that duplicate discovery path. ViGEmBus is retired but widely used; Butterpollo does not bundle its installer.
 
-Automatic can choose DS4 for a client with motion sensors or a touchpad, including Steam Deck. Select **Xbox 360 (ViGEmBus)** (`gamepad = x360`) explicitly if you need the Xbox 360 path and do not need motion or touchpad input. Disconnect and reconnect after changing the setting. Check Butterpollo's logs for `backend="ViGEmBus"` and `profile="x360"`, and Steam's `logs/controller.txt` for the new arrival. An explicit VHF choice continues to use VHF even when ViGEmBus is installed.
+Automatic can choose DS4 for a client with motion sensors or a touchpad, including Steam Deck. PlayStation clients get the VHF DualSense when that driver is installed too. Select **Xbox 360 (ViGEmBus)** (`gamepad = x360`) explicitly if you need the Xbox 360 path and do not need motion or touchpad input. Disconnect and reconnect after changing the setting. Check Butterpollo's logs for `backend="ViGEmBus"` and `profile="x360"`, and Steam's `logs/controller.txt` for the new arrival. An explicit VHF choice continues to use VHF even when ViGEmBus is installed.
 
 ## An update stays queued
 

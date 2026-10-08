@@ -123,7 +123,7 @@ pub const GLOBAL: &[Setting] = settings! {
         "mouse", "Mouse input", Bool;
         "controller", "Controller input", Bool;
         "native_pen_touch", "Native pen and touch", Bool;
-        "gamepad", "Controller profile (auto prefers ViGEmBus; otherwise VHF)", Choice(&["auto","x360","ds4","vhf_xbox","vhf_xbox_one","vhf_ds4","vhf_ds5","vhf_switch"]);
+        "gamepad", "Controller profile (auto: ViGEmBus for Xbox-type, VHF DualSense for PlayStation-type; otherwise VHF)", Choice(&["auto","x360","ds4","vhf_xbox","vhf_xbox_one","vhf_ds4","vhf_ds5","vhf_switch"]);
         "keybindings", "Keyboard remapping pairs", Json;
         "always_send_scancodes", "Send keyboard scan codes", Bool;
         "key_rightalt_to_key_win", "Map right Alt to Windows key", Bool;

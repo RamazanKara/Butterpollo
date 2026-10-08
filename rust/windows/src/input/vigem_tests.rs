@@ -244,7 +244,7 @@ fn backend_open_does_not_block_input_and_worker_drop_frees_slots() -> Result<()>
     };
 
     static INJECTED: AtomicUsize = AtomicUsize::new(0);
-    for (profile, backend) in [(VHF_AUTO, "VHF"), (0, "ViGEmBus")] {
+    for (profile, backend) in [(VHF_AUTO, "VHF"), (0, "ViGEmBus+VHF")] {
         require_idle_host()?;
         let slots_before = *SLOTS.lock().unwrap();
         let (ready, opened) = mpsc::channel();
@@ -263,9 +263,11 @@ fn backend_open_does_not_block_input_and_worker_drop_frees_slots() -> Result<()>
             INJECTED.fetch_add(inputs.len(), Ordering::Relaxed);
             inputs.len()
         };
+        // An Xbox-type client with motion: a VHF DualSense on VHF, a ViGEm
+        // DualShock 4 when ViGEmBus is also open.
         injector.apply(&Input::Arrival {
             id: 0,
-            kind: 2,
+            kind: 1,
             capabilities: 0x30,
             buttons: 0,
         })?;
@@ -360,7 +362,7 @@ fn neutral_targets_enumerate_once_and_unplug_on_peer_drop() -> Result<()> {
         .ok();
     let slots_before = *SLOTS.lock().unwrap();
     let mut pads = Gamepads::open(0)?;
-    if !matches!(pads.backend, Backend::Vigem(_)) {
+    if matches!(pads.backend, Backend::Vhf(_)) {
         bail!("ViGEmBus unavailable; refusing a VHF plug cycle");
     }
     require_idle_host()?;
@@ -401,7 +403,7 @@ fn neutral_targets_enumerate_once_and_unplug_on_peer_drop() -> Result<()> {
     if state.sticks != [0; 4] {
         assert_eq!(state.sticks, [-3356, -1869, -3255, -848]);
     }
-    if let Backend::Vigem(client) = &pads.backend {
+    if let Some(client) = pads.backend.vigem() {
         let serial = client.targets[&u32::from(pads.active[&0])].serial;
         eprintln!(
             "X360 serial={serial}, XInput index={index}, masks {before:#x} -> {after_x360:#x}; zero buttons/triggers, sticks={:?} after neutral submission",
@@ -409,13 +411,19 @@ fn neutral_targets_enumerate_once_and_unplug_on_peer_drop() -> Result<()> {
         );
     }
     require_idle_host()?;
+    // An Xbox-type client with motion and a touchpad (a Steam Deck) keeps its
+    // ViGEm DualShock 4 when the VHF driver is open too.
     pads.apply(&Input::Arrival {
         id: 1,
-        kind: 2,
-        capabilities: 0,
+        kind: 1,
+        capabilities: 0x38,
         buttons: 0,
     })?;
     assert_eq!(pads.profiles[&1], VIGEM_DS4);
+    assert_eq!(
+        pads.backend.name_for(u32::from(pads.active[&1])),
+        "ViGEmBus"
+    );
     pads.apply(&Input::Controller {
         id: 1,
         active: 3,
@@ -461,6 +469,56 @@ fn neutral_targets_enumerate_once_and_unplug_on_peer_drop() -> Result<()> {
             assert_eq!(arrivals, 1, "inspect Steam's new controller records");
         }
     }
+    Ok(())
+}
+
+#[test]
+#[ignore = "plugs one neutral X360 on ViGEmBus and one DualSense on VHF; requires both drivers and an idle installed Butterpollo host"]
+fn automatic_puts_playstation_pads_on_vhf_and_xbox_pads_on_vigem() -> Result<()> {
+    require_idle_host()?;
+    let slots_before = *SLOTS.lock().unwrap();
+    let mut pads = Gamepads::open(0)?;
+    if !matches!(pads.backend, Backend::Mixed(_)) {
+        bail!("needs both ViGEmBus and the VHF gamepad driver");
+    }
+    for (id, kind, profile, driver) in [(0, 1, VIGEM_X360, "ViGEmBus"), (1, 2, 6, "VHF")] {
+        require_idle_host()?;
+        pads.apply(&Input::Arrival {
+            id,
+            kind,
+            capabilities: 0,
+            buttons: 0,
+        })?;
+        assert_eq!(pads.profiles[&u16::from(id)], profile);
+        let slot = u32::from(pads.active[&u16::from(id)]);
+        assert_eq!(pads.backend.name_for(slot), driver);
+    }
+    pads.apply(&Input::Controller {
+        id: 0,
+        active: 3,
+        buttons: 0,
+        left_trigger: 0,
+        right_trigger: 0,
+        sticks: [0; 4],
+    })?;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        require_idle_host()?;
+        pads.refresh()?;
+        let _ = pads.feedback();
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // Replugging a pad as the other client type moves it to the other driver.
+    pads.apply(&Input::Arrival {
+        id: 0,
+        kind: 2,
+        capabilities: 0,
+        buttons: 0,
+    })?;
+    assert_eq!(pads.profiles[&0], 6);
+    assert_eq!(pads.backend.name_for(u32::from(pads.active[&0])), "VHF");
+    drop(pads);
+    assert_eq!(*SLOTS.lock().unwrap(), slots_before);
     Ok(())
 }
 

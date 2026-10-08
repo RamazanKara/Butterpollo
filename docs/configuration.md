@@ -94,11 +94,13 @@ Under **Settings → Frame limiting**:
 
 ## Controllers
 
-**Settings → Input → Controller type** controls which virtual controller games see. `gamepad = auto` prefers ViGEmBus when the installed driver can be opened, as Vibepollo does. Its USB-style Xbox 360 pad avoids a Steam/SDL issue that can list one VHF Xbox pad twice through XInput and GameInput.
+**Settings → Input → Controller type** controls which virtual controller games see. `gamepad = auto` uses ViGEmBus for Xbox-type clients when the installed driver can be opened, as Vibepollo does. Its USB-style Xbox 360 pad avoids a Steam/SDL issue that can list one VHF Xbox pad twice through XInput and GameInput.
 
-With ViGEmBus, Automatic selects DualShock 4 for PlayStation clients, or for clients with motion sensors or a touchpad when `motion_as_ds4` or `touchpad_as_ds4` is enabled. Both preferences default to enabled. A Steam Deck reporting motion therefore gets DS4; other clients get Xbox 360. DS4 carries motion, battery and primary-touchpad input, rumble and lightbar feedback. Xbox 360 carries buttons, sticks, triggers and rumble.
+PlayStation clients get a virtual DualSense from the VHF driver when it is installed alongside ViGEmBus. ViGEmBus cannot emulate a DualSense, and only the DualSense has adaptive triggers; it also carries motion, battery, touchpad, lightbar and rumble. A game's trigger effects reach the player only if the client forwards them to a real DualSense. Without the VHF driver, PlayStation clients get a DualShock 4 through ViGEmBus.
 
-Without a usable ViGEmBus driver, Automatic keeps the VHF behavior: DualSense for PlayStation, Switch Pro for Nintendo, and Xbox Series for other controllers, with the motion/touchpad preferences selecting DualSense for those other types. Explicit `x360` and `ds4` require ViGEmBus; `vhf_xbox`, `vhf_xbox_one`, `vhf_ds4`, `vhf_ds5` and `vhf_switch` use VHF. An explicit choice does not silently switch drivers. Logs name the backend and profile for each connected controller.
+Other clients stay on ViGEmBus. Automatic selects DualShock 4 for clients with motion sensors or a touchpad when `motion_as_ds4` or `touchpad_as_ds4` is enabled. Both preferences default to enabled. A Steam Deck reporting motion therefore gets DS4; other clients get Xbox 360. DS4 carries motion, battery and primary-touchpad input, rumble and lightbar feedback. Xbox 360 carries buttons, sticks, triggers and rumble.
+
+Without a usable ViGEmBus driver, Automatic keeps the VHF behavior: DualSense for PlayStation, Switch Pro for Nintendo, and Xbox Series for other controllers, with the motion/touchpad preferences selecting DualSense for those other types. Explicit `x360` and `ds4` require ViGEmBus; `vhf_xbox`, `vhf_xbox_one`, `vhf_ds4`, `vhf_ds5` and `vhf_switch` use VHF. An explicit choice does not silently switch drivers, so `vhf_ds5` gives every client a DualSense and `ds4` gives every client a DualShock 4 without adaptive triggers. Logs name the backend and profile for each connected controller.
 
 [ViGEmBus from nefarius](https://github.com/nefarius/ViGEmBus/releases) is retired but widely used. Installing it separately enables the Xbox 360 path that avoids this duplicate-controller issue. Butterpollo detects it; the installer does not bundle it. Reconnect the stream after changing the controller setting.
 

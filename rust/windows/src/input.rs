@@ -186,13 +186,13 @@ impl Gamepads {
                         controller = id,
                         client_type = kind,
                         capabilities = format!("{capabilities:#x}"),
-                        backend = self.backend.name(),
+                        backend = self.backend.name_for(u32::from(global)),
                         profile = profile_name(profile),
                         "virtual controller connected"
                     );
                     return Ok(());
                 }
-                Err(error) if matches!(self.backend, gamepad_backend::Backend::Vigem(_)) => {
+                Err(error) if matches!(profile, VIGEM_X360 | VIGEM_DS4) => {
                     return Err(error);
                 }
                 Err(_) => {}

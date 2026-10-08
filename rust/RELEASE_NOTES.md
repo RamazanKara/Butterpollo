@@ -9,6 +9,7 @@ Butterpollo's host, native helpers, service and setup are written in Rust, with 
 ## New in rc.23
 
 - **Streams ride out a saturated GPU instead of ending.** An RX 9070 XT streaming 4K60 HEVC beside a game froze and then lost the stream with "The encoder returned no frame for 100 ms": the host recreated a stalled encoder about ten times a second, and a fresh encoder's first 4K keyframe on a busy GPU never got time to arrive. A stall now waits 250 ms before the first recreation, then 500 ms, 1 s and 2 s, and the session gives up after 20 s instead of 10 s. Large frames keep the error correction that fits instead of none. Your encoder settings are never changed behind your back.
+- **PlayStation controllers can have adaptive triggers with ViGEmBus installed.** Automatic now gives a PlayStation-type client the VHF DualSense instead of a ViGEmBus DualShock 4, because ViGEmBus cannot emulate a DualSense. Xbox-type clients, including a Steam Deck, stay on ViGEmBus, so Steam still lists one controller. Without the VHF driver, the DualShock 4 on ViGEmBus is used as before; `ds4` and `vhf_ds5` still pick a driver explicitly. Checked with selection tests and a compile check only: not yet tried with a real DualSense on a client or in a game.
 - **Sturdier connections:**
   - A client resetting its connection while connecting no longer shuts the host down and ends the running game.
   - A session whose control connection is lost now ends after the ping timeout instead of holding the encoder, capture and display until the host restarts.

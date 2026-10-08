@@ -7,16 +7,23 @@ pub const VIGEM_X360: u16 = 8;
 pub const VIGEM_DS4: u16 = 9;
 pub const VHF_AUTO: u16 = 10;
 pub const VIGEM_PROFILES: u32 = (1 << (VIGEM_X360 - 1)) | (1 << (VIGEM_DS4 - 1));
+/// The VHF driver's DualSense, the only virtual pad with adaptive triggers.
+pub const VHF_DUALSENSE: u16 = 6;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum GamepadBackend {
     Vigem,
     Vhf,
+    /// Automatic with ViGEmBus installed: it keeps the Xbox-type pads, and the
+    /// VHF driver is opened too, when installed, for PlayStation-type clients.
+    Mixed,
 }
 
 pub fn gamepad_backend(profile: u16, vigem_available: bool) -> GamepadBackend {
-    if matches!(profile, VIGEM_X360 | VIGEM_DS4) || (profile == 0 && vigem_available) {
+    if matches!(profile, VIGEM_X360 | VIGEM_DS4) {
         GamepadBackend::Vigem
+    } else if profile == 0 && vigem_available {
+        GamepadBackend::Mixed
     } else {
         GamepadBackend::Vhf
     }
@@ -139,6 +146,14 @@ impl Policy {
         available: u32,
     ) -> Option<u16> {
         if available & VIGEM_PROFILES != 0 {
+            // ViGEm cannot emulate a DualSense, so a PlayStation-type client
+            // gets the VHF one when that driver is installed too: it alone
+            // carries adaptive triggers. Without it, the client falls back to
+            // a ViGEm DualShock 4. Xbox-type clients stay on ViGEm, and an
+            // explicit profile is never replaced.
+            if configured == 0 && kind == 2 && available & (1 << (VHF_DUALSENSE - 1)) != 0 {
+                return Some(VHF_DUALSENSE);
+            }
             let desired = if configured != 0 {
                 configured
             } else if kind == 2
@@ -223,9 +238,9 @@ impl BackButton {
 mod tests {
     use super::*;
     #[test]
-    fn automatic_backend_prefers_vigem_and_explicit_profiles_keep_their_backend() {
+    fn automatic_backend_adds_vhf_to_vigem_and_explicit_profiles_keep_their_backend() {
         use GamepadBackend::*;
-        assert_eq!(gamepad_backend(gamepad_profile("auto"), true), Vigem);
+        assert_eq!(gamepad_backend(gamepad_profile("auto"), true), Mixed);
         assert_eq!(gamepad_backend(gamepad_profile("auto"), false), Vhf);
         for available in [false, true] {
             for value in ["x360", "ds4"] {
@@ -290,6 +305,66 @@ mod tests {
             );
         }
         assert_eq!(policy.controller_profile(0, 1, 0, 0), None);
+    }
+    #[test]
+    fn playstation_clients_prefer_vhf_dualsense_when_both_drivers_are_installed() {
+        let policy = Policy::resolve(&Config::default()).unwrap();
+        // The VHF driver's Xbox One, Xbox Series, DualShock 4, DualSense and
+        // Switch Pro profiles next to ViGEmBus's two.
+        let both = VIGEM_PROFILES | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6);
+        for caps in [0, 8, 0x10, 0x20, 0x38, 0xff] {
+            assert_eq!(
+                policy.controller_profile(0, 2, caps, both),
+                Some(VHF_DUALSENSE)
+            );
+            // An explicit ViGEm choice is not replaced.
+            assert_eq!(
+                policy.controller_profile(VIGEM_DS4, 2, caps, both),
+                Some(VIGEM_DS4)
+            );
+            assert_eq!(
+                policy.controller_profile(VIGEM_X360, 2, caps, both),
+                Some(VIGEM_X360)
+            );
+        }
+        // Everyone else is exactly what ViGEmBus alone gives them: a Steam
+        // Deck reporting motion keeps its DualShock 4.
+        for kind in [0, 1, 3, 4] {
+            for caps in [0, 8, 0x10, 0x20, 0x38] {
+                assert_eq!(
+                    policy.controller_profile(0, kind, caps, both),
+                    policy.controller_profile(0, kind, caps, VIGEM_PROFILES)
+                );
+            }
+        }
+        assert_eq!(policy.controller_profile(0, 1, 0, both), Some(VIGEM_X360));
+        assert_eq!(policy.controller_profile(0, 1, 0x30, both), Some(VIGEM_DS4));
+        // The motion and touchpad preferences only choose for Xbox-type clients.
+        let plain = Policy::resolve(
+            &Config::parse("motion_as_ds4=false\ntouchpad_as_ds4=false\n").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(plain.controller_profile(0, 2, 0, both), Some(VHF_DUALSENSE));
+        assert_eq!(plain.controller_profile(0, 1, 0x38, both), Some(VIGEM_X360));
+    }
+    #[test]
+    fn playstation_clients_fall_back_to_vigem_dualshock_without_a_vhf_dualsense() {
+        let policy = Policy::resolve(&Config::default()).unwrap();
+        // No VHF driver at all, as before.
+        assert_eq!(
+            policy.controller_profile(0, 2, 0x38, VIGEM_PROFILES),
+            Some(VIGEM_DS4)
+        );
+        // A VHF driver without a DualSense profile.
+        let no_dualsense = VIGEM_PROFILES | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 6);
+        assert_eq!(
+            policy.controller_profile(0, 2, 0x38, no_dualsense),
+            Some(VIGEM_DS4)
+        );
+        // The VHF driver alone keeps its own choice.
+        let vhf = (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6);
+        assert_eq!(policy.controller_profile(0, 2, 0, vhf), Some(VHF_DUALSENSE));
+        assert_eq!(policy.controller_profile(0, 1, 0, vhf), Some(4));
     }
     #[test]
     fn independent_controllers_match_client_type_and_available_driver_profiles() {
