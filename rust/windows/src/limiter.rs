@@ -3,7 +3,7 @@ use crate::{
     nvapi::{Drs, Scope, Value},
     rtss,
 };
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use butterpollo_core::{
     config::Config,
     framegen::{Policy, Provider, Rate},
@@ -77,6 +77,12 @@ fn persist(directory: &Path, journal: &Journal) -> Result<()> {
 }
 /// Also used by the Rust crash watcher. Failures leave the journal intact.
 pub fn recover(directory: &Path) -> Result<()> {
+    restore(directory, &mut None)
+}
+/// `owned`: the RTSS this host started for the stream. Closing it ends every
+/// live change, and RTSS reads the restored profile when it next starts, so
+/// nothing is left to restore through its SDK (Vibepollo also closes it).
+fn restore(directory: &Path, owned: &mut Option<(PathBuf, crate::process::Process)>) -> Result<()> {
     let mut journal = load(directory)?;
     if let Some(change) = journal.rtss.as_ref() {
         let text = rtss::read(&change.root)?;
@@ -93,15 +99,21 @@ pub fn recover(directory: &Path) -> Result<()> {
         if !restore.is_empty() {
             rtss::write_profile(&change.root, &restore)?;
         }
-        if rtss::available(&change.root) {
+        if let Some((_, process)) = owned.take_if(|(root, _)| *root == change.root) {
+            process
+                .stop()
+                .context("close the RTSS started for the stream")?;
+        } else if rtss::available(&change.root) {
             let _process = rtss::start(&change.root)?;
-            let before = rtss::wait_ready(&change.root)?;
+            let before = rtss::wait_ready(&change.root)
+                .context("ask RTSS for its state before restoring")?;
             let disabled = if before.flags & 4 == 0 {
                 Some(change.disabled)
             } else {
                 None
             };
-            let restored = rtss::apply(&change.root, &restore, disabled)?;
+            let restored = rtss::apply(&change.root, &restore, disabled)
+                .context("give RTSS its original frame limit")?;
             for (key, value) in &restore {
                 if let Some(value) = value
                     && restored.values.get(key) != Some(&Some(*value))
@@ -397,7 +409,10 @@ impl Lease {
                 Err(error) => {
                     state.message = format!("{error:#}");
                     tracing::warn!(root = %root.display(), error = %state.message, "RTSS frame limiter could not be applied");
-                    if journal.rtss.is_some() && recover(directory).is_err() {
+                    if journal.rtss.is_some()
+                        && let Err(error) = restore(directory, &mut state.process)
+                    {
+                        tracing::warn!(error = %format!("{error:#}"), "RTSS frame limiter could not be restored after the failure");
                         state.active = "rtss".into();
                     } else {
                         journal = load(directory)?;
@@ -438,12 +453,13 @@ impl Lease {
 }
 impl Drop for Lease {
     fn drop(&mut self) {
-        let mut state = state().lock().unwrap();
+        let mut guard = state().lock().unwrap();
+        let state = &mut *guard;
         state.users -= 1;
         if state.users != 0 {
             return;
         }
-        match recover(&state.directory) {
+        match restore(&state.directory, &mut state.process) {
             Ok(()) => {
                 let _ = crate::display_recovery::external(false);
                 state.active = "none".into();
@@ -451,8 +467,8 @@ impl Drop for Lease {
                 state.process.take();
             }
             Err(error) => {
-                state.message = error.to_string();
-                tracing::warn!(%error,"frame limiter restoration remains pending");
+                state.message = format!("{error:#}");
+                tracing::warn!(error = %state.message, "frame limiter restoration remains pending");
             }
         }
     }

@@ -60,7 +60,8 @@ fn main() -> Result<()> {
     println!(
         "{}",
         serde_json::json!({"query_ms": start.elapsed().as_secs_f64()*1000., "reply": before,
-            "rtss_version": version, "profile_sdk": rtss::profile_sdk(version)})
+            "rtss_version": version, "profile_sdk": rtss::profile_sdk(version),
+            "rtss_running": rtss::running(&root)})
     );
     if args.is_empty() {
         return Ok(());
@@ -163,7 +164,10 @@ fn main() -> Result<()> {
                 .contains("\"rtss\": null"),
             "RTSS journal remains pending"
         );
-        println!("{}", serde_json::json!({"restored":after}));
+        println!(
+            "{}",
+            serde_json::json!({"restored":after, "rtss_running": rtss::running(&root)})
+        );
         Ok(())
     })();
     // Extra restoration attempt also covers an assertion failure in this probe.

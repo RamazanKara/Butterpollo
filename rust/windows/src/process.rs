@@ -697,6 +697,17 @@ impl Process {
         }
         self.exit_code()?.context("process still running")
     }
+    /// Waits, up to `timeout`, until a GUI process started here is pumping
+    /// messages. False when it timed out or the process has no message loop.
+    pub fn wait_input_idle(&self, timeout: Duration) -> bool {
+        // SAFETY: `self.handle` is an owned process handle that stays open while `self` lives.
+        unsafe {
+            WaitForInputIdle(
+                raw(&self.handle),
+                timeout.as_millis().min(u32::MAX as u128) as u32,
+            ) == 0
+        }
+    }
     pub fn stop(&self) -> Result<()> {
         // SAFETY: `self.job` is an owned job handle that stays open while `self` lives.
         unsafe {

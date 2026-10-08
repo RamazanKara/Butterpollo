@@ -16,7 +16,10 @@ use std::{
 };
 pub const KEYS: [&str; 3] = ["Limit", "LimitDenominator", "SyncLimiter"];
 const PIPE_PREFIX: &str = r"\\.\pipe\Butterpollo.Rtss.";
+/// For each RTSS call; a stalled RTSS must not hold up a stream.
 const TIMEOUT: Duration = Duration::from_secs(2);
+/// Starting the helper as SYSTEM in the user's session can take longer.
+const STARTUP: Duration = Duration::from_secs(5);
 pub fn root(config: &butterpollo_core::config::Config) -> PathBuf {
     let configured = config.get("rtss_install_path", config.get("rtss_path", ""));
     let path = PathBuf::from(if configured.is_empty() {
@@ -135,7 +138,13 @@ pub fn start(root: &Path) -> Result<Option<Process>> {
         )
     })
     .with_context(|| format!("start RTSS at {}", executable.display()))?;
-    std::thread::sleep(Duration::from_millis(300));
+    // RTSSHooks hands profile calls to RTSS's message loop. Until that loop
+    // runs they block, as Vibepollo found: a host check's restore to an RTSS
+    // started a moment earlier timed out in the helper.
+    if !process.wait_input_idle(Duration::from_secs(3)) {
+        tracing::warn!("RTSS did not finish starting within 3 s");
+        std::thread::sleep(Duration::from_millis(300));
+    }
     Ok(Some(process))
 }
 fn start_with_elevation<T>(service: bool, mut spawn: impl FnMut(bool) -> Result<T>) -> Result<T> {
@@ -259,8 +268,16 @@ pub struct Reply {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 enum Response {
-    Done { reply: Reply },
-    Error { message: String },
+    /// The RTSS call the helper makes next, so a timeout can name it.
+    Step {
+        step: String,
+    },
+    Done {
+        reply: Reply,
+    },
+    Error {
+        message: String,
+    },
 }
 fn call(request: &Request) -> Result<Reply> {
     // The user helper cannot write the service's config directory. Keep that
@@ -281,28 +298,37 @@ fn call(request: &Request) -> Result<Reply> {
         true,
     )
     .context("start RTSS helper in the signed-in user's session")?;
-    let deadline = Instant::now() + TIMEOUT;
-    let check = || -> Result<()> {
+    let started = Instant::now();
+    let check = |deadline: Instant, step: &str| -> Result<()> {
         ensure!(
             worker.exit_code()?.is_none(),
-            "RTSS helper exited before replying"
+            "RTSS helper exited during {step}"
         );
         ensure!(
             Instant::now() < deadline,
-            "RTSS helper timed out; RTSS may be unresponsive"
+            "RTSS helper timed out after {} ms in {step}; RTSS may be unresponsive",
+            started.elapsed().as_millis()
         );
         std::thread::sleep(Duration::from_millis(2));
         Ok(())
     };
+    let mut step = String::from("starting");
+    let mut deadline = started + STARTUP;
     while !pipe.connected(worker.pid)? {
-        check()?;
+        check(deadline, &step)?;
     }
     pipe.send(request)?;
+    step = "reading the request".into();
+    deadline = Instant::now() + TIMEOUT;
     let response = loop {
-        if let Some(response) = pipe.receive::<Response>()? {
-            break response;
+        match pipe.receive::<Response>()? {
+            Some(Response::Step { step: next }) => {
+                step = next;
+                deadline = Instant::now() + TIMEOUT;
+            }
+            Some(response) => break response,
+            None => check(deadline, &step)?,
         }
-        check()?;
     };
     // Let the helper close only after the reply has been read. Closing a named
     // pipe with unread data can discard the result, even on successful exit.
@@ -314,6 +340,7 @@ fn call(request: &Request) -> Result<Reply> {
     match response {
         Response::Done { reply } => Ok(reply),
         Response::Error { message } => bail!("RTSS helper: {message}"),
+        Response::Step { .. } => unreachable!("steps are read above"),
     }
 }
 /// RTSS runs elevated, and Windows drops an unelevated caller's messages to
@@ -338,7 +365,11 @@ pub fn worker(name: &str, parent: u32) -> Result<()> {
         ensure!(Instant::now() < deadline, "RTSS request timed out");
         std::thread::sleep(Duration::from_millis(2));
     };
-    let response = match execute(&request) {
+    let report = |step: &str| {
+        // Progress only; the reply below reports any failure.
+        let _ = pipe.send(&Response::Step { step: step.into() });
+    };
+    let response = match execute(&request, &report) {
         Ok(reply) => Response::Done { reply },
         Err(error) => Response::Error {
             message: format!("{error:#}").chars().take(700).collect(),
@@ -435,8 +466,51 @@ impl Sdk for Hooks {
         unsafe { (self.set_flags)(and, xor) };
     }
 }
-fn execute(request: &Request) -> Result<Reply> {
-    run(request, &Hooks::open(&request.root)?)
+fn execute(request: &Request, report: &dyn Fn(&str)) -> Result<Reply> {
+    report("loading RTSSHooks");
+    let sdk = Hooks::open(&request.root)?;
+    run(request, &Reporting { sdk, report })
+}
+/// Names each RTSS call to the service before making it.
+struct Reporting<'a, S> {
+    sdk: S,
+    report: &'a dyn Fn(&str),
+}
+impl<S: Sdk> Sdk for Reporting<'_, S> {
+    fn load(&self) {
+        (self.report)("LoadProfile");
+        self.sdk.load()
+    }
+    fn set(&self, property: &CStr, value: u32) -> Result<bool> {
+        (self.report)(&format!(
+            "SetProfileProperty {}",
+            property.to_string_lossy()
+        ));
+        self.sdk.set(property, value)
+    }
+    fn save(&self) -> Result<()> {
+        (self.report)("SaveProfile");
+        self.sdk.save()
+    }
+    fn update(&self) {
+        (self.report)("UpdateProfiles");
+        self.sdk.update()
+    }
+    fn get(&self, property: &CStr) -> Option<u32> {
+        (self.report)(&format!(
+            "GetProfileProperty {}",
+            property.to_string_lossy()
+        ));
+        self.sdk.get(property)
+    }
+    fn flags(&self) -> u32 {
+        (self.report)("GetFlags");
+        self.sdk.flags()
+    }
+    fn set_flags(&self, and: u32, xor: u32) {
+        (self.report)("SetFlags");
+        self.sdk.set_flags(and, xor)
+    }
 }
 /// The order matches Vibepollo, which reaches RTSS 7.3.7: properties, save,
 /// UpdateProfiles, then the limiter flag and one more load and update.
@@ -932,6 +1006,34 @@ mod tests {
         };
         run(&query, &rtss)?;
         assert_eq!(*rtss.calls.borrow(), ["load"]);
+        Ok(())
+    }
+
+    #[test]
+    fn the_helper_names_each_rtss_call_before_making_it() -> Result<()> {
+        let steps = std::cell::RefCell::new(Vec::new());
+        let report = |step: &str| steps.borrow_mut().push(step.to_string());
+        let sdk = Reporting {
+            sdk: Rtss737::new(158, 0),
+            report: &report,
+        };
+        run(&request(&[("Limit", 100)], Some(false)), &sdk)?;
+        assert_eq!(
+            steps.borrow()[..6],
+            [
+                "LoadProfile",
+                "SetProfileProperty FramerateLimit",
+                "SaveProfile",
+                "UpdateProfiles",
+                "SetFlags",
+                "LoadProfile",
+            ]
+        );
+        // A timeout after this names the call that never returned.
+        assert_eq!(
+            steps.borrow().last().unwrap(),
+            "GetProfileProperty SyncLimiter"
+        );
         Ok(())
     }
 
