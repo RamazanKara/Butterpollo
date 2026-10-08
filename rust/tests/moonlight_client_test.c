@@ -128,14 +128,14 @@ static void test_measurements(void){
     fclose(timing_csv);timing_csv=NULL;fclose(audio_csv);audio_csv=NULL;
     char line[1024];FILE *file=fopen("test-video.csv","r");assert(file);
     assert(fgets(line,sizeof(line),file));
-    assert(strcmp(line,"wire_frame,arrival_ms,host_ms,decode_ms,render_frame,render_qpc,picture_age_ms,first_packet_us,assembled_us,presentation_us,frame_type\n")==0);
+    assert(strcmp(line,"wire_frame,arrival_ms,host_ms,decode_ms,render_frame,render_qpc,picture_age_ms,first_packet_us,assembled_us,presentation_us,frame_type,bytes\n")==0);
     assert(fgets(line,sizeof(line),file));
-    int wire,type;unsigned sequence;unsigned long long ticks,received,assembled,presented;
+    int wire,type,bytes;unsigned sequence;unsigned long long ticks,received,assembled,presented;
     double arrival,host,decode,age;
-    assert(sscanf(line,"%d,%lf,%lf,%lf,%u,%llu,%lf,%llu,%llu,%llu,%d",
-        &wire,&arrival,&host,&decode,&sequence,&ticks,&age,&received,&assembled,&presented,&type)==11);
+    assert(sscanf(line,"%d,%lf,%lf,%lf,%u,%llu,%lf,%llu,%llu,%llu,%d,%d",
+        &wire,&arrival,&host,&decode,&sequence,&ticks,&age,&received,&assembled,&presented,&type,&bytes)==12);
     assert(wire==1&&arrival>0&&host==2.2&&decode>=0&&sequence==123&&ticks>0&&age>=0);
-    assert(received>0&&assembled==received&&presented==12345&&type==FRAME_TYPE_IDR);
+    assert(received>0&&assembled==received&&presented==12345&&type==FRAME_TYPE_IDR&&bytes>0);
     int rows=1;while(fgets(line,sizeof(line),file))rows++;
     assert(rows==11);fclose(file);
     file=fopen("test-audio.csv","r");assert(file);

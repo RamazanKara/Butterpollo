@@ -371,7 +371,7 @@ static int video_frame(PDECODE_UNIT unit){
         host_latency[measured_frames]=unit->frameHostProcessingLatency/10.0;decode_time_ms[measured_frames]=decode_ms;
         arrivals[measured_frames]=arrival_ms;assembly_times[measured_frames]=unit->enqueueTimeUs/1000.0;picture_age[measured_frames]=age_ms;picture_frames[measured_frames]=picture_sequence;measured_frames++;
     }
-    if(timing_csv)fprintf(timing_csv,"%d,%.6f,%.3f,%.6f,%u,%llu,%.6f,%llu,%llu,%llu,%d\n",unit->frameNumber,arrival_ms,unit->frameHostProcessingLatency/10.0,decode_ms,picture_sequence,(unsigned long long)picture_ticks,age_ms,(unsigned long long)unit->receiveTimeUs,(unsigned long long)unit->enqueueTimeUs,(unsigned long long)unit->presentationTimeUs,unit->frameType);
+    if(timing_csv)fprintf(timing_csv,"%d,%.6f,%.3f,%.6f,%u,%llu,%.6f,%llu,%llu,%llu,%d,%d\n",unit->frameNumber,arrival_ms,unit->frameHostProcessingLatency/10.0,decode_ms,picture_sequence,(unsigned long long)picture_ticks,age_ms,(unsigned long long)unit->receiveTimeUs,(unsigned long long)unit->enqueueTimeUs,(unsigned long long)unit->presentationTimeUs,unit->frameType,unit->fullLength);
     atomic_fetch_add(&frames,1);if(atomic_load(&frames)<4)printf("FRAME %d bytes=%d type=%d\n",unit->frameNumber,unit->fullLength,unit->frameType);return DR_OK;
 }
 static int audio_init(int config,const POPUS_MULTISTREAM_CONFIGURATION opus,void*context,int flags){
@@ -479,7 +479,7 @@ int main(int argc,char**argv){
     if(warmup_seconds<0||warmup_seconds>60)return 2;
     if(getenv("BUTTERPOLLO_TEST_TIMING_CSV")){
         timing_csv=fopen(getenv("BUTTERPOLLO_TEST_TIMING_CSV"),"w");if(!timing_csv){perror("timing CSV");return 2;}
-        fprintf(timing_csv,"wire_frame,arrival_ms,host_ms,decode_ms,render_frame,render_qpc,picture_age_ms,first_packet_us,assembled_us,presentation_us,frame_type\n");
+        fprintf(timing_csv,"wire_frame,arrival_ms,host_ms,decode_ms,render_frame,render_qpc,picture_age_ms,first_packet_us,assembled_us,presentation_us,frame_type,bytes\n");
     }
     if(getenv("BUTTERPOLLO_TEST_AUDIO_CSV")){
         audio_csv=fopen(getenv("BUTTERPOLLO_TEST_AUDIO_CSV"),"w");if(!audio_csv){perror("audio CSV");return 2;}
