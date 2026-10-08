@@ -129,6 +129,8 @@ fn delete_at_restart(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // update.lock excludes a second opener only through Windows share modes.
+    #[cfg(windows)]
     #[test]
     fn an_interrupted_update_is_rolled_back_unless_setup_runs() -> Result<()> {
         let root = tempfile::tempdir()?;
