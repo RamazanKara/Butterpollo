@@ -190,8 +190,12 @@ static CATALOG: Mutex<Catalog> = Mutex::new(Catalog {
     plugins: vec![],
     at: None,
 });
+/// One library connection to the plugin at a time: a new one replaces the
+/// plugin's previous connection.
+static CONNECTION: Mutex<()> = Mutex::new(());
 /// Ask the plugin for its library.
 fn snapshot() -> Result<()> {
+    let _connection = CONNECTION.lock().unwrap();
     let pipe = Pipe::connect(&json!({"type":"hello","role":"sunshine","pid":std::process::id()}))
         .context("connecting to the Playnite plugin for library sync")?;
     let mut games = vec![];
@@ -244,6 +248,94 @@ fn snapshot() -> Result<()> {
         plugins,
         at: Some(Instant::now()),
     };
+    Ok(())
+}
+/// Make an uploaded cover (`covers/KEY.png`) the game's cover in Playnite,
+/// then sync so its app shows it, as Vibepollo's `/api/playnite/cover`.
+pub fn set_cover(h: &Shared, id: &str, key: &str) -> Result<PathBuf> {
+    let id = uuid::Uuid::parse_str(id.trim().trim_matches(['{', '}']))
+        .context("invalid Playnite game ID")?
+        .to_string();
+    ensure!(
+        !key.is_empty()
+            && key.len() <= 128
+            && key
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
+        "invalid cover key"
+    );
+    let cover = h.directory.join("covers").join(format!("{key}.png"));
+    ensure!(cover.is_file(), "the uploaded cover was not found");
+    ensure!(
+        Settings::from_config(&h.config.read().unwrap()).enabled,
+        "Playnite integration is disabled"
+    );
+    {
+        let _connection = CONNECTION.lock().unwrap();
+        let pipe =
+            Pipe::connect(&json!({"type":"hello","role":"sunshine","pid":std::process::id()}))
+                .context("connecting to the Playnite plugin")?;
+        let request = format!("cover-{}", uuid::Uuid::new_v4());
+        pipe.send(
+            &json!({"type":"command","command":"set-cover","requestId":request,
+                          "id":id,"path":cover.to_string_lossy().replace('\\', "/")}),
+        )?;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let line = match pipe
+                .lines
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            {
+                Ok(line) => line,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    bail!("Playnite did not confirm the cover in time")
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    bail!("the Playnite plugin closed the connection")
+                }
+            };
+            if let Message::CommandResult {
+                request_id,
+                success,
+                error,
+                ..
+            } = playnite::parse(&line)
+                && request_id == request
+            {
+                ensure!(
+                    success,
+                    "Playnite did not take the cover: {}",
+                    if error.is_empty() {
+                        "no reason given"
+                    } else {
+                        &error
+                    }
+                );
+                break;
+            }
+        }
+    }
+    tracing::info!(id, cover = %cover.display(), "set the game's cover in Playnite");
+    sync(h)?;
+    Ok(cover)
+}
+/// Start Playnite, closing it first if it runs, as Vibepollo's
+/// `/api/playnite/launch`.
+pub fn restart() -> Result<()> {
+    let program = butterpollo_windows::playnite::install_dir()
+        .and_then(|dir| butterpollo_windows::playnite::executable(&dir))
+        .context("no Playnite executable found; open Playnite once or repair its installation")?;
+    let running: BTreeMap<u32, u64> = butterpollo_windows::playnite::session_processes()?
+        .iter()
+        .filter(|p| {
+            p.name.eq_ignore_ascii_case("Playnite.DesktopApp.exe")
+                || p.name.eq_ignore_ascii_case("Playnite.FullscreenApp.exe")
+        })
+        .map(|p| (p.pid, p.started))
+        .collect();
+    butterpollo_windows::process::stop_processes(&running, Duration::from_secs(10));
+    butterpollo_windows::playnite::launch(&program, &[], &BTreeMap::new())?;
+    tracing::info!(executable = %program.display(), restarted = !running.is_empty(), "Playnite started from the console");
     Ok(())
 }
 /// A PNG of `source` in the covers folder, converted again only when the

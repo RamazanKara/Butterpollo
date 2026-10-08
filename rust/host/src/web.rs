@@ -242,6 +242,8 @@ fn token_catalog() -> Vec<auth::Scope> {
         ("/api/playnite/install", &["POST"][..]),
         ("/api/playnite/uninstall", &["POST"][..]),
         ("/api/playnite/force_sync", &["POST"][..]),
+        ("/api/playnite/cover", &["POST"][..]),
+        ("/api/playnite/launch", &["POST"][..]),
         ("/api/apps/purge_autosync", &["POST"][..]),
         ("/api/lossless_scaling/status", &["GET"][..]),
         ("/api/browse", &["GET"][..]),
@@ -736,6 +738,20 @@ pub(crate) async fn api(
                         .map(|outcome| json!({"status":true,"changed":outcome.changed,"game_count":outcome.games}))
                 })
                 .await
+            }
+            ("POST", "cover") => {
+                let (id, key) = (text("playnite_id").to_owned(), text("cover_key").to_owned());
+                if id.is_empty() || key.is_empty() {
+                    return error(StatusCode::BAD_REQUEST, "Playnite game ID and cover key are required");
+                }
+                tokio::task::spawn_blocking(move || {
+                    crate::playnite::set_cover(&h, &id, &key)
+                        .map(|path| json!({"status":true,"path":path.to_string_lossy().replace('\\', "/")}))
+                })
+                .await
+            }
+            ("POST", "launch") => {
+                tokio::task::spawn_blocking(|| crate::playnite::restart().map(|()| json!({"status":true}))).await
             }
             _ => return error(StatusCode::BAD_REQUEST, "unknown API endpoint"),
         };

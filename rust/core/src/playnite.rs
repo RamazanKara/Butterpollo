@@ -46,6 +46,13 @@ pub enum Message {
         install_dir: String,
         exe: String,
     },
+    /// The answer to a command that asked for one (`set-cover`).
+    CommandResult {
+        command: String,
+        request_id: String,
+        success: bool,
+        error: String,
+    },
     Other,
 }
 fn text(value: &Value, key: &str) -> String {
@@ -94,6 +101,12 @@ pub fn parse(line: &str) -> Message {
                 exe: text(&status, "exe"),
             }
         }
+        "commandResult" => Message::CommandResult {
+            command: text(&message, "command"),
+            request_id: text(&message, "requestId"),
+            success: message.get("success").and_then(Value::as_bool) == Some(true),
+            error: text(&message, "error"),
+        },
         _ => Message::Other,
     }
 }
@@ -790,6 +803,21 @@ mod tests {
         );
         assert_eq!(parse_time("2026-08-29"), None);
         assert_eq!(format_time(1788025796), "2026-08-29T17:49:56Z");
+        assert_eq!(
+            parse(
+                r#"{"type":"commandResult","command":"set-cover","requestId":"cover-1","success":false,"error":"Playnite rejected the cover metadata update"}"#
+            ),
+            Message::CommandResult {
+                command: "set-cover".into(),
+                request_id: "cover-1".into(),
+                success: false,
+                error: "Playnite rejected the cover metadata update".into(),
+            }
+        );
+        assert!(matches!(
+            parse(r#"{"type":"commandResult","requestId":"cover-2","success":true}"#),
+            Message::CommandResult { success: true, .. }
+        ));
         let line = "\u{feff}{\"type\":\"games\",\"payload\":[{\"id\":\"A1\",\"name\":\"Nightfire\",\"categories\":[\"Shooter\"],\"playtimeMinutes\":\"42\",\"lastPlayed\":\"2026-08-29T17:49:56Z\",\"pluginId\":\"P\"},{\"id\":\"B2\",\"installed\":false},{\"name\":\"no id\"}]}";
         let Message::Games(games) = parse(line) else {
             panic!()
