@@ -2,7 +2,9 @@
  * This is a test executable, never linked into the Rust host. */
 #include <Limelight.h>
 #ifdef _WIN32
+#define COBJMACROS
 #include <windows.h>
+#include <libavutil/hwcontext_d3d11va.h>
 #else
 #include <time.h>
 #include <errno.h>
@@ -58,6 +60,7 @@ static int barcode_bottom;
 static double barcode_scale=1.0;
 static double barcode_left,barcode_bottom_margin;
 #ifdef _WIN32
+static ID3D11Texture2D *barcode_staging;
 static double clock_ms(void){LARGE_INTEGER n,f;QueryPerformanceCounter(&n);QueryPerformanceFrequency(&f);return (double)n.QuadPart*1000.0/(double)f.QuadPart;}
 static void wait_ms(unsigned milliseconds){Sleep(milliseconds);}
 #else
@@ -78,20 +81,90 @@ static enum AVPixelFormat select_hardware_format(AVCodecContext *context,const e
     for(const enum AVPixelFormat *format=formats;*format!=AV_PIX_FMT_NONE;format++)if(*format==hardware_format)return *format;
     fprintf(stderr,"Requested hardware pixel format is unavailable\n");return AV_PIX_FMT_NONE;
 }
-static int picture_timestamp(const AVFrame *frame,uint32_t *sequence,uint64_t *ticks){
+static int barcode_sample_y(int height,int row){
+    return barcode_bottom?height-(int)(barcode_bottom_margin+(128-20-row*24)*barcode_scale):(int)((20+row*24)*barcode_scale);
+}
+static int picture_timestamp(const AVFrame *frame,const AVFrame *strip,int strip_left,uint32_t *sequence,uint64_t *ticks){
     const double s=barcode_scale;
     if(frame->width<640*s||frame->height<128*s)return 0;
+    const AVFrame *samples=strip?strip:frame;
+    int left=strip?strip_left:0;
+    if(strip&&((int)(barcode_left+12*s)<left||(int)(barcode_left+568*s)>=left+strip->width))return 0;
     uint32_t words[4]={0};
     for(int row=0;row<4;row++){
-        int y=barcode_bottom?frame->height-(int)(barcode_bottom_margin+(128-20-row*24)*s):(int)((20+row*24)*s);
-        unsigned black=luma_sample(frame,(int)(barcode_left+12*s),y),white=luma_sample(frame,(int)(barcode_left+36*s),y);
+        int y=barcode_sample_y(frame->height,row);
+        if(strip){if(y<0||y>=frame->height)return 0;y=row*2+(y&1);}
+        unsigned black=luma_sample(samples,(int)(barcode_left+12*s)-left,y),white=luma_sample(samples,(int)(barcode_left+36*s)-left,y);
         if(white<=black+32)return 0;
         unsigned threshold=(black+white)/2;
-        for(int bit=0;bit<32;bit++)if(luma_sample(frame,(int)(barcode_left+(72+bit*16)*s),y)>threshold)words[row]|=1u<<bit;
+        for(int bit=0;bit<32;bit++)if(luma_sample(samples,(int)(barcode_left+(72+bit*16)*s)-left,y)>threshold)words[row]|=1u<<bit;
     }
     if(words[3]!=0xB17E2212||words[0]==0)return 0;
     *sequence=words[0];*ticks=((uint64_t)words[2]<<32)|words[1];return 1;
 }
+static void crop_picture(AVFrame *frame){
+    // AMD AV1 surfaces can include alignment padding outside the stream.
+    // Crop before sampling pixels, the bottom barcode or a picture dump.
+    if((requested_format&VIDEO_FORMAT_MASK_AV1)&&
+       frame->width>=requested_width&&frame->width<=requested_width+64&&
+       frame->height>=requested_height&&frame->height<=requested_height+16){
+        frame->width=requested_width;frame->height=requested_height;
+    }
+}
+#ifdef _WIN32
+static void video_cleanup(void){
+    if(barcode_staging){ID3D11Texture2D_Release(barcode_staging);barcode_staging=NULL;}
+}
+static int readback_barcode(const AVFrame *decoded,AVFrame *frame,AVFrame *strip,int *left){
+    AVHWFramesContext *frames_context=(AVHWFramesContext*)decoded->hw_frames_ctx->data;
+    AVD3D11VADeviceContext *device=frames_context->device_ctx->hwctx;
+    ID3D11Texture2D *texture=(ID3D11Texture2D*)decoded->data[0];
+    D3D11_TEXTURE2D_DESC source,staging;
+    ID3D11Texture2D_GetDesc(texture,&source);
+    if(source.Format!=DXGI_FORMAT_NV12&&source.Format!=DXGI_FORMAT_P010){
+        fprintf(stderr,"Unsupported D3D11 barcode texture format: %d\n",source.Format);return -1;
+    }
+    frame->width=decoded->width;frame->height=decoded->height;frame->format=frames_context->sw_format;
+    if(av_frame_copy_props(frame,decoded)<0)return -1;
+    crop_picture(frame);
+    // Planar 4:2:0 copies need even coordinates. Pack one two-row band per
+    // barcode sample, retaining only the scaled barcode's horizontal extent.
+    *left=(int)fmax(0,fmin(floor(barcode_left),frame->width-2))&~1;
+    int right=((int)fmax(*left+2,fmin(ceil(barcode_left+640*barcode_scale),frame->width))+1)&~1;
+    strip->width=right-*left;strip->height=8;strip->format=frame->format;
+    if(barcode_staging){
+        ID3D11Texture2D_GetDesc(barcode_staging,&staging);
+        if(staging.Width!=(UINT)strip->width||staging.Format!=source.Format)video_cleanup();
+    }
+    if(!barcode_staging){
+        staging=(D3D11_TEXTURE2D_DESC){.Width=strip->width,.Height=8,.MipLevels=1,.ArraySize=1,
+            .Format=source.Format,.SampleDesc={.Count=1},.Usage=D3D11_USAGE_STAGING,.CPUAccessFlags=D3D11_CPU_ACCESS_READ};
+        HRESULT result=ID3D11Device_CreateTexture2D(device->device,&staging,NULL,&barcode_staging);
+        if(FAILED(result)){fprintf(stderr,"D3D11 barcode staging texture failed: 0x%08lx\n",(unsigned long)result);return -1;}
+        printf("HARDWARE_READBACK strip=%dx%d format=%s\n",strip->width,strip->height,av_get_pix_fmt_name(strip->format));
+    }
+    device->lock(device->lock_ctx);
+    for(int row=0;row<4;row++){
+        int top=av_clip(barcode_sample_y(frame->height,row),0,frame->height-1)&~1;
+        D3D11_BOX box={.left=*left,.top=top,.front=0,.right=right,.bottom=top+2,.back=1};
+        ID3D11DeviceContext_CopySubresourceRegion(device->device_context,(ID3D11Resource*)barcode_staging,0,0,row*2,0,
+            (ID3D11Resource*)texture,(UINT)(uintptr_t)decoded->data[1]*source.MipLevels,&box);
+    }
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    HRESULT result=ID3D11DeviceContext_Map(device->device_context,(ID3D11Resource*)barcode_staging,0,D3D11_MAP_READ,0,&mapped);
+    device->unlock(device->lock_ctx);
+    if(FAILED(result)){fprintf(stderr,"D3D11 barcode readback failed: 0x%08lx\n",(unsigned long)result);return -1;}
+    strip->data[0]=mapped.pData;strip->linesize[0]=mapped.RowPitch;
+    return 0;
+}
+static void unmap_barcode(const AVFrame *decoded){
+    AVHWFramesContext *frames_context=(AVHWFramesContext*)decoded->hw_frames_ctx->data;
+    AVD3D11VADeviceContext *device=frames_context->device_ctx->hwctx;
+    device->lock(device->lock_ctx);
+    ID3D11DeviceContext_Unmap(device->device_context,(ID3D11Resource*)barcode_staging,0);
+    device->unlock(device->lock_ctx);
+}
+#endif
 static void distribution(const char *name,double *values,unsigned count){
     if(!count)return;
     double sum=0;for(unsigned i=0;i<count;i++)sum+=values[i];
@@ -178,6 +251,8 @@ static int video_setup(int format,int width,int height,int rate,void*context,int
 }
 static int video_frame(PDECODE_UNIT unit){
     double decode_started=clock_ms();
+    // Preserve arrival's local-clock epoch without including the decoder queue.
+    double arrival_ms=hardware_format!=AV_PIX_FMT_NONE?decode_started-(LiGetMicroseconds()/1000.0-unit->enqueueTimeUs/1000.0):decode_started;
     uint32_t picture_sequence=0;uint64_t picture_ticks=0;double age_ms=-1;
     if(unit->fullLength<1||unit->fullLength>32*1024*1024){atomic_fetch_add(&frames,1);atomic_fetch_add(&failures,1);return DR_OK;}
     AVPacket *packet=av_packet_alloc();AVFrame *frame=av_frame_alloc(),*decoded=av_frame_alloc();
@@ -211,26 +286,32 @@ static int video_frame(PDECODE_UNIT unit){
         received=avcodec_receive_frame(decoder,decoded);
     }
     while(received==0){
+        const char *picture_dump=getenv("BUTTERPOLLO_TEST_FRAME_DUMP");
+        int dump_at=getenv("BUTTERPOLLO_TEST_FRAME_DUMP_AT")?atoi(getenv("BUTTERPOLLO_TEST_FRAME_DUMP_AT")):600;
+        AVFrame strip={0};int strip_left=0;
         // Read hardware surfaces back before validating pixels, geometry and
         // HDR. Decoder timing includes this readback, but excludes scanout.
         if(hardware_format!=AV_PIX_FMT_NONE){
-            if(decoded->format!=hardware_format||av_hwframe_transfer_data(frame,decoded,0)<0||av_frame_copy_props(frame,decoded)<0){
+            int result=-1;
+            if(decoded->format==hardware_format){
+#ifdef _WIN32
+                int full_picture=(dump&&atomic_load(&frames)==0)||(picture_dump&&atomic_load(&decoded_frames)+1==dump_at);
+                if(decoded->format==AV_PIX_FMT_D3D11&&!full_picture)result=readback_barcode(decoded,frame,&strip,&strip_left);
+                else
+#endif
+                if(av_hwframe_transfer_data(frame,decoded,0)>=0)result=av_frame_copy_props(frame,decoded);
+            }
+            if(result<0){
                 atomic_fetch_add(&failures,1);av_frame_unref(decoded);av_frame_unref(frame);
                 received=avcodec_receive_frame(decoder,decoded);continue;
             }
-            av_frame_unref(decoded);
         }else av_frame_move_ref(frame,decoded);
-        // AMD AV1 surfaces can include alignment padding outside the stream.
-        // Crop before sampling pixels, the bottom barcode or a picture dump.
-        if((requested_format&VIDEO_FORMAT_MASK_AV1)&&
-           frame->width>=requested_width&&frame->width<=requested_width+64&&
-           frame->height>=requested_height&&frame->height<=requested_height+16){
-            frame->width=requested_width;frame->height=requested_height;
-        }
+        crop_picture(frame);
         if(frame->width!=requested_width||frame->height!=requested_height)atomic_fetch_add(&failures,1);
+        const AVFrame *samples=strip.data[0]?&strip:frame;
         unsigned low=65535,high=0;
         for(int y=1;y<8;y++)for(int x=1;x<12;x++){
-            unsigned value=luma_sample(frame,frame->width*x/12,frame->height*y/8);
+            unsigned value=luma_sample(samples,samples->width*x/12,samples->height*y/8);
             if(value<low)low=value;if(value>high)high=value;
         }
         const AVPixFmtDescriptor *pixel=av_pix_fmt_desc_get(frame->format);
@@ -244,8 +325,6 @@ static int video_frame(PDECODE_UNIT unit){
         atomic_fetch_add(&decoded_frames,1);if(atomic_load(&decoded_frames)==1)printf("DECODED %dx%d pixel_format=%d primaries=%d transfer=%d\n",frame->width,frame->height,frame->format,frame->color_primaries,frame->color_trc);
         // Optional decoded picture for colour comparisons between hosts:
         // a text header, then each plane's rows as decoded.
-        const char *picture_dump=getenv("BUTTERPOLLO_TEST_FRAME_DUMP");
-        int dump_at=getenv("BUTTERPOLLO_TEST_FRAME_DUMP_AT")?atoi(getenv("BUTTERPOLLO_TEST_FRAME_DUMP_AT")):600;
         if(picture_dump&&atomic_load(&decoded_frames)==dump_at){
             const AVPixFmtDescriptor *desc=av_pix_fmt_desc_get(frame->format);FILE *file=fopen(picture_dump,"wb");
             if(file&&desc){
@@ -260,7 +339,7 @@ static int video_frame(PDECODE_UNIT unit){
             if(file)fclose(file);
             printf("FRAME_DUMP frame=%d format=%s\n",dump_at,desc?desc->name:"unknown");
         }
-        if(picture_timestamp(frame,&picture_sequence,&picture_ticks)){
+        if(picture_timestamp(frame,strip.data[0]?&strip:NULL,strip_left,&picture_sequence,&picture_ticks)){
             // The sequence validates fresh motion on a remote receiver too.
             // Absolute picture age needs the renderer's clock: only compare
             // QPC timestamps on the same Windows machine.
@@ -275,6 +354,10 @@ static int video_frame(PDECODE_UNIT unit){
             }
 #endif
         }
+#ifdef _WIN32
+        if(strip.data[0])unmap_barcode(decoded);
+#endif
+        av_frame_unref(decoded);
         av_frame_unref(frame);
 #ifdef BUTTERPOLLO_PYROWAVE
         if(pyro_decoder)received=AVERROR(EAGAIN);else
@@ -286,9 +369,9 @@ static int video_frame(PDECODE_UNIT unit){
     double decode_ms=clock_ms()-decode_started;
     if(measured_frames<MAX_MEASUREMENTS){
         host_latency[measured_frames]=unit->frameHostProcessingLatency/10.0;decode_time_ms[measured_frames]=decode_ms;
-        arrivals[measured_frames]=decode_started;assembly_times[measured_frames]=unit->enqueueTimeUs/1000.0;picture_age[measured_frames]=age_ms;picture_frames[measured_frames]=picture_sequence;measured_frames++;
+        arrivals[measured_frames]=arrival_ms;assembly_times[measured_frames]=unit->enqueueTimeUs/1000.0;picture_age[measured_frames]=age_ms;picture_frames[measured_frames]=picture_sequence;measured_frames++;
     }
-    if(timing_csv)fprintf(timing_csv,"%d,%.6f,%.3f,%.6f,%u,%llu,%.6f,%llu,%llu,%llu,%d\n",unit->frameNumber,decode_started,unit->frameHostProcessingLatency/10.0,decode_ms,picture_sequence,(unsigned long long)picture_ticks,age_ms,(unsigned long long)unit->receiveTimeUs,(unsigned long long)unit->enqueueTimeUs,(unsigned long long)unit->presentationTimeUs,unit->frameType);
+    if(timing_csv)fprintf(timing_csv,"%d,%.6f,%.3f,%.6f,%u,%llu,%.6f,%llu,%llu,%llu,%d\n",unit->frameNumber,arrival_ms,unit->frameHostProcessingLatency/10.0,decode_ms,picture_sequence,(unsigned long long)picture_ticks,age_ms,(unsigned long long)unit->receiveTimeUs,(unsigned long long)unit->enqueueTimeUs,(unsigned long long)unit->presentationTimeUs,unit->frameType);
     atomic_fetch_add(&frames,1);if(atomic_load(&frames)<4)printf("FRAME %d bytes=%d type=%d\n",unit->frameNumber,unit->fullLength,unit->frameType);return DR_OK;
 }
 static int audio_init(int config,const POPUS_MULTISTREAM_CONFIGURATION opus,void*context,int flags){
@@ -412,6 +495,14 @@ int main(int argc,char**argv){
     if(getenv("BUTTERPOLLO_TEST_SIGNED_KEY_ID")&&strcmp(getenv("BUTTERPOLLO_TEST_SIGNED_KEY_ID"),"1")==0)config.remoteInputAesIv[0]=(char)0x80;
     CONNECTION_LISTENER_CALLBACKS listener;LiInitializeConnectionCallbacks(&listener);listener.stageStarting=stage_start;listener.stageFailed=stage_failed;listener.connectionTerminated=terminated;listener.logMessage=log_message;listener.setHdrMode=hdr_mode;
     DECODER_RENDERER_CALLBACKS video;LiInitializeVideoCallbacks(&video);video.setup=video_setup;video.submitDecodeUnit=video_frame;video.capabilities=CAPABILITY_DIRECT_SUBMIT;
+    // Moonlight's VideoDec thread drains the decode-unit queue when direct
+    // submission is disabled, so GPU waits cannot block the receive thread.
+    if(getenv("BUTTERPOLLO_TEST_HW_DECODER")){
+        video.capabilities=0;
+#ifdef _WIN32
+        video.cleanup=video_cleanup;
+#endif
+    }
 #ifdef BUTTERPOLLO_PYROWAVE
     /* SDK decoding waits for GPU readback; keep the UDP receive thread free. */
     if(requested_format&VIDEO_FORMAT_MASK_PYROWAVE)video.capabilities=0;

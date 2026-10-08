@@ -53,6 +53,77 @@ static void test_audio(void){
     opus_decoder=NULL;
 }
 
+static void test_d3d11_readback(void){
+    AVBufferRef *device=NULL;
+    if(av_hwdevice_ctx_create(&device,AV_HWDEVICE_TYPE_D3D11VA,NULL,NULL,0)<0){
+        puts("D3D11 barcode readback tests skipped: no D3D11 device");return;
+    }
+    const struct {int bottom;double scale,left,margin;int strip_left,width,rows[4],valid;} cases[]={
+        {0,1,0,0,0,640,{20,44,68,92},1},
+        {1,1,0,0,0,640,{2076,2100,2124,2148},1},
+        {0,.625,13.5,7.25,12,402,{12,27,42,57},1},
+        {1,.625,13.5,7.25,12,402,{2110,2125,2140,2155},1},
+        {0,.5,-5,0,0,316,{10,22,34,46},1},
+        {1,1,1345.5,0,1344,624,{2076,2100,2124,2148},1},
+        {0,1,1600,0,1600,368,{20,44,68,92},0},
+        {1,1,0,2200,0,640,{-124,-100,-76,-52},0},
+        {1,1,0,-200,0,640,{2276,2300,2324,2348},0}
+    };
+    requested_format=VIDEO_FORMAT_AV1_MAIN10;requested_width=1968;requested_height=2184;
+    for(int ten_bit=0;ten_bit<2;ten_bit++){
+        AVBufferRef *pool=av_hwframe_ctx_alloc(device);assert(pool);
+        AVHWFramesContext *context=(AVHWFramesContext*)pool->data;
+        context->format=AV_PIX_FMT_D3D11;context->sw_format=ten_bit?AV_PIX_FMT_P010:AV_PIX_FMT_NV12;
+        context->width=1984;context->height=2200;context->initial_pool_size=2;
+        assert(av_hwframe_ctx_init(pool)==0);
+        AVFrame *decoded=av_frame_alloc(),*other=av_frame_alloc(),*cpu=av_frame_alloc(),*frame=av_frame_alloc();
+        assert(decoded&&other&&cpu&&frame);
+        assert(av_hwframe_get_buffer(pool,decoded,0)==0&&av_hwframe_get_buffer(pool,other,0)==0);
+        if(!decoded->data[1]){AVFrame *swap=decoded;decoded=other;other=swap;}
+        assert(decoded->data[0]==other->data[0]&&(uintptr_t)decoded->data[1]==1&&!other->data[1]);
+        cpu->format=context->sw_format;cpu->width=context->width;cpu->height=context->height;
+        assert(av_frame_get_buffer(cpu,32)==0);
+        memset(cpu->data[0],0,(size_t)cpu->linesize[0]*cpu->height);
+        memset(cpu->data[1],0,(size_t)cpu->linesize[1]*cpu->height/2);
+        assert(av_hwframe_transfer_data(other,cpu,0)==0);
+        decoded->color_primaries=AVCOL_PRI_BT2020;decoded->color_trc=AVCOL_TRC_SMPTE2084;
+        for(unsigned i=0;i<sizeof(cases)/sizeof(cases[0]);i++){
+            barcode_bottom=cases[i].bottom;barcode_scale=cases[i].scale;
+            barcode_left=cases[i].left;barcode_bottom_margin=cases[i].margin;
+            memset(cpu->data[0],0,(size_t)cpu->linesize[0]*cpu->height);
+            uint32_t words[4]={123+i,0x12345678,0x9abcdef0,0xB17E2212};
+            for(int row=0;row<4;row++)for(int column=0;column<34;column++){
+                int x=(int)(barcode_left+(column==0?12:column==1?36:72+(column-2)*16)*barcode_scale);
+                int y=cases[i].rows[row];
+                if(x<0||x>=requested_width||y<0||y>=requested_height)continue;
+                int white=column==1||(column>=2&&(words[row]&(1u<<(column-2))));
+                unsigned char *sample=cpu->data[0]+(size_t)y*cpu->linesize[0]+x*(ten_bit?2:1);
+                unsigned value=white?(ten_bit?1023u<<6:255):0;
+                sample[0]=value;if(ten_bit)sample[1]=value>>8;
+            }
+            assert(av_hwframe_transfer_data(decoded,cpu,0)==0);
+            AVFrame strip={0};int left=-1;
+            assert(readback_barcode(decoded,frame,&strip,&left)==0);
+            assert(frame->width==1968&&frame->height==2184&&frame->format==cpu->format);
+            assert(frame->color_primaries==AVCOL_PRI_BT2020&&frame->color_trc==AVCOL_TRC_SMPTE2084);
+            assert(left==cases[i].strip_left&&strip.width==cases[i].width&&strip.height==8);
+            for(int row=0;row<4;row++)for(int y=0;y<2;y++)for(int x=0;x<strip.width;x++){
+                int source_y=(av_clip(cases[i].rows[row],0,2183)&~1)+y;
+                assert(luma_sample(&strip,x,row*2+y)==luma_sample(cpu,left+x,source_y));
+            }
+            uint32_t sequence=0;uint64_t ticks=0;
+            assert(picture_timestamp(frame,&strip,left,&sequence,&ticks)==cases[i].valid);
+            if(cases[i].valid)assert(sequence==words[0]&&ticks==UINT64_C(0x9abcdef012345678));
+            unmap_barcode(decoded);av_frame_unref(frame);
+        }
+        video_cleanup();assert(!barcode_staging);
+        av_frame_free(&frame);av_frame_free(&cpu);av_frame_free(&other);av_frame_free(&decoded);av_buffer_unref(&pool);
+    }
+    av_buffer_unref(&device);
+    barcode_bottom=0;barcode_scale=1;barcode_left=0;barcode_bottom_margin=0;
+    puts("D3D11 NV12/P010 barcode readback tests passed");
+}
+
 static void test_measurements(void){
     fclose(timing_csv);timing_csv=NULL;fclose(audio_csv);audio_csv=NULL;
     char line[1024];FILE *file=fopen("test-video.csv","r");assert(file);
@@ -98,7 +169,7 @@ int main(void){
     test_picture(VIDEO_FORMAT_H264,1920,1080,1920,1082,0);
     test_picture(VIDEO_FORMAT_H265,1920,1080,1920,1080,1);
     test_picture(VIDEO_FORMAT_H265,1920,1080,1984,1096,0);
-    test_audio();test_measurements();
+    test_audio();test_measurements();test_d3d11_readback();
     puts("Receiver picture and time-series tests passed");
     return 0;
 }
