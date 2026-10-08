@@ -35,6 +35,7 @@ pub mod state;
 pub mod steam;
 pub mod stream_policy;
 pub mod topology;
+pub mod tray;
 mod update_files;
 pub mod update_recovery;
 pub mod version;

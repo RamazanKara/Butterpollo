@@ -1,9 +1,19 @@
 //! Native notification-area UI, owned by its Windows message thread.
 use anyhow::{Context, Result, bail};
-use std::{mem::size_of, path::PathBuf, sync::mpsc, thread};
+use butterpollo_core::tray::Icon;
+use std::{
+    mem::size_of,
+    path::PathBuf,
+    sync::{Mutex, mpsc},
+    thread,
+};
 use windows::{
     Win32::{
         Foundation::*,
+        Graphics::Gdi::{
+            BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, CreateBitmap, DIB_RGB_COLORS,
+            DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC,
+        },
         System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
         UI::{Shell::*, WindowsAndMessaging::*},
     },
@@ -11,18 +21,156 @@ use windows::{
 };
 /// Retries adding the icon while the taskbar does not accept it yet.
 const RETRY_TIMER: usize = 1;
+/// The running app changed; see [`show_app`].
+const APP_CHANGED: u32 = WM_APP + 2;
 #[derive(Clone, Copy)]
 pub enum Action {
     Open,
     StopSessions,
+    /// Quit the running app, as the console's close button does.
+    QuitApp,
     Restart,
     Quit,
 }
 struct State {
     sender: mpsc::Sender<Action>,
     icon: NOTIFYICONDATAW,
+    /// Idle, streaming and paused.
+    icons: [HICON; 3],
+    port: u16,
     taskbar: u32,
     hide_controls: bool,
+}
+impl State {
+    /// Show the running app's state in the icon and its tooltip.
+    fn show(&mut self) {
+        let app = APP.lock().unwrap();
+        self.icon.hIcon = self.icons[match app.icon {
+            Icon::Idle => 0,
+            Icon::Streaming => 1,
+            Icon::Paused => 2,
+        }];
+        let tip = match &app.summary {
+            Some(summary) => format!("Butterpollo — {summary}"),
+            None => format!("Butterpollo Rust — web port {}", self.port),
+        };
+        let tip: Vec<u16> = tip.encode_utf16().take(127).collect();
+        self.icon.szTip = [0; 128];
+        self.icon.szTip[..tip.len()].copy_from_slice(&tip);
+    }
+}
+/// The running app as the tray shows it.
+struct Shown {
+    icon: Icon,
+    app: Option<String>,
+    summary: Option<String>,
+}
+static APP: Mutex<Shown> = Mutex::new(Shown {
+    icon: Icon::Idle,
+    app: None,
+    summary: None,
+});
+/// Show the running app (None when none runs) in the tray: the icon's
+/// state, the tooltip and the menu's item that quits it.
+pub fn show_app(icon: Icon, app: Option<&str>, summary: Option<&str>) {
+    *APP.lock().unwrap() = Shown {
+        icon,
+        app: app.map(str::to_owned),
+        summary: summary.map(str::to_owned),
+    };
+    if let Some(window) = *SHOWN.lock().unwrap() {
+        unsafe {
+            let _ = PostMessageW(
+                Some(HWND(window as *mut _)),
+                APP_CHANGED,
+                WPARAM(0),
+                LPARAM(0),
+            );
+        }
+    }
+}
+/// `base` with the state's dot in its corner; None for Idle or an icon
+/// without alpha, which then shows as is.
+unsafe fn badged(base: HICON, state: Icon) -> Option<HICON> {
+    unsafe {
+        let mut info = ICONINFO::default();
+        GetIconInfo(base, &mut info).ok()?;
+        let made = (|| {
+            if info.hbmColor.is_invalid() {
+                return None;
+            }
+            let mut bitmap = BITMAP::default();
+            if GetObjectW(
+                info.hbmColor.into(),
+                size_of::<BITMAP>() as i32,
+                Some((&mut bitmap as *mut BITMAP).cast()),
+            ) == 0
+            {
+                return None;
+            }
+            let (width, height) = (bitmap.bmWidth, bitmap.bmHeight);
+            if width <= 0 || height <= 0 || width > 256 || height > 256 {
+                return None;
+            }
+            let mut header = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: width,
+                    // Top-down rows, as CreateBitmap takes them.
+                    biHeight: -height,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut pixels = vec![0u8; width as usize * height as usize * 4];
+            let screen = GetDC(None);
+            let lines = GetDIBits(
+                screen,
+                info.hbmColor,
+                0,
+                height as u32,
+                Some(pixels.as_mut_ptr().cast()),
+                &mut header,
+                DIB_RGB_COLORS,
+            );
+            ReleaseDC(None, screen);
+            if lines != height
+                || !butterpollo_core::tray::badge(
+                    &mut pixels,
+                    width as usize,
+                    height as usize,
+                    state,
+                )
+            {
+                return None;
+            }
+            let color = CreateBitmap(width, height, 1, 32, Some(pixels.as_ptr().cast()));
+            // An all-zero mask: the colour image's alpha decides.
+            let mask_bytes = vec![0u8; (width as usize).div_ceil(16) * 2 * height as usize];
+            let mask = CreateBitmap(width, height, 1, 1, Some(mask_bytes.as_ptr().cast()));
+            let icon = (!color.is_invalid() && !mask.is_invalid())
+                .then(|| {
+                    CreateIconIndirect(&ICONINFO {
+                        fIcon: TRUE,
+                        xHotspot: 0,
+                        yHotspot: 0,
+                        hbmMask: mask,
+                        hbmColor: color,
+                    })
+                    .ok()
+                })
+                .flatten();
+            let _ = DeleteObject(color.into());
+            let _ = DeleteObject(mask.into());
+            icon
+        })();
+        let _ = DeleteObject(info.hbmColor.into());
+        let _ = DeleteObject(info.hbmMask.into());
+        made
+    }
 }
 unsafe extern "system" fn window(
     hwnd: HWND,
@@ -41,11 +189,17 @@ unsafe extern "system" fn window(
             // Explorer announces a new taskbar (at sign-in, or after it
             // restarts); until the icon is in, retry every few seconds.
             if message == s.taskbar || (message == WM_TIMER && wparam.0 == RETRY_TIMER) {
+                s.show();
                 if Shell_NotifyIconW(NIM_ADD, &s.icon).as_bool() {
                     let _ = KillTimer(Some(hwnd), RETRY_TIMER);
                 } else if message == s.taskbar {
                     SetTimer(Some(hwnd), RETRY_TIMER, 3000, None);
                 }
+                return LRESULT(0);
+            }
+            if message == APP_CHANGED {
+                s.show();
+                let _ = Shell_NotifyIconW(NIM_MODIFY, &s.icon);
                 return LRESULT(0);
             }
             if message == WM_APP + 1 {
@@ -58,6 +212,21 @@ unsafe extern "system" fn window(
                             let _ = AppendMenuW(menu, MF_STRING, 1, w!("Open Butterpollo"));
                             if !s.hide_controls {
                                 let _ = AppendMenuW(menu, MF_STRING, 2, w!("Disconnect clients"));
+                                let app = APP.lock().unwrap().app.clone();
+                                let label: Vec<u16> = match &app {
+                                    // An ampersand would underline the next letter.
+                                    Some(app) => format!("Quit {}", app.replace('&', "&&")),
+                                    None => "No app running".into(),
+                                }
+                                .encode_utf16()
+                                .chain(Some(0))
+                                .collect();
+                                let flags = if app.is_some() {
+                                    MF_STRING
+                                } else {
+                                    MF_STRING | MF_GRAYED
+                                };
+                                let _ = AppendMenuW(menu, flags, 5, PCWSTR(label.as_ptr()));
                                 let _ = AppendMenuW(menu, MF_STRING, 3, w!("Restart"));
                                 let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
                                 let _ = AppendMenuW(menu, MF_STRING, 4, w!("Quit"));
@@ -80,6 +249,7 @@ unsafe extern "system" fn window(
                                 2 => Some(Action::StopSessions),
                                 3 => Some(Action::Restart),
                                 4 => Some(Action::Quit),
+                                5 => Some(Action::QuitApp),
                                 _ => None,
                             };
                             if let Some(action) = action {
@@ -158,8 +328,15 @@ impl Tray {
                     } else {
                         LoadIconW(None, IDI_APPLICATION)?
                     };
+                    let icons = [
+                        icon,
+                        badged(icon, Icon::Streaming).unwrap_or(icon),
+                        badged(icon, Icon::Paused).unwrap_or(icon),
+                    ];
                     let mut state = Box::new(State {
                         sender,
+                        icons,
+                        port,
                         icon: NOTIFYICONDATAW {
                             cbSize: size_of::<NOTIFYICONDATAW>() as u32,
                             uID: 1,
@@ -171,11 +348,7 @@ impl Tray {
                         taskbar: RegisterWindowMessageW(w!("TaskbarCreated")),
                         hide_controls,
                     });
-                    let tip: Vec<u16> = format!("Butterpollo Rust — web port {port}")
-                        .encode_utf16()
-                        .collect();
-                    state.icon.szTip[..tip.len().min(127)]
-                        .copy_from_slice(&tip[..tip.len().min(127)]);
+                    state.show();
                     let hwnd = CreateWindowExW(
                         WINDOW_EX_STYLE(0),
                         w!("ButterpolloRustTray"),
@@ -217,6 +390,11 @@ impl Tray {
                     let _ = Shell_NotifyIconW(NIM_DELETE, &state.icon);
                     SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                     let _ = DestroyWindow(hwnd);
+                    for badge in &icons[1..] {
+                        if *badge != icon {
+                            let _ = DestroyIcon(*badge);
+                        }
+                    }
                     if custom.is_some() {
                         let _ = DestroyIcon(icon);
                     }

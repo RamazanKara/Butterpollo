@@ -7,14 +7,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn application_finished(h: &Shared) -> bool {
-    let connected = h
-        .sessions
+/// Whether a client streams the running app.
+fn streaming(h: &Shared) -> bool {
+    h.sessions
         .lock()
         .unwrap()
         .active
         .values()
-        .any(|session| session.launch.role == Role::Stream && !session.stopping());
+        .any(|session| session.launch.role == Role::Stream && !session.stopping())
+}
+fn application_finished(h: &Shared) -> bool {
+    let connected = streaming(h);
     h.current_app.lock().unwrap().as_mut().is_some_and(|app| {
         app.connection_state(connected)
             || match app.exited() {
@@ -67,11 +70,41 @@ fn user_action(h: &Shared, action: Action, web_port: u16) {
             }
         }
         Action::StopSessions => h.sessions.lock().unwrap().request_stop(None),
+        Action::QuitApp => {
+            tracing::info!("quitting the running app from the tray");
+            let h = h.clone();
+            // Stopping the app waits for it to exit.
+            tokio::task::spawn_blocking(move || {
+                h.sessions.lock().unwrap().stop_role(Role::Stream, None);
+                h.stop_app();
+            });
+        }
         Action::Restart => {
             h.restart.store(true, Ordering::Release);
             h.stop.store(true, Ordering::Release);
         }
         Action::Quit => h.stop.store(true, Ordering::Release),
+    }
+}
+/// Show the running app in the tray, with Vibepollo's notifications when
+/// it starts, pauses, resumes and stops.
+fn show_app(h: &Shared, tray: &mut butterpollo_core::tray::Tracker) {
+    let app = h
+        .current_app
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|app| app.name.clone());
+    let current = butterpollo_core::tray::Status {
+        app,
+        streaming: streaming(h),
+    };
+    let Some(notice) = tray.update(current) else {
+        return;
+    };
+    butterpollo_windows::tray::show_app(tray.icon(), tray.app(), tray.summary().as_deref());
+    if let Some((title, text)) = notice {
+        butterpollo_windows::tray::notify(title, &text);
     }
 }
 /// End every stream and remote monitor and release the displays they held,
@@ -142,6 +175,7 @@ pub async fn maintain(
     let mut update_at = Instant::now();
     let mut steam_at = Instant::now() + Duration::from_secs(5);
     let mut hotkey = RestoreHotkey::default();
+    let mut tray = butterpollo_core::tray::Tracker::default();
     while !h.stop.load(Ordering::Acquire) {
         if stop_signal.requested() {
             tracing::info!("service requested host shutdown");
@@ -182,6 +216,9 @@ pub async fn maintain(
         if application_finished(&h) {
             h.sessions.lock().unwrap().stop_role(Role::Stream, None);
             h.stop_app();
+        }
+        if actions.is_some() {
+            show_app(&h, &mut tray);
         }
         if let Some(actions) = &actions {
             while let Ok(action) = actions.try_recv() {
