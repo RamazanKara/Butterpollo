@@ -352,7 +352,7 @@ Current automated validation: 263 ordinary tests passed, with 27 environment-dep
 - Steam library sync with covers, and streams that end when the Steam game exits. Playnite through Vibepollo's plugin (shipped in the package), including the fullscreen app. Lossless Scaling profiles and frame generation per app.
 - Frame limiting through RTSS and NVIDIA profiles, NVIDIA Smooth Motion and RTX HDR.
 - A new web console: overview with performance history, library with Steam and Playnite, devices, settings, logs, maintenance and API tokens.
-- Tray notifications for pairing requests and new versions; release checks that skip streams.
+- Tray notifications for pairing requests, new versions and an app starting, pausing, resuming and stopping, and "Check for updates" in the tray menu; release checks that skip streams.
 
 Left out on purpose: WebRTC streaming, session history and host statistics pages, the SudoVDA fallback, and Linux and macOS hosting.
 
@@ -366,6 +366,6 @@ Left out on purpose: WebRTC streaming, session history and host statistics pages
 - WGC lock/UAC transitions remain unverified. Isolated helper and synthetic-load checks do not replace final-package service recovery or sustained gameplay validation. Earlier installed-service WGC and native HDR capture were confirmed on the RX 7900 XT; that does not establish the RX 9070 XT result.
 - AMD's AV1 encoder pads some sizes: 1968×2184 decodes as 1984×2186 ([AMF issue 423](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/issues/423)); Vibepollo has the same result. HEVC is exact.
 - Verified on an AMD RX 7900 XT. NVIDIA and Intel encoders, RTX HDR, a real Playnite and Lossless Scaling, the secure desktop during a stream and streaming the sign-in screen after a reboot are not yet verified on hardware. NVIDIA and Intel keep the graphics-queue capture path.
-- Still missing from Vibepollo: choosing the GPU that renders the virtual display and reclaiming virtual displays after a host restart.
+- Still missing from Vibepollo: choosing the GPU that renders the virtual display, reclaiming virtual displays after a host restart, creating a virtual display automatically on a host with no active display, and the tray notification for an app that exits right after launch.
 
 Details: [PARITY.md](PARITY.md) for each feature and its evidence, [PERFORMANCE.md](PERFORMANCE.md) for measurements and how to reproduce them.

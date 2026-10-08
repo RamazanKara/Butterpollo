@@ -43,7 +43,7 @@ For console changes, also run `npm ci` and `npm run check` in `rust/web`. Change
 - **Measure latency changes.** Anything on the frame path (capture, colour conversion, encoding, packetization, send) needs before and after numbers from real hardware, recorded in [PERFORMANCE.md](../rust/PERFORMANCE.md). A change does not ship on reasoning alone.
 - **Hardware tests are opt-in.** Tests that need a GPU, a display or a controller are `#[ignore]` with a reason; run them with `--ignored` on a suitable machine. Passing ordinary tests is not a hardware result.
 - **Never test against the installed service.** Run a development host with `--config-dir` on its own profile and port, as the [Rust guide](../rust/README.md) shows.
-- **Keep the crates layered.** Decisions that do not need Windows go in `core`, where Linux CI tests them; Windows calls go in `windows`; `host` wires them together and has no `unsafe`.
+- **Keep the crates layered.** Decisions that do not need Windows go in `core`, where they can be tested on any OS; Windows calls go in `windows`; `host` wires them together and has no `unsafe`.
 - **Document unsafe code.** Each `unsafe` block says which invariant it relies on in a `// SAFETY:` comment.
 - **Update the docs with the behaviour.** User-visible changes update `docs/` and the current section of [RELEASE_NOTES.md](../rust/RELEASE_NOTES.md); feature coverage lives in [PARITY.md](../rust/PARITY.md). Versions change only through `rust/release/bump.py`.
 
