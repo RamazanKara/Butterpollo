@@ -109,7 +109,7 @@ fn service_profile() -> Result<Option<PathBuf>> {
     {
         if service.query_status()?.current_state != ServiceState::Running {
             bail!(
-                "The Butterpollo service is installed but stopped. Start Butterpollo Rust in Windows Services, then open Start Butterpollo.exe again."
+                "The Butterpollo service is installed but stopped. Start Butterpollo in Windows Services, then open Start Butterpollo.exe again."
             );
         }
         return Ok(Some(butterpollo_core::paths::installed_profile()));

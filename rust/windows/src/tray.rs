@@ -54,7 +54,7 @@ impl State {
         }];
         let tip = match &app.summary {
             Some(summary) => format!("Butterpollo — {summary}"),
-            None => format!("Butterpollo Rust — web port {}", self.port),
+            None => format!("Butterpollo — web port {}", self.port),
         };
         let tip: Vec<u16> = tip.encode_utf16().take(127).collect();
         self.icon.szTip = [0; 128];

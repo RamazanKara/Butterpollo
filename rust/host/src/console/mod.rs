@@ -262,7 +262,7 @@ pub(crate) fn shell(
             ) + "<button class=\"secondary\">Apply</button>"),
         );
         html += &button("logout", csrf, "/login", "", "", "Sign out");
-        html += "<small>Butterpollo Rust</small></div></aside><main>";
+        html += "<small>Butterpollo</small></div></aside><main>";
     } else {
         html += "<main class=\"auth\"><a class=\"brand\" href=\"/\"><span class=\"mark\">B</span>Butterpollo</a>";
     }

@@ -242,7 +242,7 @@ fn run<P: Pads>(
                         pads = Some(opened);
                     }
                     Err(error) => {
-                        shared.warnings.set("input_gamepad", format!("Virtual gamepad driver unavailable ({error:#}); controller input is ignored while keyboard and mouse remain available. Repair the Butterpollo install to restore the VHF gamepad driver, or choose an installed gamepad profile."));
+                        shared.warnings.set("input_gamepad", format!("Virtual gamepad driver unavailable ({error:#}); controller input is ignored while keyboard and mouse remain available. Run Butterpollo setup again with the gamepad driver selected to restore it."));
                         retry = Some(now + RETRY);
                         continue;
                     }
