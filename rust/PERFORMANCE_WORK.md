@@ -195,6 +195,47 @@ available here does, so it is not shipped. Check whether the Android
 client's MediaCodec AV1 decoder crops to it, or crops to the negotiated
 size itself, before revisiting.
 
+### AMF settings per codec: quality at a given bitrate
+
+`windows/examples/amf_quality.rs` encodes clip frames with the stream's
+encoder (compute conversion, the host's default settings plus one change) and
+writes the bitstream; FFmpeg 9.0.2 then scores it with VMAF and PSNR-Y
+against the same frames (`bench-rc21\quality\run-quality.ps1`). Each frame is
+encoded on its own, so encode time is submission to output without queueing.
+Clips: a 2D arcade game (Teenage Mutant Ninja Turtles HD, 1080p60) and a 3D
+shooter (GoldenEye XBLA, 720p30), scaled to 1968×2184 or 2560×1440, 180
+frames each, SDR 8-bit. The rows are 1968×2184 at 30 and 80 Mbps (HEVC,
+AV1) and 2560×1440 at 20 and 50 Mbps (HEVC, AV1, H.264), all at 120 fps.
+Defaults reach VMAF 96.4-99.0 except H.264 at 20 Mbps (93.5 and 79.7).
+
+Range of VMAF change against the default per codec, and the change in mean
+and 99th-percentile encode time and in 99th-percentile frame size, first clip
+(second clip in brackets where run):
+
+| Setting | HEVC ΔVMAF | AV1 ΔVMAF | H.264 ΔVMAF | Encode mean / p99 | p99 frame size |
+|---|---|---|---|---|---|
+| `amd_quality=balanced` | -0.56 to +0.11 | -0.29 to 0 | -0.05 to 0 | same | same |
+| `amd_quality=quality` | -0.32 to -0.05 | -0.31 to +0.07 | -0.03 to +0.02 | +0.7 / +1.1 ms HEVC, +6.1 ms AV1, +1.9 ms H.264 | same |
+| `amd_rc=cbr` | +0.31 to +0.52 (-0.05 to +0.03) | -0.04 to +0.34 (-0.02 to +0.24) | +0.34 to +0.98 (-0.75 to +0.04) | same | +37-67% (+30-58%) |
+| `amd_vbaq=disabled` | -0.13 to +0.24 (-0.03 to +0.40) | -0.22 to +0.07 (+0.01 to +0.19) | **+0.25 to +1.03 (+0.40 to +9.42)** | same | +1% (+6%) |
+| `amd_high_motion_quality_boost=enabled` | -0.22 to 0 | -0.29 to +0.22 | 0 to +0.12 | +0.2 to +1.1 ms | same |
+| `amd_usage=lowlatency` | -0.22 to +0.23 | -0.29 to 0 | -0.11 to +0.10 | +6 to +8 ms | same |
+
+Only one change pays at no cost: **adaptive quantization (VBAQ) off for
+H.264**. It raised VMAF in all four H.264 rows, by 1.0 and 9.4 at 20 Mbps,
+with the same encode time. H.264 now defaults to it off; HEVC and AV1 keep
+it on, where the effect is within ±0.4 either way. Constant bitrate scores
+slightly higher on the first clip only because it spends more of the budget
+(VBR with low latency stays 5-20% under the target), and its largest
+frames grow by a third to two thirds, which costs pacing time on the
+network; it stays off. The slower quality presets and the low-latency usage
+buy nothing at these bitrates and cost up to 8 ms an encode.
+
+Limits: SDR 8-bit sources (the owner streams 10-bit HDR; the encoder tools
+are the same, but the gains were not measured there), two clips upscaled
+from 720p and 1080p, and VMAF's default model. A 1 to 2 VMAF difference is
+barely visible; the H.264 row at 20 Mbps is the one a viewer would notice.
+
 ## October 5 rc.3 release continuation
 
 The user approved WGC compute by default for the next test release after
