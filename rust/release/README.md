@@ -8,7 +8,7 @@ python rust/release/bump.py 2.0.0-rc.N   # versions, READMEs, docs, a "## New in
 git tag 2.0.0-rc.N && git push origin 2.0.0-rc.N
 ```
 
-Without git, the same release is one click: **Actions → Butterpollo Rust Windows → Run workflow** on `main` with **Publish** ticked. It releases the version in `Cargo.toml` at main's head, or at an earlier commit of main given as **Commit**, and creates its tag.
+Without git, the same release is one click: **Actions → Butterpollo Rust Windows → Run workflow** on `main` with **Publish** ticked. It releases the version in `Cargo.toml` at main's head and creates its tag.
 
 The tag's run (or the published run) of [`rust-windows.yml`](../../.github/workflows/rust-windows.yml) does the rest:
 
