@@ -120,6 +120,14 @@ fn main() -> anyhow::Result<()> {
     };
     let first = read(0)?;
     let mut encoder = Encoder::new_gpu_options(&config, "amf", &first, &tuning)?;
+    if config.hdr {
+        // As a stream does before its first frame: the display's values,
+        // with optional content light levels (--max-cll N --max-fall N).
+        let mut metadata = butterpollo_core::hdr::Metadata::display(1000., 0.005, 400.);
+        metadata.max_cll = number("--max-cll", 0)? as u16;
+        metadata.max_fall = number("--max-fall", 0)? as u16;
+        encoder.set_hdr_metadata(metadata);
+    }
     let mut bitstream = std::io::BufWriter::new(std::fs::File::create(&out)?);
     let (mut latencies, mut sizes, mut idr_bytes) = (Vec::new(), Vec::new(), Vec::new());
     let mut image = Some(first);
