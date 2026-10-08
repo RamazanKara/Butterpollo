@@ -25,7 +25,9 @@ def wait_idle(host_pid=None, overlap_log=None):
             state = snapshot(os.getpid(), processes_only=True)
             overlap = [p for p in state['processes'] if p['ProcessId'] != host_pid and p['ParentProcessId'] != host_pid
                        and ((p['Name'] == 'butterpollo.exe' and '--config-dir' in (p['CommandLine'] or '')
-                             and '--service-stop-source' not in p['CommandLine'])
+                             # The installed host and its display watcher (rc.23+).
+                             and '--service-stop-source' not in p['CommandLine']
+                             and '--display-watch' not in p['CommandLine'])
                             or re.search(r'(gpu_load|_probe)\.exe$', p['Name']))]
             if overlap:
                 if overlap_log:
