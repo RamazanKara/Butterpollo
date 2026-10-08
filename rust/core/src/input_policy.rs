@@ -13,6 +13,80 @@ pub const VIGEM_PROFILES: u32 = (1 << (VIGEM_X360 - 1)) | (1 << (VIGEM_DS4 - 1))
 pub const VHF_DUALSENSE: u16 = 6;
 pub const VHF_XBOX_ONE: u16 = 3;
 pub const VHF_DS4: u16 = 5;
+/// Moonlight's `LI_CTYPE_STEAM`: a Valve controller such as the Steam Deck,
+/// with an Xbox layout, two trackpads, motion sensors and back grips.
+pub const CTYPE_STEAM: u8 = 4;
+
+/// Moonlight's paddle buttons in the order of [`BACK_GRIP_KEYS`]: upper
+/// right, upper left, lower right and lower left. They are a Steam Deck's
+/// R4, L4, R5 and L5, and an Xbox Elite's P1, P3, P2 and P4.
+pub const PADDLES: [u32; 4] = [0x01_0000, 0x02_0000, 0x04_0000, 0x08_0000];
+/// The settings that choose what each back grip presses.
+pub const BACK_GRIP_KEYS: [&str; 4] = [
+    "back_grip_r4",
+    "back_grip_l4",
+    "back_grip_r5",
+    "back_grip_l5",
+];
+
+/// The stream-card hint for a back grip pressed while it is unmapped.
+pub const BACK_GRIP_HINT: &str = "A controller's back grips (a Steam Deck's L4, R4, L5 or R5) were pressed, but no virtual controller has them, so they do nothing. Choose what each one presses under Settings, Input, Controllers.";
+
+/// What a back grip presses on the virtual pad, none of which has back grips.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GripTarget {
+    /// Moonlight button flags.
+    Buttons(u32),
+    LeftTrigger,
+    RightTrigger,
+}
+/// The `back_grip_*` setting `key`; `none` and unknown values leave the grip
+/// unmapped.
+pub fn grip_target(key: &str, value: &str) -> Option<GripTarget> {
+    use GripTarget::*;
+    Some(match value {
+        "a" => Buttons(0x1000),
+        "b" => Buttons(0x2000),
+        "x" => Buttons(0x4000),
+        "y" => Buttons(0x8000),
+        "lb" => Buttons(0x0100),
+        "rb" => Buttons(0x0200),
+        "lt" => LeftTrigger,
+        "rt" => RightTrigger,
+        "l3" => Buttons(0x0040),
+        "r3" => Buttons(0x0080),
+        "back" => Buttons(0x0020),
+        "start" => Buttons(0x0010),
+        "guide" => Buttons(0x0400),
+        "dpad_up" => Buttons(0x0001),
+        "dpad_down" => Buttons(0x0002),
+        "dpad_left" => Buttons(0x0004),
+        "dpad_right" => Buttons(0x0008),
+        "touchpad" => Buttons(0x10_0000),
+        "misc" => Buttons(0x20_0000),
+        other => {
+            crate::config::fallback(key, other, "none");
+            return None;
+        }
+    })
+}
+
+/// The stream-card hint for a Steam Deck whose controller reaches Moonlight
+/// through Steam Input: Moonlight then sees Steam's virtual Xbox pad, without
+/// the gyro, trackpads and back grips, and so does the host. Only the
+/// device's name can tell such a Deck from an Xbox pad.
+pub fn steam_input_hint(device: &str, kind: u8, capabilities: u16) -> Option<String> {
+    let name: String = device
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    (name.contains("steamdeck") && kind != CTYPE_STEAM && capabilities & 0x30 == 0).then(|| {
+        format!(
+            "{device} looks like a Steam Deck whose controls reach Moonlight through Steam Input, so the host gets a plain Xbox pad without gyro, trackpads or back grips. To pass them on, set Moonlight's controller settings in Steam on the Deck to disable Steam Input, then reconnect."
+        )
+    })
+}
 
 /// The VHF pad of the same family that stands in for an explicit ViGEm choice
 /// when ViGEmBus cannot be opened, as the C++ host mapped them: a stream with
@@ -76,6 +150,8 @@ pub struct Policy {
     pub repeat_delay: Option<Duration>,
     pub repeat_period: Duration,
     pub back_button_timeout: Option<Duration>,
+    /// What each back grip presses, in [`PADDLES`] order.
+    pub back_grips: [Option<GripTarget>; 4],
     pub keybindings: BTreeMap<u16, u16>,
 }
 impl Policy {
@@ -136,8 +212,35 @@ impl Policy {
             back_button_timeout: u64::try_from(config.integer("back_button_timeout", -1))
                 .ok()
                 .map(|ms| Duration::from_millis(ms.min(60000))),
+            back_grips: BACK_GRIP_KEYS.map(|key| grip_target(key, config.get(key, "none"))),
             keybindings,
         })
+    }
+    /// Presses what each mapped back grip is set to press, in place of the
+    /// grip. An unmapped grip stays as it came: the driver ignores it.
+    pub fn map_back_grips(&self, buttons: u32, left: u8, right: u8) -> (u32, u8, u8) {
+        let (mut buttons, mut left, mut right) = (buttons, left, right);
+        let held = buttons;
+        for (flag, target) in PADDLES.into_iter().zip(self.back_grips) {
+            let Some(target) = target else { continue };
+            buttons &= !flag;
+            if held & flag != 0 {
+                match target {
+                    GripTarget::Buttons(pressed) => buttons |= pressed,
+                    GripTarget::LeftTrigger => left = u8::MAX,
+                    GripTarget::RightTrigger => right = u8::MAX,
+                }
+            }
+        }
+        (buttons, left, right)
+    }
+    /// The back grips no setting maps, as Moonlight button flags.
+    pub fn unmapped_back_grips(&self) -> u32 {
+        PADDLES
+            .into_iter()
+            .zip(self.back_grips)
+            .filter(|(_, target)| target.is_none())
+            .fold(0, |mask, (flag, _)| mask | flag)
     }
     pub fn allows(&self, event: &Input) -> bool {
         match event {
@@ -437,6 +540,118 @@ mod tests {
         )
         .unwrap();
         assert_eq!(plain.controller_profile(0, 1, 0x30 | 8, all), Some(4));
+    }
+    #[test]
+    fn a_steam_deck_with_its_sensors_gets_a_dualsense_and_without_them_an_xbox_pad() {
+        let policy = Policy::resolve(&Config::default()).unwrap();
+        let vhf = (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6);
+        // What Moonlight announces for a Deck with Steam Input off: gyro and
+        // accelerometer, and with SDL 3 both trackpads.
+        for caps in [0x30, 0x38, 0x138] {
+            assert_eq!(
+                policy.controller_profile(0, CTYPE_STEAM, caps, vhf),
+                Some(VHF_DUALSENSE)
+            );
+            assert_eq!(
+                policy.controller_profile(0, CTYPE_STEAM, caps, VIGEM_PROFILES),
+                Some(VIGEM_DS4)
+            );
+        }
+        assert_eq!(policy.controller_profile(0, CTYPE_STEAM, 0, vhf), Some(4));
+        let plain = Policy::resolve(
+            &Config::parse("motion_as_ds4=false\ntouchpad_as_ds4=false\n").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            plain.controller_profile(0, CTYPE_STEAM, 0x138, vhf),
+            Some(4)
+        );
+        // An explicit profile is kept.
+        assert_eq!(
+            policy.controller_profile(VHF_DS4, CTYPE_STEAM, 0x138, vhf),
+            Some(VHF_DS4)
+        );
+    }
+    #[test]
+    fn back_grips_pass_through_until_mapped() {
+        let all = PADDLES.iter().fold(0, |mask, flag| mask | flag);
+        let policy = Policy::resolve(&Config::default()).unwrap();
+        assert_eq!(policy.back_grips, [None; 4]);
+        assert_eq!(policy.unmapped_back_grips(), all);
+        assert_eq!(
+            policy.map_back_grips(all | 0x1000, 7, 9),
+            (all | 0x1000, 7, 9)
+        );
+    }
+    #[test]
+    fn mapped_back_grips_press_their_button_or_trigger_instead() {
+        let policy = Policy::resolve(
+            &Config::parse(
+                "back_grip_r4=a\nback_grip_l4=lt\nback_grip_r5=rt\nback_grip_l5=nonsense\n",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let [r4, l4, r5, l5] = PADDLES;
+        assert_eq!(
+            policy.back_grips,
+            [
+                Some(GripTarget::Buttons(0x1000)),
+                Some(GripTarget::LeftTrigger),
+                Some(GripTarget::RightTrigger),
+                None
+            ]
+        );
+        assert_eq!(policy.unmapped_back_grips(), l5);
+        // R4 presses A; held with A itself, A stays down.
+        assert_eq!(policy.map_back_grips(r4, 0, 0), (0x1000, 0, 0));
+        assert_eq!(policy.map_back_grips(r4 | 0x1000, 0, 0), (0x1000, 0, 0));
+        // The trigger grips pull their trigger all the way, whatever it was at.
+        assert_eq!(policy.map_back_grips(l4 | 0x10, 40, 50), (0x10, 255, 50));
+        assert_eq!(policy.map_back_grips(r5, 40, 50), (0, 40, 255));
+        // Released grips press nothing; the unmapped one passes through.
+        assert_eq!(policy.map_back_grips(0x2000, 40, 50), (0x2000, 40, 50));
+        assert_eq!(policy.map_back_grips(l5, 0, 0), (l5, 0, 0));
+        // Every value the console offers maps to something.
+        for value in [
+            "a",
+            "b",
+            "x",
+            "y",
+            "lb",
+            "rb",
+            "lt",
+            "rt",
+            "l3",
+            "r3",
+            "back",
+            "start",
+            "guide",
+            "dpad_up",
+            "dpad_down",
+            "dpad_left",
+            "dpad_right",
+            "touchpad",
+            "misc",
+        ] {
+            assert!(grip_target("back_grip_r4", value).is_some(), "{value}");
+        }
+        assert_eq!(grip_target("back_grip_r4", "none"), None);
+    }
+    #[test]
+    fn the_steam_input_hint_names_a_deck_that_arrived_as_a_plain_xbox_pad() {
+        for name in ["steamdeck", "Steam Deck", "steam-deck (OLED)"] {
+            let hint = steam_input_hint(name, 1, 0x47).unwrap();
+            assert!(hint.starts_with(name));
+            assert!(hint.contains("disable Steam Input"));
+            // No gyro announced, whatever type SDL saw.
+            assert!(steam_input_hint(name, 0, 0x03).is_some());
+        }
+        // A Deck that passes its own controls on, and other devices.
+        assert_eq!(steam_input_hint("Steam Deck", CTYPE_STEAM, 0x138), None);
+        assert_eq!(steam_input_hint("Steam Deck", 1, 0x30), None);
+        assert_eq!(steam_input_hint("Pixel 8", 1, 0), None);
+        assert_eq!(steam_input_hint("Deck", 1, 0), None);
     }
     #[test]
     fn key_repeat_delay_follows_vibepollo() {

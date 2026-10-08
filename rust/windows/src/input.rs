@@ -262,17 +262,29 @@ impl Gamepads {
                     return Ok(());
                 }
                 self.ensure(*id)?;
+                // No virtual pad has back grips: press what each is mapped to.
+                let (buttons, left_trigger, right_trigger) =
+                    self.policy
+                        .map_back_grips(*buttons, *left_trigger, *right_trigger);
+                let mapped = Event::Controller {
+                    id: *id,
+                    active: *active,
+                    buttons,
+                    left_trigger,
+                    right_trigger,
+                    sticks: *sticks,
+                };
                 let state = self
                     .states
                     .entry(*id)
-                    .or_insert_with(|| (event.clone(), Default::default()));
-                state.0 = event.clone();
+                    .or_insert_with(|| (mapped.clone(), Default::default()));
+                state.0 = mapped;
                 let buttons = state.1.update(
-                    *buttons,
+                    buttons,
                     self.started.elapsed(),
                     self.policy.back_button_timeout,
                 );
-                self.submit(*id, buttons, *left_trigger, *right_trigger, sticks)?;
+                self.submit(*id, buttons, left_trigger, right_trigger, sticks)?;
             }
             Event::Arrival {
                 id,

@@ -2091,6 +2091,18 @@ impl Media {
                                         }
                                     }
                                     Ok(event) => {
+                                        if let input::Input::Arrival {
+                                            kind, capabilities, ..
+                                        } = &event
+                                            && let Some(hint) =
+                                                butterpollo_core::input_policy::steam_input_hint(
+                                                    &s.launch.client.name,
+                                                    *kind,
+                                                    *capabilities,
+                                                )
+                                        {
+                                            s.launch.warnings.set("input_steam_input", hint);
+                                        }
                                         if p.inputs.last_mut().is_some_and(|last| {
                                             last.merge(&event) == input::Batch::Merged
                                         }) {

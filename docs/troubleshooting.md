@@ -223,9 +223,14 @@ Until then, on Steam's stable client, install [ViGEmBus from nefarius](https://g
 
 Automatic can choose DS4 for a client with motion sensors or a touchpad, including Steam Deck. PlayStation clients get the VHF DualSense when that driver is installed too. Select **Xbox 360 (ViGEmBus)** (`gamepad = x360`) explicitly if you need the Xbox 360 path and do not need motion or touchpad input. Disconnect and reconnect after changing the setting. Check Butterpollo's logs for `backend="ViGEmBus"` and `profile="x360"`, and Steam's `logs/controller.txt` for the new arrival. An explicit VHF choice continues to use VHF even when ViGEmBus is installed. An explicit Xbox 360 or DualShock 4 (ViGEmBus) choice without ViGEmBus installed uses the VHF Xbox One or DualShock 4 pad and shows a warning on the stream; install ViGEmBus or choose Automatic to remove it.
 
-## A Steam Deck has no gyro or trackpads
+## A Steam Deck has no gyro, trackpads or back grips
 
-The host only follows what Moonlight announces when a controller connects. With Steam Input on for the Moonlight shortcut, Steam usually gives Moonlight an emulated Xbox 360 controller, which has no gyro or trackpads. Disable Steam Input in the shortcut's controller properties, then reconnect. In Butterpollo's logs, a Deck that Moonlight sees directly connects as a DualShock 4 (or DualSense with only VHF); the pad's profile is named for each connected controller. If `motion_as_ds4` and `touchpad_as_ds4` are both off, a Deck stays an Xbox pad and loses them again. The left and right trackpads share the pad's one touch surface, the right one on its right half, and the back grips (L4, R4, L5, R5) are not passed on. See [Controllers](configuration.md#controllers).
+The host only follows what Moonlight announces when a controller connects. With Steam Input on for Moonlight, Steam gives Moonlight a virtual Xbox controller, which has no gyro, trackpads or back grips. On the Deck, disable Steam Input in Moonlight's controller settings in Steam, then reconnect. The stream card says this when the paired device is named Steam Deck and its controller has no gyro. In Butterpollo's logs, a Deck that Moonlight sees directly connects with `client_type=4` and the DualSense profile (`vhf_ds5`), or DualShock 4 with ViGEmBus installed. If `motion_as_ds4` and `touchpad_as_ds4` are both off, a Deck stays an Xbox pad and loses them again.
+
+- **No trackpads with Steam Input off:** Moonlight builds whose SDL predates SDL 3 do not read the Deck's trackpads, so they send none.
+- **Back grips do nothing:** choose what each grip presses under **Settings → Input → Back grips**; no virtual controller has back buttons of its own.
+
+See [Steam Deck](configuration.md#steam-deck).
 
 ## An update stays queued
 

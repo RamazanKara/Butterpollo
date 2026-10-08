@@ -414,6 +414,44 @@ const keyboardOn = (values: Values) => on(values, 'keyboard', true);
 const mouseOn = (values: Values) => on(values, 'mouse', true);
 const controllerOn = (values: Values) => on(values, 'controller', true);
 
+/** What a back grip can press on the virtual controller, which has none. */
+const gripOptions: Option[] = [
+  { value: 'none', label: 'Nothing' },
+  { value: 'a', label: 'A (Cross)' },
+  { value: 'b', label: 'B (Circle)' },
+  { value: 'x', label: 'X (Square)' },
+  { value: 'y', label: 'Y (Triangle)' },
+  { value: 'lb', label: 'Left bumper (L1)' },
+  { value: 'rb', label: 'Right bumper (R1)' },
+  { value: 'lt', label: 'Left trigger (L2), fully' },
+  { value: 'rt', label: 'Right trigger (R2), fully' },
+  { value: 'l3', label: 'Left stick click (L3)' },
+  { value: 'r3', label: 'Right stick click (R3)' },
+  { value: 'back', label: 'View / Back (Create, Share)' },
+  { value: 'start', label: 'Menu / Start (Options)' },
+  { value: 'guide', label: 'Guide (PS)' },
+  { value: 'dpad_up', label: 'D-pad up' },
+  { value: 'dpad_down', label: 'D-pad down' },
+  { value: 'dpad_left', label: 'D-pad left' },
+  { value: 'dpad_right', label: 'D-pad right' },
+  { value: 'touchpad', label: 'Touchpad click' },
+  { value: 'misc', label: 'Share (Xbox) / Mute (DualSense)' },
+];
+
+/** One back grip setting; Moonlight sends the grips as paddles 1 to 4. */
+function backGrip(key: string, name: string, where: string): Setting {
+  return {
+    key,
+    label: `Back grip ${name}`,
+    description: `What the ${where} back button presses: a Steam Deck's ${name}, or the matching paddle on an Xbox Elite or DualSense Edge. No virtual controller has back buttons, so they do nothing until mapped here.`,
+    category: 'input',
+    group: 'Back grips',
+    control: { kind: 'select', options: gripOptions },
+    default: 'none',
+    visibleWhen: controllerOn,
+  };
+}
+
 const input: Setting[] = [
   {
     key: 'keyboard',
@@ -592,6 +630,10 @@ const input: Setting[] = [
     default: -1,
     visibleWhen: controllerOn,
   },
+  backGrip('back_grip_l4', 'L4', 'upper left'),
+  backGrip('back_grip_r4', 'R4', 'upper right'),
+  backGrip('back_grip_l5', 'L5', 'lower left'),
+  backGrip('back_grip_r5', 'R5', 'lower right'),
 ];
 
 const commands: Setting[] = [

@@ -89,6 +89,8 @@ pub struct GamepadThread {
     shared: Arc<Shared>,
     reports: mpsc::Receiver<PadReport>,
     thread: Option<JoinHandle<()>>,
+    /// The back grips no setting maps; pressing one shows a hint.
+    unmapped_grips: u32,
 }
 impl GamepadThread {
     /// The driver is opened with the first controller event, on the thread.
@@ -97,10 +99,13 @@ impl GamepadThread {
         policy: butterpollo_core::input_policy::Policy,
         warnings: Arc<butterpollo_core::session::Warnings>,
     ) -> std::io::Result<Self> {
-        Self::spawn_reported(
+        let unmapped_grips = policy.unmapped_back_grips();
+        let mut thread = Self::spawn_reported(
             move || Gamepads::open_options(profile, policy.clone()),
             warnings,
-        )
+        )?;
+        thread.unmapped_grips = unmapped_grips;
+        Ok(thread)
     }
     #[cfg(test)]
     pub(super) fn spawn<P: Pads + 'static>(
@@ -127,10 +132,20 @@ impl GamepadThread {
             shared,
             reports,
             thread: Some(thread),
+            unmapped_grips: 0,
         })
     }
     /// Queue an event for the pads; never waits for the driver.
     pub fn send(&self, event: Event) {
+        if let Event::Controller { buttons, .. } = &event
+            && buttons & self.unmapped_grips != 0
+        {
+            self.shared.warnings.event(
+                "input_back_grips",
+                butterpollo_core::input_policy::BACK_GRIP_HINT,
+                butterpollo_core::session::EVENT_PERIOD,
+            );
+        }
         let mut queue = self.shared.queue.lock().unwrap();
         if !enqueue(&mut queue.events, event) && !std::mem::replace(&mut queue.full, true) {
             self.shared.warnings.event("input_gamepad_queue", "Virtual gamepad driver is not keeping up; controller input was dropped. Check the virtual gamepad driver or choose another supported profile.", butterpollo_core::session::EVENT_PERIOD);
@@ -443,6 +458,39 @@ mod tests {
         assert_eq!(entries[0].code, "input_gamepad_stand_in");
         assert!(entries[0].message.contains("in place of Xbox 360"));
         assert_eq!(*log.lock().unwrap(), logged(&[state(0, 1, 0, 0)]));
+    }
+
+    #[test]
+    fn an_unmapped_back_grip_press_shows_a_hint_and_still_reaches_the_pads() {
+        let warnings = Arc::new(butterpollo_core::session::Warnings::default());
+        let gate = Arc::new(Gate::default());
+        gate.open();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut pads = GamepadThread::spawn_reported(
+            {
+                let (gate, log) = (gate.clone(), log.clone());
+                move || {
+                    Ok(Fake {
+                        gate: gate.clone(),
+                        log: log.clone(),
+                        plugged: false,
+                        feedback: vec![],
+                        notice: None,
+                    })
+                }
+            },
+            warnings.clone(),
+        )
+        .unwrap();
+        // L4 mapped, R4 not: pressing L4 says nothing.
+        pads.unmapped_grips = 0x01_0000;
+        pads.send(state(0, 1, 0x02_0000, 0));
+        assert!(warnings.snapshot().is_empty());
+        pads.send(state(0, 1, 0x01_0000, 0));
+        let entries = warnings.snapshot();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].code, "input_back_grips");
+        gate.wait_until(|| log.lock().unwrap().len() == 2);
     }
 
     #[test]

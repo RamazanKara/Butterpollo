@@ -15,6 +15,29 @@ pub struct Setting {
 }
 macro_rules! settings { ($($group:literal => [$($key:literal, $label:literal, $control:expr;)*])*) => { &[$($(Setting { key: $key, label: $label, group: $group, control: $control },)*)*] }; }
 use Control::*;
+/// What a back grip can press (`back_grip_*`).
+const GRIPS: &[&str] = &[
+    "none",
+    "a",
+    "b",
+    "x",
+    "y",
+    "lb",
+    "rb",
+    "lt",
+    "rt",
+    "l3",
+    "r3",
+    "back",
+    "start",
+    "guide",
+    "dpad_up",
+    "dpad_down",
+    "dpad_left",
+    "dpad_right",
+    "touchpad",
+    "misc",
+];
 pub const GLOBAL: &[Setting] = settings! {
     "Audio" => [
         "virtual_sink", "Virtual audio endpoint", Text;
@@ -134,6 +157,10 @@ pub const GLOBAL: &[Setting] = settings! {
         "motion_as_ds4", "Use PlayStation profile for motion input", Bool;
         "touchpad_as_ds4", "Use PlayStation profile for touchpad input", Bool;
         "back_button_timeout", "Hold Back to press Guide (milliseconds; -1 disables)", Number;
+        "back_grip_l4", "Back grip L4 (upper left) presses", Choice(GRIPS);
+        "back_grip_r4", "Back grip R4 (upper right) presses", Choice(GRIPS);
+        "back_grip_l5", "Back grip L5 (lower left) presses", Choice(GRIPS);
+        "back_grip_r5", "Back grip R5 (lower right) presses", Choice(GRIPS);
         "enable_input_only_mode", "Allow input-only sessions", Bool;
     ]
     "Remote monitors" => [
