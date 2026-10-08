@@ -186,6 +186,9 @@ impl Ready {
             .name("game-display-lease".into())
             .spawn(move || {
                 while !worker_stop.load(Ordering::Acquire) {
+                    // Windows refuses display configuration from the normal
+                    // desktop while it is locked (issue #6).
+                    butterpollo_windows::input::keep_on_input_desktop();
                     let mut prepared = worker_state.lock().unwrap();
                     let result = prepared.feed();
                     let current = prepared.capture_target();
@@ -335,11 +338,12 @@ impl Prepared {
         }
         Ok(())
     }
-    pub fn create(
+    fn create(
         h: &Shared,
         launch: &Launch,
         stream: &Negotiated,
         config: &Config,
+        physical_only: bool,
     ) -> Result<(Self, limiter::Lease)> {
         let app = h
             .apps
@@ -416,11 +420,14 @@ impl Prepared {
             output_override,
             configured_output: config.get("output_name", ""),
         };
-        let virtual_mode = display_request.requested()
+        let virtual_mode = !physical_only
+            && display_request.requested()
             && (display_request.explicit()
                 || display_request.output_virtual()
                 || butterpollo_windows::display::virtual_display_available());
-        if display_request.requested() && !virtual_mode {
+        if physical_only && display_request.requested() {
+            launch.warnings.set("display_virtual", "Windows was locked and the virtual display could not be set up there, so this stream shows the physical display. Start the stream again after signing in to use the virtual display.");
+        } else if display_request.requested() && !virtual_mode {
             launch.warnings.set("display_virtual", "Using a physical display because the virtual display driver is unavailable. The desktop is visible locally and its refresh can limit fresh frames; repair the virtual display driver or explicitly select the physical display.");
         } else {
             launch.warnings.clear("display_virtual");
@@ -809,11 +816,44 @@ impl Prepared {
 }
 impl Drop for Prepared {
     fn drop(&mut self) {
-        self._profile.take();
-        self._arrangement.take();
-        self.display.take();
-        self._activation.take();
-        self._golden.take();
+        // A stream ending while Windows is locked restores the layout too.
+        butterpollo_windows::input::on_input_desktop(|| {
+            self._profile.take();
+            self._arrangement.take();
+            self.display.take();
+            self._activation.take();
+            self._golden.take();
+            self._retained.take();
+            self._vulkan.take();
+        });
+    }
+}
+
+/// Prepare a stream's display. While Windows shows the lock or sign-in
+/// screen it allows display configuration only from that screen's desktop,
+/// so the work moves there (issue #6). If the virtual display or its layout
+/// still cannot be set up, the stream shows the physical display, as
+/// Vibepollo does while Windows is locked.
+pub fn prepare_stream(
+    h: &Shared,
+    launch: &Launch,
+    stream: &Negotiated,
+    config: &Config,
+) -> Result<StreamPreparation> {
+    let prepare = |physical_only: bool| {
+        butterpollo_windows::input::on_input_desktop(|| {
+            Ready::prepare(Prepared::create(h, launch, stream, config, physical_only)?)
+        })
+    };
+    match prepare(false) {
+        Err(error) if butterpollo_windows::input::secure_desktop_shown() => {
+            tracing::warn!(error = %format!("{error:#}"), "stream display could not be prepared while Windows is locked; trying the physical display");
+            prepare(true).map_err(|fallback| {
+                tracing::warn!(error = %format!("{fallback:#}"), "physical display could not be prepared either");
+                error
+            })
+        }
+        result => result,
     }
 }
 

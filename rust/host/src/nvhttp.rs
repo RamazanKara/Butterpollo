@@ -1081,9 +1081,7 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
                     }
                     h.app_display.lock().unwrap().remove(&launch.client.uuid);
                 }
-                crate::display_session::Ready::prepare(crate::display_session::Prepared::create(
-                    &h, &launch, &stream, &config,
-                )?)
+                crate::display_session::prepare_stream(&h, &launch, &stream, &config)
             })();
             match prepared {
                 Ok(prepared) => *launch.preparation.lock().unwrap() = Some(Box::new(prepared)),

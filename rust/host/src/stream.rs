@@ -850,7 +850,9 @@ impl Media {
                         .filter(|s| !s.is_empty())
                         .unwrap_or(c.get("output_name", ""));
                     if s.launch.role == Role::InputOnly {
-                        let monitors = butterpollo_windows::display::monitors()?;
+                        let monitors = butterpollo_windows::input::on_input_desktop(
+                            butterpollo_windows::display::monitors,
+                        )?;
                         let monitor = monitors
                             .iter()
                             .find(|m| m.matches(output))
@@ -877,10 +879,8 @@ impl Media {
                         previous => {
                             drop(previous);
                             h.app_display.lock().unwrap().remove(&s.launch.client.uuid);
-                            crate::display_session::Ready::prepare(
-                                crate::display_session::Prepared::create(
-                                    &h, &s.launch, &s.config, &c,
-                                )?,
+                            crate::display_session::prepare_stream(
+                                &h, &s.launch, &s.config, &c,
                             )?
                         }
                     };

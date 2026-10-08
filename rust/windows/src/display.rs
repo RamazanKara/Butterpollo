@@ -2857,6 +2857,9 @@ impl Retained {
                 let mut pending = false;
                 let mut retry_at = Instant::now();
                 while !worker_stop.load(std::sync::atomic::Ordering::Acquire) {
+                    // Windows refuses display configuration from the normal
+                    // desktop while it is locked.
+                    crate::input::keep_on_input_desktop();
                     let result = worker_guard
                         .lock()
                         .unwrap()
