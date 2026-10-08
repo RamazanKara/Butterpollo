@@ -807,9 +807,13 @@ impl Media {
     }
     pub fn start(self: &Arc<Self>, h: Shared, s: Arc<Session>) {
         let m = self.clone();
+        let worker_h = h.clone();
+        let worker_s = s.clone();
         let result = thread::Builder::new()
             .name("session".into())
             .spawn(move || {
+                let h = worker_h;
+                let s = worker_s;
                 tracing::info!(client=%s.launch.client.name,"CLIENT CONNECTED");
                 {
                     let mut paired = h.paired.write().unwrap();
@@ -1651,6 +1655,7 @@ impl Media {
                 tracing::info!(client=%s.launch.client.name,"CLIENT DISCONNECTED");
             });
         if let Err(e) = result {
+            h.sessions.lock().unwrap().fail_start(&s);
             tracing::error!(error=%e,"could not start session worker");
         }
     }

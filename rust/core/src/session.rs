@@ -287,6 +287,27 @@ mod tests {
         assert_eq!(failed.termination_reason(), 0x8000_4005);
     }
     #[test]
+    fn a_worker_that_cannot_start_fails_without_leaving_an_active_session() {
+        let mut sessions = Sessions::default();
+        let failed = launch("failed", Role::Stream);
+        sessions.queue(failed.clone()).unwrap();
+        let failed = sessions.start(failed, Negotiated::default()).unwrap();
+        let other = launch("other", Role::InputOnly);
+        sessions.queue(other.clone()).unwrap();
+        let other = sessions.start(other, Negotiated::default()).unwrap();
+        sessions.fail_start(&failed);
+        assert!(failed.failed());
+        assert!(failed.stopping());
+        assert_eq!(failed.termination_reason(), 0x8000_4005);
+        assert!(!sessions.active.contains_key("failed"));
+        assert!(sessions.active.contains_key("other"));
+        assert!(!other.stopping());
+        assert!(sessions.teardown.is_empty());
+        let retry = launch("retry", Role::Stream);
+        sessions.queue(retry.clone()).unwrap();
+        sessions.start(retry, Negotiated::default()).unwrap();
+    }
+    #[test]
     fn teardown_leaves_active_while_resources_remain_owned() {
         use std::sync::{Mutex, Weak};
         struct Resource {
@@ -682,6 +703,10 @@ impl Sessions {
         self.active.remove(&session.launch.id);
         self.teardown
             .insert(session.launch.id.clone(), Instant::now());
+    }
+    pub fn fail_start(&mut self, session: &Session) {
+        session.fail();
+        self.active.remove(&session.launch.id);
     }
     pub fn request_stop(&mut self, id: Option<&str>) {
         self.pending
