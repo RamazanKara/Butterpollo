@@ -1,11 +1,11 @@
-use crate::state::Shared;
+use crate::state::{Launch, Session, Shared};
 mod capture;
 use anyhow::{Context, Result};
 use butterpollo_core::{
     config::Config,
     crypto, input,
     packet::{AudioPacketizer, VideoPacketizer},
-    session::{Role, Session},
+    session::Role,
 };
 pub(crate) const RTX_KEYS: &[&str] = &[
     "rtx_hdr",
@@ -133,10 +133,7 @@ fn truehdr_filter(
     }
 }
 
-pub(crate) fn effective_config(
-    h: &Shared,
-    launch: &butterpollo_core::session::Launch,
-) -> Result<Config> {
+pub(crate) fn effective_config(h: &Shared, launch: &Launch) -> Result<Config> {
     let mut config = h.config.read().unwrap().clone();
     if let Some(overrides) = launch
         .client
@@ -881,12 +878,9 @@ impl Media {
                         .preparation
                         .lock()
                         .unwrap()
-                        .take()
-                        .map(|p| p.downcast::<crate::display_session::StreamPreparation>())
-                        .transpose()
-                        .map_err(|_| anyhow::anyhow!("invalid launch preparation"))?;
+                        .take();
                     let stream_preparation = stream_preparation.insert(match initial {
-                        Some(p) if p.display.matches(&s.config) => *p,
+                        Some(p) if p.prepared().display.matches(&s.config) => p.into_prepared(),
                         previous => {
                             drop(previous);
                             h.app_display.lock().unwrap().remove(&s.launch.client.uuid);
@@ -1672,8 +1666,7 @@ impl Media {
             .lock()
             .unwrap()
             .as_ref()
-            .and_then(|route| route.downcast_ref::<Arc<butterpollo_windows::audio_route::Route>>())
-            .cloned();
+            .map(|route| route.route());
         let mut capture: Option<Loopback> = None;
         let mut sink = String::new();
         let mut audio_check = Instant::now();

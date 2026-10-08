@@ -1,4 +1,4 @@
-use crate::state::Shared;
+use crate::state::{Launch, Shared};
 use anyhow::{Context, Result, bail};
 use butterpollo_core::{
     crypto,
@@ -43,10 +43,7 @@ pub async fn serve(address: SocketAddr, h: Shared, media: Arc<crate::stream::Med
         });
     }
 }
-async fn read_message(
-    socket: &mut TcpStream,
-    launches: &[butterpollo_core::session::Launch],
-) -> Result<(butterpollo_core::session::Launch, Vec<u8>)> {
+async fn read_message(socket: &mut TcpStream, launches: &[Launch]) -> Result<(Launch, Vec<u8>)> {
     let mut first = [0; 4];
     socket.read_exact(&mut first).await?;
     let word = u32::from_be_bytes(first);

@@ -188,6 +188,12 @@ mod tests {
             sessions: Weak<Mutex<Sessions>>,
             restored: Arc<AtomicBool>,
         }
+        impl Preparation<()> for Restore {
+            fn prepared(&self) -> &() {
+                &()
+            }
+            fn into_prepared(self: Box<Self>) {}
+        }
         impl Drop for Restore {
             fn drop(&mut self) {
                 assert!(self.sessions.upgrade().unwrap().try_lock().is_ok());
@@ -313,6 +319,12 @@ mod tests {
         struct Resource {
             sessions: Weak<Mutex<Sessions>>,
             released: Arc<AtomicBool>,
+        }
+        impl Preparation<()> for Resource {
+            fn prepared(&self) -> &() {
+                &()
+            }
+            fn into_prepared(self: Box<Self>) {}
         }
         impl Drop for Resource {
             fn drop(&mut self) {
@@ -489,8 +501,18 @@ mod tests {
         assert!(!other.stopping());
     }
 }
-#[derive(Clone)]
-pub struct Launch {
+/// A platform preparation that can be borrowed or moved into its stream.
+pub trait Preparation<T>: Send {
+    fn prepared(&self) -> &T;
+    fn into_prepared(self: Box<Self>) -> T;
+}
+
+/// A prepared audio route shared with the app and its stream.
+pub trait AudioPreparation<T>: Send + Sync {
+    fn route(&self) -> Arc<T>;
+}
+
+pub struct Launch<P = (), A = ()> {
     pub warnings: Arc<Warnings>,
     pub id: String,
     pub client: Client,
@@ -507,18 +529,46 @@ pub struct Launch {
     pub rtsp_received: Arc<std::sync::Mutex<crate::packet::ReplayWindow>>,
     /// The platform host owns launch preparation. Keeping it on the launch
     /// gives expired, rejected and disconnected requests the same RAII teardown.
-    pub preparation: Arc<std::sync::Mutex<Option<Box<dyn std::any::Any + Send>>>>,
+    pub preparation: Arc<std::sync::Mutex<Option<Box<dyn Preparation<P>>>>>,
     pub vrr_requested: bool,
     pub host_audio: bool,
     pub requested_rate: u32,
     pub options: BTreeMap<String, String>,
-    pub audio_preparation: Arc<std::sync::Mutex<Option<Box<dyn std::any::Any + Send + Sync>>>>,
+    pub audio_preparation: Arc<std::sync::Mutex<Option<Box<dyn AudioPreparation<A>>>>>,
     /// While the host still prepares the launch (displays, audio, the app's
     /// own commands, which can take minutes), it does not expire: the client
     /// connects only after the launch reply.
     pub preparing: Arc<AtomicBool>,
 }
-impl Launch {
+// Launch clones share the slots; the platform preparations need not be Clone.
+impl<P, A> Clone for Launch<P, A> {
+    fn clone(&self) -> Self {
+        Self {
+            warnings: self.warnings.clone(),
+            id: self.id.clone(),
+            client: self.client.clone(),
+            peer: self.peer,
+            app_id: self.app_id,
+            key: self.key,
+            key_id: self.key_id,
+            ping: self.ping.clone(),
+            connect_data: self.connect_data,
+            role: self.role,
+            created: self.created,
+            rtsp_encrypted: self.rtsp_encrypted,
+            rtsp_counter: self.rtsp_counter.clone(),
+            rtsp_received: self.rtsp_received.clone(),
+            preparation: self.preparation.clone(),
+            vrr_requested: self.vrr_requested,
+            host_audio: self.host_audio,
+            requested_rate: self.requested_rate,
+            options: self.options.clone(),
+            audio_preparation: self.audio_preparation.clone(),
+            preparing: self.preparing.clone(),
+        }
+    }
+}
+impl<P, A> Launch<P, A> {
     /// Still waiting for its client: being prepared, or prepared under 30 s ago.
     fn live(&self) -> bool {
         self.preparing.load(Ordering::Acquire) || self.created.elapsed() < Duration::from_secs(30)
@@ -535,10 +585,10 @@ pub struct Stats {
     pub frames_replaced: AtomicU64,
     pub performance: std::sync::Mutex<crate::performance::Performance>,
 }
-pub struct Session {
+pub struct Session<P = (), A = ()> {
     pub encoder: std::sync::RwLock<String>,
     pub capture_warnings: std::sync::RwLock<Arc<Warnings>>,
-    pub launch: Launch,
+    pub launch: Launch<P, A>,
     pub config: Negotiated,
     pub stop: AtomicBool,
     /// Set before `stop` when the stream ends on an error, so the client is
@@ -552,8 +602,8 @@ pub struct Session {
     pub output: std::sync::RwLock<String>,
     pub hdr_metadata: std::sync::RwLock<crate::hdr::Metadata>,
 }
-impl Session {
-    pub fn new(launch: Launch, config: Negotiated) -> Arc<Self> {
+impl<P, A> Session<P, A> {
+    pub fn new(launch: Launch<P, A>, config: Negotiated) -> Arc<Self> {
         let bitrate = config.bitrate_kbps;
         Arc::new(Self {
             encoder: Default::default(),
@@ -621,15 +671,23 @@ impl Session {
         serde_json::json!({"warnings":warnings,"encoder":*self.encoder.read().unwrap(),"uuid":self.launch.client.uuid,"device_name":self.launch.client.name,"width":self.config.width,"height":self.config.height,"fps":self.config.fps,"video_format":self.config.codec,"hdr":self.config.hdr,"vrr":self.config.vrr_low_latency,"encoder_bitrate_kbps":self.bitrate.load(Ordering::Relaxed),"pyrowave_minimum_kbps":(self.config.codec == 3).then(|| crate::pyrowave::minimum_kbps(self.config.width, self.config.height, self.config.fps_millihz())),"pyrowave_recommended_kbps":(self.config.codec == 3).then(|| crate::pyrowave::recommended_kbps(self.config.width, self.config.height, self.config.fps_millihz())),"audio_channels":self.config.audio_channels,"state":if self.stopping(){"STOPPING"}else{"RUNNING"},"frames_sent":self.stats.frames.load(Ordering::Relaxed),"frames_replaced":self.stats.frames_replaced.load(Ordering::Relaxed),"packets_sent":self.stats.packets.load(Ordering::Relaxed),"bytes_sent":self.stats.bytes.load(Ordering::Relaxed),"idr_requests":self.stats.idr_requests.load(Ordering::Relaxed),"reference_invalidations":self.stats.reference_invalidations.load(Ordering::Relaxed),"encode_latency_ms":self.stats.latency_us.load(Ordering::Relaxed) as f64/1000.,"performance":self.stats.performance.lock().unwrap().snapshot(Instant::now()),"uptime_seconds":self.started.elapsed().as_secs_f64(),"role":self.launch.role})
     }
 }
-#[derive(Default)]
-pub struct Sessions {
-    pub pending: BTreeMap<String, Launch>,
-    pub active: BTreeMap<String, Arc<Session>>,
+pub struct Sessions<P = (), A = ()> {
+    pub pending: BTreeMap<String, Launch<P, A>>,
+    pub active: BTreeMap<String, Arc<Session<P, A>>>,
     pub teardown: BTreeMap<String, Instant>,
 }
-impl Sessions {
+impl<P, A> Default for Sessions<P, A> {
+    fn default() -> Self {
+        Self {
+            pending: BTreeMap::new(),
+            active: BTreeMap::new(),
+            teardown: BTreeMap::new(),
+        }
+    }
+}
+impl<P, A> Sessions<P, A> {
     #[must_use = "drop expired launches after releasing the sessions lock"]
-    pub fn expire(&mut self) -> Vec<Launch> {
+    pub fn expire(&mut self) -> Vec<Launch<P, A>> {
         let expired: Vec<_> = self
             .pending
             .iter()
@@ -645,7 +703,7 @@ impl Sessions {
     /// stream only after abandoning its previous one, which may never have
     /// connected or may not have timed out yet; either would otherwise block
     /// the new attempt. Returns the streams asked to stop.
-    pub fn supersede(&mut self, client: &str, role: Role) -> Vec<Arc<Session>> {
+    pub fn supersede(&mut self, client: &str, role: Role) -> Vec<Arc<Session<P, A>>> {
         self.pending
             .retain(|_, p| p.client.uuid != client || p.role != role);
         let stopped: Vec<_> = self
@@ -660,7 +718,7 @@ impl Sessions {
         stopped
     }
     /// Queue a launch, replacing the same client's earlier launch in its role.
-    pub fn queue(&mut self, launch: Launch) -> Result<()> {
+    pub fn queue(&mut self, launch: Launch<P, A>) -> Result<()> {
         self.supersede(&launch.client.uuid, launch.role);
         let streaming = self.active.values().filter(|s| !s.stopping()).count();
         if self.pending.values().filter(|p| p.live()).count() + streaming >= 16 {
@@ -669,7 +727,7 @@ impl Sessions {
         self.pending.insert(launch.id.clone(), launch);
         Ok(())
     }
-    pub fn pending_for_peer(&self, peer: IpAddr) -> Result<Launch> {
+    pub fn pending_for_peer(&self, peer: IpAddr) -> Result<Launch<P, A>> {
         let mut found = self.pending.values().filter(|p| p.peer == peer && p.live());
         let p = found.next().cloned();
         if found.next().is_some() {
@@ -677,7 +735,7 @@ impl Sessions {
         }
         p.ok_or_else(|| anyhow::anyhow!("no authorized launch for RTSP peer"))
     }
-    pub fn rtsp_for_peer(&self, peer: IpAddr) -> Vec<Launch> {
+    pub fn rtsp_for_peer(&self, peer: IpAddr) -> Vec<Launch<P, A>> {
         self.pending
             .values()
             .filter(|p| p.live())
@@ -691,7 +749,11 @@ impl Sessions {
             .cloned()
             .collect()
     }
-    pub fn start(&mut self, launch: Launch, config: Negotiated) -> Result<Arc<Session>> {
+    pub fn start(
+        &mut self,
+        launch: Launch<P, A>,
+        config: Negotiated,
+    ) -> Result<Arc<Session<P, A>>> {
         if self.pending.remove(&launch.id).is_none() {
             bail!("launch expired or already consumed");
         }
@@ -699,12 +761,12 @@ impl Sessions {
         self.active.insert(s.launch.id.clone(), s.clone());
         Ok(s)
     }
-    pub fn begin_teardown(&mut self, session: &Session) {
+    pub fn begin_teardown(&mut self, session: &Session<P, A>) {
         self.active.remove(&session.launch.id);
         self.teardown
             .insert(session.launch.id.clone(), Instant::now());
     }
-    pub fn fail_start(&mut self, session: &Session) {
+    pub fn fail_start(&mut self, session: &Session<P, A>) {
         session.fail();
         self.active.remove(&session.launch.id);
     }

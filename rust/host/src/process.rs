@@ -53,7 +53,7 @@ pub struct ClientCommands {
     environment: BTreeMap<String, String>,
 }
 impl ClientCommands {
-    pub fn start(h: &crate::state::Shared, s: &butterpollo_core::session::Session) -> Result<Self> {
+    pub fn start(h: &crate::state::Shared, s: &crate::state::Session) -> Result<Self> {
         if s.launch.role == butterpollo_core::session::Role::InputOnly
             || !s.launch.client.allows_commands()
             || h.current_app

@@ -1,12 +1,12 @@
 //! Prepare display and game integrations before running application commands.
 //! The same leases move from an authorized pending launch into its transport.
-use crate::state::Shared;
+use crate::state::{Launch, Shared};
 use anyhow::{Context, Result};
 use butterpollo_core::{
     config::Config,
     framegen::{Policy, Rate},
     rtsp::Negotiated,
-    session::{Launch, Role, Warnings},
+    session::{Preparation, Role, Warnings},
 };
 use butterpollo_windows::{
     display::{Guard, Retained},
@@ -142,6 +142,14 @@ impl Recovery {
 pub struct StreamPreparation {
     pub display: Arc<Ready>,
     _limiter: limiter::Lease,
+}
+impl Preparation<StreamPreparation> for StreamPreparation {
+    fn prepared(&self) -> &Self {
+        self
+    }
+    fn into_prepared(self: Box<Self>) -> Self {
+        *self
+    }
 }
 impl StreamPreparation {
     pub fn report_limiter(

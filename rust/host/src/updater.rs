@@ -497,8 +497,8 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.directory);
         }
     }
-    fn launch(role: butterpollo_core::session::Role) -> butterpollo_core::session::Launch {
-        butterpollo_core::session::Launch {
+    fn launch(role: butterpollo_core::session::Role) -> crate::state::Launch {
+        crate::state::Launch {
             id: "fixture".into(),
             client: butterpollo_core::state::Client {
                 name: "fixture".into(),

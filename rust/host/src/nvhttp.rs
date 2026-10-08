@@ -1,5 +1,5 @@
 use crate::{
-    state::{PendingPin, Shared},
+    state::{Launch, PendingPin, Sessions, Shared},
     tls::Connection,
 };
 use anyhow::{Context, Result, bail};
@@ -15,7 +15,7 @@ use butterpollo_core::{
     crypto,
     pairing::Pairing,
     remote::{self, Control},
-    session::{Launch, Role, Sessions},
+    session::Role,
     state::{App, Client},
 };
 use serde_json::json;
@@ -1265,17 +1265,13 @@ fn prepare_launch_app(
             .lock()
             .unwrap()
             .as_ref()
-            .and_then(|route| {
-                route.downcast_ref::<std::sync::Arc<butterpollo_windows::audio_route::Route>>()
-            })
-            .cloned();
+            .map(|route| route.route());
         if let Some(lease) = launch
             .preparation
             .lock()
             .unwrap()
             .as_ref()
-            .and_then(|lease| lease.downcast_ref::<crate::display_session::StreamPreparation>())
-            .map(|prepared| prepared.display.clone())
+            .map(|prepared| prepared.prepared().display.clone())
         {
             h.app_display
                 .lock()

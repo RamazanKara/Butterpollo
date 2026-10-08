@@ -4,13 +4,13 @@
 
 use crate::text::to_wide;
 use anyhow::{Context, Result, bail};
-use butterpollo_core::config::Config;
+use butterpollo_core::{config::Config, session::AudioPreparation};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     ffi::c_void,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 use windows::{
     Win32::{
@@ -521,6 +521,11 @@ fn virtual_sink_warning(
     virtual_sink: bool,
 ) -> Option<&'static str> {
     (!host_audio && !capture_only && !virtual_sink).then_some("Virtual audio sink unavailable; capturing a physical playback device. Sound may play on the host and surround channels may be lost. Select an installed virtual sink in Audio settings or enable host audio intentionally.")
+}
+impl AudioPreparation<Route> for Arc<Route> {
+    fn route(&self) -> Arc<Route> {
+        self.clone()
+    }
 }
 impl Route {
     pub fn warning(&self, host_audio: bool) -> Option<&'static str> {

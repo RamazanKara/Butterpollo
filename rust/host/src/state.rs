@@ -3,7 +3,7 @@ use butterpollo_core::{
     config::Config,
     crypto::Identity,
     pairing::Pairings,
-    session::{Sessions, Warnings},
+    session::Warnings,
     state::{App, Credentials, PairedState, ProfileFiles},
 };
 use serde_json::{Value, json};
@@ -14,6 +14,18 @@ use std::{
     time::{Duration, Instant},
 };
 pub type Shared = Arc<Host>;
+pub type Launch = butterpollo_core::session::Launch<
+    crate::display_session::StreamPreparation,
+    butterpollo_windows::audio_route::Route,
+>;
+pub type Session = butterpollo_core::session::Session<
+    crate::display_session::StreamPreparation,
+    butterpollo_windows::audio_route::Route,
+>;
+pub type Sessions = butterpollo_core::session::Sessions<
+    crate::display_session::StreamPreparation,
+    butterpollo_windows::audio_route::Route,
+>;
 use crate::web_sessions::{self, WebSession};
 
 const STANDARD_CODECS: u32 = 0x1 | 0x100 | 0x200 | 0x10000 | 0x20000;

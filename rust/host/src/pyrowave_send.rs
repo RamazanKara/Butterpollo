@@ -1,11 +1,11 @@
 //! A slow connection retains one pending intra frame per client.
-use crate::state::Shared;
+use crate::state::{Session, Shared};
 use anyhow::{Result, bail};
 use butterpollo_core::{
     config::Config,
     packet::{PyrowaveFec, VideoPacketizer},
     pyrowave::DetailFec,
-    session::{Session, Warnings},
+    session::Warnings,
 };
 use butterpollo_windows::{encoder::Encoded, net::Batch, timing::Timer};
 use std::{
