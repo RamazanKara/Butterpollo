@@ -269,9 +269,33 @@ shared texture failed (`0x887A0026`, keyed mutex abandoned), capture
 reopened after a 258 ms gap, and afterwards the client read only 53% of the
 pictures while the host still sent 119 fps. Its picture age (17.41 ms) is
 from the pictures it did read. That recovery path needs a look: the picture
-after reopening may not have been the virtual display's.
+after reopening may not have been the virtual display's. [Later traced to the
+fixture: the virtual display moved, Desktop Duplication lost access and
+reopened correctly, but `motion_probe` stayed at the old coordinates; fixed in
+`aff04350`.]
 
 Artifacts: `bench-rc21\vp-*`, `displays-before-vibepollo.json`.
+
+#### Beside a game
+
+The same comparison with the 60 fps-capped game beside the stream
+(`gpu_load 45 1000 60 200`, which leaves the client's decoder room), two
+alternating runs per cell, 18:41-18:55 local, Desktop Duplication for both:
+
+| Beside the game, picture age mean / p95 / p99 (ms), host latency | rc.24 | Vibepollo 2.0 |
+|---|---|---|
+| 1968×2184 HEVC HDR 120 fps | **19.61 / 21.56 / 23.10**, 3.4 ms | 26.96 / 37.62 / 39.25, 8.3 ms |
+| 1968×2184 AV1 HDR 120 fps | **17.15 / 18.96 / 22.18**, 3.1 ms | 24.53 / 36.77 / 38.05, 7.4 ms |
+| 1920×1080 HEVC HDR 60 fps | 17.84 / 21.78 / 22.84, 2.2 ms | 20.55 / 22.55 / 22.66, 5.7 ms (one run) |
+
+Beside the game rc.24 delivers the native picture 7.4-7.8 ms sooner on
+average and about 16-18 ms sooner at the 95th and 99th percentiles; its host
+latency stays at 3.1-3.4 ms while Vibepollo's rises to 7-10 ms. Vibepollo also
+delivered fewer new pictures (103-118 a second for HEVC, 106-111 for AV1,
+against 117-120). At 1080p60 the two are close. One Vibepollo 1080p run is
+left out: its source ran at 60 Hz instead of 120. This matches the October 4
+result that the gap opens under GPU load, though the load and absolute values
+differ. Artifacts: `bench-rc21\vl-*`.
 
 ### AV1 at 1968×2184: padding, and why the render-size rewrite is not shipped
 
