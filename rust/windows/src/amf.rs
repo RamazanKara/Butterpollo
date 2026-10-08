@@ -308,6 +308,17 @@ impl Encoder {
             if config.codec == 2 {
                 e.property("AlignmentMode", int(av1_alignment))?;
                 e.property("GOPSize", int(0))?;
+                // Despite the alignment mode, AMD drivers encode such sizes
+                // padded (1968×2184 as 1984×2186) without a render size, so
+                // clients that do not crop to the negotiated size show the
+                // padding (AMF issue 423).
+                if !config.width.is_multiple_of(64) || !config.height.is_multiple_of(16) {
+                    tracing::warn!(
+                        width = config.width,
+                        height = config.height,
+                        "AV1 at this size is encoded with padding on AMD; a client that does not crop shows extra rows or columns. HEVC, or a width divisible by 64 and a height by 16, avoids it"
+                    );
+                }
             }
             // QueryOutput waits in the driver and returns the moment a frame is
             // encoded; no host timer is involved. `poll` only queries while a
