@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{title}} · Butterpollo</title>
+<meta name="color-scheme" content="dark light">
+<link rel="icon" href="{{root}}favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="{{root}}style.css">
+</head>
+<body class="doc-page">
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="{{root}}index.html"><span class="mark" aria-hidden="true">B</span>Butterpollo</a>
+    <nav class="topnav" aria-label="Documentation">{{nav}}</nav>
+    <a class="button small" href="{{download_url}}">Download {{download_label}}</a>
+  </div>
+</header>
+<main class="doc">
+{{toc}}
+<article class="prose">
+{{content}}
+</article>
+<p class="doc-source"><a href="{{source}}">View this page on GitHub</a></p>
+</main>
+<footer class="footer">
+  <div class="footer-inner">
+    <span><span class="mark small" aria-hidden="true">B</span> Butterpollo · GPL-3.0</span>
+    <span><a href="https://github.com/RamazanKara/Butterpollo">GitHub</a> · <a href="https://github.com/RamazanKara/Butterpollo/releases">Releases</a> · <a href="https://github.com/RamazanKara/Butterpollo/issues">Issues</a></span>
+  </div>
+</footer>
+</body>
+</html>

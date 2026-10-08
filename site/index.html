@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Butterpollo · Moonlight host for AMD Radeon</title>
+<meta name="description" content="A Windows game-streaming host for Moonlight, written in Rust and built for AMD Radeon: native AMF encoding, Radeon compute, HEVC and AV1 10-bit HDR, and PyroWave HDR 4:4:4.">
+<meta name="color-scheme" content="dark light">
+<meta property="og:title" content="Butterpollo">
+<meta property="og:description" content="Written in Rust. Built for Radeon. Made for Moonlight.">
+<meta property="og:image" content="poster.jpg">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="landing">
+<!--
+  Every number on this page comes from rust/PERFORMANCE_WORK.md or
+  docs/performance.md and links to its section. When a newer measurement
+  replaces one, update it here in the same commit.
+-->
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html"><span class="mark" aria-hidden="true">B</span>Butterpollo</a>
+    <nav class="topnav" aria-label="Site">
+      <a href="#performance">Performance</a>
+      <a href="#features">Features</a>
+      <a href="#install">Install</a>
+      <a href="docs/index.html">Docs</a>
+      <a href="https://github.com/RamazanKara/Butterpollo">GitHub</a>
+    </nav>
+    <a class="button small" href="{{download_url}}">Download {{download_label}}</a>
+  </div>
+</header>
+
+<main>
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Windows game-streaming host for Moonlight</p>
+    <h1>Written in Rust.<br><span class="accent">Built for Radeon.</span><br>Made for Moonlight.</h1>
+    <p class="lede">Stream your gaming PC to a laptop, TV or phone. Butterpollo drives AMD's encoder natively, prepares every frame on Radeon compute queues, and carries HEVC and AV1 in 10-bit HDR, or full-colour HDR 4:4:4 through PyroWave.</p>
+    <div class="actions">
+      <a class="button" href="{{download_url}}">Download {{download_label}}</a>
+      <a class="button ghost" href="docs/getting-started.html">Get started</a>
+    </div>
+    <p class="fine">Windows x64 · free and open source (GPL-3.0) · release candidate</p>
+
+    <div class="stats">
+      <div class="stat">
+        <p class="stat-value">13.5<span> ms</span></p>
+        <p class="stat-label">from rendered picture to a laptop over Wi-Fi, 1968×2184 AV1 HDR at 120 fps</p>
+        <p class="stat-note">95th percentile 14.3 ms, 120 fresh pictures a second</p>
+      </div>
+      <div class="stat">
+        <p class="stat-value">7.4<span> ms</span></p>
+        <p class="stat-label">sooner than Vibepollo 2.0 on average beside a game, at 1968×2184 HDR 120 fps</p>
+        <p class="stat-note">16–18 ms sooner at the 95th and 99th percentiles</p>
+      </div>
+      <div class="stat">
+        <p class="stat-value">3.1<span> ms</span></p>
+        <p class="stat-label">host latency for AV1 beside a game, where Vibepollo 2.0 takes 7.4 ms</p>
+        <p class="stat-note">HEVC: 3.4 ms against 8.3 ms</p>
+      </div>
+    </div>
+    <p class="fine">RX 7900 XT host running rc.24, measured October 8, 2026. <a href="#performance">How these were measured</a></p>
+  </div>
+</section>
+
+<section class="film">
+  <div class="wrap">
+    <video controls preload="none" playsinline poster="poster.jpg" aria-label="Butterpollo launch film, 60 seconds">
+      <source src="docs/media/demo.mp4" type="video/mp4">
+    </video>
+    <p class="caption">Follow one frame from your game to Moonlight, see the Radeon measurements, then get started. 60 seconds, original soundtrack.</p>
+  </div>
+</section>
+
+<section id="performance" class="section">
+  <div class="wrap">
+    <p class="eyebrow">Measured, not claimed</p>
+    <h2>Lower picture age where it counts: beside a game</h2>
+    <p class="section-lede">Every latency change ships with before-and-after numbers from the real host, an RX 7900 XT. A timestamped picture is drawn on the streamed display and an independent client records when it arrives, so the number covers composition, capture, encoding and transport.</p>
+
+    <figure class="chart" aria-labelledby="chart-title">
+      <figcaption>
+        <h3 id="chart-title">Picture age beside a game: Butterpollo rc.24 and Vibepollo 2.0</h3>
+        <p>Milliseconds, same GPU and settings, alternating runs, October 8, 2026. Bar: average. Thin line: 95th percentile.</p>
+      </figcaption>
+      <div class="legend" aria-hidden="true">
+        <span><i class="key bp"></i>Butterpollo rc.24</span>
+        <span><i class="key vp"></i>Vibepollo 2.0</span>
+      </div>
+      <div class="bars">
+        <div class="group">
+          <p class="group-label">1968×2184 HEVC HDR, 120 fps</p>
+          <div class="bar-row" tabindex="0" style="--mean:19.61;--p95:21.56">
+            <div class="track"><span class="bar bp"></span><span class="whisker"></span></div>
+            <span class="val"><b>19.6</b> ms<small>p95 21.6</small></span>
+            <span class="tip">Butterpollo rc.24: average 19.61 ms, p95 21.56 ms, p99 23.10 ms, host latency 3.4 ms</span>
+          </div>
+          <div class="bar-row" tabindex="0" style="--mean:26.96;--p95:37.62">
+            <div class="track"><span class="bar vp"></span><span class="whisker"></span></div>
+            <span class="val"><b>27.0</b> ms<small>p95 37.6</small></span>
+            <span class="tip">Vibepollo 2.0: average 26.96 ms, p95 37.62 ms, p99 39.25 ms, host latency 8.3 ms</span>
+          </div>
+        </div>
+        <div class="group">
+          <p class="group-label">1968×2184 AV1 HDR, 120 fps</p>
+          <div class="bar-row" tabindex="0" style="--mean:17.15;--p95:18.96">
+            <div class="track"><span class="bar bp"></span><span class="whisker"></span></div>
+            <span class="val"><b>17.2</b> ms<small>p95 19.0</small></span>
+            <span class="tip">Butterpollo rc.24: average 17.15 ms, p95 18.96 ms, p99 22.18 ms, host latency 3.1 ms</span>
+          </div>
+          <div class="bar-row" tabindex="0" style="--mean:24.53;--p95:36.77">
+            <div class="track"><span class="bar vp"></span><span class="whisker"></span></div>
+            <span class="val"><b>24.5</b> ms<small>p95 36.8</small></span>
+            <span class="tip">Vibepollo 2.0: average 24.53 ms, p95 36.77 ms, p99 38.05 ms, host latency 7.4 ms</span>
+          </div>
+        </div>
+        <div class="group">
+          <p class="group-label">1920×1080 HEVC HDR, 60 fps</p>
+          <div class="bar-row" tabindex="0" style="--mean:17.84;--p95:21.78">
+            <div class="track"><span class="bar bp"></span><span class="whisker"></span></div>
+            <span class="val"><b>17.8</b> ms<small>p95 21.8</small></span>
+            <span class="tip">Butterpollo rc.24: average 17.84 ms, p95 21.78 ms, p99 22.84 ms, host latency 2.2 ms</span>
+          </div>
+          <div class="bar-row" tabindex="0" style="--mean:20.55;--p95:22.55">
+            <div class="track"><span class="bar vp"></span><span class="whisker"></span></div>
+            <span class="val"><b>20.6</b> ms<small>p95 22.6</small></span>
+            <span class="tip">Vibepollo 2.0 (one valid run): average 20.55 ms, p95 22.55 ms, p99 22.66 ms, host latency 5.7 ms</span>
+          </div>
+        </div>
+        <div class="axis" aria-hidden="true"><span>0</span><span>10</span><span>20</span><span>30</span><span>40</span></div>
+      </div>
+    </figure>
+
+    <h3 class="table-title">The same comparison as a table</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Picture age, average / p95 / p99</th><th>Butterpollo rc.24</th><th>Vibepollo 2.0</th></tr>
+        </thead>
+        <tbody>
+          <tr class="row-group"><th colspan="3">Beside a game capped at 60 fps</th></tr>
+          <tr><td>1968×2184 HEVC HDR 120 fps</td><td><b>19.61 / 21.56 / 23.10 ms</b><br><small>host 3.4 ms</small></td><td>26.96 / 37.62 / 39.25 ms<br><small>host 8.3 ms</small></td></tr>
+          <tr><td>1968×2184 AV1 HDR 120 fps</td><td><b>17.15 / 18.96 / 22.18 ms</b><br><small>host 3.1 ms</small></td><td>24.53 / 36.77 / 38.05 ms<br><small>host 7.4 ms</small></td></tr>
+          <tr><td>1920×1080 HEVC HDR 60 fps</td><td>17.84 / 21.78 / 22.84 ms<br><small>host 2.2 ms</small></td><td>20.55 / 22.55 / 22.66 ms<br><small>host 5.7 ms, one valid run</small></td></tr>
+          <tr class="row-group"><th colspan="3">No game running</th></tr>
+          <tr><td>1968×2184 HEVC HDR 120 fps</td><td><b>17.81 / 18.94 / 19.56 ms</b></td><td>19.97 / 20.43 / 20.87 ms</td></tr>
+          <tr><td>1968×2184 AV1 HDR 120 fps</td><td><b>17.42 / 18.10 / 18.62 ms</b></td><td>18.88 / 19.54 / 19.90 ms</td></tr>
+          <tr><td>2560×1440 HEVC HDR 120 fps</td><td>17.09 / 17.99 / 18.46 ms</td><td>17.19 / 17.68 / 17.93 ms</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">RX 7900 XT, rc.24 and the pinned Vibepollo 2.0 build alternating in one batch, two runs per cell. Identical settings: native AMF at ultra-low latency, Desktop Duplication capture, a virtual HDR display. The picture is decoded in hardware by an independent client on the same PC, so network transit and display scanout are not included. Beside the game Vibepollo also delivered fewer fresh pictures: 103–118 a second against 117–120. <a href="rust/PERFORMANCE_WORK.html#rc24-against-vibepollo-20-on-the-same-gpu">Runs, settings and caveats</a></p>
+
+    <h3 class="sub-title">Over Wi-Fi to a real laptop</h3>
+    <p>A Radeon 780M laptop on 5 GHz Wi-Fi, decoding in hardware, against the host on Ethernet. "Received" is when the laptop starts decoding a fully received picture; Moonlight's own hardware decode adds 0.3–0.7 ms on this laptop.</p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>rc.24, HDR, render to received</th><th>Average / p95 / p99</th><th>Fresh pictures</th><th>Host</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>1968×2184 AV1, 120 fps, 80 Mbps</td><td><b>13.54 / 14.33 / 14.93 ms</b></td><td>120.0/s</td><td>3.0 ms</td></tr>
+          <tr><td>1968×2184 HEVC, 120 fps, 80 Mbps</td><td>14.13 / 14.97 / 15.90 ms</td><td>120.0/s</td><td>3.7 ms</td></tr>
+          <tr><td>2560×1440 AV1, 120 fps, 50 Mbps</td><td>13.34 / 14.15 / 16.12 ms<br><small>repeat: 13.28 / 14.07 / 15.63 ms</small></td><td>120.0/s</td><td>2.8 ms</td></tr>
+          <tr><td>2560×1440 HEVC, 120 fps, 50 Mbps</td><td>13.67 / 14.69 / 19.87 ms</td><td>120.0/s</td><td>3.1 ms</td></tr>
+          <tr><td>1920×1080 AV1, 60 fps, 20 Mbps</td><td>12.91 / 15.05 / 17.89 ms</td><td>60.6/s</td><td>2.2 ms</td></tr>
+          <tr><td>1920×1080 HEVC, 60 fps, 20 Mbps</td><td>12.99 / 14.15 / 16.62 ms</td><td>60.5/s</td><td>2.4 ms</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">October 8, 2026, one 30-second run per row. A first 1440p AV1 run measured 14.78 / 21.87 / 34.85 ms with a clean host side, so its late frames came from Wi-Fi or the client. Not measured yet: a game on the host during these runs, a wired client, and Vibepollo on this fixture. <a href="rust/PERFORMANCE_WORK.html#october-8-real-client-picture-age-over-wi-fi-rc24-laptop">Method and clock sync</a></p>
+
+    <h3 class="sub-title">Earlier results</h3>
+    <ul class="results">
+      <li><b>Radeon compute, one setting changed:</b> average picture age beside a game-like load fell from 41.0 to 33.5 ms and the 95th percentile from 54.4 to 42.3 ms (1080p60 HEVC HDR, October 4). <a href="docs/performance.html#isolating-radeon-compute">Details</a></li>
+      <li><b>PyroWave beside a GPU-heavy game:</b> 0.55 ms per 1080p HDR 4:4:4 frame instead of 5.7 ms, now that its colour conversion runs on the compute queue (rc.19). <a href="docs/performance.html#new-in-rc19">Details</a></li>
+      <li><b>A saturated encoder:</b> at 5120×1440 HEVC 240 fps a game frame reaches the network in 11.1 ms instead of 42.7 ms (rc.19). <a href="docs/performance.html#new-in-rc19">Details</a></li>
+      <li><b>Input under CPU load:</b> a mouse move behind a controller update took at worst 2.0 ms instead of 287 ms (October 7). <a href="docs/performance.html#input-under-load">Details</a></li>
+      <li><b>H.264 picture quality:</b> adaptive quantization off by default raised VMAF by 1.0 and 9.4 points at 1440p120 and 20 Mbps, at the same encode time (rc.23). <a href="rust/PERFORMANCE_WORK.html#amf-settings-per-codec-quality-at-a-given-bitrate">Details</a></li>
+    </ul>
+    <p><a class="more" href="docs/performance.html">All performance results and what each number means</a></p>
+  </div>
+</section>
+
+<section id="features" class="section alt">
+  <div class="wrap">
+    <p class="eyebrow">What you get</p>
+    <h2>The Radeon frame path, end to end</h2>
+    <div class="cards">
+      <article class="card">
+        <h3>Radeon compute</h3>
+        <p>Frame copies and colour conversion run on D3D12 compute queues beside the game's graphics work, instead of waiting behind it.</p>
+      </article>
+      <article class="card">
+        <h3>Native AMF encoding</h3>
+        <p>AMD's encoder driven directly, not through a generic wrapper, and tuned per codec from VMAF measurements. Driver quirks get workarounds, and lose them once AMD fixes the driver.</p>
+      </article>
+      <article class="card">
+        <h3>HEVC and AV1 HDR</h3>
+        <p>Ten-bit BT.2020/PQ from capture to the encoder, with HDR metadata in the keyframes, checked by a test. H.264 is there too.</p>
+      </article>
+      <article class="card">
+        <h3>PyroWave HDR 4:4:4</h3>
+        <p>A colour sample for every pixel keeps coloured text and edges crisp, over a fast wired LAN with <a href="https://github.com/Nonary/moonlight-qt">Nonary's Moonlight client</a>.</p>
+      </article>
+      <article class="card">
+        <h3>Virtual displays</h3>
+        <p>A display per device, shared or off, with exclusive, extended, primary and isolated layouts, HDR, and your own layout restored after the stream.</p>
+      </article>
+      <article class="card">
+        <h3>Your library</h3>
+        <p>Steam and Playnite sync, per-app and per-device settings, RTSS frame limits, Lossless Scaling, and Nonary's 1000 Hz VRR mode for his Moonlight client.</p>
+      </article>
+      <article class="card">
+        <h3>Controllers</h3>
+        <p>Xbox, DualSense with adaptive triggers and Switch Pro pads from one signed driver. New in rc.25: with usbip-win2 installed, a Steam Deck can show up on the host as a real Steam Deck controller.</p>
+      </article>
+      <article class="card">
+        <h3>Rust throughout</h3>
+        <p>Streaming, protocol, native helpers, the Windows service and the installer are Rust, with a web console for pairing, the library and live encoder timings.</p>
+      </article>
+    </div>
+    <p><a class="more" href="rust/PARITY.html">Feature-by-feature compatibility with Vibepollo, Apollo and Sunshine</a></p>
+  </div>
+</section>
+
+<section id="install" class="section">
+  <div class="wrap">
+    <p class="eyebrow">Install. Pair Moonlight. Play.</p>
+    <h2>Three steps to your first stream</h2>
+    <ol class="steps">
+      <li><h3>Install</h3><p>Run <code>butterpollo-setup-{{version}}.exe</code> from the <a href="{{download_url}}">release</a>. Installing over Vibepollo or an earlier Butterpollo keeps your settings, paired devices, app library and covers.</p></li>
+      <li><h3>Open the console</h3><p>Go to <code>https://localhost:47990</code> on the host PC and create your local account.</p></li>
+      <li><h3>Pair and play</h3><p>Add your PC in Moonlight, enter its PIN under <b>Devices</b>, then launch <b>Desktop</b>. Start at 1080p60, then raise resolution, frame rate and HDR.</p></li>
+    </ol>
+    <p><a class="more" href="docs/getting-started.html">First-stream walkthrough, portable setup and migration</a></p>
+  </div>
+</section>
+
+<section class="section alt">
+  <div class="wrap narrow">
+    <p class="eyebrow">Why it exists</p>
+    <h2>AMD rarely gets any love in this space</h2>
+    <p>The protocol started as NVIDIA's GameStream, and the hosts that replaced it kept NVIDIA first. Upstream Sunshine has had a native NVENC encoder since 2023, while AMD still goes through FFmpeg's generic AMF wrapper. So Radeon owners have spent years hearing their cards are just worse at streaming. Most of the time the card was never the problem. Nobody had sat down with it.</p>
+    <p>Butterpollo began as a fork of <a href="https://github.com/Nonary/Vibepollo">Vibepollo</a> and rebuilds the host in Rust around the Radeon frame path. Anything that works out here is GPL-3.0 for Vibepollo to take. <b>On NVIDIA, use Vibepollo.</b></p>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <p class="eyebrow">Documentation</p>
+    <h2>Find what you need</h2>
+    <div class="links">
+      <a href="docs/getting-started.html"><b>Getting started</b><span>Install, pair, first stream, choosing a client</span></a>
+      <a href="docs/configuration.html"><b>Configuration</b><span>Capture, codecs, HDR, displays, frame limits, updates</span></a>
+      <a href="docs/troubleshooting.html"><b>Troubleshooting</b><span>Pairing, black screens, HDR colour, smoothness</span></a>
+      <a href="docs/architecture.html"><b>Architecture</b><span>The Radeon frame path, HDR and PyroWave</span></a>
+      <a href="docs/performance.html"><b>Performance</b><span>Comparisons and what each number means</span></a>
+      <a href="rust/PARITY.html"><b>Compatibility</b><span>What matches Vibepollo, what differs, the evidence</span></a>
+      <a href="rust/RELEASE_NOTES.html"><b>Release notes</b><span>Every release candidate, honestly described</span></a>
+      <a href="docs/building.html"><b>Build guide</b><span>Toolchain, dependencies, packaging and CI</span></a>
+      <a href="docs/api.html"><b>HTTP API</b><span>Authentication, permissions and endpoints</span></a>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer class="footer">
+  <div class="footer-inner">
+    <p>Butterpollo is GPL-3.0. Thanks to Nonary for Vibepollo, ClassicOldSong for Apollo, and LizardByte and the Sunshine contributors. The AMD encoder's low-latency defaults draw on qiin2333's work in AlkaidLab's Foundation Sunshine. PyroWave and Granite are by Themaister; the PyroWave Moonlight protocol and clients are joemossjr16's work.</p>
+    <p>The name came from a tester's verdict: “smooth as butter.” · <a href="https://github.com/RamazanKara/Butterpollo">GitHub</a> · <a href="https://github.com/RamazanKara/Butterpollo/issues">Issues</a> · <a href="rust/THIRD_PARTY.html">Third-party components</a></p>
+  </div>
+</footer>
+</body>
+</html>

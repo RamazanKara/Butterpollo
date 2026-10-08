@@ -1,0 +1,40 @@
+name: Pages
+permissions: {}
+on:
+  push:
+    branches: [main]
+    paths: ['site/**', 'docs/**', 'rust/*.md', 'README.md', '.github/workflows/pages.yml']
+  workflow_dispatch:
+concurrency:
+  # A running deployment finishes; the next push deploys after it.
+  group: pages
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Build the site
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet -r site/requirements.txt
+          "$RUNNER_TEMP/venv/bin/python" site/build.py
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

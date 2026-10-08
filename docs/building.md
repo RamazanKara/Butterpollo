@@ -113,3 +113,14 @@ npm run dev
 CI runs `npm run check`; packaging runs the production build and copies `dist` into `assets/web`. The package script uses a separate web build folder so a WSL checkout's Linux `node_modules` cannot be reused as Windows dependencies.
 
 The development server proxies `/api` to `https://localhost:47990` by default. Set `BUTTERPOLLO_HOST` before starting it to point at an isolated development profile. Requests go to that real host, including actions taken in the console. See [vite.config.ts](../rust/web/vite.config.ts) for the proxy configuration.
+
+## Website
+
+[site/](../site) builds the project website at https://ramazankara.github.io/Butterpollo/: a landing page plus these guides, rendered from the repository's Markdown. [.github/workflows/pages.yml](../.github/workflows/pages.yml) publishes it whenever `site/`, `docs/`, `README.md` or the Markdown in `rust/` changes on `main`. To preview it, from the repository root:
+
+```sh
+python3 -m pip install -r site/requirements.txt
+python3 site/build.py
+```
+
+Open `_site/index.html`. The build fails on a link to a file that doesn't exist. The landing page's measurements are written into [site/index.html](../site/index.html); when a newer measurement replaces one, update it there too.
