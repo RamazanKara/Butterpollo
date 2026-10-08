@@ -27,7 +27,8 @@ jobs:
           "$RUNNER_TEMP/venv/bin/python" site/build.py
       # Deploy only once Pages is set to publish from Actions; until then
       # the build still checks the site and the run stays green.
-      - id: pages
+      - name: Check that Pages publishes from Actions
+        id: pages
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
