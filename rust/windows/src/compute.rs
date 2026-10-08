@@ -9,6 +9,8 @@
 //! on one compute queue ([`Handoff`]) and converted to the encoder's YUV
 //! format on another ([`Converter`]); the encoder waits for the conversion's
 //! fence on the GPU.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use anyhow::{Context, Result, bail};
 use std::{
     collections::HashMap,
@@ -38,6 +40,7 @@ pub fn enabled(config: &butterpollo_core::config::Config) -> bool {
 /// where AMF converts and encodes from it too. Other encoders read the
 /// copies on the graphics queue, and that path is unverified elsewhere.
 pub fn copies_on(device: &windows::Win32::Graphics::Direct3D11::ID3D11Device) -> bool {
+    // SAFETY: `device` is a live D3D11 device, and GetAdapter and GetDesc only return owned values.
     unsafe {
         device
             .cast::<IDXGIDevice>()
@@ -49,6 +52,7 @@ pub fn copies_on(device: &windows::Win32::Graphics::Direct3D11::ID3D11Device) ->
 /// Whether the compute queue can open `texture` (an NT-handle shared one).
 pub fn shareable(texture: &ID3D11Texture2D) -> bool {
     let mut desc = windows::Win32::Graphics::Direct3D11::D3D11_TEXTURE2D_DESC::default();
+    // SAFETY: `texture` is a live texture and `desc` is a live local that GetDesc fills.
     unsafe { texture.GetDesc(&mut desc) };
     desc.MiscFlags
         & windows::Win32::Graphics::Direct3D11::D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0 as u32
@@ -68,7 +72,11 @@ pub struct Compute {
     stuck: std::sync::atomic::AtomicBool,
 }
 // D3D12 devices, queues and fences are free-threaded; the rest is locked.
+// SAFETY: The D3D12 device, queue and fence are free-threaded, the cached D3D11 textures and D3D12
+// resources are only touched under `opened`'s lock, and `next` is a mutex.
 unsafe impl Send for Compute {}
+// SAFETY: `&self` methods call only free-threaded D3D12 methods and change state only through the
+// two mutexes and the atomic.
 unsafe impl Sync for Compute {}
 fn completed_value(value: u64) -> Result<u64> {
     // D3D12 signals UINT64_MAX on device removal, including shared fences.
@@ -83,6 +91,8 @@ fn completed_value(value: u64) -> Result<u64> {
 /// good with no error to recover from.
 fn wait_fence(fence: &ID3D12Fence, value: u64) -> Result<()> {
     use windows::Win32::System::Threading::*;
+    // SAFETY: `fence` is a live D3D12 fence, and the event is created here, used only by
+    // SetEventOnCompletion and the wait, and closed once.
     unsafe {
         if completed_value(fence.GetCompletedValue())? >= value {
             return Ok(());
@@ -120,6 +130,7 @@ fn compute_queue(device: &ID3D12Device) -> Result<(ID3D12CommandQueue, i32)> {
     .into_iter()
     .filter(|priority| realtime || *priority != D3D12_COMMAND_QUEUE_PRIORITY_GLOBAL_REALTIME.0)
     {
+        // SAFETY: `device` is a live D3D12 device and the queue description outlives the call.
         if let Ok(queue) = unsafe {
             device.CreateCommandQueue::<ID3D12CommandQueue>(&D3D12_COMMAND_QUEUE_DESC {
                 Type: D3D12_COMMAND_LIST_TYPE_COMPUTE,
@@ -136,6 +147,8 @@ fn compute_queue(device: &ID3D12Device) -> Result<(ID3D12CommandQueue, i32)> {
 impl Compute {
     /// A compute queue on the adapter with `luid`.
     pub fn new(luid: LUID) -> Result<Arc<Self>> {
+        // SAFETY: `adapter` comes from a live DXGI factory, the device out-parameter is a live
+        // local checked for None, and the queue and fence are created on that device.
         unsafe {
             let factory: IDXGIFactory4 = CreateDXGIFactory1()?;
             let adapter: IDXGIAdapter1 = factory.EnumAdapterByLuid(luid)?;
@@ -164,6 +177,8 @@ impl Compute {
     ) -> Result<Arc<Self>> {
         type Shared = Vec<((u32, i32), std::sync::Weak<Compute>)>;
         static SHARED: Mutex<Shared> = Mutex::new(Vec::new());
+        // SAFETY: `device` is a live D3D11 device, and GetAdapter and GetDesc only return owned
+        // values.
         let luid = unsafe {
             let dxgi: IDXGIDevice = device.cast()?;
             dxgi.GetAdapter()?.GetDesc()?.AdapterLuid
@@ -190,6 +205,8 @@ impl Compute {
         let mut next = self.next.lock().unwrap();
         // Advance only once the signal is queued: a value nothing will ever
         // signal would hold every later wait on it.
+        // SAFETY: `queue` and `fence` were created on the same D3D12 device and live as long as
+        // `self`.
         unsafe { self.queue.Signal(&self.fence, *next + 1)? };
         *next += 1;
         Ok(*next)
@@ -200,6 +217,8 @@ impl Compute {
     }
     /// Run a closed command list; returns the fence value that follows it.
     pub(crate) fn execute(&self, list: &ID3D12GraphicsCommandList) -> Result<u64> {
+        // SAFETY: Callers pass a closed compute command list recorded on `self.device`, the queue's
+        // device, and keep what it references alive until the returned fence value.
         unsafe {
             self.queue
                 .ExecuteCommandLists(&[Some(list.cast::<ID3D12CommandList>()?)]);
@@ -207,6 +226,7 @@ impl Compute {
         self.signal()
     }
     pub fn completed(&self, value: u64) -> bool {
+        // SAFETY: `fence` is a live D3D12 fence owned by `self`; GetCompletedValue only reads it.
         match completed_value(unsafe { self.fence.GetCompletedValue() }) {
             Ok(done) => done >= value,
             Err(_) => {
@@ -231,6 +251,8 @@ impl Compute {
         if let Some((_, resource)) = opened.get(&key) {
             return Ok(resource.clone());
         }
+        // SAFETY: `texture` is a live D3D11 texture on this GPU, the NT handle is closed exactly
+        // once after OpenSharedHandle has used it, and `resource` is a live local.
         unsafe {
             let shared: IDXGIResource1 = texture.cast()?;
             let handle = shared
@@ -267,7 +289,10 @@ pub struct Ready {
     device: usize,
 }
 // Fences are free-threaded.
+// SAFETY: `fence` is a free-threaded ID3D12Fence, and `device` is an address compared, never
+// dereferenced.
 unsafe impl Send for Ready {}
+// SAFETY: Shared use only reads `value` and calls free-threaded methods on the fence.
 unsafe impl Sync for Ready {}
 impl Ready {
     /// Block until the copy is done.
@@ -315,6 +340,8 @@ pub struct Handoff {
 }
 // The context is only used by the capture that owns this, under the D3D11
 // device's multithread protection; D3D12 objects are free-threaded.
+// SAFETY: The D3D11 context's device is multithread-protected (`capture::Device::create`), and the
+// command allocators and lists are used only through `&mut self` on one thread at a time.
 unsafe impl Send for Handoff {}
 impl Handoff {
     /// A helper already created this texture's NT handle. Import that handle
@@ -325,6 +352,8 @@ impl Handoff {
         handle: HANDLE,
     ) -> Result<()> {
         let mut resource: Option<ID3D12Resource> = None;
+        // SAFETY: `handle` is a live NT handle to `texture` that the caller owns, and `resource` is
+        // a live local.
         unsafe {
             self.compute
                 .device
@@ -349,6 +378,8 @@ impl Handoff {
     pub fn new(compute: Arc<Compute>, gpu: &crate::capture::Device) -> Result<Self> {
         let device: ID3D11Device5 = gpu.device.cast()?;
         let shared = |compute: &Compute| -> Result<(ID3D12Fence, ID3D11Fence)> {
+            // SAFETY: The fence is created on the live `compute.device`, the NT handle is closed
+            // once after `device` opened it, and `opened` is a live local.
             unsafe {
                 let fence: ID3D12Fence = compute.device.CreateFence(0, D3D12_FENCE_FLAG_SHARED)?;
                 let handle =
@@ -388,6 +419,8 @@ impl Handoff {
         let list = self.list()?;
         self.value += 1;
         let value = self.value;
+        // SAFETY: The list's last copy has finished, `resources` keeps both textures alive until it
+        // runs again, and the D3D11 context is multithread-protected.
         unsafe {
             let (allocator, commands, last, resources) = &mut self.lists[list];
             allocator.Reset()?;
@@ -429,11 +462,15 @@ impl Handoff {
     }
     /// A command list the copy queue has finished with.
     fn list(&mut self) -> Result<usize> {
+        // SAFETY: `copied.0` is a live D3D12 fence owned by this handoff; GetCompletedValue only
+        // reads it.
         let done = completed_value(unsafe { self.copied.0.GetCompletedValue() })?;
         if let Some(index) = self.lists.iter().position(|(_, _, last, _)| *last <= done) {
             return Ok(index);
         }
         if self.lists.len() < 8 {
+            // SAFETY: `compute.device` is a live D3D12 device, and the new list records into the
+            // allocator created with it just before.
             unsafe {
                 let allocator: ID3D12CommandAllocator = self
                     .compute
@@ -480,6 +517,8 @@ fn shader(entry: &[u8]) -> Result<&'static [u8]> {
 /// Constants, two source views (t0, t1) and `uavs` output views from
 /// register `u{first}`.
 fn root_signature(device: &ID3D12Device, first: u32, uavs: u32) -> Result<ID3D12RootSignature> {
+    // SAFETY: `srv`, `uav` and `parameters` outlive the serialize call that reads them, and the
+    // slice covers exactly the blob's GetBufferSize bytes while `blob` is alive.
     unsafe {
         let srv = D3D12_DESCRIPTOR_RANGE {
             RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
@@ -550,6 +589,8 @@ fn pipeline(
     entry: &[u8],
 ) -> Result<ID3D12PipelineState> {
     let code = shader(entry)?;
+    // SAFETY: `code` is the build's cs_5_0 bytecode with its exact length, and `root` is a live
+    // root signature on `device`.
     unsafe {
         Ok(
             device.CreateComputePipelineState(&D3D12_COMPUTE_PIPELINE_STATE_DESC {
@@ -591,6 +632,8 @@ impl Target {
     /// Free when nothing holds the texture and nothing will still signal
     /// its fence.
     fn free(&self) -> Result<bool> {
+        // SAFETY: `fence` is a live D3D12 fence owned by this target; GetCompletedValue only reads
+        // it.
         let done = completed_value(unsafe { self.fence.GetCompletedValue() })?;
         Ok(Arc::strong_count(&self.texture) == 1 && done >= self.last())
     }
@@ -627,6 +670,8 @@ pub struct Converter {
     /// from. Holding them keeps a new shape from reusing their address.
     pointer: Option<(Arc<[u8]>, ID3D12Resource)>,
 }
+// SAFETY: `mapped` points into the upload buffer `constants` this converter owns, the D3D12 objects
+// are free-threaded, and the command allocators and lists are used only through `&mut self`.
 unsafe impl Send for Converter {}
 const SLOTS: usize = 4;
 /// Descriptors per slot: the source and pointer, then up to three outputs.
@@ -636,6 +681,8 @@ impl Converter {
         if width == 0 || height == 0 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
             bail!("compute conversion needs even, nonzero dimensions");
         }
+        // SAFETY: Every call is on the live `compute.device` with descriptions that outlive it, and
+        // `constants` (SLOTS * 256 bytes) stays mapped at `mapped` until Unmap in Drop.
         unsafe {
             let device = &compute.device;
             let root = root_signature(device, 0, 2)?;
@@ -710,6 +757,8 @@ impl Converter {
         {
             return Ok(texture.clone());
         }
+        // SAFETY: `cursor.pixels` holds `width * height` RGBA pixels and `upload` `pitch * height`
+        // bytes, so each row copy stays in both; the copy is waited for before `upload` drops.
         unsafe {
             let device = &self.compute.device;
             let desc = D3D12_RESOURCE_DESC {
@@ -815,6 +864,8 @@ impl Converter {
         if self.targets.len() >= 8 {
             bail!("compute conversion queue reached its bounded limit");
         }
+        // SAFETY: `compute.device` is a live D3D12 device and the description and out-parameter
+        // outlive the call.
         unsafe {
             let mut texture: Option<ID3D12Resource> = None;
             self.compute
@@ -871,6 +922,8 @@ impl Converter {
         let slot = self.slot;
         self.slot = (self.slot + 1) % SLOTS;
         self.compute.wait(self.slots[slot].fence)?;
+        // SAFETY: The slot's last conversion has finished (waited above), the 80 bytes of `values`
+        // fit its 256-byte slot, and every view and barrier names a live resource on this device.
         unsafe {
             std::ptr::copy_nonoverlapping(
                 self.values.as_ptr().cast::<u8>(),
@@ -975,6 +1028,8 @@ impl Converter {
         }
         // The capture's copy into `source` may still be waiting for DWM.
         match ready {
+            // SAFETY: The guard checked that `ready.fence` belongs to this queue's device, and
+            // `ready` holds it for the call.
             Some(ready) if ready.device == self.compute.device.as_raw() as usize => unsafe {
                 self.compute.queue.Wait(&ready.fence, ready.value)?;
             },
@@ -989,6 +1044,8 @@ impl Converter {
         // The encoder's signal for this texture, after the conversion.
         let target = &mut self.targets[index];
         target.value = target.last() + 1;
+        // SAFETY: `queue` and `target.fence` were created on the same D3D12 device and outlive the
+        // call.
         unsafe {
             self.compute.queue.Signal(&target.fence, target.value)?;
         }
@@ -1023,6 +1080,8 @@ impl Converter {
         let slot = self.slot;
         self.slot = (self.slot + 1) % SLOTS;
         self.compute.wait(self.slots[slot].fence)?;
+        // SAFETY: As in `convert`, the slot is idle and `values` fits its slot; `target`'s planes
+        // and fence are on `compute.device`, and `ready` is waited on the GPU only if it is too.
         unsafe {
             std::ptr::copy_nonoverlapping(
                 self.values.as_ptr().cast::<u8>(),
@@ -1118,6 +1177,7 @@ impl Converter {
         }
         self.slots[slot].inputs = [Some(source.clone()), pointer.cloned()];
         self.slots[slot].fence = self.compute.execute(&self.slots[slot].list)?;
+        // SAFETY: `target.fence` is opened on this queue's device and outlives the call.
         unsafe { self.compute.queue.Signal(&target.fence, target.done)? };
         Ok(())
     }
@@ -1137,6 +1197,8 @@ impl Drop for Converter {
         // The queue may still read the constants and write the targets.
         let last = self.slots.iter().map(|s| s.fence).max().unwrap_or(0);
         let _ = self.compute.wait(last);
+        // SAFETY: `constants` was mapped once in `new`, and nothing writes through `mapped` after
+        // this.
         unsafe { self.constants.Unmap(0, None) };
     }
 }
@@ -1162,6 +1224,8 @@ fn transition(
 /// Release the resource references a transition barrier holds.
 fn drop_barriers(barriers: &mut [D3D12_RESOURCE_BARRIER]) {
     for barrier in barriers {
+        // SAFETY: Callers pass only barriers from `transition`, once each, so `Transition` is the
+        // active field and still holds the one reference released here.
         unsafe {
             let mut transition = std::mem::ManuallyDrop::take(&mut barrier.Anonymous.Transition);
             std::mem::ManuallyDrop::drop(&mut transition.pResource);

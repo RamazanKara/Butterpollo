@@ -1,3 +1,5 @@
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use crate::text::from_wide;
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
@@ -45,6 +47,7 @@ pub struct Display {
     pub output_index: u32,
 }
 pub fn enable_dpi_awareness() {
+    // SAFETY: SetProcessDpiAwarenessContext takes a predefined context constant and no pointers.
     unsafe {
         // A failed call means the embedding process already set its DPI context.
         let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
@@ -53,6 +56,8 @@ pub fn enable_dpi_awareness() {
     }
 }
 pub fn displays() -> Result<Vec<Display>> {
+    // SAFETY: The factory, adapters and outputs are live COM objects returned by these calls, and
+    // each GetDesc returns an owned struct.
     unsafe {
         let factory: IDXGIFactory1 = CreateDXGIFactory1()?;
         let mut result = vec![];
@@ -133,6 +138,8 @@ fn adapter_pnp_id(luid: windows::Win32::Foundation::LUID) -> Option<String> {
     info.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_ADAPTER_NAME;
     info.header.size = std::mem::size_of_val(&info) as u32;
     info.header.adapterId = luid;
+    // SAFETY: `info.header` names the request type and the full size of `info`, so the call writes
+    // only within `info`.
     if unsafe { DisplayConfigGetDeviceInfo(&mut info.header) } != 0 {
         return None;
     }
@@ -146,6 +153,8 @@ fn adapter_pnp_id(luid: windows::Win32::Foundation::LUID) -> Option<String> {
     Some(format!("{bus}\\{hardware}\\{instance}"))
 }
 pub fn gpus() -> Result<Vec<Gpu>> {
+    // SAFETY: The factory and adapters are live COM objects returned by these calls, and GetDesc1
+    // returns an owned struct.
     unsafe {
         let factory: IDXGIFactory1 = CreateDXGIFactory1()?;
         let mut result = Vec::new();
@@ -169,6 +178,8 @@ pub fn gpus() -> Result<Vec<Gpu>> {
 }
 impl ComGuard {
     pub fn new() -> Result<Self> {
+        // SAFETY: CoInitializeEx takes no pointers here, and only a successful call yields the
+        // guard whose Drop balances it.
         unsafe {
             CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
         }
@@ -177,6 +188,8 @@ impl ComGuard {
 }
 impl Drop for ComGuard {
     fn drop(&mut self) {
+        // SAFETY: CoUninitialize takes no arguments, and `new` returns a guard only after
+        // CoInitializeEx succeeded.
         unsafe {
             CoUninitialize();
         }
@@ -194,6 +207,8 @@ impl Default for Priority {
 impl Priority {
     pub fn new() -> Self {
         let priority = Self::games();
+        // SAFETY: SetThreadPriority acts on the current thread's pseudo-handle and takes no
+        // pointers.
         unsafe {
             use windows::Win32::System::Threading::*;
             let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
@@ -207,6 +222,8 @@ impl Priority {
     pub fn input() -> Self {
         let priority = Self::games();
         if priority.handle.is_invalid() {
+            // SAFETY: SetThreadPriority acts on the current thread's pseudo-handle and takes no
+            // pointers.
             unsafe {
                 use windows::Win32::System::Threading::*;
                 let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
@@ -216,6 +233,8 @@ impl Priority {
     }
     /// Register the thread with MMCSS's "Games" task at high priority.
     fn games() -> Self {
+        // SAFETY: `name` is a NUL-terminated UTF-16 buffer alive for the call, `index` is a live
+        // local, and the handle is checked before use.
         unsafe {
             use windows::Win32::System::Threading::*;
             let name: Vec<u16> = "Games\0".encode_utf16().collect();
@@ -235,6 +254,8 @@ impl Priority {
 impl Drop for Priority {
     fn drop(&mut self) {
         if !self.handle.is_invalid() {
+            // SAFETY: `handle` is the valid MMCSS handle `games` registered on this thread (HANDLE
+            // keeps `Priority` on it), reverted only here.
             unsafe {
                 let _ =
                     windows::Win32::System::Threading::AvRevertMmThreadCharacteristics(self.handle);
@@ -276,6 +297,7 @@ impl Device {
     pub fn hdr_metadata(&self) -> butterpollo_core::hdr::Metadata {
         self.output
             .as_ref()
+            // SAFETY: `output` is a live IDXGIOutput1, and GetDesc1 returns an owned struct.
             .and_then(|output| unsafe {
                 output
                     .cast::<IDXGIOutput6>()
@@ -319,6 +341,8 @@ impl Device {
         )
     }
     fn with_display(display: Option<Display>, adapter_name: &str, pnp_id: &str) -> Result<Self> {
+        // SAFETY: The factory, adapters and outputs are live COM objects returned by these calls,
+        // and each GetDesc1 returns an owned struct.
         unsafe {
             let Some(mut display) = display else {
                 return Self::without_display(adapter_name, pnp_id);
@@ -366,6 +390,8 @@ impl Device {
     /// monitor is connected: the host can still probe its encoders, as
     /// Vibepollo does on headless hosts.
     fn without_display(adapter_name: &str, pnp_id: &str) -> Result<Self> {
+        // SAFETY: The factory and adapters are live COM objects returned by these calls, and
+        // GetDesc1 returns an owned struct.
         unsafe {
             let factory: IDXGIFactory1 = CreateDXGIFactory1()?;
             for index in 0..32 {
@@ -407,6 +433,8 @@ impl Device {
         output: Option<IDXGIOutput1>,
         display: Display,
     ) -> Result<Self> {
+        // SAFETY: `adapter` is a live DXGI adapter, the out-parameters are live locals, and they
+        // are unwrapped only after D3D11CreateDevice succeeded.
         unsafe {
             let mut device = None;
             let mut context = None;
@@ -456,8 +484,12 @@ impl Duplication {
         if let (Ok(device), Ok(owner)) = (
             gpu.device
                 .cast::<IDXGIDevice>()
+                // SAFETY: `d` is the device's live IDXGIDevice, and GetAdapter returns an owned
+                // adapter.
                 .and_then(|d| unsafe { d.GetAdapter() }),
+            // SAFETY: `output` is a live IDXGIOutput1, and GetParent returns an owned reference.
             unsafe { output.GetParent::<IDXGIAdapter>() },
+            // SAFETY: Both adapters are live COM objects, and GetDesc returns owned structs.
         ) && let (Ok(device), Ok(owner)) = unsafe { (device.GetDesc(), owner.GetDesc()) }
             && (device.AdapterLuid.LowPart, device.AdapterLuid.HighPart)
                 != (owner.AdapterLuid.LowPart, owner.AdapterLuid.HighPart)
@@ -472,6 +504,7 @@ impl Duplication {
         let native_hdr = hdr
             && output
                 .cast::<IDXGIOutput6>()
+                // SAFETY: `output` is a live IDXGIOutput6, and GetDesc1 returns an owned struct.
                 .and_then(|output| unsafe { output.GetDesc1() })
                 .is_ok_and(|desc| desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020);
         // Always name the formats this host accepts. The legacy call loses
@@ -482,6 +515,8 @@ impl Duplication {
         } else {
             &[DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT]
         };
+        // SAFETY: `output` and `gpu.device` are live, and `formats` outlives the DuplicateOutput1
+        // call that reads it.
         let (duplicate, api) = unsafe {
             // DuplicateOutput1 needs a per-monitor DPI-aware process; fall back
             // to the legacy call rather than fail where it is refused.
@@ -501,6 +536,7 @@ impl Duplication {
                 }
             }
         };
+        // SAFETY: `duplicate` is a live output duplication, and GetDesc returns an owned struct.
         let desc = unsafe { duplicate.GetDesc() };
         tracing::info!(api, output = %gpu.display.display_name,
             width = desc.ModeDesc.Width, height = desc.ModeDesc.Height,
@@ -575,6 +611,8 @@ impl Duplication {
     }
     fn release_frame(&mut self) -> Result<()> {
         if std::mem::replace(&mut self.frame_owned, false) {
+            // SAFETY: `frame_owned` was set, so this duplication holds an acquired frame that has
+            // not been released.
             unsafe {
                 self.duplicate.ReleaseFrame()?;
             }
@@ -591,6 +629,8 @@ impl Duplication {
         self.release_frame()?;
         let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
         let mut resource = None;
+        // SAFETY: `duplicate` is live, the previous frame was released above, and both
+        // out-parameters are live locals.
         match unsafe {
             self.duplicate
                 .AcquireNextFrame(timeout_ms, &mut info, &mut resource)
@@ -655,6 +695,8 @@ impl GpuImage {
         {
             bail!("invalid GPU upload image");
         }
+        // SAFETY: `image.bytes` holds `stride * height` bytes with `stride` covering a row (checked
+        // above), and CreateTexture2D copies them during the call.
         unsafe {
             let desc = D3D11_TEXTURE2D_DESC {
                 Width: image.width,
@@ -730,6 +772,8 @@ impl GpuPool {
         gpu: &Device,
         source: &ID3D11Texture2D,
     ) -> Result<Option<GpuImage>> {
+        // SAFETY: `source` and the pool's textures are live on `gpu.device` with matching size and
+        // format, and that device's context is multithread-protected.
         unsafe {
             let mut desc = D3D11_TEXTURE2D_DESC::default();
             source.GetDesc(&mut desc);
@@ -813,6 +857,8 @@ pub fn read_texture(
     texture: &ID3D11Texture2D,
     staging: &mut Option<ID3D11Texture2D>,
 ) -> Result<Image> {
+    // SAFETY: `stage` matches `texture`'s size and format, and each row read stays inside the
+    // `RowPitch * Height` mapped bytes until Unmap below.
     unsafe {
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         texture.GetDesc(&mut desc);
@@ -936,6 +982,7 @@ pub struct Wgc {
 pub(crate) fn qpc_frequency() -> i64 {
     *std::sync::OnceLock::get_or_init(&QPC_FREQUENCY, || {
         let mut frequency = 0;
+        // SAFETY: QueryPerformanceFrequency writes only to the live local `frequency`.
         let _ = unsafe {
             windows::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency)
         };
@@ -947,6 +994,7 @@ fn qpc_timestamps(ticks: i64) -> (Instant, Option<Instant>) {
     let now = Instant::now();
     let mut current = 0;
     if ticks <= 0
+        // SAFETY: QueryPerformanceCounter writes only to the live local `current`.
         || unsafe { windows::Win32::System::Performance::QueryPerformanceCounter(&mut current) }
             .is_err()
     {
@@ -996,6 +1044,7 @@ fn pin_capture_runtime() -> Result<()> {
     // Keep only the system runtime loaded for the process lifetime; sessions,
     // frame pools and their GPU resources still close and release normally.
     PINNED
+        // SAFETY: The module name is a static NUL-terminated literal, and `module` is a live local.
         .get_or_init(|| unsafe {
             let mut module = HMODULE::default();
             GetModuleHandleExW(
@@ -1015,6 +1064,8 @@ impl Wgc {
         Self::new_device(Device::new(name)?, hdr, false)
     }
     fn new_device(gpu: Device, hdr: bool, high_rate: bool) -> Result<Self> {
+        // SAFETY: `output` and `gpu.device` are live, `d.Monitor` is that output's monitor, and
+        // every call returns owned COM or WinRT objects.
         unsafe {
             let output = gpu.output()?.clone();
             let d = output.GetDesc()?;
@@ -1121,6 +1172,7 @@ impl Wgc {
         let result = (|| -> Result<Image> {
             let surface = frame.Surface()?;
             let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
+            // SAFETY: `access` is the surface of `frame`, which is closed only after this closure.
             let texture: ID3D11Texture2D = unsafe { access.GetInterface()? };
             read_texture(&self.gpu, &texture, &mut self.staging)
         })();
@@ -1170,6 +1222,7 @@ impl Wgc {
         let result = (|| {
             let surface = frame.Surface()?;
             let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
+            // SAFETY: `access` is the surface of `frame`, which is closed only after this closure.
             let texture: ID3D11Texture2D = unsafe { access.GetInterface()? };
             let mut image = self.owned.copy(&self.gpu, &texture)?;
             if let Some(image) = image.as_mut() {
@@ -1204,6 +1257,8 @@ impl Wgc {
         // An empty pool returns a successful HRESULT and a null interface. The
         // generated binding requires a non-null frame, so preserve the HRESULT
         // and optional output separately instead of swallowing every error.
+        // SAFETY: `pool` is live, the call matches the TryGetNextFrame vtable slot, and a non-null
+        // `frame` is a reference it transferred to us.
         unsafe {
             let mut frame = std::ptr::null_mut();
             (self.pool.vtable().TryGetNextFrame)(self.pool.as_raw(), &mut frame)
@@ -1229,6 +1284,7 @@ impl Wgc {
             return Ok(());
         }
         self.color_check = Instant::now() + Duration::from_secs(1);
+        // SAFETY: `output` is a live IDXGIOutput1, and GetDesc1 returns an owned struct.
         let current = unsafe {
             self.gpu
                 .output()

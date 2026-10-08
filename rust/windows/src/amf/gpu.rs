@@ -1,4 +1,6 @@
 //! Wrap the Rust D3D11 converter's GPU texture in AMF's native surface ABI.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use crate::{
     amf::check,
     amf_abi::*,
@@ -22,6 +24,8 @@ pub(crate) fn boolean(value: bool) -> AMFVariantStruct {
 pub(crate) struct Surface(pub *mut AMFSurface);
 impl Drop for Surface {
     fn drop(&mut self) {
+        // SAFETY: `self.0` is a non-null surface from a CreateSurfaceFrom* call in this file, and
+        // this `Surface` owns the one reference it returned.
         unsafe {
             ((*(*self.0).pVtbl).Release.unwrap())(self.0);
         }
@@ -42,6 +46,8 @@ unsafe extern "C" fn released(observer: *mut AMFSurfaceObserver, surface: *mut A
     if observer.is_null() {
         return;
     }
+    // SAFETY: AMF passes back the observer from `Ownership::raw`, the first field of a boxed
+    // #[repr(C)] Ownership that the encoder keeps until AMF is terminated.
     let ownership = unsafe { &*observer.cast::<Ownership>() };
     if let Ok(mut textures) = ownership.textures.lock() {
         textures.remove(&(surface as usize));
@@ -99,6 +105,8 @@ fn wrap(
     texture: &Arc<ID3D11Texture2D>,
     ownership: &mut Ownership,
 ) -> Result<(Surface, Arc<ID3D11Texture2D>)> {
+    // SAFETY: `context` is a live AMF context, `ownership` is boxed so the observer address stays
+    // valid, and `texture` is held in it until AMF releases the surface.
     unsafe {
         let mut surface = ptr::null_mut();
         check(((*(*context).pVtbl).CreateSurfaceFromDX11Native.unwrap())(
@@ -154,6 +162,8 @@ const CONTEXT2: AMFGuid = AMFGuid {
 pub(crate) struct D3d12Context(*mut Context2);
 impl D3d12Context {
     pub fn new(context: *mut AMFContext) -> Result<Self> {
+        // SAFETY: `context` is a live AMF context, and QueryInterface writes an added reference to
+        // an AMFContext2 into `interface`, which is checked for null.
         unsafe {
             let mut interface = ptr::null_mut();
             check(((*(*context).pVtbl).QueryInterface.unwrap())(
@@ -169,6 +179,8 @@ impl D3d12Context {
         }
     }
     pub fn init(&self, device: &windows::Win32::Graphics::Direct3D12::ID3D12Device) -> Result<()> {
+        // SAFETY: `self.0` is the live AMFContext2 from `new`, whose table has InitDX12 right after
+        // AMFContext1's 65 entries, and `device` is a live D3D12 device.
         unsafe {
             check(((*(*self.0).vtable).init_dx12)(
                 self.0.cast(),
@@ -184,6 +196,8 @@ impl D3d12Context {
         texture: &Arc<windows::Win32::Graphics::Direct3D12::ID3D12Resource>,
         ownership: &mut Ownership,
     ) -> Result<Surface> {
+        // SAFETY: `self.0` is the live AMFContext2, `ownership` is boxed so the observer address
+        // stays valid, and `texture` is held in it until AMF releases the surface.
         unsafe {
             let mut surface = ptr::null_mut();
             check(((*(*self.0).vtable).surface_from_dx12)(
@@ -203,8 +217,9 @@ impl D3d12Context {
 }
 impl Drop for D3d12Context {
     fn drop(&mut self) {
+        // SAFETY: `self.0` holds the one reference QueryInterface added in `new`, and entry 1 of
+        // AMFContext1's table is Release.
         unsafe {
-            // QueryInterface added a reference; Release is the table's second entry.
             let release: unsafe extern "C" fn(*mut std::ffi::c_void) -> i64 =
                 std::mem::transmute((*(*self.0).vtable)._context1[1]);
             release(self.0.cast());
@@ -239,6 +254,8 @@ pub(crate) fn synchronize(
     fence: &windows::Win32::Graphics::Direct3D12::ID3D12Fence,
     value: u64,
 ) -> Result<()> {
+    // SAFETY: `texture` and `fence` are live D3D12 objects, and each data pointer refers to a local
+    // of exactly the size passed.
     unsafe {
         let state: u32 = windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_COMMON.0 as u32;
         texture.SetPrivateData(&RESOURCE_STATE, 4, Some((&state as *const u32).cast()))?;
@@ -253,6 +270,7 @@ pub(crate) fn fence_value(
 ) -> Option<u64> {
     let mut value = 0u64;
     let mut size = 8u32;
+    // SAFETY: `fence` is live, and `value` is a local u64 whose 8-byte size is passed in `size`.
     unsafe {
         fence
             .GetPrivateData(

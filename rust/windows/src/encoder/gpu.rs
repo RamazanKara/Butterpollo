@@ -1,4 +1,6 @@
 //! Native D3D11 frames with codec-owned references, also mapped to Quick Sync.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use crate::{
     capture::{Device, GpuImage, Pixel},
     encoder::check,
@@ -20,6 +22,8 @@ impl Buffer {
         Ok(Self(pointer))
     }
     fn reference(&self) -> Result<*mut ff::AVBufferRef> {
+        // SAFETY: `self.0` is a non-null buffer reference (checked in `owned`) that this `Buffer`
+        // owns.
         unsafe {
             let pointer = ff::av_buffer_ref(self.0);
             if pointer.is_null() {
@@ -31,6 +35,8 @@ impl Buffer {
 }
 impl Drop for Buffer {
     fn drop(&mut self) {
+        // SAFETY: `self.0` is the one reference this `Buffer` owns, and av_buffer_unref releases it
+        // once and nulls it.
         unsafe {
             ff::av_buffer_unref(&mut self.0);
         }
@@ -39,6 +45,7 @@ impl Drop for Buffer {
 struct Frame(*mut ff::AVFrame);
 impl Frame {
     fn new() -> Result<Self> {
+        // SAFETY: av_frame_alloc has no preconditions, and its result is checked for null.
         unsafe {
             let pointer = ff::av_frame_alloc();
             if pointer.is_null() {
@@ -50,26 +57,38 @@ impl Frame {
 }
 impl Drop for Frame {
     fn drop(&mut self) {
+        // SAFETY: `self.0` is the frame from `Frame::new` that this `Frame` owns, and av_frame_free
+        // nulls it.
         unsafe {
             ff::av_frame_free(&mut self.0);
         }
     }
 }
 unsafe extern "C" fn lock(pointer: *mut c_void) {
+    // SAFETY: FFmpeg passes back `lock_ctx`, the ID3D11Multithread reference `Native::new` stored,
+    // which `release_lock` drops only after FFmpeg's last call.
     if let Some(lock) = unsafe { ID3D11Multithread::from_raw_borrowed(&pointer) } {
+        // SAFETY: `lock` is the device context's live ID3D11Multithread, and FFmpeg pairs each lock
+        // with an unlock.
         unsafe {
             lock.Enter();
         }
     }
 }
 unsafe extern "C" fn unlock(pointer: *mut c_void) {
+    // SAFETY: FFmpeg passes back `lock_ctx`, the ID3D11Multithread reference `Native::new` stored,
+    // which `release_lock` drops only after FFmpeg's last call.
     if let Some(lock) = unsafe { ID3D11Multithread::from_raw_borrowed(&pointer) } {
+        // SAFETY: `lock` is the device context's live ID3D11Multithread, and this unlock follows
+        // FFmpeg's lock.
         unsafe {
             lock.Leave();
         }
     }
 }
 unsafe extern "C" fn release_lock(context: *mut ff::AVHWDeviceContext) {
+    // SAFETY: FFmpeg calls this once with the D3D11VA context `Native::new` filled, whose
+    // `lock_ctx` holds an `into_raw` reference, released here once and then nulled.
     unsafe {
         let native = (*context).hwctx.cast::<ff::AVD3D11VADeviceContext>();
         if !(*native).lock_ctx.is_null() {
@@ -80,6 +99,8 @@ unsafe extern "C" fn release_lock(context: *mut ff::AVHWDeviceContext) {
 }
 unsafe extern "C" fn release_texture(opaque: *mut c_void, _data: *mut u8) {
     if !opaque.is_null() {
+        // SAFETY: `opaque` is the `Arc::into_raw` pointer `Native::frame` gave av_buffer_create,
+        // and it is released once: by FFmpeg, or directly when that call failed.
         unsafe {
             drop(Arc::from_raw(opaque.cast::<ID3D11Texture2D>()));
         }
@@ -108,6 +129,8 @@ impl Native {
         let device = image.gpu.clone();
         let layout = (image.width, image.height, image.pixel);
         let color = crate::gpu_color::Converter::new(&device, config, layout)?;
+        // SAFETY: Each FFmpeg context is checked for null by `Buffer::owned` before its `data` is
+        // used, and the D3D11 references stored in it are `into_raw` ones FFmpeg releases.
         unsafe {
             let native_device = Buffer::owned(ff::av_hwdevice_ctx_alloc(
                 ff::AVHWDeviceType_AV_HWDEVICE_TYPE_D3D11VA,
@@ -195,6 +218,8 @@ impl Native {
             self.layout = layout;
         }
         let texture = self.color.convert(image)?;
+        // SAFETY: `source` and `mapped` are frames this encoder owns, and the texture's
+        // `Arc::into_raw` reference goes into `buf[0]` with `release_texture` to drop it.
         unsafe {
             ff::av_frame_unref(self.mapped.0);
             ff::av_frame_unref(self.source.0);
@@ -235,6 +260,8 @@ mod tests {
     fn native_ffmpeg_frames_hold_the_texture_until_the_last_codec_reference() -> Result<()> {
         let _com = crate::capture::ComGuard::new()?;
         let device = Device::new("")?;
+        // SAFETY: `device.device` is a live D3D11 device, and GetAdapter and GetDesc only return
+        // owned values.
         let adapter = unsafe {
             device
                 .device
@@ -247,6 +274,8 @@ mod tests {
             .find(|g| g.luid == (adapter.AdapterLuid.LowPart, adapter.AdapterLuid.HighPart))
             .unwrap();
         let selected = Device::new_adapter("", &gpu.name, "")?;
+        // SAFETY: `selected.device` is a live D3D11 device, and GetAdapter and GetDesc only return
+        // owned values.
         let selected_adapter = unsafe {
             selected
                 .device
@@ -264,6 +293,8 @@ mod tests {
         );
         if let Some(pnp) = gpu.pnp_id {
             let selected = Device::new_adapter("", "stale GPU name", &pnp)?;
+            // SAFETY: `selected.device` is a live D3D11 device, and GetAdapter and GetDesc only
+            // return owned values.
             let selected_adapter = unsafe {
                 selected
                     .device
@@ -296,6 +327,8 @@ mod tests {
             };
             let mut native = Native::new(&image, &config, false)?;
             let frame = native.frame(&image)?;
+            // SAFETY: `native` owns the frames these pointers name and keeps them allocated, and
+            // `held` keeps `original`'s texture alive until it is dropped after the last use.
             unsafe {
                 assert_eq!((*frame).format, ff::AVPixelFormat_AV_PIX_FMT_D3D11);
                 let held = Frame::new()?;
