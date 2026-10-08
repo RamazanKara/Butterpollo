@@ -1,5 +1,6 @@
 //! Endpoint routing is shared by stream owners and restored after the last
 //! owner, including host crashes. Capture-only sinks never alter defaults.
+use crate::text::to_wide;
 use anyhow::{Context, Result, bail};
 use butterpollo_core::config::Config;
 use serde::{Deserialize, Serialize};
@@ -41,9 +42,6 @@ pub struct Endpoint {
     pub adapter: String,
     pub default: bool,
     pub virtual_sink: bool,
-}
-fn wide(text: &str) -> Vec<u16> {
-    text.encode_utf16().chain(Some(0)).collect()
 }
 unsafe fn device_id(device: &IMMDevice) -> Result<String> {
     let id = unsafe { device.GetId()? };
@@ -138,14 +136,14 @@ impl Policy {
         })
     }
     fn set_default(&self, id: &str, role: ERole) -> Result<()> {
-        let id = wide(id);
+        let id = to_wide(id);
         unsafe {
             (self.vtable().default)(self.as_raw(), PCWSTR(id.as_ptr()), role).ok()?;
         }
         Ok(())
     }
     fn format(&self, id: &str) -> Result<Vec<u8>> {
-        let id = wide(id);
+        let id = to_wide(id);
         let mut format = std::ptr::null_mut();
         unsafe {
             (self.vtable().device_format)(self.as_raw(), PCWSTR(id.as_ptr()), 0, &mut format)
@@ -167,7 +165,7 @@ impl Policy {
         if bytes.len() < size_of::<WAVEFORMATEX>() || bytes.len() > 4096 {
             bail!("invalid saved audio format");
         }
-        let id = wide(id);
+        let id = to_wide(id);
         // Stored format bytes need native alignment when passed back to COM.
         let mut storage = vec![0u64; bytes.len().div_ceil(8)];
         unsafe {
@@ -347,7 +345,7 @@ fn try_install_steam(config: &Config, endpoints: &[Endpoint]) -> Result<bool> {
     if !inf.is_file() {
         return Ok(false);
     }
-    let file = wide(&inf.to_string_lossy());
+    let file = to_wide(&inf.to_string_lossy());
     unsafe {
         use windows::Win32::Devices::DeviceAndDriverInstallation::{
             DIIRFLAG_FORCE_INF, DiInstallDriverW,

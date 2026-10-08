@@ -1,3 +1,4 @@
+use crate::text::from_wide;
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use std::time::{Duration, Instant};
@@ -51,9 +52,6 @@ pub fn enable_dpi_awareness() {
         );
     }
 }
-fn wide(b: &[u16]) -> String {
-    String::from_utf16_lossy(&b[..b.iter().position(|v| *v == 0).unwrap_or(b.len())])
-}
 pub fn displays() -> Result<Vec<Display>> {
     unsafe {
         let factory: IDXGIFactory1 = CreateDXGIFactory1()?;
@@ -71,18 +69,18 @@ pub fn displays() -> Result<Vec<Display>> {
                 if !d.AttachedToDesktop.as_bool() {
                     continue;
                 }
-                let name = wide(&d.DeviceName);
+                let name = from_wide(&d.DeviceName);
                 let r = d.DesktopCoordinates;
                 result.push(Display {
                     device_id: name.clone(),
                     display_name: name,
-                    friendly_name: wide(&ad.Description),
+                    friendly_name: from_wide(&ad.Description),
                     width: (r.right - r.left) as u32,
                     height: (r.bottom - r.top) as u32,
                     x: r.left,
                     y: r.top,
                     primary: r.left == 0 && r.top == 0,
-                    adapter: wide(&ad.Description),
+                    adapter: from_wide(&ad.Description),
                     adapter_index: a,
                     output_index: o,
                 });
@@ -138,7 +136,7 @@ fn adapter_pnp_id(luid: windows::Win32::Foundation::LUID) -> Option<String> {
     if unsafe { DisplayConfigGetDeviceInfo(&mut info.header) } != 0 {
         return None;
     }
-    let path = wide(&info.adapterDevicePath);
+    let path = from_wide(&info.adapterDevicePath);
     let path = path.strip_prefix(r"\\?\")?;
     let mut parts = path.split('#');
     let (bus, hardware, instance) = (parts.next()?, parts.next()?, parts.next()?);
@@ -158,7 +156,7 @@ pub fn gpus() -> Result<Vec<Gpu>> {
             let info = adapter.GetDesc1()?;
             if info.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 == 0 {
                 result.push(Gpu {
-                    name: wide(&info.Description),
+                    name: from_wide(&info.Description),
                     vendor: info.VendorId,
                     dedicated_memory: info.DedicatedVideoMemory as u64,
                     luid: (info.AdapterLuid.LowPart, info.AdapterLuid.HighPart),
@@ -344,7 +342,7 @@ impl Device {
                         adapter_pnp_id(desc.AdapterLuid)
                             .is_some_and(|id| id.eq_ignore_ascii_case(pnp_id))
                     } else {
-                        wide(&desc.Description) == adapter_name
+                        from_wide(&desc.Description) == adapter_name
                     };
                     if matched {
                         matches.push(candidate);
@@ -360,7 +358,7 @@ impl Device {
                 }
                 matches.remove(0)
             };
-            display.adapter = wide(&adapter.GetDesc1()?.Description);
+            display.adapter = from_wide(&adapter.GetDesc1()?.Description);
             Self::create(&adapter, output, display)
         }
     }
@@ -375,7 +373,7 @@ impl Device {
                     break;
                 };
                 let desc = adapter.GetDesc1()?;
-                let description = wide(&desc.Description);
+                let description = from_wide(&desc.Description);
                 if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0
                     || (!pnp_id.is_empty()
                         && !adapter_pnp_id(desc.AdapterLuid)
@@ -467,8 +465,8 @@ impl Duplication {
             bail!(
                 "Desktop Duplication captures {} only on the GPU it is connected to ({}), not on {}; use WGC capture to encode on another GPU",
                 gpu.display.display_name,
-                wide(&owner.Description),
-                wide(&device.Description)
+                from_wide(&owner.Description),
+                from_wide(&device.Description)
             );
         }
         let native_hdr = hdr

@@ -1,4 +1,5 @@
 //! Private, bounded local IPC for owned user-session helpers.
+use crate::text::to_wide;
 use anyhow::{Context, Result, ensure};
 use serde::{Serialize, de::DeserializeOwned};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
@@ -21,9 +22,6 @@ fn owned(handle: HANDLE) -> OwnedHandle {
 fn raw(handle: &OwnedHandle) -> HANDLE {
     HANDLE(handle.as_raw_handle())
 }
-fn utf16(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain([0]).collect()
-}
 
 struct Descriptor(PSECURITY_DESCRIPTOR);
 impl Drop for Descriptor {
@@ -39,7 +37,7 @@ impl Pipe {
         let sid = crate::process::user_sid().context("helper needs a signed-in user")?;
         // The only client is the signed-in user. No anonymous/network access;
         // a PID check below also rejects another process under that same user.
-        let sddl = utf16(&format!("D:P(A;;GA;;;SY)(A;;GRGW;;;{sid})"));
+        let sddl = to_wide(&format!("D:P(A;;GA;;;SY)(A;;GRGW;;;{sid})"));
         let mut descriptor = Descriptor(PSECURITY_DESCRIPTOR::default());
         unsafe {
             ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -49,7 +47,7 @@ impl Pipe {
                 None,
             )?;
             let name = format!("{prefix}{:?}", CoCreateGuid()?);
-            let wide = utf16(&name);
+            let wide = to_wide(&name);
             let security = SECURITY_ATTRIBUTES {
                 nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
                 lpSecurityDescriptor: descriptor.0.0,
@@ -81,7 +79,7 @@ impl Pipe {
             name.starts_with(prefix) && name.len() < 128 && !name.contains('\0'),
             "invalid helper pipe name"
         );
-        let name = utf16(name);
+        let name = to_wide(name);
         unsafe {
             let pipe = Self(owned(CreateFileW(
                 PCWSTR(name.as_ptr()),

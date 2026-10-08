@@ -1,4 +1,5 @@
 //! First-run and repeated-launch experience for the portable Windows package.
+use crate::text::to_wide;
 use anyhow::{Context, Result, bail};
 use butterpollo_core::{config::Config, migration};
 use std::{
@@ -16,9 +17,6 @@ use windows::{
     },
     core::{PCWSTR, w},
 };
-fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(Some(0)).collect()
-}
 fn folder() -> Result<Option<PathBuf>> {
     unsafe {
         CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
@@ -49,7 +47,7 @@ fn folder() -> Result<Option<PathBuf>> {
     }
 }
 pub fn show_error(error: &str) {
-    let text = wide(error);
+    let text = to_wide(error);
     unsafe {
         MessageBoxW(
             None,

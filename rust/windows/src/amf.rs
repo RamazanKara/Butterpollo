@@ -5,6 +5,7 @@
 //! per-codec settings from `butterpollo_core::encoder_policy`.
 pub(crate) mod gpu;
 
+use crate::text::to_wide;
 use crate::{
     amf_abi::*,
     capture::{Device, GpuImage, Image},
@@ -28,9 +29,6 @@ pub(crate) fn int(n: i64) -> AMFVariantStruct {
         type_: AMF_VARIANT_TYPE_AMF_VARIANT_INT64,
         __bindgen_anon_1: AMFVariantStruct__bindgen_ty_1 { int64Value: n },
     }
-}
-pub(crate) fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(Some(0)).collect()
 }
 fn guard_smart_access_video(properties: &mut [butterpollo_core::encoder_policy::Property]) {
     use butterpollo_core::encoder_policy::Value;
@@ -201,7 +199,7 @@ impl Encoder {
                 check(((*(*factory).pVtbl).CreateComponent.unwrap())(
                     factory,
                     context,
-                    wide(name).as_ptr(),
+                    to_wide(name).as_ptr(),
                     &mut component,
                 ))
                 .with_context(|| format!("AMF CreateComponent {name}"))?;
@@ -454,7 +452,7 @@ impl Encoder {
             let mut value = int(0);
             if ((*(*self.component).pVtbl).GetProperty.unwrap())(
                 self.component,
-                wide(name).as_ptr(),
+                to_wide(name).as_ptr(),
                 &mut value,
             ) != AMF_RESULT_AMF_OK
             {
@@ -475,7 +473,7 @@ impl Encoder {
             let mut value = int(0);
             if ((*(*self.component).pVtbl).GetProperty.unwrap())(
                 self.component,
-                wide(name).as_ptr(),
+                to_wide(name).as_ptr(),
                 &mut value,
             ) != AMF_RESULT_AMF_OK
                 || value.type_ != AMF_VARIANT_TYPE_AMF_VARIANT_RATE
@@ -498,7 +496,7 @@ impl Encoder {
             }
             let mut value = int(0);
             let result =
-                ((*(*caps).pVtbl).GetProperty.unwrap())(caps, wide(name).as_ptr(), &mut value);
+                ((*(*caps).pVtbl).GetProperty.unwrap())(caps, to_wide(name).as_ptr(), &mut value);
             ((*(*caps).pVtbl).Release.unwrap())(caps);
             (result == AMF_RESULT_AMF_OK && value.type_ == AMF_VARIANT_TYPE_AMF_VARIANT_INT64)
                 .then_some(value.__bindgen_anon_1.int64Value)
@@ -517,7 +515,7 @@ impl Encoder {
         unsafe {
             check(((*(*self.component).pVtbl).GetProperty.unwrap())(
                 self.component,
-                wide(&property.name).as_ptr(),
+                to_wide(&property.name).as_ptr(),
                 &mut applied,
             ))?;
             let matches = match property.value {
@@ -812,7 +810,7 @@ impl Encoder {
         unsafe {
             check(((*(*self.component).pVtbl).SetProperty.unwrap())(
                 self.component,
-                wide(name).as_ptr(),
+                to_wide(name).as_ptr(),
                 value,
             ))
             .with_context(|| format!("AMF property {name}"))
@@ -873,7 +871,7 @@ impl Encoder {
                 let mut info = ptr::null();
                 if ((*(*self.component).pVtbl).GetPropertyInfo.unwrap())(
                     self.component,
-                    wide(maximum).as_ptr(),
+                    to_wide(maximum).as_ptr(),
                     &mut info,
                 ) == AMF_RESULT_AMF_OK
                     && !info.is_null()
@@ -892,7 +890,7 @@ impl Encoder {
                         let mut limit = int(0);
                         let result = ((*(*caps).pVtbl).GetProperty.unwrap())(
                             caps,
-                            wide("Av1CapMaxNumLTRFrames").as_ptr(),
+                            to_wide("Av1CapMaxNumLTRFrames").as_ptr(),
                             &mut limit,
                         );
                         if result == AMF_RESULT_AMF_OK
@@ -911,7 +909,7 @@ impl Encoder {
                 let mut applied = int(0);
                 check(((*(*self.component).pVtbl).GetProperty.unwrap())(
                     self.component,
-                    wide(maximum).as_ptr(),
+                    to_wide(maximum).as_ptr(),
                     &mut applied,
                 ))?;
                 if applied.type_ != AMF_VARIANT_TYPE_AMF_VARIANT_INT64
@@ -944,7 +942,7 @@ impl Encoder {
             unsafe {
                 check(((*(*surface).pVtbl).SetProperty.unwrap())(
                     surface,
-                    wide(name).as_ptr(),
+                    to_wide(name).as_ptr(),
                     value,
                 ))
             }
@@ -1039,7 +1037,7 @@ impl Encoder {
                 1 => "HevcOutputDataType",
                 _ => "Av1OutputFrameType",
             };
-            let _ = (v.GetProperty.unwrap())(buffer, wide(prop).as_ptr(), &mut picture);
+            let _ = (v.GetProperty.unwrap())(buffer, to_wide(prop).as_ptr(), &mut picture);
             if size > 64 * 1024 * 1024 || raw.is_null() {
                 (v.Release.unwrap())(buffer);
                 bail!("invalid AMF output buffer");
@@ -1228,14 +1226,14 @@ impl Encoder {
                     let table = &*(*self.component).pVtbl;
                     if (table.GetProperty.unwrap())(
                         self.component,
-                        wide(&name).as_ptr(),
+                        to_wide(&name).as_ptr(),
                         &mut current,
                     ) == AMF_RESULT_AMF_OK
                         && current.type_ == AMF_VARIANT_TYPE_AMF_VARIANT_INT64
                         && current.__bindgen_anon_1.int64Value > 0
                         && (table.GetPropertyInfo.unwrap())(
                             self.component,
-                            wide(&name).as_ptr(),
+                            to_wide(&name).as_ptr(),
                             &mut info,
                         ) == AMF_RESULT_AMF_OK
                         && !info.is_null()

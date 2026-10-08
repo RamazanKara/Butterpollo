@@ -1,4 +1,5 @@
 //! Per-user Vulkan layer registration and reference-counted HDR activation.
+use crate::text::to_wide;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::{
@@ -17,9 +18,6 @@ use windows::{
     core::PCWSTR,
 };
 const KEY: &str = "Software\\Khronos\\Vulkan\\ImplicitLayers";
-fn wide(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain(Some(0)).collect()
-}
 pub fn manifest() -> Result<PathBuf> {
     let path = std::env::current_exe()?
         .parent()
@@ -28,8 +26,8 @@ pub fn manifest() -> Result<PathBuf> {
     Ok(path)
 }
 pub fn installed(path: &Path) -> bool {
-    let name = wide(&path.to_string_lossy());
-    let key = wide(KEY);
+    let name = to_wide(&path.to_string_lossy());
+    let key = to_wide(KEY);
     let (mut data, mut size) = (0u32, 4u32);
     unsafe {
         [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE]
@@ -59,8 +57,8 @@ pub fn register(enabled: bool) -> Result<()> {
     {
         bail!("the Rust Vulkan HDR layer is missing from this installation");
     }
-    let key = wide(KEY);
-    let name = wide(&path.to_string_lossy());
+    let key = to_wide(KEY);
+    let name = to_wide(&path.to_string_lossy());
     unsafe {
         let mut handle = HKEY::default();
         RegCreateKeyExW(
@@ -127,7 +125,7 @@ impl Lease {
         let mut events = events.lock().unwrap();
         if events.handles.is_empty() {
             let descriptor_text =
-                wide("D:P(A;;GA;;;OW)(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00100000;;;WD)");
+                to_wide("D:P(A;;GA;;;OW)(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00100000;;;WD)");
             let mut descriptor = PSECURITY_DESCRIPTOR::default();
             unsafe {
                 ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -146,7 +144,7 @@ impl Lease {
                 "Global\\ButterpolloRustVirtualHdrActive",
                 "Local\\ButterpolloRustVirtualHdrActive",
             ] {
-                let name = wide(name);
+                let name = to_wide(name);
                 if let Ok(handle) =
                     unsafe { CreateEventW(Some(&security), true, false, PCWSTR(name.as_ptr())) }
                 {

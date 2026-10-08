@@ -92,7 +92,7 @@ pub(super) fn desktop_available() -> bool {
             None,
         );
         let _ = CloseDesktop(desktop);
-        result.is_ok() && super::wide(&name).eq_ignore_ascii_case("default")
+        result.is_ok() && crate::text::from_wide(&name).eq_ignore_ascii_case("default")
     }
 }
 

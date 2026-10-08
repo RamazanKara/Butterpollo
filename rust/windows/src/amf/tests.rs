@@ -264,7 +264,7 @@ fn native_av1_geometry_and_hdr_are_preserved() -> Result<()> {
                     unsafe {
                         check(((*(*encoder.component).pVtbl).GetProperty.unwrap())(
                             encoder.component,
-                            wide(name).as_ptr(),
+                            to_wide(name).as_ptr(),
                             &mut value,
                         ))?;
                     }
