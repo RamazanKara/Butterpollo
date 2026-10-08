@@ -38,6 +38,28 @@ fn crc(s: &str) -> String {
         .unsigned_abs()
         .to_string()
 }
+/// A PNG file of at most 16 MiB.
+fn png(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut header = [0; 8];
+    file.metadata()
+        .is_ok_and(|m| m.is_file() && m.len() <= 16 * 1024 * 1024)
+        && file.read_exact(&mut header).is_ok()
+        && &header == b"\x89PNG\r\n\x1a\n"
+}
+/// The icon a Playnite sync saved for `app` (`playnite-icon-path`), served
+/// as `/api/apps/{uuid}/icon`. Only a PNG, like the covers.
+pub fn icon(app: &App) -> Option<PathBuf> {
+    let path = app
+        .extra
+        .get("playnite-icon-path")
+        .and_then(Value::as_str)?
+        .trim();
+    (!path.is_empty() && png(Path::new(path))).then(|| PathBuf::from(path))
+}
 pub fn artwork(app: &App, assets: &Path) -> PathBuf {
     let image = app
         .extra
@@ -48,16 +70,7 @@ pub fn artwork(app: &App, assets: &Path) -> PathBuf {
     if !image.to_ascii_lowercase().ends_with(".png") {
         return fallback;
     }
-    let valid = |p: &Path| {
-        use std::io::Read;
-        let Ok(mut file) = std::fs::File::open(p) else {
-            return false;
-        };
-        let mut header = [0; 8];
-        file.metadata().is_ok_and(|m| m.len() <= 16 * 1024 * 1024)
-            && file.read_exact(&mut header).is_ok()
-            && &header == b"\x89PNG\r\n\x1a\n"
-    };
+    let valid = png;
     let candidate = assets.join(image);
     if valid(&candidate) {
         candidate
@@ -266,5 +279,27 @@ mod tests {
         assert_ne!(old, apps[0].id());
         assert!(apps[0].aliases.contains(&old));
         assert_eq!(doc["root"]["other"], 123);
+    }
+    #[test]
+    fn the_icon_is_the_synced_png_and_nothing_else() {
+        let d = tempfile::tempdir().unwrap();
+        let mut app = App::desktop();
+        assert_eq!(icon(&app), None);
+        let png = d.path().join("playnite_icon_game.png");
+        std::fs::write(&png, b"\x89PNG\r\n\x1a\nicon").unwrap();
+        let text = d.path().join("secrets.txt");
+        std::fs::write(&text, b"not an image").unwrap();
+        for (path, expected) in [
+            (png.clone(), Some(png.clone())),
+            (text, None),
+            (d.path().join("missing.png"), None),
+            (d.path().to_path_buf(), None),
+        ] {
+            app.extra.insert(
+                "playnite-icon-path".into(),
+                json!(format!(" {} ", path.display())),
+            );
+            assert_eq!(icon(&app), expected);
+        }
     }
 }

@@ -108,6 +108,12 @@ fn cover_id(path: &str) -> Option<&str> {
         .or_else(|| path.strip_prefix("/api/covers/"))
         .filter(|id| !id.is_empty())
 }
+/// The app of an icon request: /api/apps/UUID/icon.
+fn icon_id(path: &str) -> Option<&str> {
+    path.strip_prefix("/api/apps/")
+        .and_then(|rest| rest.strip_suffix("/icon"))
+        .filter(|id| !id.is_empty() && !id.contains('/'))
+}
 /// Whether the request is signed in: a browser session, or Basic
 /// credentials from `peer`, which count against its sign-in attempts.
 pub(crate) fn authenticated(
@@ -184,6 +190,7 @@ fn token_catalog() -> Vec<auth::Scope> {
         ("/api/apps", &["GET", "POST"][..]),
         ("/api/apps/[^/]+", &["DELETE"][..]),
         ("/api/apps/[^/]+/cover", &["GET"][..]),
+        ("/api/apps/[^/]+/icon", &["GET"][..]),
         ("/api/apps/close", &["POST"][..]),
         ("/api/apps/launch", &["POST"][..]),
         ("/api/apps/reorder", &["POST"][..]),
@@ -237,6 +244,7 @@ fn token_catalog() -> Vec<auth::Scope> {
         ("/api/playnite/force_sync", &["POST"][..]),
         ("/api/apps/purge_autosync", &["POST"][..]),
         ("/api/lossless_scaling/status", &["GET"][..]),
+        ("/api/browse", &["GET"][..]),
         ("/api/restart", &["POST"][..]),
         ("/api/quit", &["POST"][..]),
         ("/api/password", &["POST"][..]),
@@ -763,6 +771,49 @@ pub(crate) async fn api(
             Ok(value) => Json(value).into_response(),
             Err(err) => error(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
         };
+    }
+    if method == Method::GET && path == "/api/browse" {
+        let query: std::collections::HashMap<String, String> =
+            url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes())
+                .into_owned()
+                .collect();
+        let filter = butterpollo_core::browse::Filter::parse(
+            query.get("type").map(String::as_str).unwrap_or(""),
+        );
+        let requested = query.get("path").cloned().unwrap_or_default();
+        // Listing a folder waits on the disk, or on the network for a share.
+        let result = tokio::task::spawn_blocking(move || {
+            if butterpollo_core::browse::root(&requested) {
+                Ok(butterpollo_core::browse::drives(
+                    &butterpollo_windows::files::drives(),
+                ))
+            } else {
+                butterpollo_core::browse::listing(std::path::Path::new(&requested), filter)
+            }
+        })
+        .await;
+        return match result {
+            Ok(Ok(value)) => Json(value).into_response(),
+            Ok(Err(message)) => error(StatusCode::BAD_REQUEST, &message),
+            Err(err) => error(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
+        };
+    }
+    if method == Method::GET
+        && let Some(id) = icon_id(path)
+    {
+        let icon = h
+            .apps
+            .read()
+            .unwrap()
+            .iter()
+            .find(|a| a.extra.get("uuid").and_then(Value::as_str) == Some(id))
+            .and_then(butterpollo_core::catalog::icon);
+        if let Some(icon) = icon
+            && let Ok(bytes) = tokio::fs::read(icon).await
+        {
+            return ([(header::CONTENT_TYPE, "image/png")], bytes).into_response();
+        }
+        return StatusCode::NOT_FOUND.into_response();
     }
     if method == Method::POST && path == "/api/apps/purge_autosync" {
         let mut removed = 0;
@@ -1617,6 +1668,10 @@ mod tests {
         assert_eq!(super::cover_id("/api/apps/cover"), None);
         assert_eq!(super::cover_id("/api/apps//cover"), None);
         assert_eq!(super::cover_id("/api/covers/"), None);
+        assert_eq!(super::icon_id("/api/apps/abc-1/icon"), Some("abc-1"));
+        assert_eq!(super::icon_id("/api/apps/icon"), None);
+        assert_eq!(super::icon_id("/api/apps//icon"), None);
+        assert_eq!(super::icon_id("/api/apps/a/b/icon"), None);
     }
     #[test]
     fn sign_ins_are_limited_per_address_but_never_on_this_pc() {

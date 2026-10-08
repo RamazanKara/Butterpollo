@@ -2,6 +2,7 @@
 pub mod audio;
 pub mod auth;
 pub mod bitstream;
+pub mod browse;
 pub mod capture_policy;
 pub mod catalog;
 pub mod config;

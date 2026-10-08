@@ -77,14 +77,14 @@ The routes below are implemented by the Rust host. JSON requests use `Content-Ty
 | Area | Read | Change |
 | --- | --- | --- |
 | Host settings | `GET /api/config`, `GET /api/metadata`, `GET /api/configLocale` | `POST` or `PATCH /api/config` |
-| Applications | `GET /api/apps`, `GET /api/apps/{id}/cover` | `POST /api/apps`, `DELETE /api/apps/{id}`, `POST /api/apps/reorder`, `POST /api/apps/launch`, `POST /api/apps/close` |
+| Applications | `GET /api/apps`, `GET /api/apps/{id}/cover`, `GET /api/apps/{uuid}/icon` | `POST /api/apps`, `DELETE /api/apps/{id}`, `POST /api/apps/reorder`, `POST /api/apps/launch`, `POST /api/apps/close` |
 | Paired devices | `GET /api/clients/list`, `GET /api/clients/pending` | `POST /api/pin`, `POST /api/otp`, `POST /api/clients/update`, `POST /api/clients/disconnect`, `POST /api/clients/unpair`, `POST /api/clients/unpair-all` |
 | Active sessions | `GET /api/session/status`, `GET /api/rtsp/sessions` | Use the application or device controls above. |
 | Displays | `GET /api/display-devices`, `GET /api/clients/display-layout`, `GET /api/clients/hdr-profiles`, `GET /api/display/golden_status` | `PUT /api/clients/display-layout`, `POST /api/display/export_golden`, `POST /api/display/restore_golden`, `DELETE /api/display/golden`, `POST /api/display/terminate_virtual`, `POST /api/reset-display-device-persistence` |
 | Frame limiting and HDR | `GET /api/frame-limiter/status`, `GET /api/rtss/status`, `GET /api/health/vulkan-hdr-layer`, `GET /api/framegen/edid-refresh?device_id=...` | `POST /api/health/vulkan-hdr-layer/register`, `POST /api/apps/rtx_hdr/live` |
 | Steam | `GET /api/steam/status`, `GET /api/steam/games` | `POST /api/steam/force_sync`, `POST /api/steam/launch` |
 | Playnite | `GET /api/playnite/status`, `GET /api/playnite/games`, `GET /api/playnite/categories` | `POST /api/playnite/install`, `POST /api/playnite/uninstall`, `POST /api/playnite/force_sync` |
-| Library extras | `GET /api/covers/{id}`, `GET /api/lossless_scaling/status` | `POST /api/covers/upload`, `POST /api/apps/purge_autosync` |
+| Library extras | `GET /api/covers/{id}`, `GET /api/lossless_scaling/status`, `GET /api/browse?path=...&type=...` | `POST /api/covers/upload`, `POST /api/apps/purge_autosync` |
 | Updates | `GET /api/updates` | `POST /api/updates/check`, `POST /api/updates/install`, `POST /api/updates/cancel` |
 | Diagnostics | `GET /api/logs`, `GET /api/logs/tail`, `GET /api/logs/export`, `GET /api/logs/export_crash`, `GET /api/logs/export_crash/manifest`, `GET /api/health/crashdump` | `POST /api/health/crashdump/dismiss` |
 | Administration | Authentication and token routes above. | `POST /api/password`, `POST /api/restart`, `POST /api/quit` |
@@ -94,6 +94,8 @@ Useful response and request details:
 - Configuration writes merge submitted fields and return `restart_required: true`. Treat the response as a saved configuration, not confirmation that every active stream has adopted it.
 - Applications are updated by their `uuid`; deletion accepts the UUID or numeric app ID. Read `/api/apps` before making changes rather than treating an array index as the identity.
 - `/api/logs` and `/api/logs/export` return up to the last 8 MiB of the current log as text. `/api/logs/export_crash` creates the support ZIP. The ordinary log export is not a ZIP.
+- `/api/apps/{uuid}/icon` returns the PNG icon a Playnite sync saved for the app, or `404`.
+- `/api/browse` lists a folder of this PC for a file picker: `path`, `parent` and `entries` (each with `name`, `path` and `type` `directory` or `file`), folders first. `type=executable` lists only `.exe`, `.bat`, `.cmd` and `.ps1` files, `type=file` any file; folders are always listed. A file or missing path lists the nearest existing folder above it; an empty `path` lists the drives, and a drive root's `parent` is empty.
 - `/api/logs/tail` accepts `offset` and `max`, then returns `text`, the next `offset`, `size` and a `reset` flag for log rotation.
 - Update installation is queued for an idle installed service. Read `/api/updates` for progress and the result.
 

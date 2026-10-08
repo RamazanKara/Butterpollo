@@ -32,6 +32,8 @@ pub mod encoder;
 #[cfg(windows)]
 mod ffmpeg_gpu;
 #[cfg(windows)]
+pub mod files;
+#[cfg(windows)]
 pub mod firewall;
 #[cfg(windows)]
 pub mod foreground;

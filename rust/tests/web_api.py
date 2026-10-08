@@ -98,6 +98,10 @@ try:
         while request(browser, 'GET', '/api/session/status').json()['appRunning'] and time.monotonic() < deadline: time.sleep(.1)
         assert request(browser, 'GET', '/api/session/status').json()['appRunning'] is False
         assert output.read_bytes().strip() == b'RUST_APP_OUTPUT'
+        listed = request(browser, 'GET', '/api/browse', params={'path':str(output),'type':'file'}).json()
+        assert listed['path'] == str(output.parent) and any(e['name'] == output.name for e in listed['entries'])
+        assert any(e['path'].endswith(':\\') for e in request(browser, 'GET', '/api/browse').json()['entries'])
+        request(browser, 'GET', '/api/apps/' + app_id + '/icon', 404)
     catalog = request(browser, 'GET', '/api/token/routes').json()['routes']
     assert any(r['path'] == '/api/apps' and 'GET' in r['methods'] for r in catalog)
     secret = request(browser, 'POST', '/api/token', json={'scopes':[{'path':'/api/apps','methods':['GET']}]}).json()['token']
