@@ -739,25 +739,6 @@ pub fn plugin_version(manifest: &str) -> Option<String> {
             .filter(|v| !v.is_empty())
     })
 }
-/// Whether version `a` is newer than `b` (dotted numbers).
-pub fn newer(a: &str, b: &str) -> bool {
-    let parts = |v: &str| -> Vec<u64> {
-        v.split('.')
-            .map(|p| p.trim().parse().unwrap_or(0))
-            .collect()
-    };
-    let (a, b) = (parts(a), parts(b));
-    for i in 0..a.len().max(b.len()) {
-        let (x, y) = (
-            a.get(i).copied().unwrap_or(0),
-            b.get(i).copied().unwrap_or(0),
-        );
-        if x != y {
-            return x > y;
-        }
-    }
-    false
-}
 
 #[cfg(test)]
 mod tests {
@@ -842,7 +823,6 @@ mod tests {
             plugin_version("Name: x\nVersion: 0.4.14\n").as_deref(),
             Some("0.4.14")
         );
-        assert!(newer("0.4.14", "0.4.9") && !newer("0.4.14", "0.4.14"));
     }
     fn game(id: &str, name: &str, last: Option<i64>) -> Game {
         Game {

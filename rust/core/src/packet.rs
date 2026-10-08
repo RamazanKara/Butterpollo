@@ -63,19 +63,6 @@ impl ReplayWindow {
     }
 }
 
-pub fn canonical_codec(s: &str) -> &str {
-    if s.eq_ignore_ascii_case("h264") {
-        "H.264"
-    } else if s.eq_ignore_ascii_case("h265") || s.eq_ignore_ascii_case("hevc") {
-        "HEVC"
-    } else if s.eq_ignore_ascii_case("av1") {
-        "AV1"
-    } else if s.eq_ignore_ascii_case("pyrowave") {
-        "PyroWave"
-    } else {
-        s
-    }
-}
 pub fn concat_and_insert(header: usize, slice: usize, a: &[u8], b: &[u8]) -> Result<Vec<u8>> {
     if slice == 0 {
         return Ok(vec![]);

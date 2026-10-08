@@ -1,7 +1,8 @@
 //! Only release metadata from our fixed GitHub repository can select an installer.
 //! Installation is limited to the installed service and serialized with launches.
-use crate::{maintenance::newer, state::Shared};
+use crate::state::Shared;
 use anyhow::{Context, Result, bail};
+use butterpollo_core::version::newer;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{

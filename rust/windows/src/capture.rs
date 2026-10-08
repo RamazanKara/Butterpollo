@@ -451,10 +451,6 @@ impl Duplication {
     pub fn new_format(name: &str, hdr: bool) -> Result<Self> {
         Self::new_device(Device::new(name)?, hdr)
     }
-    /// Duplicate the device's output with that device, which may be shared.
-    pub fn new_format_device(gpu: Device, hdr: bool) -> Result<Self> {
-        Self::new_device(gpu, hdr)
-    }
     fn new_device(gpu: Device, hdr: bool) -> Result<Self> {
         let output = gpu.output()?.clone();
         // Desktop Duplication works only on the GPU the display is connected
@@ -1384,14 +1380,6 @@ impl Capture {
     }
     /// Keep a stream usable when WGC cannot open. Explicit capture probes use
     /// `new_options` instead, so a WGC benchmark cannot silently measure DDX.
-    pub fn open_for_stream(
-        name: &str,
-        kind: &str,
-        hdr: bool,
-        config: &butterpollo_core::config::Config,
-    ) -> Result<Self> {
-        Self::open_for_stream_reported(name, kind, hdr, config, Default::default())
-    }
     pub fn open_for_stream_reported(
         name: &str,
         kind: &str,

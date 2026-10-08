@@ -367,7 +367,6 @@ dependencies = [
  "sha2",
  "subtle",
  "tempfile",
- "thiserror",
  "tracing",
  "uuid",
  "x509-parser",

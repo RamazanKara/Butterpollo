@@ -4,6 +4,7 @@
 use crate::state::Shared;
 use anyhow::{Context, Result, bail, ensure};
 use butterpollo_core::playnite::{self, Artwork, Game, Message, Settings};
+use butterpollo_core::version;
 use butterpollo_windows::playnite::Pipe;
 use serde_json::{Value, json};
 use std::{
@@ -41,8 +42,8 @@ fn installed_plugin() -> Option<PathBuf> {
 }
 fn needs_update(packaged: &str, target: &Path) -> bool {
     match version(target) {
-        Some(installed) if playnite::newer(&installed, packaged) => false,
-        Some(installed) => playnite::newer(packaged, &installed) || !plugin_present(target),
+        Some(installed) if version::newer(&installed, packaged) => false,
+        Some(installed) => version::newer(packaged, &installed) || !plugin_present(target),
         None => true,
     }
 }
@@ -490,7 +491,7 @@ pub fn status(h: &Shared) -> Value {
         "installed_version": installed_version,
         "packaged_version": packaged_version,
         "update_available": match (&installed_version, &packaged_version) {
-            (Some(installed), Some(packaged)) => playnite::newer(packaged, installed),
+            (Some(installed), Some(packaged)) => version::newer(packaged, installed),
             _ => false,
         },
         "auto_sync": settings.auto_sync,

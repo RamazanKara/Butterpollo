@@ -2791,13 +2791,6 @@ impl Retained {
             .as_ref()
             .map_or_else(|| self.output.clone(), |g| g.output.clone())
     }
-    pub fn current_generation(&self) -> u64 {
-        self.guard
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map_or(0, |g| g.generation)
-    }
     pub fn create(id: &str, width: u32, height: u32, fps: u32, hdr: bool) -> Result<Self> {
         Self::create_rate(
             id,

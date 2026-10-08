@@ -1,5 +1,6 @@
 use crate::state::Shared;
 use anyhow::{Context, Result, bail};
+use butterpollo_core::version::newer;
 use serde_json::{Value, json};
 use std::{
     io::{Read, Seek, SeekFrom, Write},
@@ -144,9 +145,6 @@ fn notify_update(version: &str) {
         ),
     );
 }
-/// Whether release `a` is newer than `b`: dotted numbers, then a final
-/// release above its pre-releases (`2.0.0` > `2.0.0-rc.2` > `2.0.0-rc.1`).
-pub use butterpollo_core::version::newer;
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -1,3 +1,9 @@
+//! Release version ordering, shared by the host's updater, the Playnite
+//! plugin installer and setup (which includes this file by path).
+
+/// Whether release `a` is newer than `b`: dotted numbers, then a final
+/// release above its pre-releases (`2.0.0` > `2.0.0-rc.2` > `2.0.0-rc.1`).
+/// A leading `v` and `+build` metadata are ignored.
 pub fn newer(a: &str, b: &str) -> bool {
     fn parts(version: &str) -> (Vec<u64>, Option<Vec<String>>) {
         let version = version.trim().trim_start_matches(['v', 'V']);

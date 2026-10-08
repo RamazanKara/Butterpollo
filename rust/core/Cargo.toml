@@ -8,7 +8,6 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 tracing.workspace = true
-thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = { version = "0.10", features = ["oid"] }
