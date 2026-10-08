@@ -101,7 +101,7 @@ pub fn recover(directory: &Path) -> Result<()> {
             } else {
                 None
             };
-            let restored = rtss::reload(&change.root, disabled)?;
+            let restored = rtss::apply(&change.root, &restore, disabled)?;
             for (key, value) in &restore {
                 if let Some(value) = value
                     && restored.values.get(key) != Some(&Some(*value))
@@ -391,7 +391,8 @@ impl Lease {
             match applied {
                 Ok(()) => {
                     state.active = "rtss".into();
-                    tracing::info!(rate = ?policy.rate.rational(), sync_limiter = policy.sync_limiter, "RTSS frame limit applied and verified");
+                    let version = rtss::version(&root);
+                    tracing::info!(rate = ?policy.rate.rational(), sync_limiter = policy.sync_limiter, rtss_version = ?version, profile_sdk = rtss::profile_sdk(version), "RTSS frame limit applied and verified");
                 }
                 Err(error) => {
                     state.message = format!("{error:#}");
@@ -468,7 +469,8 @@ pub fn status(config: &Config) -> Json {
         "rtss_available":available,"disable_vsync":config.boolean("frame_limiter_disable_vsync",config.boolean("rtss_disable_vsync_ullm",false)),
         "disable_vsync_ullm":config.boolean("frame_limiter_disable_vsync",config.boolean("rtss_disable_vsync_ullm",false)),
         "nv_overrides_supported":nvcp,"configured_path":configured,"path_configured":!configured.is_empty(),
-        "resolved_path":root,"path_exists":root.is_dir(),"hooks_found":available,"profile_found":root.join("Profiles/Global").is_file(),
+        "resolved_path":root,"path_exists":root.is_dir(),"hooks_found":available,
+        "rtss_version":rtss::version(&root).map(|v| v.map(|part| part.to_string()).join(".")),"profile_found":root.join("Profiles/Global").is_file(),
         "can_bootstrap_profile":available,"process_running":rtss::running(&root),
         "message":if state.message.is_empty(){"Limiter settings apply during streaming and restore after the last stream."}else{&state.message}})
 }

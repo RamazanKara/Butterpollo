@@ -10,6 +10,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
+    ffi::{CStr, c_char},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -243,6 +244,8 @@ pub fn replace(text: &str, values: &BTreeMap<String, Option<u32>>) -> Result<Str
 #[serde(deny_unknown_fields)]
 struct Request {
     root: PathBuf,
+    /// Written through the profile SDK and saved before the reload.
+    set: BTreeMap<String, u32>,
     /// Only the limiter-disable bit is touched; other RTSS flags are retained.
     disabled: Option<bool>,
     reload: bool,
@@ -352,58 +355,178 @@ pub fn worker(name: &str, parent: u32) -> Result<()> {
     }
     Ok(())
 }
-fn execute(request: &Request) -> Result<Reply> {
-    // SAFETY: the hooks DLL is RTSS's own, from the configured RTSS folder, and loading it runs
-    // only that trusted code.
-    let library =
-        unsafe { libloading::Library::new(hooks(&request.root).context("RTSS hooks missing")?)? };
-    // SAFETY: the symbol types match the RTSSHooks exports, the strings are NUL-terminated C
-    // literals, `value` is writable for the 4 bytes passed, and `library` outlives every symbol.
-    unsafe {
-        let load = library.get::<unsafe extern "C" fn(*const i8)>(b"LoadProfile\0")?;
-        let update = library.get::<unsafe extern "C" fn()>(b"UpdateProfiles\0")?;
-        let flags = library.get::<unsafe extern "C" fn() -> u32>(b"GetFlags\0")?;
-        let set_flags = library.get::<unsafe extern "C" fn(u32, u32) -> u32>(b"SetFlags\0")?;
-        let get = library.get::<unsafe extern "C" fn(*const i8, *mut u32, u32) -> i32>(
-            b"GetProfileProperty\0",
-        )?;
-        // RTSS's SDK identifies the global profile with an empty string.
-        load(c"".as_ptr());
-        if request.reload {
-            update();
+/// RTSSHooks' profile and flag calls; tests substitute a simulated RTSS.
+trait Sdk {
+    /// Reads the Global profile into the SDK's buffer.
+    fn load(&self);
+    fn set(&self, property: &CStr, value: u32) -> Result<bool>;
+    fn save(&self) -> Result<()>;
+    /// Asks RTSS to apply its profiles to running applications.
+    fn update(&self);
+    fn get(&self, property: &CStr) -> Option<u32>;
+    fn flags(&self) -> u32;
+    fn set_flags(&self, and: u32, xor: u32);
+}
+struct Hooks {
+    load: unsafe extern "C" fn(*const c_char),
+    save: Option<unsafe extern "C" fn(*const c_char)>,
+    update: unsafe extern "C" fn(),
+    flags: unsafe extern "C" fn() -> u32,
+    set_flags: unsafe extern "C" fn(u32, u32) -> u32,
+    get: unsafe extern "C" fn(*const c_char, *mut u32, u32) -> i32,
+    set: Option<unsafe extern "C" fn(*const c_char, *const u32, u32) -> i32>,
+    // The function pointers above are valid only while this stays loaded.
+    _library: libloading::Library,
+}
+impl Hooks {
+    fn open(root: &Path) -> Result<Self> {
+        // SAFETY: the hooks DLL is RTSS's own, from the configured RTSS folder, and loading it
+        // runs only that trusted code.
+        let library =
+            unsafe { libloading::Library::new(hooks(root).context("RTSS hooks missing")?)? };
+        // SAFETY: the symbol types match the RTSSHooks exports, and `_library` keeps every copied
+        // function pointer loaded for the lifetime of `Hooks`.
+        unsafe {
+            Ok(Self {
+                load: *library.get(b"LoadProfile\0")?,
+                save: library.get(b"SaveProfile\0").ok().map(|f| *f),
+                update: *library.get(b"UpdateProfiles\0")?,
+                flags: *library.get(b"GetFlags\0")?,
+                set_flags: *library.get(b"SetFlags\0")?,
+                get: *library.get(b"GetProfileProperty\0")?,
+                set: library.get(b"SetProfileProperty\0").ok().map(|f| *f),
+                _library: library,
+            })
         }
-        if let Some(disabled) = request.disabled {
-            set_flags(!4, if disabled { 4 } else { 0 });
-        }
-        let mut values = BTreeMap::new();
-        for (key, property) in KEYS.into_iter().zip(PROPERTIES) {
-            let mut value = 0;
-            let exists = get(property.as_ptr(), &mut value, 4) != 0;
-            values.insert(key.into(), exists.then_some(value));
-        }
-        Ok(Reply {
-            flags: flags(),
-            values,
-        })
     }
 }
-const PROPERTIES: [&std::ffi::CStr; 3] = [
+// The pointers come from the loaded RTSSHooks exports (see `Hooks::open`).
+impl Sdk for Hooks {
+    fn load(&self) {
+        // SAFETY: the profile name is a NUL-terminated C literal.
+        unsafe { (self.load)(c"".as_ptr()) }
+    }
+    fn set(&self, property: &CStr, value: u32) -> Result<bool> {
+        let set = self.set.context("this RTSS has no SetProfileProperty")?;
+        // SAFETY: the name is NUL-terminated and `value` is readable for the 4 bytes passed.
+        Ok(unsafe { set(property.as_ptr(), &value, 4) } != 0)
+    }
+    fn save(&self) -> Result<()> {
+        let save = self.save.context("this RTSS has no SaveProfile")?;
+        // SAFETY: the profile name is a NUL-terminated C literal.
+        unsafe { save(c"".as_ptr()) };
+        Ok(())
+    }
+    fn update(&self) {
+        // SAFETY: UpdateProfiles takes no arguments.
+        unsafe { (self.update)() }
+    }
+    fn get(&self, property: &CStr) -> Option<u32> {
+        let mut value = 0;
+        // SAFETY: the name is NUL-terminated and `value` is writable for the 4 bytes passed.
+        (unsafe { (self.get)(property.as_ptr(), &mut value, 4) } != 0).then_some(value)
+    }
+    fn flags(&self) -> u32 {
+        // SAFETY: GetFlags takes no arguments.
+        unsafe { (self.flags)() }
+    }
+    fn set_flags(&self, and: u32, xor: u32) {
+        // SAFETY: SetFlags takes two masks by value.
+        unsafe { (self.set_flags)(and, xor) };
+    }
+}
+fn execute(request: &Request) -> Result<Reply> {
+    run(request, &Hooks::open(&request.root)?)
+}
+/// The order matches Vibepollo, which reaches RTSS 7.3.7: properties, save,
+/// UpdateProfiles, then the limiter flag and one more load and update.
+fn run(request: &Request, sdk: &impl Sdk) -> Result<Reply> {
+    sdk.load();
+    if !request.set.is_empty() {
+        for (key, value) in &request.set {
+            let property = property(key).context("unknown RTSS property")?;
+            ensure!(sdk.set(property, *value)?, "RTSS rejected {key}={value}");
+        }
+        sdk.save()?;
+        sdk.update();
+    }
+    if let Some(disabled) = request.disabled {
+        sdk.set_flags(!4, if disabled { 4 } else { 0 });
+    }
+    if request.reload {
+        sdk.load();
+        sdk.update();
+    }
+    Ok(Reply {
+        flags: sdk.flags(),
+        values: KEYS
+            .into_iter()
+            .zip(PROPERTIES)
+            .map(|(key, property)| (key.into(), sdk.get(property)))
+            .collect(),
+    })
+}
+const PROPERTIES: [&CStr; 3] = [
     c"FramerateLimit",
     c"FramerateLimitDenominator",
     c"SyncLimiter",
 ];
+fn property(key: &str) -> Option<&'static CStr> {
+    KEYS.iter().position(|k| *k == key).map(|i| PROPERTIES[i])
+}
+/// RTSS's value for a key its profile leaves out.
+fn default_value(key: &str) -> u32 {
+    u32::from(key == "LimitDenominator")
+}
+/// RTSS.exe's file version: major, minor, build, revision.
+pub fn version(root: &Path) -> Option<[u16; 4]> {
+    use windows::{
+        Win32::Storage::FileSystem::{
+            GetFileVersionInfoSizeW, GetFileVersionInfoW, VS_FIXEDFILEINFO, VerQueryValueW,
+        },
+        core::{HSTRING, w},
+    };
+    let path = HSTRING::from(executable(root)?.as_os_str());
+    // SAFETY: `data` has the size Windows reported, VerQueryValueW returns a pointer into it
+    // with the length checked here, and the structure is read unaligned before `data` drops.
+    unsafe {
+        let size = GetFileVersionInfoSizeW(&path, None);
+        if size == 0 {
+            return None;
+        }
+        let mut data = vec![0u8; size as usize];
+        GetFileVersionInfoW(&path, None, size, data.as_mut_ptr().cast()).ok()?;
+        let mut info = std::ptr::null_mut();
+        let mut length = 0;
+        if !VerQueryValueW(data.as_ptr().cast(), w!("\\"), &mut info, &mut length).as_bool()
+            || info.is_null()
+            || (length as usize) < size_of::<VS_FIXEDFILEINFO>()
+        {
+            return None;
+        }
+        let info = std::ptr::read_unaligned(info.cast::<VS_FIXEDFILEINFO>());
+        Some([
+            (info.dwFileVersionMS >> 16) as u16,
+            info.dwFileVersionMS as u16,
+            (info.dwFileVersionLS >> 16) as u16,
+            info.dwFileVersionLS as u16,
+        ])
+    }
+}
+/// RTSS 7.3.7 keeps running the Global profile it has open: UpdateProfiles
+/// after a direct file edit leaves the live limit unchanged (Vibepollo #378,
+/// #479), so the values must go through its profile SDK. That release's
+/// RTSS.exe still says 7.3.5.28314. Older RTSS reloads the file, and its SDK
+/// mishandles fractional limits.
+pub fn profile_sdk(version: Option<[u16; 4]>) -> bool {
+    version.is_some_and(|v| v == [7, 3, 5, 28314] || (v[0], v[1], v[2]) >= (7, 3, 7))
+}
 pub fn query(root: &Path) -> Result<Reply> {
     call(&Request {
         root: root.into(),
+        set: BTreeMap::new(),
         disabled: None,
         reload: false,
-    })
-}
-pub fn reload(root: &Path, disabled: Option<bool>) -> Result<Reply> {
-    call(&Request {
-        root: root.into(),
-        disabled,
-        reload: true,
     })
 }
 pub fn write_profile(root: &Path, values: &BTreeMap<String, Option<u32>>) -> Result<()> {
@@ -446,12 +569,22 @@ pub fn write_profile(root: &Path, values: &BTreeMap<String, Option<u32>>) -> Res
     Ok(())
 }
 /// Called only after the limiter has durably saved its originals. The service
-/// writes the protected profile; the user helper reloads and verifies it. SDK
-/// setters reject some rational numerators, so retain the complete file values.
+/// writes the protected profile, so it holds the values even if RTSS stalls;
+/// the helper then gives RTSS 7.3.7 the same values through its SDK, reloads
+/// and verifies. Older SDK setters reject some rational numerators.
 pub fn apply(
     root: &Path,
     values: &BTreeMap<String, Option<u32>>,
     disabled: Option<bool>,
+) -> Result<Reply> {
+    apply_with(root, values, disabled, profile_sdk(version(root)), call)
+}
+fn apply_with(
+    root: &Path,
+    values: &BTreeMap<String, Option<u32>>,
+    disabled: Option<bool>,
+    sdk: bool,
+    call: impl FnOnce(&Request) -> Result<Reply>,
 ) -> Result<Reply> {
     ensure!(
         values.keys().all(|key| KEYS.contains(&key.as_str())),
@@ -460,7 +593,30 @@ pub fn apply(
     if !values.is_empty() {
         write_profile(root, values).context("write RTSS Global profile")?;
     }
-    reload(root, disabled)
+    // The SDK cannot remove a key; an originally absent one gets RTSS's default.
+    let set: BTreeMap<_, _> = if sdk {
+        values
+            .iter()
+            .map(|(key, value)| (key.clone(), value.unwrap_or_else(|| default_value(key))))
+            .collect()
+    } else {
+        BTreeMap::new()
+    };
+    let reply = call(&Request {
+        root: root.into(),
+        set: set.clone(),
+        disabled,
+        reload: true,
+    })?;
+    // SaveProfile rewrote the file that restoration and crash recovery read.
+    let saved = properties(&read(root)?)?;
+    for (key, value) in &set {
+        ensure!(
+            saved[key].unwrap_or_else(|| default_value(key)) == *value,
+            "RTSS saved a different {key} than the requested {value}"
+        );
+    }
+    Ok(reply)
 }
 pub fn wait_ready(root: &Path) -> Result<Reply> {
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -641,6 +797,265 @@ mod tests {
             .is_err()
         );
         assert_eq!(read(directory.path())?, original);
+        Ok(())
+    }
+
+    #[test]
+    fn profile_sdk_starts_at_rtss_737_including_its_mislabelled_build() {
+        for (version, sdk) in [
+            ([7, 3, 5, 28314], true),
+            ([7, 3, 7, 0], true),
+            ([7, 3, 8, 1], true),
+            ([7, 4, 0, 0], true),
+            ([8, 0, 0, 0], true),
+            ([7, 3, 5, 26975], false),
+            ([7, 3, 6, 27707], false),
+            ([7, 3, 4, 0], false),
+            ([7, 2, 9, 0], false),
+        ] {
+            assert_eq!(profile_sdk(Some(version)), sdk, "{version:?}");
+        }
+        assert!(!profile_sdk(None));
+    }
+
+    /// RTSS 7.3.7 as Vibepollo found it: SaveProfile reaches the profile RTSS
+    /// has open, UpdateProfiles applies that one, and a file edit does not.
+    #[derive(Default)]
+    struct Rtss737 {
+        disk: std::cell::RefCell<BTreeMap<&'static CStr, u32>>,
+        buffer: std::cell::RefCell<BTreeMap<&'static CStr, u32>>,
+        open: std::cell::RefCell<BTreeMap<&'static CStr, u32>>,
+        live: std::cell::RefCell<BTreeMap<&'static CStr, u32>>,
+        flags: std::cell::Cell<u32>,
+        calls: std::cell::RefCell<Vec<&'static str>>,
+    }
+    impl Rtss737 {
+        fn new(limit: u32, flags: u32) -> Self {
+            let profile = BTreeMap::from([
+                (PROPERTIES[0], limit),
+                (PROPERTIES[1], 1),
+                (PROPERTIES[2], 0),
+            ]);
+            let rtss = Self::default();
+            *rtss.disk.borrow_mut() = profile.clone();
+            *rtss.open.borrow_mut() = profile.clone();
+            *rtss.live.borrow_mut() = profile;
+            rtss.flags.set(flags);
+            rtss
+        }
+        fn live_limit(&self) -> u32 {
+            self.live.borrow()[PROPERTIES[0]]
+        }
+    }
+    impl Sdk for Rtss737 {
+        fn load(&self) {
+            self.calls.borrow_mut().push("load");
+            *self.buffer.borrow_mut() = self.disk.borrow().clone();
+        }
+        fn set(&self, property: &CStr, value: u32) -> Result<bool> {
+            self.calls.borrow_mut().push("set");
+            let property = PROPERTIES.into_iter().find(|p| *p == property).unwrap();
+            self.buffer.borrow_mut().insert(property, value);
+            Ok(true)
+        }
+        fn save(&self) -> Result<()> {
+            self.calls.borrow_mut().push("save");
+            *self.disk.borrow_mut() = self.buffer.borrow().clone();
+            *self.open.borrow_mut() = self.buffer.borrow().clone();
+            Ok(())
+        }
+        fn update(&self) {
+            self.calls.borrow_mut().push("update");
+            *self.live.borrow_mut() = self.open.borrow().clone();
+        }
+        fn get(&self, property: &CStr) -> Option<u32> {
+            self.buffer.borrow().get(property).copied()
+        }
+        fn flags(&self) -> u32 {
+            self.flags.get()
+        }
+        fn set_flags(&self, and: u32, xor: u32) {
+            self.calls.borrow_mut().push("flags");
+            self.flags.set((self.flags.get() & and) ^ xor);
+        }
+    }
+    fn request(set: &[(&str, u32)], disabled: Option<bool>) -> Request {
+        Request {
+            root: PathBuf::new(),
+            set: set.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+            disabled,
+            reload: true,
+        }
+    }
+
+    #[test]
+    fn rtss_737_takes_the_stream_limit_only_through_its_profile_sdk() -> Result<()> {
+        // The user's own 158 FPS limit, with the limiter switched off.
+        let rtss = Rtss737::new(158, 4);
+        // The file edit and reload the host made before this fix.
+        rtss.disk.borrow_mut().insert(PROPERTIES[0], 100);
+        let reply = run(&request(&[], Some(false)), &rtss)?;
+        assert_eq!(reply.values["Limit"], Some(100));
+        assert_eq!(rtss.live_limit(), 158, "the file alone never reaches RTSS");
+
+        let rtss = Rtss737::new(158, 4);
+        let applied = [("Limit", 100), ("LimitDenominator", 1), ("SyncLimiter", 1)];
+        let reply = run(&request(&applied, Some(false)), &rtss)?;
+        assert_eq!(rtss.live_limit(), 100);
+        assert_eq!(rtss.live.borrow()[PROPERTIES[2]], 1);
+        assert_eq!(reply.flags & 4, 0);
+        assert_eq!(
+            reply.values,
+            applied
+                .iter()
+                .map(|(k, v)| (k.to_string(), Some(*v)))
+                .collect::<BTreeMap<_, _>>()
+        );
+        // Vibepollo's order: values, save, UpdateProfiles, the flag, reload.
+        assert_eq!(
+            *rtss.calls.borrow(),
+            [
+                "load", "set", "set", "set", "save", "update", "flags", "load", "update"
+            ]
+        );
+
+        // Restoring the user's limit at stream end goes the same way.
+        let reply = run(&request(&[("Limit", 158)], Some(true)), &rtss)?;
+        assert_eq!(rtss.live_limit(), 158);
+        assert_eq!(reply.flags & 4, 4);
+
+        // A query changes nothing.
+        let rtss = Rtss737::new(158, 0);
+        let query = Request {
+            reload: false,
+            ..request(&[], None)
+        };
+        run(&query, &rtss)?;
+        assert_eq!(*rtss.calls.borrow(), ["load"]);
+        Ok(())
+    }
+
+    #[test]
+    fn rtss_rejecting_a_property_fails_before_saving() {
+        struct Rejecting(Rtss737);
+        impl Sdk for Rejecting {
+            fn load(&self) {
+                self.0.load()
+            }
+            fn set(&self, _: &CStr, _: u32) -> Result<bool> {
+                Ok(false)
+            }
+            fn save(&self) -> Result<()> {
+                self.0.save()
+            }
+            fn update(&self) {
+                self.0.update()
+            }
+            fn get(&self, property: &CStr) -> Option<u32> {
+                self.0.get(property)
+            }
+            fn flags(&self) -> u32 {
+                self.0.flags()
+            }
+            fn set_flags(&self, and: u32, xor: u32) {
+                self.0.set_flags(and, xor)
+            }
+        }
+        let rtss = Rejecting(Rtss737::new(158, 0));
+        let error = run(&request(&[("Limit", 100)], Some(false)), &rtss).unwrap_err();
+        assert!(error.to_string().contains("rejected Limit=100"), "{error}");
+        assert_eq!(*rtss.0.calls.borrow(), ["load"]);
+        assert_eq!(rtss.0.live_limit(), 158);
+    }
+
+    fn profile_fixture(text: &str) -> Result<tempfile::TempDir> {
+        let directory = tempfile::tempdir()?;
+        std::fs::create_dir(directory.path().join("Profiles"))?;
+        std::fs::write(directory.path().join("Profiles/Global"), text)?;
+        Ok(directory)
+    }
+    fn reply(values: &BTreeMap<String, Option<u32>>) -> Reply {
+        Reply {
+            flags: 0,
+            values: values.clone(),
+        }
+    }
+
+    #[test]
+    fn apply_sends_values_through_the_sdk_only_for_rtss_737() -> Result<()> {
+        let original = "[Framerate]\r\nLimit=158\r\nLimitDenominator=1\r\nCustom=keep\r\n";
+        let applied = BTreeMap::from([
+            ("Limit".into(), Some(100)),
+            ("LimitDenominator".into(), Some(1)),
+            ("SyncLimiter".into(), Some(1)),
+        ]);
+        for sdk in [false, true] {
+            let directory = profile_fixture(original)?;
+            let mut sent = None;
+            apply_with(directory.path(), &applied, Some(false), sdk, |request| {
+                sent = Some((request.set.clone(), request.disabled, request.reload));
+                Ok(reply(&applied))
+            })?;
+            let expected = if sdk {
+                BTreeMap::from([
+                    ("Limit".into(), 100),
+                    ("LimitDenominator".into(), 1),
+                    ("SyncLimiter".into(), 1),
+                ])
+            } else {
+                BTreeMap::new()
+            };
+            assert_eq!(sent, Some((expected, Some(false), true)), "sdk {sdk}");
+            // The service's own write keeps the file right even if RTSS stalls.
+            assert_eq!(properties(&read(directory.path())?)?, applied);
+            assert!(read(directory.path())?.contains("Custom=keep\r\n"));
+        }
+
+        // Restoring a key the user's profile never had: the SDK cannot delete
+        // it, so RTSS gets its default and may save that.
+        let directory =
+            profile_fixture("[Framerate]\nLimit=100\nLimitDenominator=1\nSyncLimiter=1\n")?;
+        let restore = BTreeMap::from([("Limit".into(), Some(158)), ("SyncLimiter".into(), None)]);
+        let mut sent = None;
+        apply_with(directory.path(), &restore, Some(true), true, |request| {
+            sent = Some(request.set.clone());
+            write_profile(
+                &request.root,
+                &request
+                    .set
+                    .iter()
+                    .map(|(k, v)| (k.clone(), Some(*v)))
+                    .collect(),
+            )?;
+            Ok(reply(&restore))
+        })?;
+        assert_eq!(
+            sent,
+            Some(BTreeMap::from([
+                ("Limit".into(), 158),
+                ("SyncLimiter".into(), 0)
+            ]))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn apply_fails_when_rtss_saves_a_different_limit() -> Result<()> {
+        let directory = profile_fixture("[Framerate]\nLimit=158\nLimitDenominator=1\n")?;
+        let applied = BTreeMap::from([
+            ("Limit".into(), Some(100)),
+            ("LimitDenominator".into(), Some(1)),
+        ]);
+        let error = apply_with(directory.path(), &applied, Some(false), true, |request| {
+            // SaveProfile from a stale buffer.
+            write_profile(
+                &request.root,
+                &BTreeMap::from([("Limit".into(), Some(158))]),
+            )?;
+            Ok(reply(&applied))
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("different Limit"), "{error}");
         Ok(())
     }
 }

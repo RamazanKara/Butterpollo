@@ -45,19 +45,29 @@ fn main() -> Result<()> {
             .insert("rtss_install_path".into(), args.remove(at + 1));
         args.remove(at);
     }
+    // Keeps the exercise's limit for this long, so a renderer that was
+    // already running shows whether RTSS applied it live.
+    let mut hold = std::time::Duration::ZERO;
+    if let Some(at) = args.iter().position(|arg| arg == "--hold") {
+        ensure!(at + 1 < args.len(), "--hold requires seconds");
+        hold = std::time::Duration::from_secs(args.remove(at + 1).parse()?);
+        args.remove(at);
+    }
     let root = rtss::root(&config);
     let start = Instant::now();
     let before = rtss::query(&root)?;
+    let version = rtss::version(&root);
     println!(
         "{}",
-        serde_json::json!({"query_ms": start.elapsed().as_secs_f64()*1000., "reply": before})
+        serde_json::json!({"query_ms": start.elapsed().as_secs_f64()*1000., "reply": before,
+            "rtss_version": version, "profile_sdk": rtss::profile_sdk(version)})
     );
     if args.is_empty() {
         return Ok(());
     }
     ensure!(
         args.len() == 2 && matches!(args[0].as_str(), "--exercise" | "--exercise-recovery"),
-        "usage: rtss_probe [--root RTSS_DIRECTORY] [--exercise NEW_REPORT_DIRECTORY | --exercise-recovery NEW_REPORT_DIRECTORY]"
+        "usage: rtss_probe [--root RTSS_DIRECTORY] [--hold SECONDS] [--exercise NEW_REPORT_DIRECTORY | --exercise-recovery NEW_REPORT_DIRECTORY]"
     );
     let retry_recovery = args[0] == "--exercise-recovery";
     if retry_recovery {
@@ -110,6 +120,7 @@ fn main() -> Result<()> {
             "fractional lease failed"
         );
         println!("{}", serde_json::json!({"lease":during,"status":status}));
+        std::thread::sleep(hold);
         if retry_recovery {
             ensure!(rtss::running(&root), "the lease did not start RTSS");
             let fault = root.join("crash");
