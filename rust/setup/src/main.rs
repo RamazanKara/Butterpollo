@@ -6,6 +6,8 @@
 //! butterpollo-setup.exe [--quiet] [--install-dir <folder>] [--no-gamepad-driver]
 //!                       [--no-display-driver] [--no-start]
 //! butterpollo-setup.exe --uninstall [--quiet] [--factory-reset] [--remove-drivers]
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 mod detect;
 mod install;
 mod log;
@@ -253,6 +255,7 @@ fn failed(quiet: bool, heading: &str, error: &anyhow::Error) -> i32 {
 }
 fn open(url: &str) {
     let url = windows::core::HSTRING::from(url);
+    // SAFETY: the verb and URL are NUL-terminated and outlive the call.
     unsafe {
         windows::Win32::UI::Shell::ShellExecuteW(
             None,

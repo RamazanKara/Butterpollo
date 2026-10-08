@@ -195,6 +195,7 @@ fn task_script(program: &str, args: &[&str], log: &Path) -> String {
     )
 }
 pub fn elevated() -> bool {
+    // SAFETY: IsUserAnAdmin takes no arguments and only reads the process token.
     unsafe { IsUserAnAdmin().as_bool() }
 }
 /// Start this program again elevated with the same arguments and return its
@@ -222,6 +223,7 @@ pub fn relaunch_elevated() -> Result<i32> {
         nShow: 1,
         ..Default::default()
     };
+    // SAFETY: `info` and the wide strings it points at outlive the call; the process handle it returns is closed before returning.
     unsafe {
         if let Err(error) = ShellExecuteExW(&mut info) {
             if error.code() == windows::Win32::Foundation::ERROR_CANCELLED.to_hresult() {
@@ -243,12 +245,14 @@ pub fn relaunch_elevated() -> Result<i32> {
 struct ServiceHandle(SC_HANDLE);
 impl Drop for ServiceHandle {
     fn drop(&mut self) {
+        // SAFETY: the handle came from OpenSCManagerW or OpenServiceW and is closed only here.
         unsafe {
             let _ = CloseServiceHandle(self.0);
         }
     }
 }
 fn manager() -> Result<ServiceHandle> {
+    // SAFETY: null machine and database names select the local service manager.
     unsafe {
         Ok(ServiceHandle(OpenSCManagerW(
             PCWSTR::null(),
@@ -260,6 +264,7 @@ fn manager() -> Result<ServiceHandle> {
 fn open_service(name: &str) -> Option<ServiceHandle> {
     let manager = manager().ok()?;
     let name = wide(name);
+    // SAFETY: `manager` is a live handle and `name` is NUL-terminated UTF-16 that outlives the call.
     unsafe {
         OpenServiceW(manager.0, PCWSTR(name.as_ptr()), SERVICE_ALL_ACCESS)
             .ok()
@@ -282,6 +287,7 @@ pub fn service_program(name: &str) -> Option<PathBuf> {
 }
 fn service_state(service: &ServiceHandle) -> Option<SERVICE_STATUS_CURRENT_STATE> {
     let mut status = SERVICE_STATUS::default();
+    // SAFETY: `service` is a live handle and `status` is a valid out-pointer.
     unsafe { QueryServiceStatus(service.0, &mut status) }
         .ok()
         .map(|_| status.dwCurrentState)
@@ -302,6 +308,7 @@ pub fn stop_service(name: &str) -> Result<()> {
     }
     line(format!("stopping service {name}"));
     let mut status = SERVICE_STATUS::default();
+    // SAFETY: `service` is a live handle and `status` is a valid out-pointer.
     unsafe {
         let _ = ControlService(service.0, SERVICE_CONTROL_STOP, &mut status);
     }
@@ -334,6 +341,7 @@ pub fn wait_stopped(name: &str, timeout: Duration) -> bool {
 pub fn start_service(name: &str) -> Result<()> {
     let service = open_service(name).with_context(|| format!("the {name} service is missing"))?;
     line(format!("starting service {name}"));
+    // SAFETY: `service` is a live handle; no start arguments are passed.
     unsafe { StartServiceW(service.0, None) }.with_context(|| format!("starting {name}"))
 }
 pub fn delete_service(name: &str) -> Result<()> {
@@ -341,6 +349,7 @@ pub fn delete_service(name: &str) -> Result<()> {
         return Ok(());
     };
     line(format!("deleting service {name}"));
+    // SAFETY: `service` is a live handle.
     unsafe { DeleteService(service.0) }.with_context(|| format!("deleting {name}"))
 }
 /// Create the service, or point an existing one with this name at `program`.
@@ -350,6 +359,7 @@ pub fn install_service(name: &str, display: &str, description: &str, program: &P
     let binary = wide(&format!("\"{}\"", program.display()));
     let wide_name = wide(name);
     let wide_display = wide(display);
+    // SAFETY: `manager` is a live handle and every string argument is NUL-terminated UTF-16 that outlives the calls.
     let service = unsafe {
         match OpenServiceW(manager.0, PCWSTR(wide_name.as_ptr()), SERVICE_ALL_ACCESS) {
             Ok(existing) => {
@@ -415,6 +425,7 @@ pub fn install_service(name: &str, display: &str, description: &str, program: &P
         cActions: actions.len() as u32,
         lpsaActions: actions.as_mut_ptr(),
     };
+    // SAFETY: `service` is a live handle and each info structure, with the strings and actions it points at, outlives its call.
     unsafe {
         ChangeServiceConfig2W(
             service.0,
@@ -446,6 +457,7 @@ pub fn registry_string_view(
     let name = wide(value);
     let mut size = 0u32;
     let mut kind = REG_VALUE_TYPE::default();
+    // SAFETY: `key` is an open key, `name` is NUL-terminated and the second read gets a buffer of `bytes` bytes.
     unsafe {
         if RegQueryValueExW(
             key.0,
@@ -484,6 +496,7 @@ pub fn registry_dword(root: HKEY, path: &str, value: &str, view: REG_SAM_FLAGS) 
     let mut data = 0u32;
     let mut size = 4u32;
     let mut kind = REG_VALUE_TYPE::default();
+    // SAFETY: `key` is an open key, `name` is NUL-terminated and `data` holds the four bytes `size` names.
     unsafe {
         (RegQueryValueExW(
             key.0,
@@ -500,6 +513,7 @@ pub fn registry_dword(root: HKEY, path: &str, value: &str, view: REG_SAM_FLAGS) 
 pub struct Key(pub HKEY);
 impl Drop for Key {
     fn drop(&mut self) {
+        // SAFETY: the key came from RegOpenKeyExW or RegCreateKeyExW and is closed only here.
         unsafe {
             let _ = RegCloseKey(self.0);
         }
@@ -508,6 +522,7 @@ impl Drop for Key {
 pub fn open_key(root: HKEY, path: &str, access: REG_SAM_FLAGS) -> Option<Key> {
     let path = wide(path);
     let mut key = HKEY::default();
+    // SAFETY: `path` is NUL-terminated UTF-16 and `key` is a valid out-pointer.
     unsafe {
         (RegOpenKeyExW(root, PCWSTR(path.as_ptr()), None, access, &mut key) == ERROR_SUCCESS)
             .then_some(Key(key))
@@ -521,6 +536,7 @@ pub fn subkeys(root: HKEY, path: &str, view: REG_SAM_FLAGS) -> Vec<String> {
     for index in 0.. {
         let mut name = [0u16; 256];
         let mut length = name.len() as u32;
+        // SAFETY: `key` is an open key and `length` is the capacity of `name` in characters.
         let status = unsafe {
             RegEnumKeyExW(
                 key.0,
@@ -549,6 +565,7 @@ pub fn values(root: HKEY, path: &str, view: REG_SAM_FLAGS) -> Vec<String> {
     for index in 0.. {
         let mut name = [0u16; 2048];
         let mut length = name.len() as u32;
+        // SAFETY: `key` is an open key and `length` is the capacity of `name` in characters.
         let status = unsafe {
             RegEnumValueW(
                 key.0,
@@ -571,6 +588,7 @@ pub fn values(root: HKEY, path: &str, view: REG_SAM_FLAGS) -> Vec<String> {
 pub fn delete_value(root: HKEY, path: &str, value: &str, view: REG_SAM_FLAGS) {
     if let Some(key) = open_key(root, path, KEY_SET_VALUE | view) {
         let value = wide(value);
+        // SAFETY: `key` is an open key and `value` is NUL-terminated UTF-16.
         unsafe {
             let _ = RegDeleteValueW(key.0, PCWSTR(value.as_ptr()));
         }
@@ -578,6 +596,7 @@ pub fn delete_value(root: HKEY, path: &str, value: &str, view: REG_SAM_FLAGS) {
 }
 pub fn delete_key(root: HKEY, path: &str) {
     let path = wide(path);
+    // SAFETY: `root` is a predefined key and `path` is NUL-terminated UTF-16.
     unsafe {
         let _ = RegDeleteTreeW(root, PCWSTR(path.as_ptr()));
         let _ = RegDeleteKeyExW(root, PCWSTR(path.as_ptr()), KEY_WOW64_64KEY.0, None);
@@ -590,6 +609,7 @@ pub enum Value<'a> {
 pub fn write_key(root: HKEY, path: &str, values: &[(&str, Value)]) -> Result<()> {
     let path = wide(path);
     let mut key = HKEY::default();
+    // SAFETY: `path` is NUL-terminated UTF-16, `key` is a valid out-pointer and each value buffer outlives its write.
     unsafe {
         let status = RegCreateKeyExW(
             root,
@@ -799,6 +819,7 @@ pub fn shortcut(link: &Path, target: &Path, description: &str) -> Result<()> {
     if let Some(parent) = link.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    // SAFETY: COM is initialised on this thread before the shell link is used and released after it is dropped.
     unsafe {
         let initialized = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
         let result = (|| -> Result<()> {
@@ -825,6 +846,7 @@ pub fn remove_file_later(path: &Path) {
         return;
     }
     let source = HSTRING::from(path.as_os_str());
+    // SAFETY: `source` is NUL-terminated UTF-16; a null target schedules deletion.
     unsafe {
         let _ = windows::Win32::Storage::FileSystem::MoveFileExW(
             &source,

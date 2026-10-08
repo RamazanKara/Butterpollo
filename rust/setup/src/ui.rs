@@ -31,6 +31,7 @@ const MANIFEST: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?
 /// TaskDialogIndirect from Common Controls 6, loaded once.
 fn task_dialog() -> Option<TaskDialogIndirect> {
     static FUNCTION: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    // SAFETY: the manifest path outlives CreateActCtxW and the module stays loaded while the address is in use.
     let address = FUNCTION.get_or_init(|| unsafe {
         let manifest = std::env::temp_dir().join("butterpollo-setup-controls.manifest");
         std::fs::write(&manifest, MANIFEST).ok()?;
@@ -52,12 +53,14 @@ fn task_dialog() -> Option<TaskDialogIndirect> {
             }
         }
     });
+    // SAFETY: the address is TaskDialogIndirect from comctl32 6, whose signature `TaskDialogIndirect` matches.
     address.map(|a| unsafe { std::mem::transmute::<usize, TaskDialogIndirect>(a) })
 }
 
 pub fn message_box(title: &str, text: &str) {
     let title = HSTRING::from(title);
     let text = HSTRING::from(text);
+    // SAFETY: both strings are HSTRINGs that outlive the call.
     unsafe {
         MessageBoxW(None, &text, &title, MB_OK | MB_ICONERROR);
     }
@@ -80,6 +83,7 @@ pub fn ask(
         use windows::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONQUESTION, MB_YESNO};
         let body = HSTRING::from(format!("{heading}\n\n{text}"));
         let caption = HSTRING::from(title);
+        // SAFETY: both strings are HSTRINGs that outlive the call.
         let answer = unsafe { MessageBoxW(None, &body, &caption, MB_YESNO | MB_ICONQUESTION) };
         return Choice {
             accepted: answer == IDYES,
@@ -119,6 +123,7 @@ pub fn ask(
     };
     let mut button = 0;
     let mut checked = BOOL(0);
+    // SAFETY: `config` and every string and button it points at outlive the modal call; the out-pointers are valid or null.
     let result = unsafe { dialog(&config, &mut button, std::ptr::null_mut(), &mut checked) };
     Choice {
         accepted: result.is_ok() && button == IDOK.0,
@@ -144,7 +149,9 @@ unsafe extern "system" fn progress_callback(
     _: LPARAM,
     data: isize,
 ) -> HRESULT {
+    // SAFETY: `data` is the `lpCallbackData` set in `progress`, which keeps that state alive until the dialog closes.
     let state = unsafe { &*(data as *const (Arc<Progress>, Mutex<String>)) };
+    // SAFETY: `hwnd` is the dialog that called back, valid for the duration of the notification.
     unsafe {
         match message {
             TDN_CREATED => {
@@ -222,6 +229,7 @@ pub fn progress<T: Send + 'static>(
             lpCallbackData: &*callback_state as *const _ as isize,
             ..Default::default()
         };
+        // SAFETY: `config` and the state it points at outlive the modal call; the out-pointers are null.
         unsafe {
             let _ = dialog(
                 &config,
@@ -281,6 +289,7 @@ pub fn finished(
         ..Default::default()
     };
     let mut button = 0;
+    // SAFETY: `config` and every string and button it points at outlive the modal call.
     unsafe {
         let _ = dialog(
             &config,

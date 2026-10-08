@@ -322,19 +322,7 @@ fn write_record(path: &Path, value: &serde_json::Value) -> Result<()> {
     file.sync_all()?;
     drop(file);
     // The console may read this file during startup. Replace it atomically.
-    use windows::{
-        Win32::Storage::FileSystem::{
-            MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-        },
-        core::HSTRING,
-    };
-    unsafe {
-        MoveFileExW(
-            &HSTRING::from(temporary.as_os_str()),
-            &HSTRING::from(path.as_os_str()),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )?;
-    }
+    crate::update_files::publish(&temporary, path)?;
     Ok(())
 }
 
