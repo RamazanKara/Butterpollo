@@ -239,9 +239,9 @@ mod tests {
         sessions.start(fresh, Negotiated::default()).unwrap();
         assert!(!sessions.idle());
         sessions.active.clear();
-        sessions.teardown = 1;
+        sessions.teardown.insert("ended".into(), Instant::now());
         assert!(!sessions.idle());
-        sessions.teardown = 0;
+        sessions.teardown.clear();
         assert!(sessions.idle());
     }
     fn launch(id: &str, role: Role) -> Launch {
@@ -285,6 +285,55 @@ mod tests {
         failed.fail();
         assert!(failed.stopping());
         assert_eq!(failed.termination_reason(), 0x8000_4005);
+    }
+    #[test]
+    fn teardown_leaves_active_while_resources_remain_owned() {
+        use std::sync::{Mutex, Weak};
+        struct Resource {
+            sessions: Weak<Mutex<Sessions>>,
+            released: Arc<AtomicBool>,
+        }
+        impl Drop for Resource {
+            fn drop(&mut self) {
+                let sessions = self.sessions.upgrade().unwrap();
+                let sessions = sessions.try_lock().unwrap();
+                assert!(!sessions.active.contains_key("old"));
+                assert!(sessions.teardown.contains_key("old"));
+                self.released.store(true, Ordering::Release);
+            }
+        }
+        let sessions = Arc::new(Mutex::new(Sessions::default()));
+        let released = Arc::new(AtomicBool::new(false));
+        let old = launch("old", Role::Stream);
+        *old.preparation.lock().unwrap() = Some(Box::new(Resource {
+            sessions: Arc::downgrade(&sessions),
+            released: released.clone(),
+        }));
+        let old = {
+            let mut sessions = sessions.lock().unwrap();
+            sessions.queue(old.clone()).unwrap();
+            sessions.start(old, Negotiated::default()).unwrap()
+        };
+        old.stop();
+        {
+            let mut sessions = sessions.lock().unwrap();
+            sessions.begin_teardown(&old);
+            assert!(sessions.active.is_empty());
+            assert!(sessions.owns_capture());
+            assert!(!sessions.idle());
+            let mut next = launch("next", Role::Stream);
+            next.app_id = 2;
+            sessions.queue(next.clone()).unwrap();
+            sessions.start(next, Negotiated::default()).unwrap();
+            assert!(!released.load(Ordering::Acquire));
+        }
+        drop(old);
+        assert!(released.load(Ordering::Acquire));
+        let mut sessions = sessions.lock().unwrap();
+        sessions.teardown.remove("old");
+        sessions.active.clear();
+        assert!(sessions.idle());
+        assert!(!sessions.owns_capture());
     }
     #[test]
     fn only_pyrowave_sessions_report_quality_bitrates() {
@@ -555,7 +604,7 @@ impl Session {
 pub struct Sessions {
     pub pending: BTreeMap<String, Launch>,
     pub active: BTreeMap<String, Arc<Session>>,
-    pub teardown: usize,
+    pub teardown: BTreeMap<String, Instant>,
 }
 impl Sessions {
     #[must_use = "drop expired launches after releasing the sessions lock"]
@@ -629,6 +678,11 @@ impl Sessions {
         self.active.insert(s.launch.id.clone(), s.clone());
         Ok(s)
     }
+    pub fn begin_teardown(&mut self, session: &Session) {
+        self.active.remove(&session.launch.id);
+        self.teardown
+            .insert(session.launch.id.clone(), Instant::now());
+    }
     pub fn request_stop(&mut self, id: Option<&str>) {
         self.pending
             .retain(|_, p| id.is_some_and(|id| p.client.uuid != id && p.id != id));
@@ -639,13 +693,15 @@ impl Sessions {
         }
     }
     pub fn owns_capture(&self) -> bool {
-        !self.pending.is_empty() || !self.active.is_empty() || self.teardown != 0
+        !self.pending.is_empty() || !self.active.is_empty() || !self.teardown.is_empty()
     }
     /// No stream runs, tears down or is about to start. Unlike
     /// `owns_capture`, an expired launch that nothing has removed yet, such
     /// as one the client abandoned, does not count.
     pub fn idle(&self) -> bool {
-        self.active.is_empty() && self.teardown == 0 && !self.pending.values().any(Launch::live)
+        self.active.is_empty()
+            && self.teardown.is_empty()
+            && !self.pending.values().any(Launch::live)
     }
     pub fn stop_role(&mut self, role: Role, client: Option<&str>) {
         self.pending

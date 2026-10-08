@@ -14,12 +14,13 @@ use axum::{
 use butterpollo_core::{
     crypto,
     pairing::Pairing,
-    session::{Launch, Role},
+    session::{Launch, Role, Sessions},
     state::Client,
 };
 use serde_json::json;
 use std::{
     collections::{BTreeMap, HashMap},
+    sync::Mutex,
     time::{Duration, Instant},
 };
 type Args = HashMap<String, String>;
@@ -31,6 +32,29 @@ impl std::fmt::Display for LaunchFailure {
     }
 }
 impl std::error::Error for LaunchFailure {}
+fn wait_for_teardown(sessions: &Mutex<Sessions>, ids: &[String], timeout: Duration) -> bool {
+    let started = Instant::now();
+    loop {
+        {
+            let sessions = sessions.lock().unwrap();
+            let active = ids.iter().any(|id| sessions.active.contains_key(id));
+            if !active && !ids.iter().any(|id| sessions.teardown.contains_key(id)) {
+                return true;
+            }
+            if started.elapsed() >= timeout {
+                for id in ids {
+                    if let Some(since) = sessions.teardown.get(id) {
+                        tracing::warn!(session = %id, teardown_seconds = since.elapsed().as_secs_f64(), "session teardown exceeded the launch wait");
+                    } else if sessions.active.contains_key(id) {
+                        tracing::warn!(session = %id, waited_seconds = started.elapsed().as_secs_f64(), "session worker has not stopped within the launch wait");
+                    }
+                }
+                return !active;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
 fn remote_owner(h: &Shared, client: &str) -> butterpollo_core::remote::Owner {
     use butterpollo_core::remote::Owner;
     if h.monitors.lock().unwrap().contains_key(client) {
@@ -949,21 +973,17 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
         // This client abandoned any earlier launch or stream in this role. Let
         // a stream finish its teardown first, so its display, audio and client
         // commands are released before the new launch prepares them again.
-        let superseded = h
+        let superseded: Vec<_> = h
             .sessions
             .lock()
             .unwrap()
-            .supersede(&launch.client.uuid, role);
+            .supersede(&launch.client.uuid, role)
+            .iter()
+            .map(|s| s.launch.id.clone())
+            .collect();
         if !superseded.is_empty() {
             tracing::info!(client = %launch.client.name, "replacing this client's previous stream");
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while Instant::now() < deadline
-                && superseded
-                    .iter()
-                    .any(|s| h.sessions.lock().unwrap().active.contains_key(&s.launch.id))
-            {
-                std::thread::sleep(Duration::from_millis(10));
-            }
+            wait_for_teardown(&h.sessions, &superseded, Duration::from_secs(5));
         }
         let mut current = h.current_app.lock().unwrap();
         if role == Role::Stream && !resume && current.as_ref().is_some_and(|a| a.id != app_id) {
@@ -989,7 +1009,16 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
                 .lock()
                 .unwrap()
                 .clear(&launch.client.uuid, remote::Confirmation::Replace);
-            h.sessions.lock().unwrap().stop_role(Role::Stream, None);
+            let stopped: Vec<_> = {
+                let mut sessions = h.sessions.lock().unwrap();
+                sessions.stop_role(Role::Stream, None);
+                sessions
+                    .active
+                    .values()
+                    .filter(|s| s.launch.role == Role::Stream)
+                    .map(|s| s.launch.id.clone())
+                    .collect()
+            };
             let previous = current.take();
             drop(current);
             // Stopping the app waits for it to exit, never under the lock
@@ -997,21 +1026,8 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
             drop(previous);
             h.app_audio.lock().unwrap().take();
             h.app_display.lock().unwrap().clear();
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while h
-                .sessions
-                .lock()
-                .unwrap()
-                .active
-                .values()
-                .any(|s| s.launch.role == Role::Stream)
-            {
-                if Instant::now() >= deadline {
-                    bail!(
-                        "previous game session is still releasing its resources; retry the launch"
-                    );
-                }
-                std::thread::sleep(Duration::from_millis(10));
+            if !wait_for_teardown(&h.sessions, &stopped, Duration::from_secs(10)) {
+                bail!("previous game session is still releasing its resources; retry the launch");
             }
             current = h.current_app.lock().unwrap();
         }
@@ -1484,6 +1500,28 @@ async fn abr(State(h): State<Shared>, Extension(c): Extension<Connection>) -> Re
 #[cfg(test)]
 mod tests {
     use super::stream_key_id;
+    #[test]
+    fn a_slow_teardown_does_not_block_the_next_launch_after_the_wait() {
+        use super::{Duration, Instant, Mutex, Sessions, wait_for_teardown};
+        let sessions = Mutex::new(Sessions::default());
+        sessions
+            .lock()
+            .unwrap()
+            .teardown
+            .insert("slow".into(), Instant::now() - Duration::from_secs(6));
+        assert!(wait_for_teardown(
+            &sessions,
+            &["slow".into()],
+            Duration::ZERO
+        ));
+        assert!(sessions.lock().unwrap().owns_capture());
+        sessions.lock().unwrap().teardown.remove("slow");
+        assert!(wait_for_teardown(
+            &sessions,
+            &["slow".into()],
+            Duration::from_secs(5)
+        ));
+    }
     #[test]
     fn another_device_cannot_take_over_a_pairing_in_progress() {
         use super::another_device_pairing as blocked;

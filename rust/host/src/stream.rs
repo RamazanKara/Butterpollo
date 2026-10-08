@@ -832,8 +832,15 @@ impl Media {
                         }
                     }
                 }
+                let mut com = None;
+                let mut stream_preparation = None;
+                let mut latest = None;
+                let mut encoder = None;
+                let mut client_commands = None;
+                let mut audio = None;
+                let mut pyrowave_sender = None;
                 let result = (|| -> Result<()> {
-                    let _com = ComGuard::new()?;
+                    com = Some(ComGuard::new()?);
                     let _priority = Priority::new();
                     let _streaming = butterpollo_windows::timing::StreamingScope::enter();
                     let mut c = effective_config(&h, &s.launch)?;
@@ -859,7 +866,7 @@ impl Media {
                             .or_else(|| monitors.iter().find(|m| m.primary))
                             .context("input display unavailable")?;
                         *s.output.write().unwrap() = monitor.display_name.clone();
-                        let _client_commands = crate::process::ClientCommands::start(&h, &s)?;
+                        client_commands = Some(crate::process::ClientCommands::start(&h, &s)?);
                         while !s.stopping() && !h.stop.load(Ordering::Acquire) {
                             thread::sleep(Duration::from_millis(10));
                         }
@@ -874,7 +881,7 @@ impl Media {
                         .map(|p| p.downcast::<crate::display_session::StreamPreparation>())
                         .transpose()
                         .map_err(|_| anyhow::anyhow!("invalid launch preparation"))?;
-                    let stream_preparation = match initial {
+                    let stream_preparation = stream_preparation.insert(match initial {
                         Some(p) if p.display.matches(&s.config) => *p,
                         previous => {
                             drop(previous);
@@ -883,7 +890,7 @@ impl Media {
                                 &h, &s.launch, &s.config, &c,
                             )?
                         }
-                    };
+                    });
                     stream_preparation.report_limiter(&s.launch.warnings, &c);
                     let prepared = stream_preparation.display.clone();
                     if s.launch.role == Role::Stream {
@@ -894,16 +901,15 @@ impl Media {
                     }
                     let output = prepared.output();
                     *s.output.write().unwrap() = output.clone();
-                    // Declaration order closes the encoder and joins capture before the display lease is removed.
                     let mut use_truehdr = s.config.hdr && rtx_enabled(&c);
-                    let mut latest = m.capture(
+                    let latest = latest.insert(m.capture(
                         &prepared.capture(),
                         s.config.hdr,
                         &c,
                         butterpollo_core::framegen::Rate(s.config.fps_millihz()),
                         &s.launch.id,
                         prepared.clone(),
-                    )?;
+                    )?);
                     *s.capture_warnings.write().unwrap() = latest.warnings.clone();
                     let mut capture_wake = latest.subscribe()?;
                     let first = {
@@ -921,7 +927,7 @@ impl Media {
                             if let Some(image) = latest.wait_for_frame(&timer, &capture_wake, (Instant::now() + Duration::from_millis(50)).min(deadline))? { break image; }
                         }
                     };
-                    let mut encoder = Some(Encoder::new_gpu_reported(
+                    encoder = Some(Encoder::new_gpu_reported(
                         &s.config,
                         c.get("encoder", "auto"),
                         &first,
@@ -959,15 +965,15 @@ impl Media {
                     };
                     drop(first);
                     let mut truehdr_staging = None;
-                    let _client_commands = crate::process::ClientCommands::start(&h, &s)?;
+                    client_commands = Some(crate::process::ClientCommands::start(&h, &s)?);
                     let audio_m = m.clone();
                     let audio_h = h.clone();
                     let audio_s = s.clone();
-                    let audio = thread::Builder::new().name("audio".into()).spawn(move || {
+                    audio = Some(thread::Builder::new().name("audio".into()).spawn(move || {
                         if let Err(e) = audio_m.audio(audio_h, audio_s.clone()) {
                             audio_s.launch.warnings.set("audio_stopped", format!("Audio stopped ({e:#}); video is still running without sound. Check the playback device and network, then reconnect."));
                         }
-                    })?;
+                    })?);
                     let requested_fec = c.integer("fec_percentage", 20);
                     if requested_fec != requested_fec.clamp(0, 100) {
                         s.launch.warnings.set("network_fec_config", format!("FEC percentage {requested_fec} is outside 0-100; using {}%. Correct fec_percentage in Network settings.", requested_fec.clamp(0, 100)));
@@ -988,7 +994,7 @@ impl Media {
                     let next_wire_frame = std::cell::Cell::new(u64::from(packetizer.frame));
                     let start = Instant::now();
                     let mut present_stamper = (s.config.codec != 3 && prepared.capture() == "wgc").then(butterpollo_windows::present_timing::Stamper::default);
-                    let pyrowave_sender = if s.config.codec == 3 { Some(crate::pyrowave_send::Sender::new(m.video.clone(),s.clone(),c.clone(),h.clone(),start,prepared.capture() == "wgc")?) } else { None };
+                    pyrowave_sender = if s.config.codec == 3 { Some(crate::pyrowave_send::Sender::new(m.video.clone(),s.clone(),c.clone(),h.clone(),start,prepared.capture() == "wgc")?) } else { None };
                     let period = butterpollo_core::framegen::Rate(s.config.fps_millihz()).period();
                     let mut cadence = butterpollo_core::stream_policy::Cadence::new(Instant::now(), period, c.boolean("wgc_pacing_smoothing", true));
                     // VRR claims each frame as it arrives, but no faster than the
@@ -1160,7 +1166,7 @@ impl Media {
                         }
                         Ok(())
                     };
-                    let result = (|| -> Result<()> {
+                    (|| -> Result<()> {
                         while !s.stopping() && !h.stop.load(Ordering::Acquire) {
                             if Instant::now() >= live_at {
                                 live_at = Instant::now() + Duration::from_millis(250);
@@ -1173,7 +1179,7 @@ impl Media {
                                 let enabled = s.config.hdr && rtx_enabled(runtime);
                                 if enabled != use_truehdr {
                                     truehdr = None;
-                                    latest = m.capture(
+                                    *latest = m.capture(
                                         &prepared.capture(),
                                         s.config.hdr,
                                         runtime,
@@ -1610,27 +1616,29 @@ impl Media {
                             send_frames(output, peer, call_latency)?;
                         }
                         Ok(())
-                    })();
-                    // Fail before stopping, so the control stream tells the
-                    // client about the error instead of a normal close.
-                    if result.is_err() {
-                        s.fail();
-                    } else {
-                        s.stop();
-                    }
-                    let _ = audio.join();
-                    result
+                    })()
                 })();
                 if let Err(e) = result {
                     s.fail();
                     tracing::error!(error=%format!("{e:#}"),client=%s.launch.client.name,"session failed; check the reported encoder, capture or socket error before reconnecting");
                 }
                 s.stop();
+                h.sessions.lock().unwrap().begin_teardown(&s);
                 m.peers
                     .lock()
                     .unwrap()
                     .retain(|(id, _), _| id != &s.launch.id);
-                h.sessions.lock().unwrap().active.remove(&s.launch.id);
+                // Keep capture and display leases owned until the encoder has
+                // terminated, even if a driver blocks its drop indefinitely.
+                if let Some(audio) = audio {
+                    let _ = audio.join();
+                }
+                drop(pyrowave_sender);
+                drop(client_commands);
+                drop(encoder);
+                drop(latest);
+                drop(stream_preparation);
+                drop(com);
                 if s.launch.role == Role::RemoteMonitor
                     && h.config
                         .read()
@@ -1639,6 +1647,7 @@ impl Media {
                 {
                     crate::remote_display::disconnect(&h, Some(&s.launch.client.uuid));
                 }
+                h.sessions.lock().unwrap().teardown.remove(&s.launch.id);
                 tracing::info!(client=%s.launch.client.name,"CLIENT DISCONNECTED");
             });
         if let Err(e) = result {
