@@ -178,22 +178,19 @@ impl Gamepads {
             if slots[global as usize] {
                 continue;
             }
-            match self.backend.plug(u32::from(global), profile) {
-                Ok(()) => {
-                    slots[global as usize] = true;
-                    self.active.insert(id, global);
-                    self.profiles.insert(id, profile);
-                    tracing::info!(
-                        controller = id,
-                        client_type = kind,
-                        capabilities = format!("{capabilities:#x}"),
-                        backend = self.backend.name(),
-                        profile = profile_name(profile),
-                        "virtual controller connected"
-                    );
-                    return Ok(());
-                }
-                Err(_) => {}
+            if self.backend.plug(u32::from(global), profile).is_ok() {
+                slots[global as usize] = true;
+                self.active.insert(id, global);
+                self.profiles.insert(id, profile);
+                tracing::info!(
+                    controller = id,
+                    client_type = kind,
+                    capabilities = format!("{capabilities:#x}"),
+                    backend = self.backend.name(),
+                    profile = profile_name(profile),
+                    "virtual controller connected"
+                );
+                return Ok(());
             }
         }
         bail!("no free virtual controller slots")
@@ -456,7 +453,6 @@ fn profile_name(profile: u16) -> &'static str {
 // independent of device IO so unsupported surfaces cannot change slot state.
 struct GamepadTouchRequest {
     packet: Vec<u8>,
-    position: [f32; 2],
     id: u8,
     pointer: u32,
     slot: u8,
@@ -536,7 +532,6 @@ fn gamepad_touch_request(
     b.extend_from_slice(&[0, 0]);
     Some(GamepadTouchRequest {
         packet: b,
-        position: [x, *y],
         id: *id,
         pointer,
         slot,

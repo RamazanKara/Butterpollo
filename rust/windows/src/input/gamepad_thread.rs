@@ -100,12 +100,6 @@ impl GamepadThread {
         thread.unmapped_grips = unmapped_grips;
         Ok(thread)
     }
-    #[cfg(test)]
-    pub(super) fn spawn<P: Pads + 'static>(
-        open: impl FnMut() -> Result<P> + Send + 'static,
-    ) -> std::io::Result<Self> {
-        Self::spawn_reported(open, Default::default())
-    }
     fn spawn_reported<P: Pads + 'static>(
         open: impl FnMut() -> Result<P> + Send + 'static,
         warnings: Arc<butterpollo_core::session::Warnings>,
