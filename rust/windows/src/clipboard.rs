@@ -1,3 +1,5 @@
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use anyhow::{Result, bail};
 use windows::{
     Win32::{
@@ -12,6 +14,8 @@ static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 struct Open(HWND);
 impl Open {
     fn new() -> Result<Self> {
+        // SAFETY: the window class and title are static literals, and the clipboard is opened only
+        // for the message window created here, which is destroyed if that fails.
         unsafe {
             let owner = CreateWindowExW(
                 WINDOW_EX_STYLE(0),
@@ -40,6 +44,7 @@ impl Open {
 }
 impl Drop for Open {
     fn drop(&mut self) {
+        // SAFETY: this value exists only while the clipboard is open for `self.0`, which it owns.
         unsafe {
             let _ = CloseClipboard();
             let _ = DestroyWindow(self.0);
@@ -49,6 +54,8 @@ impl Drop for Open {
 pub fn read() -> Result<String> {
     let _lock = LOCK.lock().unwrap();
     let _open = Open::new()?;
+    // SAFETY: the clipboard stays open for `_open`, so the handle stays valid, and the locked
+    // memory is read only within its GlobalSize bytes before it is unlocked.
     unsafe {
         if IsClipboardFormatAvailable(13).is_err() {
             return Ok(String::new());
@@ -77,6 +84,8 @@ pub fn write(text: &str) -> Result<()> {
     let _lock = LOCK.lock().unwrap();
     let _open = Open::new()?;
     let text: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: `global` is allocated for `text.len()` UTF-16 units, so the copy fits; the system
+    // owns it once SetClipboardData succeeds, and it is freed here only on failure.
     unsafe {
         let global = GlobalAlloc(GMEM_MOVEABLE, text.len() * 2)?;
         let pointer = GlobalLock(global).cast::<u16>();

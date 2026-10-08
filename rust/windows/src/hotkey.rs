@@ -1,5 +1,7 @@
 //! The display restore hotkey: a thread that owns the registration and
 //! reports each press.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use anyhow::{Context, Result};
 use std::sync::mpsc;
 use windows::Win32::{
@@ -26,6 +28,8 @@ impl Hotkey {
     /// call `pressed` on each press until the hotkey is dropped.
     pub fn register(key: u32, modifiers: u32, pressed: impl Fn() + Send + 'static) -> Result<Self> {
         let (ready, registered) = mpsc::channel();
+        // SAFETY: `message` is a live local for every call, and the hotkey is registered and
+        // unregistered on this one thread with no window.
         let worker = std::thread::Builder::new()
             .name("restore-hotkey".into())
             .spawn(move || unsafe {
@@ -64,6 +68,8 @@ impl Hotkey {
 }
 impl Drop for Hotkey {
     fn drop(&mut self) {
+        // SAFETY: PostThreadMessageW only takes the worker's thread id and plain values; a stale id
+        // fails.
         unsafe {
             let _ = PostThreadMessageW(self.thread, WM_QUIT, WPARAM(0), LPARAM(0));
         }

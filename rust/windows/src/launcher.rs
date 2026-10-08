@@ -1,4 +1,6 @@
 //! First-run and repeated-launch experience for the portable Windows package.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use crate::text::to_wide;
 use anyhow::{Context, Result, bail};
 use butterpollo_core::{config::Config, migration};
@@ -18,11 +20,15 @@ use windows::{
     core::{PCWSTR, w},
 };
 fn folder() -> Result<Option<PathBuf>> {
+    // SAFETY: COM is initialised on this thread before any COM call and `_com` uninitialises it
+    // once, after `dialog` and `item` drop; the display name is CoTaskMemAlloc'd and freed once.
     unsafe {
         CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
         struct Com;
         impl Drop for Com {
             fn drop(&mut self) {
+                // SAFETY: this guard exists only after CoInitializeEx succeeded, so the
+                // uninitialise is balanced.
                 unsafe { CoUninitialize() }
             }
         }
@@ -48,6 +54,7 @@ fn folder() -> Result<Option<PathBuf>> {
 }
 pub fn show_error(error: &str) {
     let text = to_wide(error);
+    // SAFETY: `text` is NUL-terminated and outlives the modal call.
     unsafe {
         MessageBoxW(
             None,
@@ -133,6 +140,7 @@ pub fn run() -> Result<()> {
     }
     let has_profile = directory.is_dir() && std::fs::read_dir(&directory)?.next().is_some();
     if !has_profile && import.is_none() && interactive {
+        // SAFETY: both strings are static NUL-terminated literals and the call is modal.
         let choice = unsafe {
             MessageBoxW(
                 None,

@@ -1,4 +1,6 @@
 //! Service supervisor; the child is the Rust streaming executable in the active session.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use anyhow::{Context, Result};
 use std::{
     ffi::OsString,
@@ -148,6 +150,7 @@ fn supervise() -> Result<()> {
     let mut restart = RestartPolicy::default();
     let mut retry_at = Instant::now();
     while !stop.load(Ordering::Acquire) {
+        // SAFETY: WTSGetActiveConsoleSessionId takes no arguments and has no preconditions.
         let current =
             unsafe { windows::Win32::System::RemoteDesktop::WTSGetActiveConsoleSessionId() };
         if current != session {

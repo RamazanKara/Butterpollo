@@ -1,5 +1,7 @@
 //! Endpoint routing is shared by stream owners and restored after the last
 //! owner, including host crashes. Capture-only sinks never alter defaults.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use crate::text::to_wide;
 use anyhow::{Context, Result, bail};
 use butterpollo_core::config::Config;
@@ -44,19 +46,26 @@ pub struct Endpoint {
     pub virtual_sink: bool,
 }
 unsafe fn device_id(device: &IMMDevice) -> Result<String> {
+    // SAFETY: `device` is a live IMMDevice borrowed for the call.
     let id = unsafe { device.GetId()? };
+    // SAFETY: GetId returned a NUL-terminated string that is not freed until below.
     let value = unsafe { id.to_string() };
+    // SAFETY: `id` came from CoTaskMemAlloc in GetId and is freed once, after its last use.
     unsafe {
         CoTaskMemFree(Some(id.0.cast()));
     }
     Ok(value?)
 }
 fn enumerator() -> Result<IMMDeviceEnumerator> {
+    // SAFETY: CoCreateInstance only reads the static CLSID, and fails cleanly when COM is not
+    // initialised.
     Ok(unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? })
 }
 pub fn endpoints() -> Result<Vec<Endpoint>> {
     let _com = crate::capture::ComGuard::new()?;
     let enumerator = enumerator()?;
+    // SAFETY: COM is initialised on this thread by `_com`, every interface used is live, and each
+    // string from PropVariantToStringAlloc is freed once after it is copied.
     unsafe {
         let default = enumerator
             .GetDefaultAudioEndpoint(eRender, eConsole)
@@ -121,12 +130,16 @@ struct PolicyVtbl {
     default: unsafe extern "system" fn(*mut c_void, PCWSTR, ERole) -> HRESULT,
     visibility: usize,
 }
+// SAFETY: PolicyVtbl mirrors IPolicyConfig's slot layout (the offset test checks it) and Policy is
+// a transparent IUnknown, so the IID names an interface with exactly this vtable.
 unsafe impl Interface for Policy {
     type Vtable = PolicyVtbl;
     const IID: GUID = GUID::from_u128(0xf8679f50_850a_41cf_9c72_430f290290c8);
 }
 impl Policy {
     fn new() -> Result<Self> {
+        // SAFETY: CoCreateInstance only reads the static CLSID and returns an owned interface or an
+        // error.
         Ok(unsafe {
             CoCreateInstance(
                 &GUID::from_u128(0x870af99c_171d_4f9e_af0d_e63df40c2bc9),
@@ -137,6 +150,8 @@ impl Policy {
     }
     fn set_default(&self, id: &str, role: ERole) -> Result<()> {
         let id = to_wide(id);
+        // SAFETY: `self` is a live IPolicyConfig whose slot matches PolicyVtbl, and `id` is
+        // NUL-terminated and outlives the call.
         unsafe {
             (self.vtable().default)(self.as_raw(), PCWSTR(id.as_ptr()), role).ok()?;
         }
@@ -145,6 +160,8 @@ impl Policy {
     fn format(&self, id: &str) -> Result<Vec<u8>> {
         let id = to_wide(id);
         let mut format = std::ptr::null_mut();
+        // SAFETY: `format` receives a CoTaskMemAlloc'd WAVEFORMATEX that is read only within its
+        // header plus cbSize bytes and freed once.
         unsafe {
             (self.vtable().device_format)(self.as_raw(), PCWSTR(id.as_ptr()), 0, &mut format)
                 .ok()?;
@@ -168,6 +185,8 @@ impl Policy {
         let id = to_wide(id);
         // Stored format bytes need native alignment when passed back to COM.
         let mut storage = vec![0u64; bytes.len().div_ceil(8)];
+        // SAFETY: `storage` is u64-aligned and at least `bytes.len()` long, and `id` and `empty`
+        // outlive the call, whose slot matches PolicyVtbl.
         unsafe {
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), storage.as_mut_ptr().cast(), bytes.len());
             let empty = WAVEFORMATEXTENSIBLE::default();
@@ -184,6 +203,7 @@ impl Policy {
 }
 fn defaults() -> Result<[Option<String>; 3]> {
     let enumerator = enumerator()?;
+    // SAFETY: `enumerator` is a live interface and device_id only needs a live IMMDevice.
     Ok(ROLES.map(|role| unsafe {
         enumerator
             .GetDefaultAudioEndpoint(eRender, role)
@@ -346,6 +366,7 @@ fn try_install_steam(config: &Config, endpoints: &[Endpoint]) -> Result<bool> {
         return Ok(false);
     }
     let file = to_wide(&inf.to_string_lossy());
+    // SAFETY: `file` is NUL-terminated and outlives the call.
     unsafe {
         use windows::Win32::Devices::DeviceAndDriverInstallation::{
             DIIRFLAG_FORCE_INF, DiInstallDriverW,
@@ -399,6 +420,8 @@ fn virtual_format(channels: usize, sample: Sample, side: bool) -> Vec<u8> {
             0x00000001_0000_0010_8000_00aa00389b71
         }),
     };
+    // SAFETY: `format` is a live packed WAVEFORMATEXTENSIBLE with no padding, so all its bytes are
+    // initialised.
     unsafe {
         std::slice::from_raw_parts(
             (&format as *const WAVEFORMATEXTENSIBLE).cast(),
@@ -409,10 +432,15 @@ fn virtual_format(channels: usize, sample: Sample, side: bool) -> Vec<u8> {
 }
 fn valid_bits(bytes: &[u8]) -> u16 {
     // Policy::format has already checked the native format's allocation size.
+    // SAFETY: callers pass bytes from Policy::format or virtual_format, which hold at least a whole
+    // WAVEFORMATEX, and the read is unaligned.
     let format = unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast::<WAVEFORMATEX>()) };
     if format.wFormatTag == 65534 && bytes.len() >= size_of::<WAVEFORMATEXTENSIBLE>() {
+        // SAFETY: `bytes` was just checked to hold a whole WAVEFORMATEXTENSIBLE, and the read is
+        // unaligned.
         let extended =
             unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast::<WAVEFORMATEXTENSIBLE>()) };
+        // SAFETY: both fields of the union are u16, so any bits are a valid value.
         let bits = unsafe { extended.Samples.wValidBitsPerSample };
         if bits > 0 && bits <= format.wBitsPerSample {
             return bits;
@@ -711,6 +739,7 @@ impl Route {
         };
         let policy = Policy::new()?;
         let current = policy.format(&self.sink)?;
+        // SAFETY: `current` came from Policy::format, which returns at least a whole WAVEFORMATEX.
         let format = unsafe { std::ptr::read_unaligned(current.as_ptr().cast::<WAVEFORMATEX>()) };
         if usize::from(format.nChannels) == channels {
             return Ok(());
@@ -833,6 +862,7 @@ mod tests {
     #[test]
     fn virtual_speakers_preserve_valid_depth_and_offer_pcm_fallbacks() -> Result<()> {
         let formats = virtual_formats(2, 24)?;
+        // SAFETY: `formats[0]` is a whole WAVEFORMATEXTENSIBLE from virtual_format, read unaligned.
         let first =
             unsafe { std::ptr::read_unaligned(formats[0].as_ptr().cast::<WAVEFORMATEXTENSIBLE>()) };
         let container_bits = first.Format.wBitsPerSample;
@@ -847,6 +877,7 @@ mod tests {
         );
         let formats = virtual_formats(2, 32)?;
         assert_eq!(formats.len(), 5);
+        // SAFETY: `formats[1]` is a whole WAVEFORMATEXTENSIBLE from virtual_format, read unaligned.
         let pcm =
             unsafe { std::ptr::read_unaligned(formats[1].as_ptr().cast::<WAVEFORMATEXTENSIBLE>()) };
         let subformat = pcm.SubFormat;
@@ -867,6 +898,7 @@ mod tests {
         );
         for (channels, mask) in [(2, 3), (6, 0x3f), (8, 0x63f)] {
             let bytes = virtual_format(channels, Sample::Pcm24, false);
+            // SAFETY: `bytes` is a whole WAVEFORMATEXTENSIBLE from virtual_format, read unaligned.
             let format =
                 unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast::<WAVEFORMATEXTENSIBLE>()) };
             let actual_mask = format.dwChannelMask;

@@ -1,4 +1,6 @@
 //! Where Steam is installed on this PC.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use std::path::PathBuf;
 use windows::{
     Win32::System::Registry::{
@@ -13,6 +15,8 @@ pub(crate) fn registry_string(root: HKEY, key: &str, value: &str) -> Option<Stri
     let value: Vec<u16> = value.encode_utf16().chain(Some(0)).collect();
     let mut buffer = [0u16; 1024];
     let mut size = (buffer.len() * 2) as u32;
+    // SAFETY: `key` and `value` are NUL-terminated and outlive the call, and `size` is the byte
+    // size of `buffer`.
     unsafe {
         RegGetValueW(
             root,

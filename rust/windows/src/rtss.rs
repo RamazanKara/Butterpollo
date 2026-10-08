@@ -1,5 +1,7 @@
 //! RTSS SDK calls run in a short-lived Rust worker, keeping a stalled third-party
 //! message loop outside the streaming process. The profile's unknown fields survive.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use crate::{
     ipc::Pipe,
     process::{Process, Target},
@@ -58,6 +60,8 @@ pub fn running(root: &Path) -> bool {
     // Configured paths may contain a trailing separator, dot components or a
     // directory junction. Compare the actual directory, not its spelling.
     let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    // SAFETY: `entry` has dwSize set to its size, `size` is the capacity of `path` in UTF-16 units,
+    // and the snapshot and each process handle are closed once.
     unsafe {
         let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
             return false;
@@ -337,8 +341,12 @@ pub fn worker(name: &str, parent: u32) -> Result<()> {
     Ok(())
 }
 fn execute(request: &Request) -> Result<Reply> {
+    // SAFETY: the hooks DLL is RTSS's own, from the configured RTSS folder, and loading it runs
+    // only that trusted code.
     let library =
         unsafe { libloading::Library::new(hooks(&request.root).context("RTSS hooks missing")?)? };
+    // SAFETY: the symbol types match the RTSSHooks exports, the strings are NUL-terminated C
+    // literals, `value` is writable for the 4 bytes passed, and `library` outlives every symbol.
     unsafe {
         let load = library.get::<unsafe extern "C" fn(*const i8)>(b"LoadProfile\0")?;
         let update = library.get::<unsafe extern "C" fn()>(b"UpdateProfiles\0")?;

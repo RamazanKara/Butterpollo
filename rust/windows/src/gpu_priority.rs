@@ -1,4 +1,6 @@
 //! WDDM scheduling applies to this process only; no system HAGS setting changes.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use anyhow::{Context, Result, bail};
 use libloading::Library;
 use windows::Win32::{Foundation::LUID, System::Threading::GetCurrentProcess};
@@ -34,6 +36,8 @@ pub fn configure(
     config: &butterpollo_core::config::Config,
 ) -> Result<()> {
     crate::compute::set_realtime(config.boolean("compute_queue_realtime", false));
+    // SAFETY: the symbol types and repr(C) structs match the D3DKMT exports (the test checks their
+    // layout), every pointer passed is a live local, and `library` outlives each symbol.
     unsafe {
         let device = gpu.device.cast::<IDXGIDevice>()?;
         // These device settings are independent of the privileged process

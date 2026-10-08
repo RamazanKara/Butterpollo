@@ -1,4 +1,6 @@
 //! Private, bounded local IPC for owned user-session helpers.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use crate::text::to_wide;
 use anyhow::{Context, Result, ensure};
 use serde::{Serialize, de::DeserializeOwned};
@@ -17,6 +19,7 @@ use windows::core::{BOOL, HRESULT, PCWSTR};
 pub(crate) const MESSAGE_LIMIT: usize = 4096;
 
 fn owned(handle: HANDLE) -> OwnedHandle {
+    // SAFETY: callers pass a freshly created handle they own and that nothing else closes.
     unsafe { OwnedHandle::from_raw_handle(handle.0) }
 }
 fn raw(handle: &OwnedHandle) -> HANDLE {
@@ -26,6 +29,8 @@ fn raw(handle: &OwnedHandle) -> HANDLE {
 struct Descriptor(PSECURITY_DESCRIPTOR);
 impl Drop for Descriptor {
     fn drop(&mut self) {
+        // SAFETY: `self.0` is null (which LocalFree accepts) or the converted security descriptor,
+        // freed once here.
         unsafe {
             let _ = LocalFree(Some(HLOCAL(self.0.0)));
         }
@@ -39,6 +44,8 @@ impl Pipe {
         // a PID check below also rejects another process under that same user.
         let sddl = to_wide(&format!("D:P(A;;GA;;;SY)(A;;GRGW;;;{sid})"));
         let mut descriptor = Descriptor(PSECURITY_DESCRIPTOR::default());
+        // SAFETY: `sddl` and `wide` are NUL-terminated and outlive the calls, `security` points at
+        // the live descriptor, and the new pipe handle is owned once.
         unsafe {
             ConvertStringSecurityDescriptorToSecurityDescriptorW(
                 PCWSTR(sddl.as_ptr()),
@@ -80,6 +87,8 @@ impl Pipe {
             "invalid helper pipe name"
         );
         let name = to_wide(name);
+        // SAFETY: `name` is NUL-terminated and outlives CreateFileW, the new handle is owned once,
+        // and the other calls only take that owned handle and live locals.
         unsafe {
             let pipe = Self(owned(CreateFileW(
                 PCWSTR(name.as_ptr()),
@@ -106,6 +115,8 @@ impl Pipe {
         }
     }
     pub(crate) fn connected(&self, expected_pid: u32) -> Result<bool> {
+        // SAFETY: `self.0` is the owned pipe handle, open while `self` lives, and `actual` is a
+        // live local.
         unsafe {
             if let Err(error) = ConnectNamedPipe(raw(&self.0), None) {
                 if error.code() == HRESULT::from_win32(ERROR_PIPE_LISTENING.0) {
@@ -131,6 +142,8 @@ impl Pipe {
             "helper message exceeds its bound"
         );
         let mut written = 0;
+        // SAFETY: `self.0` is the owned pipe handle, and `bytes` and `written` outlive the
+        // synchronous write.
         unsafe {
             WriteFile(raw(&self.0), Some(&bytes), Some(&mut written), None)?;
         }
@@ -141,6 +154,8 @@ impl Pipe {
     }
     pub(crate) fn receive<T: DeserializeOwned>(&self) -> Result<Option<T>> {
         let mut size = 0;
+        // SAFETY: `self.0` is the owned pipe handle, and `bytes` and `read` outlive the synchronous
+        // read.
         unsafe {
             PeekNamedPipe(raw(&self.0), None, 0, None, None, Some(&mut size))?;
             if size == 0 {

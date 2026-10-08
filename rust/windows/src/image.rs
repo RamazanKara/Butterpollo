@@ -1,4 +1,6 @@
 //! Cover images: any format Windows can decode, written as PNG for Moonlight.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use anyhow::{Context, Result};
 use std::path::Path;
 use windows::{
@@ -11,9 +13,11 @@ use windows::{
 };
 
 fn factory() -> Result<IWICImagingFactory> {
+    // SAFETY: CoCreateInstance only reads the static CLSID, and callers hold a ComGuard.
     Ok(unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)? })
 }
 fn frame(factory: &IWICImagingFactory, path: &Path) -> Result<IWICBitmapFrameDecode> {
+    // SAFETY: COM is initialised by the caller's ComGuard and the path HSTRING outlives the call.
     unsafe {
         let decoder = factory
             .CreateDecoderFromFilename(
@@ -32,6 +36,7 @@ pub fn dimensions(path: &Path) -> Result<(u32, u32)> {
     let factory = factory()?;
     let frame = frame(&factory, path)?;
     let (mut width, mut height) = (0, 0);
+    // SAFETY: COM is initialised by `_com`, and `width` and `height` are live out-pointers.
     unsafe { frame.GetSize(&mut width, &mut height)? };
     Ok((width, height))
 }
@@ -48,6 +53,8 @@ pub fn to_png(source: &Path, destination: &Path) -> Result<(u32, u32)> {
         std::fs::create_dir_all(parent)?;
     }
     let result = (|| -> Result<(u32, u32)> {
+        // SAFETY: COM is initialised by `_com` for the whole closure, every interface used is live,
+        // and the null pointers passed are the documented "no options" values.
         unsafe {
             let (mut width, mut height) = (0, 0);
             frame.GetSize(&mut width, &mut height)?;

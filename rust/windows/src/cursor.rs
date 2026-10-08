@@ -1,4 +1,6 @@
 //! Desktop Duplication's separately supplied hardware pointer.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use crate::capture::Device;
 use anyhow::{Result, bail};
 use windows::Win32::Graphics::{
@@ -104,6 +106,8 @@ impl Cursor {
     ) -> Result<Self> {
         let mut texture = None;
         let mut view = None;
+        // SAFETY: `pixels` holds `width * height` RGBA pixels (it comes from decode or a Cursor
+        // built from it) and outlives the call, and the out-parameters are live locals.
         unsafe {
             gpu.device.CreateTexture2D(
                 &D3D11_TEXTURE2D_DESC {
@@ -242,6 +246,8 @@ impl State {
             let mut bytes = vec![0; info.PointerShapeBufferSize as usize];
             let mut shape = DXGI_OUTDUPL_POINTER_SHAPE_INFO::default();
             let mut required = 0;
+            // SAFETY: `bytes` is writable for the length passed, and `required` and `shape` are
+            // live locals.
             unsafe {
                 duplicate.GetFramePointerShape(
                     bytes.len() as u32,

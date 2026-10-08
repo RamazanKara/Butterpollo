@@ -1,3 +1,5 @@
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use anyhow::{Context, Result, bail};
 use std::{ffi::c_void, path::Path};
 use windows::Win32::{Media::Audio::*, System::Com::*};
@@ -22,6 +24,8 @@ impl Loopback {
         Self::new_sink(output_channels, "")
     }
     pub fn new_sink(output_channels: usize, sink: &str) -> Result<Self> {
+        // SAFETY: COM calls only fail if the thread lacks COM, `id` outlives GetDevice, and the mix
+        // format is read within its header plus cbSize bytes and freed once.
         unsafe {
             let enumerator: IMMDeviceEnumerator =
                 CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
@@ -131,6 +135,7 @@ impl Loopback {
     /// caller's silence on time.
     pub fn wait(&self, timeout: std::time::Duration) {
         match self.ready {
+            // SAFETY: `event` is the event this struct owns, closed only in Drop.
             Some(event) => unsafe {
                 let _ = windows::Win32::System::Threading::WaitForSingleObject(
                     event,
@@ -157,6 +162,8 @@ impl Loopback {
             .map(|at| now.saturating_duration_since(at))
     }
     pub fn read(&mut self, frames: usize) -> Result<Option<Vec<f32>>> {
+        // SAFETY: GetBuffer returns `count` frames of `channels` samples of `bits` bits each, read
+        // only before ReleaseBuffer; each read is unaligned and inside that packet.
         unsafe {
             loop {
                 let n = self.capture.GetNextPacketSize()?;
@@ -225,6 +232,8 @@ impl Loopback {
 }
 impl Drop for Loopback {
     fn drop(&mut self) {
+        // SAFETY: `self.client` is live, and `self.ready` is the event this struct owns and closes
+        // only here.
         unsafe {
             let _ = self.client.Stop();
             if let Some(event) = self.ready {
@@ -271,6 +280,8 @@ impl Opus {
         // reserving space for each self-delimited stream's length fields.
         let packet_bitrate = (1360 - layout.streams * 4) * 8000 / i32::from(packet_ms);
         let bitrate = layout.bitrate.min(packet_bitrate);
+        // SAFETY: the symbol types match libopus, `layout.mapping` has `channels` entries, and
+        // `library` is kept in `Self` with its function pointers.
         unsafe {
             let path = directory.join("libopus-0.dll");
             let library = libloading::Library::new(&path)
@@ -316,6 +327,8 @@ impl Opus {
         // Leave room for RTP, AES padding and parity headers within the
         // previous Moonlight receiver's fixed 1400-byte UDP buffer.
         let mut output = vec![0; 1360];
+        // SAFETY: `self.state` is a live encoder, `samples` holds whole frames for `channels`, and
+        // `output` is writable for the length passed.
         let n = unsafe {
             (self.encode)(
                 self.state,
@@ -334,6 +347,8 @@ impl Opus {
 }
 impl Drop for Opus {
     fn drop(&mut self) {
+        // SAFETY: `self.state` came from opus_multistream_encoder_create and is destroyed once,
+        // here.
         unsafe {
             (self.destroy)(self.state);
         }
@@ -356,6 +371,8 @@ mod tests {
         }
         impl Drop for Decoder {
             fn drop(&mut self) {
+                // SAFETY: `self.state` came from opus_multistream_decoder_create and is destroyed
+                // once, here.
                 unsafe {
                     (self.destroy)(self.state);
                 }
@@ -388,6 +405,8 @@ mod tests {
                     butterpollo_core::audio::OpusLayout::select(channels, quality, custom).unwrap();
                 let mut encoder =
                     Opus::new_layout_duration(&root, &layout, packet_ms as u8).unwrap();
+                // SAFETY: the symbol types match libopus, `layout.mapping` has `channels` entries,
+                // and the library is kept in Decoder with its pointers.
                 let (decoder, decode) = unsafe {
                     let library = libloading::Library::new(root.join("libopus-0.dll")).unwrap();
                     let create = *library
@@ -440,6 +459,8 @@ mod tests {
                     assert!(encoded.len() <= 1360);
                     bytes += encoded.len();
                     let mut decoded = vec![0.0; frames * channels];
+                    // SAFETY: `decoder.state` is a live decoder, `encoded` is read for its length,
+                    // and `decoded` holds `frames` frames of `channels` samples.
                     let result = unsafe {
                         decode(
                             decoder.state,

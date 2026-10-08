@@ -1,5 +1,7 @@
 //! Read-only visible window stack, including passive shell/compositor
 //! overlays, and the foreground window's process.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use crate::capture::Display;
 use std::sync::{Arc, Mutex, mpsc};
 use windows::{
@@ -70,6 +72,7 @@ impl Tracker {
 /// The process of the foreground window on the input desktop.
 pub fn process() -> Option<u32> {
     crate::input::follow_input_desktop();
+    // SAFETY: GetForegroundWindow has no preconditions and `pid` is a live out-pointer.
     unsafe {
         let window = GetForegroundWindow();
         if window.is_invalid() {
@@ -81,6 +84,8 @@ pub fn process() -> Option<u32> {
     }
 }
 fn process_path(pid: u32) -> Option<String> {
+    // SAFETY: the process handle is closed once after the query, and `count` is the capacity of
+    // `name` in UTF-16 units, updated to the length written.
     unsafe {
         let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let mut name = [0; 32768];
@@ -148,6 +153,8 @@ fn visible_executable(request: &Request) -> Option<(String, u32)> {
         count: usize,
     }
     unsafe extern "system" fn visit(window: HWND, context: LPARAM) -> BOOL {
+        // SAFETY: EnumWindows passes the `&mut Scan` from visible_executable as `context`, which
+        // outlives the enumeration; every out-pointer is a live local of the size passed.
         unsafe {
             let scan = &mut *(context.0 as *mut Scan<'_>);
             scan.count += 1;
@@ -285,6 +292,7 @@ fn visible_executable(request: &Request) -> Option<(String, u32)> {
         selected: None,
         count: 0,
     };
+    // SAFETY: `scan` outlives the synchronous EnumWindows call that reads it through `visit`.
     unsafe {
         let _ = EnumWindows(Some(visit), LPARAM((&mut scan as *mut Scan<'_>) as isize));
     }

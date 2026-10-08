@@ -1,5 +1,7 @@
 //! Lossless Scaling on this PC: where it is, its settings file, and the
 //! window and keyboard steps that start scaling a game.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use std::path::{Path, PathBuf};
 use windows::Win32::{
     Foundation::{HWND, LPARAM},
@@ -107,6 +109,8 @@ pub fn windows_of(pid: u32) -> Vec<HWND> {
         found: Vec<HWND>,
     }
     unsafe extern "system" fn visit(window: HWND, data: LPARAM) -> windows::core::BOOL {
+        // SAFETY: EnumWindows passes the `&mut Search` from windows_of as `data`, which outlives
+        // the enumeration and is not otherwise used during it.
         unsafe {
             let search = &mut *(data.0 as *mut Search);
             let mut pid = 0;
@@ -121,6 +125,7 @@ pub fn windows_of(pid: u32) -> Vec<HWND> {
         }
     }
     let mut search = Search { pid, found: vec![] };
+    // SAFETY: `search` outlives the synchronous EnumWindows call that reads it through `visit`.
     unsafe {
         let _ = EnumWindows(Some(visit), LPARAM((&mut search as *mut Search) as isize));
     }
@@ -129,6 +134,7 @@ pub fn windows_of(pid: u32) -> Vec<HWND> {
 /// Minimize `pid`'s windows without activating them.
 pub fn minimize(pid: u32) {
     for window in windows_of(pid) {
+        // SAFETY: ShowWindow only takes a window handle by value; a stale handle just fails.
         unsafe {
             let _ = ShowWindow(window, SW_SHOWMINNOACTIVE);
         }
@@ -140,6 +146,7 @@ pub fn focus(pid: u32) -> bool {
         return false;
     };
     crate::input::follow_input_desktop();
+    // SAFETY: these calls take window handles by value, and a stale handle just fails.
     unsafe {
         if IsIconic(window).as_bool() {
             let _ = ShowWindow(window, SW_RESTORE);
@@ -171,6 +178,8 @@ fn key(code: u16, up: bool) -> INPUT {
     }
 }
 fn send(inputs: &[INPUT]) -> bool {
+    // SAFETY: `inputs` outlives the call, its length is passed by the slice, and the size is
+    // INPUT's.
     unsafe { SendInput(inputs, size_of::<INPUT>() as i32) as usize == inputs.len() }
 }
 /// Press `modifiers` and `code`, then release them in reverse.

@@ -2,6 +2,8 @@
 //! installer allows the host on every network, but a block rule (left when
 //! Windows' "allow access" prompt was dismissed, for instance on a network
 //! marked public) overrides any allow rule.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use anyhow::Result;
 use windows::{
     Win32::{
@@ -15,6 +17,8 @@ use windows::{
 /// the PC is on now: each enabled block rule naming it, or the absence of any
 /// allow rule. Empty when nothing stands in the way or the firewall is off.
 pub fn problems(program: &std::path::Path) -> Result<Vec<String>> {
+    // SAFETY: COM is initialised on this thread in some mode before the first COM call, and the
+    // Rules enumerator yields VT_DISPATCH variants, so `pdispVal` is read before VariantClear.
     unsafe {
         // Already initialised in another mode is fine for this in-process object.
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);

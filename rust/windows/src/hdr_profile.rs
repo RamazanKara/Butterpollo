@@ -1,5 +1,7 @@
 //! Windows Advanced Color ICC associations, owned by the last streaming lease.
 //! ABI: https://learn.microsoft.com/windows/win32/api/icm/nf-icm-colorprofilegetdisplaydefault
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use crate::display::Monitor;
 use anyhow::{Context, Result, bail};
 use libloading::Library;
@@ -25,6 +27,8 @@ struct Api {
 impl Api {
     fn load() -> Result<Self> {
         let directory = std::env::var_os("SystemRoot").context("Windows directory unavailable")?;
+        // SAFETY: the Get, Add and Remove types match mscms.dll's exported signatures, and
+        // `library` is kept in `Self` for as long as the copied function pointers.
         unsafe {
             let library = Library::new(Path::new(&directory).join("System32").join("mscms.dll"))?;
             Ok(Self {
@@ -36,6 +40,8 @@ impl Api {
         }
     }
     fn get(&self, monitor: &Monitor, system: bool) -> Result<Option<String>> {
+        // SAFETY: `pointer` receives a NUL-terminated name from LocalAlloc, read only up to its
+        // terminator and freed once with LocalFree.
         unsafe {
             let mut pointer = std::ptr::null_mut();
             let status = HRESULT((self.get)(
@@ -68,6 +74,7 @@ impl Api {
     }
     fn add(&self, monitor: &Monitor, system: bool, name: &str) -> Result<()> {
         let name = wide(name)?;
+        // SAFETY: `name` is NUL-terminated and outlives the call, whose type matches the export.
         unsafe {
             HRESULT((self.add)(
                 scope(system),
@@ -83,6 +90,7 @@ impl Api {
     }
     fn remove(&self, monitor: &Monitor, system: bool, name: &str) -> Result<()> {
         let name = wide(name)?;
+        // SAFETY: `name` is NUL-terminated and outlives the call, whose type matches the export.
         unsafe {
             HRESULT((self.remove)(
                 scope(system),

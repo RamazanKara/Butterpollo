@@ -1,4 +1,6 @@
 //! User-session process creation with ownership of the complete Windows job.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use anyhow::{Context, Result, bail};
 use std::{
     collections::BTreeMap,
@@ -20,6 +22,7 @@ use windows::{
     core::{BOOL, PCWSTR, PWSTR},
 };
 fn owned(handle: HANDLE) -> OwnedHandle {
+    // SAFETY: callers pass a freshly created handle they own and that nothing else closes.
     unsafe { OwnedHandle::from_raw_handle(handle.0) }
 }
 fn raw(handle: &OwnedHandle) -> HANDLE {
@@ -58,6 +61,7 @@ pub(crate) fn quote(s: &std::ffi::OsStr) -> Result<String> {
     Ok(result)
 }
 fn token() -> Result<OwnedHandle> {
+    // SAFETY: `token` is a valid out-pointer and the handle it receives is owned by the caller.
     unsafe {
         let mut token = HANDLE::default();
         OpenProcessToken(
@@ -70,6 +74,8 @@ fn token() -> Result<OwnedHandle> {
 }
 pub fn is_system() -> bool {
     let Ok(token) = token() else { return false };
+    // SAFETY: `buffer` is usize-aligned and writable for the size passed, and holds a TOKEN_USER
+    // whose SID points into it once the call succeeds.
     unsafe {
         let mut buffer = [0usize; 64];
         let mut needed = 0;
@@ -96,6 +102,8 @@ pub fn user_sid() -> Option<String> {
     let user_token = target_token(&Target::User { elevated: false }).ok()?;
     let own = token().ok()?;
     let token = user_token.as_ref().unwrap_or(&own);
+    // SAFETY: `buffer` holds a TOKEN_USER once the call succeeds, and the string from
+    // ConvertSidToStringSidW is read before it is freed once with LocalFree.
     unsafe {
         let mut buffer = [0usize; 64];
         let mut needed = 0;
@@ -125,6 +133,8 @@ pub fn restrict_to_administrators(folder: &Path) -> Result<()> {
     let sddl = wide(std::ffi::OsStr::new("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"))?;
     let path = wide(folder.as_os_str())?;
     let mut descriptor = PSECURITY_DESCRIPTOR::default();
+    // SAFETY: `sddl` and `path` are NUL-terminated and outlive the calls, and `dacl` points into
+    // `descriptor`, which is freed once after its last use.
     unsafe {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
             PCWSTR(sddl.as_ptr()),
@@ -173,6 +183,7 @@ fn target_token(target: &Target) -> Result<Option<OwnedHandle>> {
             let token = token()?;
             let mut info = TOKEN_ELEVATION::default();
             let mut bytes = 0;
+            // SAFETY: `info` is a writable TOKEN_ELEVATION and the size passed is its size.
             unsafe {
                 GetTokenInformation(
                     raw(&token),
@@ -188,6 +199,8 @@ fn target_token(target: &Target) -> Result<Option<OwnedHandle>> {
         }
         return Ok(None);
     }
+    // SAFETY: every out-pointer is a live local whose size matches the one passed, and each
+    // returned token handle is wrapped in OwnedHandle exactly once.
     unsafe {
         let source = match target {
             Target::SystemSession(_) => token()?,
@@ -242,6 +255,8 @@ struct Environment(*mut std::ffi::c_void);
 impl Drop for Environment {
     fn drop(&mut self) {
         if !self.0.is_null() {
+            // SAFETY: `self.0` is non-null and came from CreateEnvironmentBlock, and Drop runs
+            // once.
             unsafe {
                 let _ = DestroyEnvironmentBlock(self.0);
             }
@@ -256,11 +271,14 @@ pub struct Process {
 }
 /// The session attached to the physical console.
 pub fn console_session() -> u32 {
+    // SAFETY: WTSGetActiveConsoleSessionId takes no arguments and has no preconditions.
     unsafe { windows::Win32::System::RemoteDesktop::WTSGetActiveConsoleSessionId() }
 }
 /// Whether a user is signed in to this process's session. Only a host
 /// running as SYSTEM can tell; a portable host runs as the user.
 pub fn user_signed_in() -> bool {
+    // SAFETY: `session` and `token` are valid out-pointers, and the token returned is closed once
+    // here.
     unsafe {
         let mut session = 0;
         if ProcessIdToSessionId(GetCurrentProcessId(), &mut session).is_err() {
@@ -276,6 +294,8 @@ pub fn user_signed_in() -> bool {
 }
 pub fn user_environment() -> Result<BTreeMap<String, String>> {
     let token = target_token(&Target::User { elevated: false })?;
+    // SAFETY: the block from CreateEnvironmentBlock is NUL-terminated UTF-16 strings ending in an
+    // empty one, so reads stop at the terminators, and `native` frees it on drop.
     unsafe {
         let mut native = Environment(std::ptr::null_mut());
         CreateEnvironmentBlock(&mut native.0, token.as_ref().map(raw), true)?;
@@ -315,6 +335,8 @@ impl Process {
             handle != 0 && handle != usize::MAX,
             "invalid child resource handle"
         );
+        // SAFETY: `self.handle` is the child's owned process handle and the duplicate is owned
+        // once.
         unsafe {
             let mut duplicate = HANDLE::default();
             DuplicateHandle(
@@ -332,6 +354,8 @@ impl Process {
     /// A handle of this process duplicated into the child, as the value the
     /// child uses; the child's handle closes when it exits.
     pub(crate) fn duplicate_into(&self, handle: HANDLE) -> Result<u64> {
+        // SAFETY: `self.handle` is the child's owned process handle and `handle` is valid in this
+        // process.
         unsafe {
             let mut duplicate = HANDLE::default();
             DuplicateHandle(
@@ -452,6 +476,8 @@ impl Process {
         let program = wide(program.as_os_str())?;
         let directory = directory.map(|p| wide(p.as_os_str())).transpose()?;
         let mut line = wide(std::ffi::OsStr::new(line))?;
+        // SAFETY: the environment block is read only up to its NUL terminators, the strings given
+        // to CreateProcess are NUL-terminated locals, and each new handle is owned once.
         unsafe {
             let mut native = Environment(std::ptr::null_mut());
             CreateEnvironmentBlock(&mut native.0, token.as_ref().map(raw), true)?;
@@ -601,6 +627,7 @@ impl Process {
         }
     }
     pub fn exit_code(&self) -> Result<Option<u32>> {
+        // SAFETY: `self.handle` is an owned process handle that stays open while `self` lives.
         unsafe {
             if WaitForSingleObject(raw(&self.handle), 0) == WAIT_TIMEOUT {
                 return Ok(None);
@@ -611,6 +638,7 @@ impl Process {
         }
     }
     pub fn active_processes(&self) -> Result<u32> {
+        // SAFETY: `self.job` is an owned job handle and `info` is writable for the size passed.
         unsafe {
             let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
             QueryInformationJobObject(
@@ -626,6 +654,8 @@ impl Process {
     pub fn process_ids(&self) -> Result<Vec<u32>> {
         let mut words = vec![0usize; 4098];
         let list = words.as_mut_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>();
+        // SAFETY: `words` is usize-aligned, outlives the call and its byte size is passed, and
+        // `count` is checked against the 4096 ids it can hold before the slice is made.
         unsafe {
             QueryInformationJobObject(
                 Some(raw(&self.job)),
@@ -647,6 +677,7 @@ impl Process {
         }
     }
     pub fn wait(&self, timeout: Duration) -> Result<u32> {
+        // SAFETY: `self.handle` is an owned process handle that stays open while `self` lives.
         unsafe {
             match WaitForSingleObject(
                 raw(&self.handle),
@@ -660,6 +691,7 @@ impl Process {
         self.exit_code()?.context("process still running")
     }
     pub fn stop(&self) -> Result<()> {
+        // SAFETY: `self.job` is an owned job handle that stays open while `self` lives.
         unsafe {
             TerminateJobObject(raw(&self.job), 0)?;
         }
@@ -673,6 +705,8 @@ impl Process {
             sent: bool,
         }
         unsafe extern "system" fn close_window(window: HWND, data: LPARAM) -> BOOL {
+            // SAFETY: EnumWindows passes the `&mut Closing` from stop_graceful as `data`, which
+            // outlives the enumeration and is not otherwise used during it.
             unsafe {
                 let closing = &mut *(data.0 as *mut Closing);
                 let mut pid = 0;
@@ -690,6 +724,8 @@ impl Process {
         }
         let mut words = vec![0usize; 4098];
         let list = words.as_mut_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>();
+        // SAFETY: `words` is usize-aligned with its byte size passed, `count` is checked before the
+        // slice, and `closing` outlives the synchronous EnumWindows call.
         unsafe {
             QueryInformationJobObject(
                 Some(raw(&self.job)),
@@ -746,6 +782,7 @@ pub enum HostShutdown {
 struct HostStop(OwnedHandle);
 impl HostStop {
     fn new() -> Result<Self> {
+        // SAFETY: CreateEventW returns a new event handle that this struct then owns.
         Ok(Self(owned(unsafe {
             CreateEventW(None, true, false, PCWSTR::null())?
         })))
@@ -753,11 +790,13 @@ impl HostStop {
     fn source(&self) -> String {
         format!(
             "{}:{:x}",
+            // SAFETY: GetCurrentProcessId has no preconditions.
             unsafe { GetCurrentProcessId() },
             self.0.as_raw_handle() as usize
         )
     }
     fn request(&self) -> Result<()> {
+        // SAFETY: `self.0` is the owned event handle, open while `self` lives.
         unsafe {
             SetEvent(raw(&self.0))?;
         }
@@ -784,6 +823,8 @@ fn parse_stop_source(source: &str) -> Result<(u32, usize)> {
 }
 fn parent_pid() -> Result<u32> {
     use windows::Win32::System::Diagnostics::ToolHelp::*;
+    // SAFETY: `entry` has dwSize set to its size and the owned snapshot handle is open for every
+    // call.
     unsafe {
         let snapshot = owned(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)?);
         let mut entry = PROCESSENTRY32W {
@@ -801,6 +842,8 @@ fn parent_pid() -> Result<u32> {
     }
 }
 fn duplicate_stop_event(pid: u32, handle: usize) -> Result<OwnedHandle> {
+    // SAFETY: the parent process handle is owned for the call, DuplicateHandle validates `handle`
+    // in that process, and the copy is owned once.
     unsafe {
         let parent = owned(OpenProcess(PROCESS_DUP_HANDLE, false, pid)?);
         let mut duplicate = HANDLE::default();
@@ -833,6 +876,7 @@ impl StopSignal {
     pub fn requested(&self) -> bool {
         self.0
             .as_ref()
+            // SAFETY: `event` is an owned handle borrowed from `self`, open for the wait.
             .is_some_and(|event| unsafe { WaitForSingleObject(raw(event), 0) == WAIT_OBJECT_0 })
     }
 }
@@ -885,11 +929,14 @@ pub fn shell_command(command: &str) -> String {
 }
 /// The current time on the clock of [`creation_time`] (100 ns since 1601).
 pub fn now() -> u64 {
+    // SAFETY: GetSystemTimeAsFileTime has no preconditions.
     let time = unsafe { windows::Win32::System::SystemInformation::GetSystemTimeAsFileTime() };
     u64::from(time.dwHighDateTime) << 32 | u64::from(time.dwLowDateTime)
 }
 /// A process's creation time (100 ns since 1601), 0 when it cannot be read.
 pub fn creation_time(pid: u32) -> u64 {
+    // SAFETY: the process handle is owned and open for the call, and each out-pointer is a local
+    // FILETIME.
     unsafe {
         let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
             return 0;
@@ -915,6 +962,8 @@ pub fn creation_time(pid: u32) -> u64 {
 pub fn processes() -> Result<Vec<butterpollo_core::steam::Process>> {
     use windows::Win32::System::Diagnostics::ToolHelp::*;
     let mut list = vec![];
+    // SAFETY: `entry` has dwSize set to its size and the owned snapshot handle stays open for the
+    // loop.
     unsafe {
         let snapshot = owned(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)?);
         let mut entry = PROCESSENTRY32W {
@@ -943,6 +992,8 @@ pub fn processes() -> Result<Vec<butterpollo_core::steam::Process>> {
 }
 /// A process's full program path.
 pub fn image_path(pid: u32) -> Option<String> {
+    // SAFETY: `buffer` outlives the call and `size` is its capacity in UTF-16 units, updated to the
+    // length written.
     unsafe {
         let process = owned(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?);
         let mut buffer = [0u16; 32768];
@@ -970,6 +1021,8 @@ pub fn stop_processes(processes: &BTreeMap<u32, u64>, timeout: Duration) {
             .collect()
     };
     unsafe extern "system" fn close_window(window: HWND, data: LPARAM) -> BOOL {
+        // SAFETY: EnumWindows passes the `&Vec<u32>` from stop_processes as `data`, which outlives
+        // the enumeration.
         unsafe {
             let ids = &*(data.0 as *const Vec<u32>);
             let mut pid = 0;
@@ -984,6 +1037,7 @@ pub fn stop_processes(processes: &BTreeMap<u32, u64>, timeout: Duration) {
     if ids.is_empty() {
         return;
     }
+    // SAFETY: `ids` outlives the synchronous EnumWindows call that reads it through `close_window`.
     unsafe {
         let _ = EnumWindows(
             Some(close_window),
@@ -995,6 +1049,7 @@ pub fn stop_processes(processes: &BTreeMap<u32, u64>, timeout: Duration) {
         std::thread::sleep(Duration::from_millis(50));
     }
     for pid in alive(processes) {
+        // SAFETY: the handle OpenProcess returns is owned and closed once on drop.
         unsafe {
             if let Ok(process) = OpenProcess(PROCESS_TERMINATE, false, pid) {
                 let process = owned(process);
@@ -1054,12 +1109,14 @@ mod tests {
         assert!(!signal.requested());
         let event = raw(signal.0.as_ref().unwrap());
         assert_eq!(
+            // SAFETY: `event` is a handle owned by `signal`, which is alive here.
             unsafe { SetEvent(event) }.unwrap_err().code(),
             windows::core::HRESULT::from_win32(ERROR_ACCESS_DENIED.0)
         );
         source.request()?;
         drop(source);
         assert!(signal.requested());
+        // SAFETY: `event` is a handle owned by `signal`, which is alive here.
         assert!(unsafe { ResetEvent(event) }.is_err());
         Ok(())
     }
@@ -1105,6 +1162,7 @@ mod tests {
         let mut ids = [0usize; 34];
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let count = loop {
+            // SAFETY: `ids` outlives the call and its byte size is passed.
             unsafe {
                 QueryInformationJobObject(
                     Some(raw(&process.job)),
@@ -1115,6 +1173,8 @@ mod tests {
                 )
                 .unwrap();
             }
+            // SAFETY: `ids` holds a JOBOBJECT_BASIC_PROCESS_ID_LIST whose second u32, inside the
+            // array, is NumberOfProcessIdsInList.
             let count = unsafe { *ids.as_ptr().cast::<u32>().add(1) } as usize;
             if count >= 2 {
                 break count;
@@ -1129,12 +1189,15 @@ mod tests {
         let children: Vec<_> = ids[1..=count]
             .iter()
             .map(|id| {
+                // SAFETY: OpenProcess has no memory preconditions and the returned handle is owned
+                // once.
                 owned(unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, *id as u32).unwrap() })
             })
             .collect();
         drop(process);
         for child in children {
             assert_eq!(
+                // SAFETY: `child` is an owned process handle, open for the wait.
                 unsafe { WaitForSingleObject(raw(&child), 5000) },
                 WAIT_OBJECT_0
             );
