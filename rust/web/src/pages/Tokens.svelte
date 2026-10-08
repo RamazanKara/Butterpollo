@@ -21,7 +21,7 @@
 </script>
 
 <div class="page">
-  <PageHeader title="API tokens" subtitle="A token lets a script call the API routes you choose, without your password." />
+  <PageHeader title="API tokens" subtitle="Give scripts access to selected API paths without sharing your password." />
   <div class="stack">
     <p class="notice usage">
       <span>Scripts send the token with each request: <code>Authorization: Bearer &lt;token&gt;</code></span>
@@ -33,11 +33,13 @@
 
 <style>
   .page {
+    display: grid;
+    gap: var(--space-5);
     min-width: 0;
     max-width: 1040px;
   }
   .stack {
-    gap: var(--space-4);
+    gap: var(--space-5);
   }
   .usage {
     overflow-wrap: anywhere;
@@ -47,6 +49,6 @@
     border: 1px solid var(--line);
     border-radius: 4px;
     background: var(--panel);
-    white-space: nowrap;
+    white-space: normal;
   }
 </style>

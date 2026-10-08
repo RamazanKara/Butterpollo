@@ -385,8 +385,8 @@
         <Panel title={active.label} description={active.description} flush>
           {#if inCategory.length === 0}
             {#if active.id !== 'advanced'}
-              <EmptyState icon="settings" title="Nothing here yet">
-                <p>This console does not describe any {active.label.toLowerCase()} settings yet.</p>
+              <EmptyState icon="settings" title="No settings in this category">
+                <p>There are no {active.label.toLowerCase()} settings available.</p>
               </EmptyState>
             {/if}
           {:else if basic.length === 0}
@@ -432,7 +432,7 @@
       <p class="status" role="status">
         <span class="dot" aria-hidden="true"></span>
         {pending.size} unsaved {pending.size === 1 ? 'change' : 'changes'}
-        {#if invalidCount}<span class="problem">Fix the JSON before saving.</span>{/if}
+        {#if invalidCount}<span class="problem">Correct the highlighted settings before saving.</span>{/if}
       </p>
       <div class="actions">
         <Button disabled={saving} onclick={discard}>Discard</Button>

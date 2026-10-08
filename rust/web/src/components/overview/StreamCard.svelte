@@ -15,7 +15,7 @@
   const perf = $derived(stream.performance);
   // No frames in the last two seconds: the averages are zeros, not measurements.
   const measured = $derived(perf.sample_frames > 0);
-  const codec = $derived((CODEC_NAMES as readonly string[])[stream.video_format] ?? `Codec ${stream.video_format}`);
+  const codec = $derived((CODEC_NAMES as readonly string[])[stream.video_format] ?? 'Unknown video format');
   const mbps = $derived(stream.encoder_bitrate_kbps / 1000);
   const starved = $derived(
     stream.pyrowave_minimum_kbps != null && stream.encoder_bitrate_kbps < stream.pyrowave_minimum_kbps,
@@ -30,6 +30,14 @@
   const latest = $derived(trend.at(-1) ?? 0);
 
   const timing = (value: number) => (measured ? ms(value) : '–');
+  const encoders: Record<string, string> = {
+    amf: 'AMD AMF',
+    nvenc: 'NVIDIA NVENC',
+    nvenc_legacy: 'NVIDIA NVENC (FFmpeg)',
+    qsv: 'Intel Quick Sync',
+    software: 'Software',
+    pyrowave: 'PyroWave',
+  };
 </script>
 
 <article class="stream" aria-label="Stream to {stream.device_name}">
@@ -48,11 +56,11 @@
   <ul class="spec">
     <li class="num">{stream.width}×{stream.height} at {stream.fps} fps</li>
     <li>{codec}</li>
-    {#if stream.encoder}<li>Encoder: {stream.encoder}</li>{/if}
-    {#if stream.hdr}<li><Badge>HDR</Badge></li>{/if}
-    {#if stream.vrr}<li><Badge>VRR</Badge></li>{/if}
+    {#if stream.encoder}<li>Encoder: {encoders[stream.encoder] ?? 'Other encoder'}</li>{/if}
+    {#if stream.hdr}<li><abbr title="High dynamic range">HDR</abbr></li>{/if}
+    {#if stream.vrr}<li><abbr title="Variable refresh rate">VRR</abbr></li>{/if}
     <li class="num">{mbps.toFixed(mbps < 100 ? 1 : 0)} Mbps</li>
-    <li><span>Up <span class="num">{duration(stream.uptime_seconds)}</span></span></li>
+    <li><span>Connected for <span class="num">{duration(stream.uptime_seconds)}</span></span></li>
   </ul>
 
   {#each stream.warnings ?? [] as warning (warning.code)}
@@ -66,7 +74,7 @@
       {:else}
         PyroWave bitrate is below recommended: text and textures may lose detail.
       {/if}
-      Try <span class="num">{recommended}</span> Mbps or more at this resolution and frame rate, with network headroom.
+      Try <span class="num">{recommended}</span> Mbps or more at this resolution and frame rate, with spare network capacity.
       Quality depends on the picture. Raise the bitrate in Moonlight, or use HEVC or AV1.
     </p>
   {/if}
@@ -75,22 +83,22 @@
     <div>
       <dt>Frame rate</dt>
       <dd class="value num">{measured ? `${Math.round(perf.fps)} fps` : '–'}</dd>
-      <dd class="sub">target <span class="num">{stream.fps}</span></dd>
+      <dd class="sub">Target <span class="num">{stream.fps}</span></dd>
     </div>
     <div>
-      <dt>Encode</dt>
+      <dt>Encoding time</dt>
       <dd class="value num">{timing(perf.encode_p95_ms)}</dd>
-      <dd class="sub">p95</dd>
+      <dd class="sub">95% of frames are faster</dd>
     </div>
     <div>
       <dt>Host processing</dt>
       <dd class="value num">{timing(perf.host_processing_mean_ms)}</dd>
-      <dd class="sub">mean, p99 <span class="num">{timing(perf.host_processing_p99_ms)}</span></dd>
+      <dd class="sub">Average; 99% below <span class="num">{timing(perf.host_processing_p99_ms)}</span></dd>
     </div>
     <div>
       <dt>Frame age</dt>
       <dd class="value num">{timing(perf.frame_age_mean_ms)}</dd>
-      <dd class="sub">mean</dd>
+      <dd class="sub">Average</dd>
     </div>
   </dl>
   {#if !measured && !stopping}
@@ -99,8 +107,8 @@
 
   <figure>
     <figcaption>
-      <span>Host processing mean{trend.length > 1 ? `, last ${duration(trend.length)}` : ''}</span>
-      {#if trend.length > 1}<span class="peak num">peak {ms(peak)}</span>{/if}
+      <span>Average host processing{trend.length > 1 ? `, last ${duration(trend.length)}` : ''}</span>
+      {#if trend.length > 1}<span class="peak num">Peak {ms(peak)}</span>{/if}
     </figcaption>
     {#if trend.length > 1}
       <Sparkline
@@ -129,6 +137,7 @@
   }
   .who {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--space-2);
     min-width: 0;
@@ -213,6 +222,7 @@
   figcaption {
     display: flex;
     justify-content: space-between;
+    flex-wrap: wrap;
     gap: var(--space-3);
     font-size: var(--text-xs);
     color: var(--muted);

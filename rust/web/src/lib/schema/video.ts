@@ -90,7 +90,7 @@ const video: Setting[] = [
     key: 'capture_poll_interval_us',
     label: 'Capture poll interval',
     description:
-      'How long the capture thread waits before checking again when no new frame is ready. Shorter waits notice new frames sooner and use more CPU time.',
+      'How long screen capture waits before checking again when no new frame is ready. Shorter waits notice new frames sooner and use more CPU time.',
     category: 'video',
     group: 'Capture',
     control: { kind: 'number', min: 100, max: 1000, step: 50, unit: 'µs' },
@@ -111,9 +111,9 @@ const video: Setting[] = [
   },
   {
     key: 'wgc_slot_aligned_publish',
-    label: 'Align capture to encode slots',
+    label: 'Align capture with encoding',
     description:
-      'With Windows Graphics Capture, holds a new frame until just before the next encode slot when a newer frame could arrive first. Helps when the display refreshes much faster than the stream; VRR streams ignore it.',
+      'With Windows Graphics Capture, holds a new frame until just before the next frame is due to be encoded when a newer frame could arrive first. Helps when the display refreshes much faster than the stream; variable refresh rate (VRR) streams ignore it.',
     category: 'video',
     group: 'Capture',
     control: { kind: 'toggle' },
@@ -136,7 +136,7 @@ const video: Setting[] = [
     key: 'gpu_compute_conversion',
     label: 'Copy and convert on a compute queue',
     description:
-      'On supported AMD GPUs, copies Desktop Duplication and Windows Graphics Capture frames and converts their colours on compute queues beside a game. Unsupported capture textures fall back to the graphics queue. Turn off to compare or troubleshoot.',
+      'On supported AMD GPUs, copies Desktop Duplication and Windows Graphics Capture frames and converts their colors on compute queues beside a game. Unsupported capture textures fall back to the graphics queue. Turn off to compare or troubleshoot.',
     category: 'video',
     group: 'Capture',
     control: { kind: 'toggle' },
@@ -147,7 +147,7 @@ const video: Setting[] = [
     key: 'hevc_mode',
     label: 'HEVC support',
     description:
-      'Which HEVC profiles clients may request. A profile the encoder fails when the host starts is never offered.',
+      'Which HEVC profiles devices may request. A profile the encoder fails when the host starts is never offered.',
     category: 'video',
     group: 'Codecs',
     control: {
@@ -166,7 +166,7 @@ const video: Setting[] = [
     key: 'av1_mode',
     label: 'AV1 support',
     description:
-      'Which AV1 profiles clients may request. A profile the encoder fails when the host starts is never offered.',
+      'Which AV1 profiles devices may request. A profile the encoder fails when the host starts is never offered.',
     category: 'video',
     group: 'Codecs',
     control: {
@@ -185,7 +185,7 @@ const video: Setting[] = [
     key: 'pyrowave',
     label: 'PyroWave',
     description:
-      'Lets compatible clients request PyroWave, a GPU codec that encodes each frame on its own with very low latency. Synthetic desktop and game tests suggest 277 Mbps for 720p60, 399 Mbps for 1080p60 or 1593 Mbps for 4K60 for clean pictures. Severe detail loss is likely below 139, 187 or 747 Mbps respectively. Quality depends on the picture. Use a fast wired network with headroom for packet overhead and recovery data; 4K60 needs more than gigabit Ethernet. If the client or network cannot carry the rate, use HEVC or AV1.',
+      'Lets compatible devices request PyroWave, a GPU codec that encodes each frame on its own with very low latency. Synthetic desktop and game tests suggest 277 Mbps for 720p60, 399 Mbps for 1080p60 or 1593 Mbps for 4K60 for clean pictures. Severe detail loss is likely below 139, 187 or 747 Mbps respectively. Quality depends on the picture. Use a fast wired network with headroom for packet overhead and recovery data; 4K60 needs more than gigabit Ethernet. If the device or network cannot carry the rate, use HEVC or AV1.',
     category: 'video',
     group: 'Codecs',
     control: { kind: 'toggle' },
@@ -194,9 +194,9 @@ const video: Setting[] = [
   },
   {
     key: 'prefer_sdr_10bit',
-    label: '10-bit SDR instead of HDR',
+    label: 'Prefer 10-bit SDR',
     description:
-      'When a client asks for HDR, keeps the display in SDR and sends 10-bit SDR video, which reduces banding without switching the screen to HDR. Not applied while RTX HDR converts the stream; devices and apps can override it.',
+      'When a device asks for HDR, keeps the display in standard dynamic range (SDR) and sends 10-bit SDR video, which reduces banding without switching the screen to HDR. Not applied while RTX HDR converts the stream; devices and apps can override it.',
     category: 'video',
     group: 'Codecs',
     control: { kind: 'toggle' },
@@ -206,7 +206,7 @@ const video: Setting[] = [
     key: 'frame_pacing',
     label: 'Frame pacing',
     description:
-      'On arrival encodes each new frame as soon as it is captured, never faster than the stream rate. Fixed grid encodes the newest frame at fixed intervals; VRR streams ignore this setting.',
+      'On arrival encodes each new frame as soon as it is captured, never faster than the stream rate. Fixed grid encodes the newest frame at fixed intervals; variable refresh rate (VRR) streams ignore this setting.',
     category: 'video',
     group: 'Frame pacing',
     control: {
@@ -243,7 +243,7 @@ const video: Setting[] = [
     key: 'limit_framerate',
     label: 'Use the launch frame rate',
     description:
-      'Encodes at the frame rate the client asked for when it launched the app rather than the rate in its stream request. If the stream request is twice that rate or more, the bitrate is raised to match.',
+      'Encodes at the frame rate the device asked for when it launched the app rather than the rate in its stream request. If the stream request is twice that rate or more, the bitrate is raised to match.',
     category: 'video',
     group: 'Frame pacing',
     control: { kind: 'toggle' },
@@ -252,7 +252,7 @@ const video: Setting[] = [
   {
     key: 'max_bitrate',
     label: 'Maximum bitrate',
-    description: "Caps the bitrate a client can request. 0 uses the client's bitrate.",
+    description: "Caps the bitrate a device can request. 0 uses the device's bitrate.",
     category: 'video',
     group: 'Bitrate and network',
     control: { kind: 'number', min: 0, step: 1, unit: 'Kbps' },
@@ -272,7 +272,7 @@ const video: Setting[] = [
     key: 'pyrowave_critical_fec_percentage',
     label: 'PyroWave error correction',
     description:
-      'Recovery packets for the start of each PyroWave frame, which holds its coarsest detail; losing it drops the whole frame. 0 turns it off, and only clients that support it use it.',
+      'Recovery packets for the start of each PyroWave frame, which holds its coarsest detail; losing it drops the whole frame. 0 turns it off, and only devices that support it use it.',
     category: 'video',
     group: 'Bitrate and network',
     control: { kind: 'number', min: 0, max: 255, step: 1, unit: '%' },
@@ -283,7 +283,7 @@ const video: Setting[] = [
     key: 'packetsize',
     label: 'Packet size',
     description:
-      'Largest video packet the host sends, from 256 to 1400 bytes. 0 uses the size the client asks for; lower it if your network drops large packets.',
+      'Largest video packet the host sends, from 256 to 1400 bytes. 0 uses the size the device asks for; lower it if your network drops large packets.',
     category: 'video',
     group: 'Bitrate and network',
     control: { kind: 'number', min: 0, max: 1400, step: 1, unit: 'bytes' },
@@ -344,9 +344,9 @@ const encoders: Setting[] = [
   },
   {
     key: 'adapter_name',
-    label: 'GPU',
+    label: 'Graphics card',
     description:
-      'The GPU that captures and encodes the stream. Automatic uses the GPU the streamed display is connected to.',
+      'The graphics processing unit (GPU) that captures and compresses the video. Automatic uses the card connected to the streamed display.',
     category: 'encoders',
     group: 'Encoder',
     control: { kind: 'adapter' },
@@ -354,7 +354,7 @@ const encoders: Setting[] = [
   },
   {
     key: 'adapter_pnp_id',
-    label: 'GPU device ID',
+    label: 'Graphics card device ID',
     description:
       'Chooses the GPU by its Windows device instance ID instead of its name, for systems with two identical GPUs. When set, it takes precedence over the GPU name.',
     category: 'encoders',
@@ -370,7 +370,7 @@ const nvidia: Setting[] = [
     key: 'nvenc_preset',
     label: 'Preset',
     description:
-      'Higher presets compress better at the same bitrate but take longer to encode each frame. Raise it only when the network or the client limits the bitrate.',
+      'Higher presets compress better at the same bitrate but take longer to encode each frame. Raise it only when the network or the device limits the bitrate.',
     category: 'encoders',
     group: 'NVIDIA NVENC',
     control: {
@@ -470,9 +470,9 @@ const nvidia: Setting[] = [
   },
   {
     key: 'nvenc_realtime_hags',
-    label: 'Realtime GPU priority with HAGS',
+    label: 'Real-time graphics priority',
     description:
-      'With hardware-accelerated GPU scheduling on, the host runs at realtime GPU priority. Turn off if the encoder freezes when video memory is nearly full; the host then uses high priority.',
+      'With hardware-accelerated GPU scheduling (HAGS) on in Windows, the host gets real-time priority on the graphics card. Turn off if the encoder freezes when video memory is nearly full; the host then uses high priority.',
     category: 'encoders',
     group: 'NVIDIA NVENC',
     control: { kind: 'toggle' },
@@ -528,7 +528,7 @@ const nvidia: Setting[] = [
   {
     key: 'nvenc_min_qp_h264',
     label: 'Minimum QP for H.264',
-    description: 'The lowest quantizer H.264 frames may use. Higher values cap quality sooner.',
+    description: 'The lowest quantization parameter (QP), which controls compression, for H.264 frames. Higher values cap quality sooner.',
     category: 'encoders',
     group: 'NVIDIA NVENC',
     control: { kind: 'number', min: 0, max: 51, step: 1 },
@@ -539,7 +539,7 @@ const nvidia: Setting[] = [
   {
     key: 'nvenc_min_qp_hevc',
     label: 'Minimum QP for HEVC',
-    description: 'The lowest quantizer HEVC frames may use. Higher values cap quality sooner.',
+    description: 'The lowest quantization parameter (QP), which controls compression, for HEVC frames. Higher values cap quality sooner.',
     category: 'encoders',
     group: 'NVIDIA NVENC',
     control: { kind: 'number', min: 0, max: 51, step: 1 },
@@ -550,7 +550,7 @@ const nvidia: Setting[] = [
   {
     key: 'nvenc_min_qp_av1',
     label: 'Minimum QP for AV1',
-    description: 'The lowest quantizer AV1 frames may use, from 0 to 255. Higher values cap quality sooner.',
+    description: 'The lowest quantization parameter (QP), which controls compression, for AV1 frames, from 0 to 255. Higher values cap quality sooner.',
     category: 'encoders',
     group: 'NVIDIA NVENC',
     control: { kind: 'number', min: 0, max: 255, step: 1 },
@@ -743,7 +743,7 @@ const amd: Setting[] = [
   },
   {
     key: 'amd_enforce_hrd',
-    label: 'Enforce HRD',
+    label: 'Enforce decoder buffer limits',
     description:
       'Holds rate control to the decoder buffer model, which greatly reduces bitrate spikes. Can cause artifacts or lower quality on some GPUs.',
     category: 'encoders',
@@ -875,7 +875,7 @@ const amd: Setting[] = [
   {
     key: 'amd_av1_tiles',
     label: 'AV1 tiles',
-    description: "Tiles per AV1 frame. Automatic follows the client's slice request, up to 4.",
+    description: "Tiles per AV1 frame. Automatic follows the device's slice request, up to 4.",
     category: 'encoders',
     group: 'AMD AMF',
     control: {

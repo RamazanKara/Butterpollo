@@ -173,7 +173,7 @@ export const settings: Setting[] = [
     key: 'steam_enabled',
     label: 'Steam library',
     description:
-      'Adds your Steam games to the library, with their covers, and ends a stream when the game it started exits. Library › Sync Steam adds them now.',
+      'Adds your Steam games to the library, with their covers, and ends a stream when the game it started exits. In Library, select Sync now beside Steam to add them now.',
     category: 'library',
     group: 'Steam',
     control: { kind: 'toggle' },
@@ -181,7 +181,7 @@ export const settings: Setting[] = [
   },
   {
     key: 'steam_auto_sync',
-    label: 'Keep in step',
+    label: 'Sync automatically',
     description: 'Checks Steam every 30 seconds and updates the Steam apps when games are installed, removed or played.',
     category: 'library',
     group: 'Steam',

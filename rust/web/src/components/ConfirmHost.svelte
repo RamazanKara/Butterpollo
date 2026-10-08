@@ -44,6 +44,7 @@
   .buttons {
     display: flex;
     justify-content: flex-end;
+    flex-wrap: wrap;
     gap: var(--space-2);
   }
 </style>

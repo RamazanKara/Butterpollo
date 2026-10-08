@@ -94,7 +94,6 @@
     align-items: center;
     gap: var(--space-3);
     padding: var(--space-2) var(--space-3);
-    margin-bottom: var(--space-4);
     border: 1px solid var(--line);
     border-radius: var(--radius-lg);
     background: var(--panel);

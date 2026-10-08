@@ -77,7 +77,7 @@
       {#if updates.check_failed}<p class="notice warn" role="alert">The last check failed. {updates.check_error || 'Check that this PC can reach GitHub.'}</p>{/if}
       {#if loadError}<p class="notice warn" role="alert">Could not refresh update status: {loadError}</p>{/if}
       {#if updates.phase === 'waiting' || updates.phase === 'ready'}
-        <p class="notice" role="status">{updates.queued_version} is queued. Waiting for the host to be idle. Disconnect clients and quit the host app to continue.</p>
+        <p class="notice" role="status">{updates.queued_version} is queued. Waiting for the host to be idle. Disconnect devices and close the running app to continue.</p>
       {:else if updates.phase === 'downloading'}
         <p class="notice" role="status">Downloading {updates.queued_version}: {progress}%</p>
         <progress max="100" value={progress} aria-label="Update download">{progress}%</progress>

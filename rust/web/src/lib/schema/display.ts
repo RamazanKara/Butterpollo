@@ -254,7 +254,7 @@ export const settings: Setting[] = [
     key: 'dd_snapshot_exclude_devices',
     label: 'Displays the saved layout skips',
     description:
-      'A JSON list of display device IDs that restoring the saved layout leaves as they are, such as a dummy plug.',
+      'A list of display device IDs in JSON format (text enclosed in square brackets) that restoring the saved layout leaves as they are, such as a dummy plug.',
     category: 'display',
     group: 'After a stream',
     control: { kind: 'json' },
@@ -346,7 +346,7 @@ export const settings: Setting[] = [
     key: 'frame_limiter_provider',
     label: 'Limiter',
     description:
-      'What enforces the limit. Automatic and RTSS use RTSS when it is installed and the NVIDIA driver otherwise; None turns off all limiting.',
+      'What enforces the limit. Automatic and RTSS use RivaTuner Statistics Server (RTSS) when it is installed and the NVIDIA driver otherwise; None turns off all limiting.',
     category: 'frame-limiting',
     group: 'Frame limiter',
     control: {
@@ -367,7 +367,7 @@ export const settings: Setting[] = [
       'The frame rate games are capped at; 0 uses the stream’s frame rate. RTSS keeps decimals such as 59.94, the NVIDIA driver rounds them.',
     category: 'frame-limiting',
     group: 'Frame limiter',
-    control: { kind: 'number', min: 0, max: 1000, step: 0.001, unit: 'FPS' },
+    control: { kind: 'number', min: 0, max: 1000, step: 0.001, unit: 'fps' },
     default: 0,
   },
   {
@@ -418,7 +418,7 @@ export const settings: Setting[] = [
     control: {
       kind: 'select',
       options: [
-        { value: 'async', label: 'Async' },
+        { value: 'async', label: 'Asynchronous' },
         { value: 'front edge sync', label: 'Front edge sync' },
         { value: 'back edge sync', label: 'Back edge sync' },
         { value: 'nvidia reflex', label: 'NVIDIA Reflex' },
@@ -551,7 +551,7 @@ export const settings: Setting[] = [
     key: 'fallback_mode',
     label: 'Default stream mode',
     description:
-      'The resolution and frame rate used when a launch request names none, as WIDTHxHEIGHTxFPS. Clients normally send their own.',
+      'The resolution and frame rate used when a launch request names none, as WIDTHxHEIGHTxFPS. Devices normally send their own.',
     category: 'advanced',
     group: 'Displays',
     control: { kind: 'text', placeholder: '1920x1080x60', mono: true },

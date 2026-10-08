@@ -69,7 +69,6 @@
   {/if}
 
   <div class="meta">
-    <code class="key" title="Configuration key">{setting.key}</code>
     <span>Default: <span class="default" class:mono={fallback.literal}>{fallback.text}</span></span>
     {#if setting.restart}<span>Applies after a restart</span>{/if}
     {#if inactive}<span>Not used with the current settings</span>{/if}
@@ -140,10 +139,6 @@
     gap: 2px var(--space-3);
     font-size: var(--text-xs);
     color: var(--muted);
-  }
-  .key {
-    color: var(--ink-2);
-    overflow-wrap: anywhere;
   }
   .default {
     color: var(--ink-2);

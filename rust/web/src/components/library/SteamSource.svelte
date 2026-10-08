@@ -53,7 +53,7 @@
       <strong>Steam</strong>
       <span class="muted">
         {#if status.available}
-          {scope}{status.auto_sync ? ', kept in step' : ''}
+          {scope}{status.auto_sync ? ', synced automatically' : ''}
         {:else}
           Steam is not installed on this PC.
         {/if}
@@ -66,7 +66,7 @@
   <div class="source hint">
     <Icon name="gamepad" />
     <span class="text muted">Steam is installed. Turn on the Steam library to add your games with their covers.</span>
-    <Button size="sm" href="/settings/library">Game library settings</Button>
+    <Button size="sm" href="/settings/library">Library settings</Button>
   </div>
 {/if}
 
@@ -76,7 +76,6 @@
     align-items: center;
     gap: var(--space-3);
     padding: var(--space-2) var(--space-3);
-    margin-bottom: var(--space-4);
     border: 1px solid var(--line);
     border-radius: var(--radius-lg);
     background: var(--panel);

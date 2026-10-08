@@ -75,7 +75,7 @@
   }
 </script>
 
-<Panel title="Create a token" description="Choose only the routes and methods the script needs.">
+<Panel title="Create a token" description="Select the API paths the script needs and the request methods allowed on each path.">
   {#if secret}
     <div class="stack issued">
       <p class="notice warn" role="status">
@@ -93,19 +93,19 @@
   {:else if routes}
     <div class="stack">
       <div class="search">
-        <label class="visually-hidden" for="route-search">Search routes</label>
+        <label class="visually-hidden" for="route-search">Search API paths</label>
         <span class="search-icon" aria-hidden="true"><Icon name="search" size={15} /></span>
         <input
           id="route-search"
           class="input"
           type="search"
-          placeholder="Search routes"
+          placeholder="Search API paths"
           autocomplete="off"
           spellcheck="false"
           bind:value={query}
         />
       </div>
-      <ul class="routes" aria-label="Routes">
+      <ul class="routes" aria-label="API paths">
         {#each shown as route (route.path)}
           <li class:picked={route.methods.some((method) => chosen.has(key(method, route.path)))}>
             <span class="mono path">{displayPath(route.path)}</span>
@@ -124,30 +124,30 @@
             </span>
           </li>
         {:else}
-          <li class="none muted">No routes match “{query}”.</li>
+          <li class="none muted">No API paths match “{query}”.</li>
         {/each}
       </ul>
       <div class="footer">
         <span class="muted count">
           {#if tooMany}
-            <span class="over">{scopes.length} routes selected; a token can have at most {MAX_ROUTES}.</span>
+            <span class="over">{scopes.length} paths selected; a token can have at most {MAX_ROUTES}.</span>
           {:else if chosen.size}
             {chosen.size} {chosen.size === 1 ? 'permission' : 'permissions'} on {scopes.length}
-            {scopes.length === 1 ? 'route' : 'routes'}
+            {scopes.length === 1 ? 'path' : 'paths'}
           {:else}
-            Nothing selected
+            No permissions selected
           {/if}
         </span>
         <div class="row">
-          {#if chosen.size}<Button variant="ghost" onclick={() => chosen.clear()}>Clear</Button>{/if}
+          {#if chosen.size}<Button variant="ghost" onclick={() => chosen.clear()}>Clear selection</Button>{/if}
           <Button variant="primary" icon="key" {busy} disabled={!scopes.length || tooMany} onclick={create}>Create token</Button>
         </div>
       </div>
     </div>
   {:else if loadError}
-    <p class="notice danger" role="alert">Could not load the routes: {loadError}</p>
+    <p class="notice danger" role="alert">Could not load the API paths: {loadError}</p>
   {:else}
-    <p class="muted loading">Loading routes…</p>
+    <p class="muted loading">Loading API paths…</p>
   {/if}
 </Panel>
 

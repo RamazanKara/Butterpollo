@@ -45,21 +45,21 @@
 <div class="rtx">
   <Toggle
     label="Use RTX HDR for this app"
-    hint="Turns the app’s SDR picture into HDR on NVIDIA GPUs when a device streams in HDR."
+    hint="Turns the app’s SDR picture into HDR on NVIDIA graphics cards when a device streams in HDR."
     bind:checked={() => draft.flag('rtx-hdr'), (value) => draft.setFlag('rtx-hdr', value)}
   />
 
   <div class="numbers">
-    <NumberField {draft} key="rtx-hdr-sdr-brightness" label="SDR brightness" hint="0 to 100." placeholder="Host" />
-    <NumberField {draft} key="rtx-hdr-contrast" label="Contrast" hint="−100 to 100." placeholder="Host" />
-    <NumberField {draft} key="rtx-hdr-saturation" label="Saturation" hint="−100 to 100." placeholder="Host" />
-    <NumberField {draft} key="rtx-hdr-middle-gray" label="Middle gray" hint="10 to 100." placeholder="Host" />
+    <NumberField {draft} key="rtx-hdr-sdr-brightness" label="SDR brightness" hint="0 to 100." placeholder="Host setting" />
+    <NumberField {draft} key="rtx-hdr-contrast" label="Contrast" hint="−100 to 100." placeholder="Host setting" />
+    <NumberField {draft} key="rtx-hdr-saturation" label="Saturation" hint="−100 to 100." placeholder="Host setting" />
+    <NumberField {draft} key="rtx-hdr-middle-gray" label="Middle gray" hint="10 to 100." placeholder="Host setting" />
     <NumberField
       {draft}
       key="rtx-hdr-peak-brightness"
       label="Peak brightness"
       hint="400 to 2000."
-      placeholder="Host"
+      placeholder="Host setting"
       unit="nits"
     />
   </div>

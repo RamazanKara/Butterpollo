@@ -8,7 +8,7 @@
 
 <fieldset class="list" aria-describedby="{id}-hint">
   <legend>Detached commands</legend>
-  <p class="hint" id="{id}-hint">Started and left running, e.g. launchers.</p>
+  <p class="hint" id="{id}-hint">Run independently of the app and stay open when it closes, such as game launchers.</p>
   {#each rows as row, index (row.key)}
     <div class="item">
       <input

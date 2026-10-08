@@ -37,7 +37,7 @@
   <select {id} class="select" bind:value={() => draft.text(key), (next) => draft.setText(key, next)}>
     <option value="">{empty}</option>
     {#if value && !known}
-      <option {value}>{value} (not recognised)</option>
+      <option {value}>Saved custom choice</option>
     {/if}
     {#each options as option (option.value)}
       <option value={option.value}>{option.label}</option>

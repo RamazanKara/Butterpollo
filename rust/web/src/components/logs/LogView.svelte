@@ -144,6 +144,15 @@
     font-family: var(--font);
     font-size: var(--text-sm);
   }
+  @media (max-width: 520px) {
+    .lines {
+      width: 100%;
+    }
+    .line {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+  }
   .jump {
     position: absolute;
     right: var(--space-4);

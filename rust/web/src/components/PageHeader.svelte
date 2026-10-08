@@ -19,7 +19,9 @@
     align-items: flex-end;
     gap: var(--space-4);
     flex-wrap: wrap;
-    margin-bottom: var(--space-5);
+  }
+  .page-header > div {
+    min-width: 0;
   }
   p {
     margin-top: 6px;

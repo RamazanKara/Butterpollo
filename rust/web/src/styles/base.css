@@ -16,6 +16,7 @@ body {
   font: var(--text) / 1.5 var(--font);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  overflow-wrap: anywhere;
 }
 
 #app {

@@ -120,7 +120,7 @@
     const status = meta.capture_status;
     const backend = status.configured_backend || 'auto';
     const method =
-      backend === 'auto' ? 'Picks the capture method automatically.' : `Uses ${CAPTURE[backend] ?? backend}.`;
+      backend === 'auto' ? 'Picks the capture method automatically.' : `Uses ${CAPTURE[backend] ?? 'the configured capture method'}.`;
     if (status.error) {
       return { ...base, tone: 'danger', state: 'Error', text: `${method} Displays can't be read.`, detail: status.error };
     }

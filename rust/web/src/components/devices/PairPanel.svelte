@@ -32,7 +32,7 @@
                 <dt>Address</dt>
                 <dd class="num">{session.metadata.pc_address}</dd>
                 {#if others.length}
-                  <dt>Also</dt>
+                  <dt>Other addresses</dt>
                   <dd class="num">{others.join(', ')}</dd>
                 {/if}
               </dl>

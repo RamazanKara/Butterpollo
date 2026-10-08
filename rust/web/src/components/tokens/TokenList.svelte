@@ -18,13 +18,12 @@
   const expanded = new SvelteSet<string>();
   let revoking = $state<string | null>(null);
 
-  const short = (hash: string) => hash.slice(0, 12);
   const created = (value: number | string) => (typeof value === 'number' ? when(value) : value);
 
   async function revoke(token: ApiToken) {
     const ok = await confirm({
       title: 'Revoke this token?',
-      message: `Scripts using token ${short(token.hash)} lose access immediately. This cannot be undone.`,
+      message: `Scripts using the token created ${created(token.created_at)} lose access immediately. This cannot be undone.`,
       confirm: 'Revoke',
       danger: true,
     });
@@ -32,7 +31,7 @@
     revoking = token.hash;
     try {
       await api.tokens.revoke(token.hash);
-      notify(`Token ${short(token.hash)} revoked.`, 'ok');
+      notify('Token revoked.', 'ok');
       await onchange();
     } catch (failure) {
       failed('Revoking the token failed', failure);
@@ -63,8 +62,7 @@
         <li>
           <div class="info">
             <div class="head">
-              <span class="mono hash" title={token.hash}>{short(token.hash)}</span>
-              <span class="muted">Created {created(token.created_at)}</span>
+              <strong>Created {created(token.created_at)}</strong>
             </div>
             <p class="scopes mono">
               {open ? list.join(', ') : list.slice(0, SUMMARY).join(', ')}{#if !open && list.length > SUMMARY}, …{/if}
@@ -110,6 +108,7 @@
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
+    flex-wrap: wrap;
     gap: var(--space-4);
     padding: var(--space-3) var(--space-5);
     border-bottom: 1px solid var(--line);
@@ -130,11 +129,8 @@
     gap: 4px var(--space-3);
     font-size: var(--text-sm);
   }
-  .hash {
+  .head strong {
     font-weight: 600;
-  }
-  .head .muted {
-    font-size: var(--text-xs);
   }
   .scopes {
     font-size: var(--text-xs);

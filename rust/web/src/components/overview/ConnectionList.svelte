@@ -29,14 +29,14 @@
       <li>
         <div class="what">
           <span class="name">{session.device_name || 'Unnamed device'}</span>
-          <Badge>{ROLES[session.role] ?? session.role}</Badge>
+          <Badge>{ROLES[session.role] ?? 'Other connection'}</Badge>
           {#if session.state === 'STOPPING'}<Badge tone="warn">Stopping</Badge>{/if}
         </div>
         <div class="detail muted">
           {#if session.role === 'remote_monitor'}
             <span class="num">{session.width}×{session.height} at {session.fps} fps</span>
           {/if}
-          <span>Up <span class="num">{duration(session.uptime_seconds)}</span></span>
+          <span>Connected for <span class="num">{duration(session.uptime_seconds)}</span></span>
         </div>
         <div class="action">
           <Button

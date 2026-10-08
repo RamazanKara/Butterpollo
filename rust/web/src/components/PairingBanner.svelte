@@ -34,7 +34,7 @@
     <Icon name="link" />
     <div class="text">
       <strong>{first.name} wants to pair.</strong>
-      <span class="muted">Enter the PIN Moonlight shows on that device.{requests.length > 1
+      <span class="muted">Enter the PIN shown on that device.{requests.length > 1
           ? ` ${requests.length - 1} more waiting.`
           : ''}</span>
     </div>

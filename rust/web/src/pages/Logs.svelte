@@ -144,7 +144,7 @@
 </script>
 
 <div class="page">
-  <PageHeader title="Logs" subtitle="The host log, read every second. The viewer keeps the latest {MAX_LINES} lines.">
+  <PageHeader title="Logs" subtitle="Troubleshooting messages from the host, updated every second. The viewer keeps the latest {MAX_LINES} lines.">
     {#snippet actions()}
       <Button href={api.logs.downloadUrl} icon="download">Download log</Button>
       <Button href={api.logs.supportBundleUrl} icon="download">Download support bundle</Button>
@@ -167,7 +167,7 @@
             id="log-search"
             class="input"
             type="search"
-            placeholder="Search"
+            placeholder="Search the log"
             autocomplete="off"
             spellcheck="false"
             bind:value={query}
@@ -194,14 +194,14 @@
       {:else if loaded}
         <Badge tone="live">Live</Badge>
       {/if}
-      <Toggle label="Follow" bind:checked={follow} />
+      <Toggle label="Follow latest" bind:checked={follow} />
       <Button size="sm" onclick={() => (paused = !paused)}>{paused ? 'Resume' : 'Pause'}</Button>
-      <Button size="sm" icon="copy" disabled={!visible.length} onclick={copy}>Copy</Button>
+      <Button size="sm" icon="copy" disabled={!visible.length} onclick={copy}>Copy visible lines</Button>
     </div>
   </div>
 
   {#if error}
-    <p class="notice danger" role="alert">Could not read the log: {error}. Trying again every second.</p>
+    <p class="notice danger" role="alert">Could not read the log: {error}. {paused ? 'Resume updates to try again.' : 'Trying again every second.'}</p>
   {/if}
 
   <LogView lines={visible} {pattern} {matched} {current} {placeholder} bind:follow />
@@ -210,7 +210,7 @@
 <style>
   .page {
     display: grid;
-    gap: var(--space-3);
+    gap: var(--space-5);
     min-width: 0;
   }
   .toolbar {

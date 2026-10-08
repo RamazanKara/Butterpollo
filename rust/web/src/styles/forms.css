@@ -89,7 +89,7 @@
 /* A label and its value on one line (details lists). */
 .facts {
   display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
   gap: 8px var(--space-5);
   margin: 0;
   font-size: var(--text-sm);
@@ -130,6 +130,7 @@
   display: grid;
   gap: var(--space-5);
   align-content: start;
+  min-width: 0;
 }
 .row {
   display: flex;

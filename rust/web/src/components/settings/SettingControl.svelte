@@ -66,7 +66,7 @@
           const matches = current !== '' && [name, display.device_id].some((field) => field && same(field, current));
           const choice = matches ? current : name;
           if (options.some((option) => option.value === choice)) continue;
-          const text = display.friendly_name ? `${display.friendly_name} (${name})` : name;
+          const text = display.friendly_name || `Display ${options.length}`;
           options.push({ value: choice, label: display.primary ? `${text} · primary` : text });
         }
         break;
@@ -83,7 +83,7 @@
           if (sink.virtual_sink && !sink.name.toLowerCase().includes('steam streaming speakers')) {
             marks.push('Steam Streaming Speakers');
           }
-          options.push({ value: choice, label: [sink.name || sink.id, ...marks].join(' · ') });
+          options.push({ value: choice, label: [sink.name || sink.description || 'Unnamed audio device', ...marks].join(' · ') });
         }
         break;
       case 'adapter': {
@@ -96,7 +96,7 @@
         return [];
     }
     if (!options.some((option) => option.value === current)) {
-      const missing = { value: current, label: current === '' ? 'Not set' : `${current} (current)` };
+      const missing = { value: current, label: current === '' ? 'Not set' : 'Saved custom choice' };
       options.splice(options[0]?.value === '' ? 1 : 0, 0, missing);
     }
     return options;
@@ -285,7 +285,7 @@
         </button>
       </div>
     {:else}
-      <p class="none">None.</p>
+      <p class="none">No entries.</p>
     {/each}
     <div><Button size="sm" icon="plus" onclick={() => addRow([...items, ''])}>Add</Button></div>
   </div>
@@ -294,7 +294,7 @@
     {#each commands as row, index}
       <div class="command" data-row>
         <label class="cell">
-          <span class="cell-label">Do<span class="visually-hidden">, command {index + 1}</span></span>
+          <span class="cell-label">{setting.key === 'global_state_cmd' ? 'On resume' : 'Before launch'}<span class="visually-hidden">, command {index + 1}</span></span>
           <input
             class="input mono"
             autocomplete="off"
@@ -304,7 +304,7 @@
           />
         </label>
         <label class="cell">
-          <span class="cell-label">Undo<span class="visually-hidden">, command {index + 1}</span></span>
+          <span class="cell-label">{setting.key === 'global_state_cmd' ? 'On pause' : 'After exit'}<span class="visually-hidden">, command {index + 1}</span></span>
           <input
             class="input mono"
             autocomplete="off"
@@ -334,7 +334,7 @@
         </div>
       </div>
     {:else}
-      <p class="none">None.</p>
+      <p class="none">No commands.</p>
     {/each}
     <div>
       <Button size="sm" icon="plus" onclick={() => addRow([...commands, { do: '', undo: '', elevated: false }])}>
@@ -386,7 +386,7 @@
         </div>
       </div>
     {:else}
-      <p class="none">None.</p>
+      <p class="none">No host commands.</p>
     {/each}
     <div>
       <Button size="sm" icon="plus" onclick={() => addRow([...serverCommands, { name: '', cmd: '', elevated: false }])}>
@@ -395,6 +395,7 @@
     </div>
   </div>
 {:else if control.kind === 'json'}
+  <p class="note">Edit as JSON: use double quotes around text, commas between entries, and matching brackets.</p>
   <textarea
     {id}
     class="textarea"

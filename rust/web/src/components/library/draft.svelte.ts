@@ -75,34 +75,6 @@ export type TextKey =
   | 'frame-generation-mode'
   | 'gamepad'
   | 'lossless-scaling-profile';
-const TEXT_KEYS: TextKey[] = [
-  'virtual-display-mode',
-  'virtual-display-layout',
-  'display-output',
-  'dd-configuration-option',
-  'frame-generation-mode',
-  'gamepad',
-  'lossless-scaling-profile',
-];
-
-/** Keys the editor has a control for (or shows elsewhere). */
-const KNOWN = new Set<string>([
-  'name',
-  'cmd',
-  'working-dir',
-  'detached',
-  'prep-cmd',
-  'image-path',
-  'uuid',
-  'prefer-10bit-sdr',
-  'lossless-scaling-recommended',
-  'lossless-scaling-custom',
-  'lossless-scaling-framegen',
-  ...Object.keys(FLAGS),
-  ...Object.keys(NUMBERS),
-  ...TEXT_KEYS,
-]);
-
 export function blankApp(): App {
   return { name: '', cmd: '', 'working-dir': '', 'prep-cmd': [] };
 }
@@ -257,13 +229,6 @@ export class AppDraft {
     if (!Number.isInteger(value)) return 'Enter a whole number.';
     if (range.max === undefined) return value < range.min ? `Enter ${range.min} or more.` : '';
     return value < range.min || value > range.max ? `Enter ${range.min} to ${range.max}.` : '';
-  }
-
-  /** Keys the editor has no control for; they are saved unchanged. */
-  others(): [string, unknown][] {
-    return Object.entries(this.app)
-      .filter(([key]) => !KNOWN.has(key))
-      .sort(([a], [b]) => a.localeCompare(b));
   }
 
   /** The Lossless Scaling profile the app uses. */

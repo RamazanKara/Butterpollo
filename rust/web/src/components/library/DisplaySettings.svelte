@@ -80,7 +80,7 @@
       options={LAYOUTS}
     />
     <Field
-      label="Display output"
+      label="Display"
       id="{uid}-output"
       hint="Device ID or name of the monitor to stream. Empty uses the device’s or the host’s choice."
     >
@@ -89,7 +89,7 @@
         class="input mono"
         autocomplete="off"
         spellcheck="false"
-        placeholder="Host setting"
+        placeholder="Use the host setting"
         bind:value={() => draft.text('display-output'), (value) => draft.setText('display-output', value)}
       />
     </Field>

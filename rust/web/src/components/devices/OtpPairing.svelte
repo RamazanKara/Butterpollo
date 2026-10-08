@@ -58,7 +58,7 @@
         bind:value={passphrase}
       />
     </Field>
-    <Field label="Device name" id="{uid}-name" hint="Optional. Empty uses the name Artemis sends.">
+    <Field label="Device name" id="{uid}-name" hint="Optional. Leave empty to use the name from Artemis.">
       <input id="{uid}-name" class="input" autocomplete="off" bind:value={deviceName} />
     </Field>
     <div>
@@ -74,7 +74,7 @@
           <p><strong>This PIN expired.</strong> Create a new one.</p>
         {:else}
           <p aria-live="off">Expires in <span class="num">{countdown}</span>. Works once.</p>
-          <p>In Artemis, choose Pair with OTP for this PC and enter this PIN and the passphrase.</p>
+          <p>In Artemis, choose “Pair with OTP” (one-time PIN) for this PC and enter this PIN and the passphrase.</p>
         {/if}
         {#if otp.host || otp.address}
           <p class="muted">

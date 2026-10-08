@@ -35,14 +35,14 @@
 <div class="prep" bind:this={list}>
   {#if rows.length}
     <div class="head" aria-hidden="true">
-      <span>Do</span>
-      <span>Undo</span>
+      <span>Before launch</span>
+      <span>After exit</span>
     </div>
     <ol class="rows">
       {#each rows as row, index (row.key)}
         <li class="row-item" data-key={row.key}>
           <div class="cell">
-            <label class="cell-label" for="{id}-do-{row.key}">Do, command {index + 1}</label>
+            <label class="cell-label" for="{id}-do-{row.key}">Before launch, command {index + 1}</label>
             <input
               id="{id}-do-{row.key}"
               class="input mono"
@@ -53,7 +53,7 @@
             />
           </div>
           <div class="cell">
-            <label class="cell-label" for="{id}-undo-{row.key}">Undo, command {index + 1}</label>
+            <label class="cell-label" for="{id}-undo-{row.key}">After exit, command {index + 1}</label>
             <input
               id="{id}-undo-{row.key}"
               class="input mono"
@@ -106,7 +106,7 @@
       {/each}
     </ol>
   {:else}
-    <p class="muted none">None.</p>
+    <p class="muted none">No preparation commands.</p>
   {/if}
   <div>
     <Button size="sm" icon="plus" onclick={add}>Add command</Button>

@@ -61,7 +61,7 @@
       {draft}
       key="gamepad"
       label="Controller type"
-      hint="Automatic matches each client's controller: DualSense for PlayStation or for motion and touchpad input, Switch Pro for Nintendo, Xbox Series otherwise. A choice here uses that pad for this app."
+      hint="Automatic matches each device’s controller: DualSense for PlayStation or for motion and touchpad input, Switch Pro for Nintendo, Xbox Series otherwise. A choice here uses that controller for this app."
       options={GAMEPADS}
     />
   </div>
@@ -69,7 +69,7 @@
   <div class="toggles">
     <Toggle
       label="Legacy frame generation capture fix"
-      hint="Older switch. Only used while Frame generation is None."
+      hint="Compatibility option for older frame generation setups. Only used when Frame generation is set to None."
       bind:checked={() => draft.flag('gen1-framegen-fix'), (value) => draft.setFlag('gen1-framegen-fix', value)}
     />
     <Toggle

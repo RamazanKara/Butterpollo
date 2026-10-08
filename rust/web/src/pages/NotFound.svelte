@@ -1,9 +1,9 @@
 <script lang="ts">
   import Button from '../components/Button.svelte';
-  import EmptyState from '../components/EmptyState.svelte';
+  import PageHeader from '../components/PageHeader.svelte';
 </script>
 
-<EmptyState icon="search" title="Page not found">
-  <p>This address is not part of the console.</p>
+<PageHeader title="Page not found" subtitle="This address is not part of the console." />
+<div>
   <Button href="/">Go to the overview</Button>
-</EmptyState>
+</div>

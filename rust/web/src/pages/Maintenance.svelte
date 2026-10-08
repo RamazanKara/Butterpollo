@@ -49,6 +49,8 @@
 
 <style>
   .page {
+    display: grid;
+    gap: var(--space-5);
     min-width: 0;
   }
   .columns {
@@ -58,12 +60,12 @@
     align-items: start;
   }
   .stack {
-    gap: var(--space-4);
+    gap: var(--space-5);
   }
   @media (max-width: 1100px) {
     .columns {
       grid-template-columns: minmax(0, 1fr);
-      gap: var(--space-4);
+      gap: var(--space-5);
     }
   }
 </style>

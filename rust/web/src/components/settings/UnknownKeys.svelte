@@ -63,44 +63,48 @@
 
 <section class="unknown" aria-labelledby="{uid}-title">
   <div class="intro">
-    <h3 id="{uid}-title">Other keys</h3>
-    <p>Keys in the settings file that this console does not describe. Values are saved exactly as typed.</p>
+    <h3 id="{uid}-title">Custom settings</h3>
+    <p>Settings without a built-in control. Use the configuration key from the host's settings file. Values are saved exactly as typed.</p>
   </div>
 
   {#if keys.length}
     <ul>
-      {#each keys as key (key)}
+      {#each keys as key, index (key)}
         {@const removed = edits[key] === null}
         {@const marked = has(changes, key)}
         <li class:marked>
-          <label class="key" for="{uid}-{key}"><code>{key}</code></label>
-          <div class="value">
-            <input
-              id="{uid}-{key}"
-              class="input mono"
-              autocomplete="off"
-              spellcheck="false"
-              disabled={removed}
-              value={text(key)}
-              oninput={(event) => onedit(key, event.currentTarget.value)}
-            />
-            {#if removed}
-              <Button size="sm" onclick={() => onundo(key)}>
-                Undo<span class="visually-hidden">{` removing ${key}`}</span>
-              </Button>
-            {:else}
-              <button type="button" class="remove" aria-label="Remove {key}" title="Remove" onclick={() => onremove(key)}>
-                <Icon name="trash" size={15} />
-              </button>
-            {/if}
-          </div>
+          <Field label="Configuration key" id="{uid}-{key}-key">
+            <input id="{uid}-{key}-key" class="input mono" value={key} readonly />
+          </Field>
+          <Field label="Value" id="{uid}-{key}">
+            <div class="value">
+              <input
+                id="{uid}-{key}"
+                class="input mono"
+                autocomplete="off"
+                spellcheck="false"
+                disabled={removed}
+                value={text(key)}
+                oninput={(event) => onedit(key, event.currentTarget.value)}
+              />
+              {#if removed}
+                <Button size="sm" onclick={() => onundo(key)}>
+                  Undo<span class="visually-hidden"> removing custom setting {index + 1}</span>
+                </Button>
+              {:else}
+                <button type="button" class="remove" aria-label="Remove custom setting {index + 1}" title="Remove" onclick={() => onremove(key)}>
+                  <Icon name="trash" size={15} />
+                </button>
+              {/if}
+            </div>
+          </Field>
           {#if removed}
             <p class="state">Removed when saved</p>
           {:else if marked}
             <p class="state">
               <span class="changed">{has(stored, key) ? 'Changed' : 'New'}</span>
               <button type="button" class="link" onclick={() => onundo(key)}>
-                Undo<span class="visually-hidden">{` ${key}`}</span>
+                Undo<span class="visually-hidden"> custom setting {index + 1}</span>
               </button>
             </p>
           {/if}
@@ -108,19 +112,19 @@
       {/each}
     </ul>
   {:else if adding}
-    <p class="none">The settings file has no other keys.</p>
+    <p class="none">No custom settings.</p>
   {/if}
 
   {#if adding}
-    <form class="add" onsubmit={add} aria-label="Add a key">
-      <Field label="Key" id="{uid}-new-key" error={tried && keyError ? keyError : undefined}>
+    <form class="add" onsubmit={add} aria-label="Add a custom setting">
+      <Field label="Configuration key" id="{uid}-new-key" error={tried && keyError ? keyError : undefined}>
         <input id="{uid}-new-key" class="input mono" autocomplete="off" spellcheck="false" bind:value={newKey} />
       </Field>
       <Field label="Value" id="{uid}-new-value" error={tried && valueError ? valueError : undefined}>
         <input id="{uid}-new-value" class="input mono" autocomplete="off" spellcheck="false" bind:value={newValue} />
       </Field>
       <div class="add-action">
-        <Button type="submit" size="sm" icon="plus">Add key</Button>
+        <Button type="submit" size="sm" icon="plus">Add setting</Button>
       </div>
     </form>
   {/if}
@@ -171,12 +175,6 @@
   }
   li.marked {
     box-shadow: inset 3px 0 0 var(--accent);
-  }
-  .key {
-    min-width: 0;
-    overflow-wrap: anywhere;
-    color: var(--ink-2);
-    font-size: var(--text-sm);
   }
   .value {
     display: flex;

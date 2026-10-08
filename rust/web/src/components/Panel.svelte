@@ -44,9 +44,13 @@
     display: flex;
     justify-content: space-between;
     align-items: flex-start;
+    flex-wrap: wrap;
     gap: var(--space-4);
     padding: var(--space-4) var(--space-5);
     border-bottom: 1px solid var(--line);
+  }
+  header > div {
+    min-width: 0;
   }
   header p {
     font-size: var(--text-sm);
@@ -60,5 +64,11 @@
   }
   .body {
     padding: var(--space-5);
+  }
+  @media (max-width: 520px) {
+    header,
+    .body {
+      padding: var(--space-4);
+    }
   }
 </style>

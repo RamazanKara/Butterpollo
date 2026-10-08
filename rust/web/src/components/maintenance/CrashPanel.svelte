@@ -62,7 +62,7 @@
         <dt>Size</dt>
         <dd class="num">{bytes(crash.size_bytes)}</dd>
       </dl>
-      <p class="muted note">The support bundle contains this dump and the host logs. Attach it to a bug report.</p>
+      <p class="muted note">The support bundle contains this crash report and the host logs. Attach it to a bug report.</p>
       <div class="row">
         <Button href={api.logs.supportBundleUrl} icon="download">Download support bundle</Button>
         <Button {busy} onclick={dismiss}>Dismiss</Button>

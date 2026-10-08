@@ -97,6 +97,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    flex-wrap: wrap;
     gap: var(--space-3);
     padding: var(--space-3) var(--space-5);
     border-bottom: 1px solid var(--line);

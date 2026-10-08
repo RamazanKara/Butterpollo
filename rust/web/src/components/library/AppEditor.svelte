@@ -50,12 +50,10 @@
   /** 'launch', 'close', 'delete' or 'move' while a request is out. */
   let busy = $state('');
 
-  const uuid = $derived(draft.app.uuid);
   const isNew = $derived(!draft.saved.uuid);
   const savedName = $derived(draft.saved.name.trim());
   const running = $derived(runningName(status));
   const isRunning = $derived(!isNew && running !== '' && running === draft.saved.name);
-  const others = $derived(draft.others());
 
   // Follow a reload of the library while this form has no edits of its own.
   $effect(() => {
@@ -222,7 +220,7 @@
 
   {#if app?.['steam-managed'] === 'auto'}
     <p class="notice">
-      The Steam sync keeps this app in step with Steam and replaces its name, command and cover at each sync; other
+      Automatic syncing keeps this app up to date with Steam and replaces its name, command and cover at each sync; other
       settings stay. To keep your own name or command, add the game as a new app: the sync leaves apps you add alone.
     </p>
   {:else if typeof app?.['playnite-id'] === 'string' && app['playnite-id'] !== ''}
@@ -276,9 +274,6 @@
             </PathPicker>
           </Field>
           <DetachedList id="{uid}-detached" bind:rows={draft.detached} />
-          {#if uuid}
-            <p class="id muted">ID <span class="mono">{uuid}</span></p>
-          {/if}
         </div>
       </Panel>
 
@@ -287,7 +282,7 @@
       </Panel>
     </div>
 
-    <Panel title="Preparation commands" description="Run before the app starts. Undo commands run after it closes.">
+    <Panel title="Preparation commands" description="Run before the app starts. Cleanup commands run after it closes.">
       <div class="prep">
         <PrepCommands id="{uid}-prep" bind:rows={draft.prep} />
         <p class="note">
@@ -304,7 +299,7 @@
       </div>
     </Panel>
 
-    <Panel title="Behaviour" description="What the host does while the app runs.">
+    <Panel title="Behavior" description="What the host does while the app runs.">
       <div class="toggles">
         {@render flag('elevated', 'Run as administrator', 'Detached commands run as administrator too.')}
         {@render flag(
@@ -357,19 +352,6 @@
       <RtxSettings {draft} running={isRunning} />
     </Panel>
 
-    {#if others.length}
-      <details class="others">
-        <summary>Other settings <span class="muted num">({others.length})</span></summary>
-        <p class="muted note">This page has no controls for these. They are kept as they are when you save.</p>
-        <dl class="facts">
-          {#each others as [key, value] (key)}
-            <dt class="mono">{key}</dt>
-            <dd class="mono">{JSON.stringify(value)}</dd>
-          {/each}
-        </dl>
-      </details>
-    {/if}
-
     <footer class="bar">
       <Button type="submit" variant="primary" busy={saving} disabled={!draft.changed || draft.invalid}>Save</Button>
       <Button disabled={!draft.changed || saving} onclick={discard}>Discard</Button>
@@ -405,11 +387,8 @@
 <style>
   .editor {
     display: grid;
-    gap: var(--space-4);
+    gap: var(--space-5);
     min-width: 0;
-  }
-  .editor :global(.page-header) {
-    margin-bottom: 0;
   }
   .back {
     justify-self: start;
@@ -440,22 +419,18 @@
   }
   .sections {
     display: grid;
-    gap: var(--space-4);
+    gap: var(--space-5);
     min-width: 0;
   }
   .top {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(220px, 300px);
-    gap: var(--space-4);
+    gap: var(--space-5);
     align-items: start;
   }
   .fields {
     display: grid;
-    gap: var(--space-4);
-  }
-  .id {
-    font-size: var(--text-xs);
-    overflow-wrap: anywhere;
+    gap: var(--space-5);
   }
   .toggles {
     display: grid;
@@ -467,7 +442,7 @@
   }
   .prep {
     display: grid;
-    gap: var(--space-4);
+    gap: var(--space-5);
   }
   .note {
     font-size: var(--text-xs);
@@ -476,27 +451,6 @@
   }
   .note code {
     color: var(--ink-2);
-  }
-  .others {
-    border: 1px solid var(--line);
-    border-radius: var(--radius-lg);
-    background: var(--panel);
-    padding: var(--space-3) var(--space-5);
-  }
-  .others summary {
-    cursor: pointer;
-    font-weight: 600;
-    font-size: var(--text-sm);
-  }
-  .others[open] summary {
-    margin-bottom: var(--space-3);
-  }
-  .others .note {
-    margin-bottom: var(--space-3);
-  }
-  .others dt,
-  .others dd {
-    font-size: var(--text-xs);
   }
   .bar {
     position: sticky;

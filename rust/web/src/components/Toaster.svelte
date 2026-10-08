@@ -44,7 +44,11 @@
   .danger {
     border-left-color: var(--danger);
   }
+  .toast > span {
+    min-width: 0;
+  }
   button {
+    flex: none;
     border: 0;
     background: none;
     color: var(--muted);

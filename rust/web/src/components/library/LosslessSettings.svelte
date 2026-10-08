@@ -30,7 +30,7 @@
     { value: 'xbr', label: 'xBR' },
     { value: 'sharp-bilinear', label: 'Sharp bilinear' },
     { value: 'integer', label: 'Integer' },
-    { value: 'nearest', label: 'Nearest neighbour' },
+    { value: 'nearest', label: 'Nearest neighbor' },
   ];
 
   const generating = $derived(draft.text('frame-generation-mode') === 'lossless-scaling');
@@ -125,8 +125,8 @@
           {draft}
           key="lossless-scaling-target-fps"
           label="Target frame rate"
-          hint="The frame rate Lossless Scaling generates up to. Empty uses the stream's."
-          placeholder="Stream's"
+          hint="The frame rate Lossless Scaling generates up to. Leave empty to use the stream frame rate."
+          placeholder="Stream frame rate"
           unit="fps"
         />
         <NumberField
@@ -134,7 +134,7 @@
           key="lossless-scaling-rtss-limit"
           label="Game frame limit"
           hint="The game is limited to this while frames are generated. Empty uses half the target."
-          placeholder="Half"
+          placeholder="Half the target"
           unit="fps"
         />
       {/if}
@@ -150,7 +150,7 @@
     <div class="toggles">
       <Toggle
         label="Performance mode"
-        hint="Lighter frame generation for weaker GPUs."
+        hint="Reduces the graphics card load during frame generation."
         bind:checked={performance, (value) => draft.setLossless('performance-mode', value)}
       />
       <Toggle

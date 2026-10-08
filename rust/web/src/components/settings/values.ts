@@ -196,7 +196,7 @@ export function describeDefault(setting: Setting): DefaultText {
     case 'server-commands':
       return word(count(toServerCommands(value).length));
     case 'json':
-      return value === null || value === '' ? word('Not set') : literal(JSON.stringify(value), 'Not set');
+      return word(value === null || value === '' ? 'Not set' : Array.isArray(value) ? `${value.length} entries` : 'Built-in configuration');
   }
 }
 

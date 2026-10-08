@@ -78,6 +78,7 @@
     outline-offset: 2px;
   }
   .text {
+    min-width: 0;
     display: grid;
     gap: 2px;
   }

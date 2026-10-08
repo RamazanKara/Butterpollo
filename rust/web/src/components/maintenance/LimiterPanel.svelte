@@ -23,10 +23,10 @@
     'nvidia-control-panel': 'NVIDIA driver',
     none: 'None',
   };
-  const provider = (name: string) => providers[name] ?? (name || 'None');
+  const provider = (name: string) => providers[name] ?? (name ? 'Other limiter' : 'None');
 </script>
 
-<Panel title="Frame limiter" description="Limits game frame rates during streams, through RTSS or the NVIDIA driver.">
+<Panel title="Frame limiter" description="Limits game frame rates during streams, through RivaTuner Statistics Server (RTSS) or the NVIDIA driver.">
   {#snippet actions()}
     {#if limiter}<Badge tone={limiter.enabled ? 'ok' : 'neutral'}>{limiter.enabled ? 'On' : 'Off'}</Badge>{/if}
   {/snippet}

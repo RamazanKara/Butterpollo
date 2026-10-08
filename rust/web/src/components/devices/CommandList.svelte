@@ -36,7 +36,7 @@
       </button>
     </div>
   {:else}
-    <p class="muted none">None.</p>
+    <p class="muted none">No commands.</p>
   {/each}
   <div>
     <Button size="sm" icon="plus" disabled={rows.length >= LIMIT} onclick={() => rows.push(commandRow())}>

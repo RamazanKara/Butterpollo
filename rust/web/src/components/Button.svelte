@@ -55,11 +55,13 @@
     color: var(--ink);
     font-weight: 560;
     font-size: var(--text-sm);
-    line-height: 1;
+    line-height: 1.3;
     padding: 9px 13px;
     cursor: pointer;
     text-decoration: none;
-    white-space: nowrap;
+    max-width: 100%;
+    white-space: normal;
+    text-align: center;
     transition: background 0.12s, border-color 0.12s;
   }
   .sm {
@@ -97,6 +99,10 @@
   .button:disabled {
     opacity: 0.55;
     cursor: default;
+  }
+  .button :global(svg),
+  .spinner {
+    flex: none;
   }
   .spinner {
     width: 13px;

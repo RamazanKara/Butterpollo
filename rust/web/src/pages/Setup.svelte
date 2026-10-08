@@ -36,8 +36,8 @@
   <form class="card" onsubmit={submit}>
     <h1>Set up this host</h1>
     <p class="muted">
-      Create the account for this console. It works only from this computer until it exists; afterwards you can manage
-      the host from any device on your network.
+      Create the account for this console. Set it up on this PC. Once the account is created, you can manage
+      the host from other devices on your network.
     </p>
     <Field label="Username" id="new-username">
       <input id="new-username" class="input" autocomplete="username" required bind:value={username} />
@@ -45,7 +45,7 @@
     <Field label="Password" id="new-password" hint="At least 8 characters.">
       <input id="new-password" class="input" type="password" autocomplete="new-password" minlength="8" required bind:value={password} />
     </Field>
-    <Field label="Confirm password" id="confirm-password" error={mismatch ? 'The passwords differ.' : undefined}>
+    <Field label="Confirm password" id="confirm-password" error={mismatch ? 'The passwords do not match.' : undefined}>
       <input id="confirm-password" class="input" type="password" autocomplete="new-password" required bind:value={confirmation} />
     </Field>
     {#if error}<p class="notice danger" role="alert">{error}</p>{/if}
@@ -80,7 +80,7 @@
     font-weight: 800;
   }
   .card {
-    width: min(440px, calc(100vw - 40px));
+    width: min(440px, calc(100vw - 48px));
     display: grid;
     gap: var(--space-4);
     padding: var(--space-6);
@@ -88,6 +88,11 @@
     border: 1px solid var(--line);
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow);
+  }
+  @media (max-width: 520px) {
+    .card {
+      padding: var(--space-5);
+    }
   }
   h1 {
     font-size: var(--text-xl);

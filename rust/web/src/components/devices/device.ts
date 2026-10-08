@@ -25,11 +25,11 @@ export const PERMISSION_GROUPS: { name: string; items: { bit: number; label: str
   {
     name: 'Other',
     items: [
-      { bit: PERM.CLIPBOARD_WRITE, label: 'Clipboard write' },
-      { bit: PERM.CLIPBOARD_READ, label: 'Clipboard read' },
-      { bit: PERM.FILE_UPLOAD, label: 'File upload' },
-      { bit: PERM.FILE_DOWNLOAD, label: 'File download' },
-      { bit: PERM.SERVER_CMD, label: 'Server commands' },
+      { bit: PERM.CLIPBOARD_WRITE, label: 'Write to the clipboard' },
+      { bit: PERM.CLIPBOARD_READ, label: 'Read the clipboard' },
+      { bit: PERM.FILE_UPLOAD, label: 'Upload files' },
+      { bit: PERM.FILE_DOWNLOAD, label: 'Download files' },
+      { bit: PERM.SERVER_CMD, label: 'Host commands' },
     ],
   },
 ];

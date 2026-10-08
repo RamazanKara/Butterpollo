@@ -38,7 +38,7 @@
   <form class="request" onsubmit={pair}>
     <div class="who">
       <span class="name">{request.name}</span>
-      <span class="muted age">Asked {duration(request.age_seconds)} ago</span>
+      <span class="muted age">Requested {duration(request.age_seconds)} ago</span>
     </div>
     <label class="visually-hidden" for="{uid}-pin">PIN shown on {request.name}</label>
     <div class="entry">

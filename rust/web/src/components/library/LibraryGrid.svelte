@@ -47,7 +47,7 @@
 
   const hint = $derived.by(() => {
     if (apps.length < 2) return '';
-    if (missingIds) return 'Some apps have no ID yet, so the order can’t be changed here.';
+    if (missingIds) return 'Restart the host to enable reordering for all apps.';
     if (canReorder) return 'Drag a cover to change the order.';
     return 'Clear the search and sort by library order to drag apps into place.';
   });
@@ -177,10 +177,10 @@
               <span class="name">{app.name || 'Unnamed app'}</span>
             </a>
           {:else}
-            <div class="open" title="This app has no ID yet. Restart the host to edit it here.">
+            <div class="open" title="Restart the host to edit this app.">
               <div class="art"><AppCover name={app.name} /></div>
               <span class="name">{app.name || 'Unnamed app'}</span>
-              <span class="muted note">Read-only, no ID yet</span>
+              <span class="muted note">Restart the host to edit</span>
             </div>
           {/if}
           <div class="actions">

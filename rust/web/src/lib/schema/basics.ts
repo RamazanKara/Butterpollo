@@ -55,7 +55,7 @@ const general: Setting[] = [
     key: 'sunshine_name',
     label: 'Host name',
     description:
-      "The name Moonlight shows for this host. Leave it empty to use the PC's name; LAN discovery picks up a change after a restart.",
+      "The name Moonlight shows for this host. Leave it empty to use the PC's name; local network discovery picks up a change after a restart.",
     category: 'general',
     group: 'Host',
     control: { kind: 'text', placeholder: "This PC's name" },
@@ -94,7 +94,7 @@ const general: Setting[] = [
     key: 'hide_tray_controls',
     label: 'Hide tray controls',
     description:
-      "Remove Disconnect clients, Restart and Quit from the tray icon's menu, so people at the PC cannot stop the host from there.",
+      "Remove the disconnect, restart and quit actions from the tray icon's menu, so people at the PC cannot stop the host from there.",
     category: 'general',
     group: 'Tray',
     control: { kind: 'toggle' },
@@ -142,7 +142,7 @@ const general: Setting[] = [
       options: [
         { value: 'verbose', label: 'Verbose' },
         { value: 'debug', label: 'Debug' },
-        { value: 'info', label: 'Info' },
+        { value: 'info', label: 'Information' },
         { value: 'warning', label: 'Warning' },
         { value: 'error', label: 'Error' },
         { value: 'none', label: 'None' },
@@ -163,9 +163,9 @@ const general: Setting[] = [
   },
   {
     key: 'legacy_ordering',
-    label: 'App order for older clients',
+    label: 'App order for older devices',
     description:
-      'Add invisible characters to app names so older Moonlight clients list apps in your order. This can break scripts and tools that match app names exactly.',
+      'Add invisible characters to app names so older versions of Moonlight list apps in your order. This can break scripts and tools that match app names exactly.',
     category: 'general',
     group: 'Compatibility',
     control: { kind: 'toggle' },
@@ -185,7 +185,7 @@ const general: Setting[] = [
 
 const encryption: Option[] = [
   { value: '0', label: 'Off' },
-  { value: '1', label: 'When the client supports it' },
+  { value: '1', label: 'When the device supports it' },
   { value: '2', label: 'Required' },
 ];
 
@@ -204,7 +204,7 @@ const network: Setting[] = [
   {
     key: 'address_family',
     label: 'IP versions',
-    description: 'Whether the host also accepts connections over IPv6. Ignored when a bind address is set.',
+    description: 'Whether the host also accepts connections over IPv6. Ignored when a listen address is set.',
     category: 'network',
     group: 'Ports and addresses',
     control: {
@@ -219,9 +219,9 @@ const network: Setting[] = [
   },
   {
     key: 'bind_address',
-    label: 'Bind address',
+    label: 'Listen address',
     description:
-      "Listen on one of this PC's IP addresses instead of all of them; LAN discovery then uses only that address. Leave it empty to listen on every address.",
+      "Listen on one of this PC's IP addresses instead of all of them; local network discovery then uses only that address. Leave it empty to listen on every address.",
     category: 'network',
     group: 'Ports and addresses',
     control: { kind: 'text', placeholder: 'All addresses', mono: true },
@@ -230,7 +230,7 @@ const network: Setting[] = [
   },
   {
     key: 'enable_discovery',
-    label: 'LAN discovery',
+    label: 'Local network discovery',
     description: 'Announce this host on the local network so Moonlight finds it without typing an address.',
     category: 'network',
     group: 'Discovery and internet',
@@ -242,7 +242,7 @@ const network: Setting[] = [
     key: 'upnp',
     label: 'UPnP port forwarding',
     description:
-      'Ask the router to forward the streaming ports so clients can connect over the internet. The router must have UPnP turned on.',
+      'Ask the router to forward the streaming ports so devices can connect over the internet. The router must have Universal Plug and Play (UPnP) turned on.',
     category: 'network',
     group: 'Discovery and internet',
     control: { kind: 'toggle' },
@@ -251,9 +251,9 @@ const network: Setting[] = [
   },
   {
     key: 'lan_encryption_mode',
-    label: 'LAN encryption',
+    label: 'Local network encryption',
     description:
-      'Whether streams to clients on the local network, including Tailscale, are encrypted. Required turns away clients that cannot encrypt; encryption costs some performance on slower devices.',
+      'Whether streams to devices on the local network, including Tailscale, are encrypted. Required turns away devices that cannot encrypt; encryption costs some performance on slower devices.',
     category: 'network',
     group: 'Streams',
     control: { kind: 'select', options: encryption },
@@ -263,7 +263,7 @@ const network: Setting[] = [
     key: 'wan_encryption_mode',
     label: 'Internet encryption',
     description:
-      'Whether streams to clients outside the local network are encrypted. Required turns away clients that cannot encrypt.',
+      'Whether streams to devices outside the local network are encrypted. Required turns away devices that cannot encrypt.',
     category: 'network',
     group: 'Streams',
     control: { kind: 'select', options: encryption },
@@ -271,9 +271,9 @@ const network: Setting[] = [
   },
   {
     key: 'ping_timeout',
-    label: 'Client timeout',
+    label: 'Device timeout',
     description:
-      'How long the host waits without hearing from a client before it ends the stream. Raise it if streams drop on an unreliable network.',
+      'How long the host waits without hearing from a device before it ends the stream. Raise it if streams drop on an unreliable network.',
     category: 'network',
     group: 'Streams',
     control: { kind: 'number', min: 1000, max: 300000, step: 1, unit: 'ms' },
@@ -310,7 +310,7 @@ const network: Setting[] = [
     key: 'session_token_ttl_seconds',
     label: 'Sign-in token lifetime',
     description:
-      'How long a console sign-in lasts before the browser must renew it (60 to 604800 seconds). Without "remember me", a sign-in ends after this time or one day, whichever is longer.',
+      'How long a console sign-in lasts before the browser must renew it (60 to 604800 seconds). Without "Keep me signed in", a sign-in ends after this time or one day, whichever is longer.',
     category: 'network',
     group: 'Console',
     control: { kind: 'number', min: 60, max: 604800, step: 1, unit: 's' },
@@ -320,7 +320,7 @@ const network: Setting[] = [
     key: 'remember_me_refresh_token_ttl_seconds',
     label: 'Remembered sign-in lifetime',
     description:
-      'How long a browser signed in with "remember me" stays signed in, up to 366 days. Lower it on shared computers.',
+      'How long a browser signed in with "Keep me signed in" stays signed in, up to 366 days. Lower it on shared computers.',
     category: 'network',
     group: 'Console',
     control: { kind: 'number', min: 60, max: 31622400, step: 1, unit: 's' },
@@ -335,7 +335,7 @@ const audio: Setting[] = [
     key: 'stream_audio',
     label: 'Stream audio',
     description:
-      "Send the host's sound to the client. Turn it off when a stream is only used as an extra monitor and should stay silent.",
+      "Send the host's sound to the device. Turn it off when a stream is only used as an extra monitor and should stay silent.",
     category: 'audio',
     group: 'Sound',
     control: { kind: 'toggle' },
@@ -345,7 +345,7 @@ const audio: Setting[] = [
     key: 'audio_sink',
     label: 'Audio device',
     description:
-      'The device captured when the client keeps sound playing on the host, or when no virtual speakers exist. Leave it empty to use the Windows default output.',
+      'The audio output captured when the streaming device keeps sound playing on the host, or when no virtual speakers exist. Leave it empty to use the Windows default output.',
     category: 'audio',
     group: 'Devices',
     control: { kind: 'audio' },
@@ -356,7 +356,7 @@ const audio: Setting[] = [
     key: 'virtual_sink',
     label: 'Virtual speakers',
     description:
-      "The device made the Windows default during a stream, so sound goes to the client instead of the PC's speakers. Leave it empty to use Steam Streaming Speakers when installed; a device chosen here is used even when the client keeps sound on the host.",
+      "The audio output made the Windows default during a stream, so sound goes to the streaming device instead of the PC's speakers. Leave it empty to use Steam Streaming Speakers when installed; an output chosen here is used even when the streaming device keeps sound on the host.",
     category: 'audio',
     group: 'Devices',
     control: { kind: 'audio' },
@@ -443,7 +443,7 @@ function backGrip(key: string, name: string, where: string): Setting {
   return {
     key,
     label: `Back grip ${name}`,
-    description: `What the ${where} back button presses: a Steam Deck's ${name}, or the matching paddle on an Xbox Elite or DualSense Edge. The virtual pads have no back buttons, so they do nothing until mapped here. A Steam Deck passed through as a Steam Deck keeps its own.`,
+    description: `What the ${where} back button presses: a Steam Deck's ${name}, or the matching paddle on an Xbox Elite or DualSense Edge. The virtual controllers have no back buttons, so they do nothing until mapped here. A Steam Deck passed through as a Steam Deck keeps its own.`,
     category: 'input',
     group: 'Steam Deck and back grips',
     control: { kind: 'select', options: gripOptions },
@@ -456,7 +456,7 @@ const input: Setting[] = [
   {
     key: 'keyboard',
     label: 'Keyboard',
-    description: 'Let clients type on the host.',
+    description: 'Let devices type on the host.',
     category: 'input',
     group: 'Devices',
     control: { kind: 'toggle' },
@@ -465,7 +465,7 @@ const input: Setting[] = [
   {
     key: 'mouse',
     label: 'Mouse',
-    description: 'Let clients use the mouse on the host. Pen and touch input need this too.',
+    description: 'Let devices use the mouse on the host. Pen and touch input need this too.',
     category: 'input',
     group: 'Devices',
     control: { kind: 'toggle' },
@@ -474,7 +474,7 @@ const input: Setting[] = [
   {
     key: 'controller',
     label: 'Controllers',
-    description: 'Let clients use game controllers on the host.',
+    description: 'Let devices use game controllers on the host.',
     category: 'input',
     group: 'Devices',
     control: { kind: 'toggle' },
@@ -484,7 +484,7 @@ const input: Setting[] = [
     key: 'enable_input_only_mode',
     label: 'Remote input entry',
     description:
-      "Add a Remote Input entry to every client's app list. It sends keyboard, mouse and controller input to the host without video, for example from a second device.",
+      "Add a Remote Input entry to every device's app list. It sends keyboard, mouse and controller input to the host without video, for example from a second device.",
     category: 'input',
     group: 'Devices',
     control: { kind: 'toggle' },
@@ -494,7 +494,7 @@ const input: Setting[] = [
     key: 'always_send_scancodes',
     label: 'Send scan codes',
     description:
-      'Send keys as scan codes, which some games need to see keyboard input at all. Turn it off if a client with a non-US layout types the wrong characters.',
+      'Send keys as scan codes, which some games need to see keyboard input at all. Turn it off if a device with a non-US layout types the wrong characters.',
     category: 'input',
     group: 'Keyboard',
     control: { kind: 'toggle' },
@@ -504,7 +504,7 @@ const input: Setting[] = [
   {
     key: 'key_rightalt_to_key_win',
     label: 'Right Alt as Windows key',
-    description: 'Treat the right Alt key as the Windows key, for clients that cannot send the Windows key.',
+    description: 'Treat the right Alt key as the Windows key, for devices that cannot send the Windows key.',
     category: 'input',
     group: 'Keyboard',
     control: { kind: 'toggle' },
@@ -535,7 +535,7 @@ const input: Setting[] = [
     key: 'keybindings',
     label: 'Key remapping',
     description:
-      'Pairs of Windows virtual-key codes in one list, each key from the client followed by the key the host presses instead, such as ["0x10", "0xA0"]. Shift, Ctrl and Alt already map to their left-hand keys.',
+      'Pairs of Windows virtual-key codes in one list, each key from the device followed by the key the host presses instead, such as ["0x10", "0xA0"]. Shift, Ctrl and Alt already map to their left-hand keys.',
     category: 'input',
     group: 'Keyboard',
     control: { kind: 'json' },
@@ -546,7 +546,7 @@ const input: Setting[] = [
     key: 'high_resolution_scrolling',
     label: 'High-resolution scrolling',
     description:
-      'Pass fine scroll steps from the client. Turn it off for older apps that scroll too far, so scrolling moves in whole notches.',
+      'Pass fine scroll steps from the device. Turn it off for older apps that scroll too far, so scrolling moves in whole notches.',
     category: 'input',
     group: 'Mouse, pen and touch',
     control: { kind: 'toggle' },
@@ -557,7 +557,7 @@ const input: Setting[] = [
     key: 'native_pen_touch',
     label: 'Native pen and touch',
     description:
-      'Pass pen and touch from clients to Windows as pen and touch. Turn it off for apps that handle them badly; clients then send touch as mouse input.',
+      'Pass pen and touch from devices to Windows as pen and touch. Turn it off for apps that handle them badly; devices then send touch as mouse input.',
     category: 'input',
     group: 'Mouse, pen and touch',
     control: { kind: 'toggle' },
@@ -568,7 +568,7 @@ const input: Setting[] = [
     key: 'gamepad',
     label: 'Controller type',
     description:
-      "Automatic picks the virtual pad that matches each client's controller: DualSense, with adaptive triggers, for PlayStation, Switch Pro for Nintendo, and Xbox Series otherwise, or DualSense when the motion or touchpad options below select it. An explicit choice uses that pad for every controller. Steam stable can list a virtual Xbox pad twice; the Steam beta lists it once.",
+      "Automatic picks the virtual controller that matches each device's controller: DualSense, with adaptive triggers, for PlayStation, Switch Pro for Nintendo, and Xbox Series otherwise, or DualSense when the motion or touchpad options below select it. Choosing a type here uses it for all connected controllers. Steam stable can list a virtual Xbox controller twice; the Steam beta lists it once.",
     category: 'input',
     group: 'Controllers',
     control: {
@@ -589,7 +589,7 @@ const input: Setting[] = [
     key: 'motion_as_ds4',
     label: 'PlayStation controller for motion controls',
     description:
-      "With Automatic, motion sensors select DualSense, including for Xbox-type clients such as Steam Deck. Nintendo clients stay Switch Pro. Turn it off to ignore motion sensors when choosing.",
+      "With Automatic, motion sensors select DualSense, including for Xbox-type devices such as Steam Deck. Nintendo devices stay Switch Pro. Turn it off to ignore motion sensors when choosing.",
     category: 'input',
     group: 'Controllers',
     control: { kind: 'toggle' },
@@ -600,7 +600,7 @@ const input: Setting[] = [
     key: 'touchpad_as_ds4',
     label: 'PlayStation controller for touchpads',
     description:
-      "With Automatic, a touchpad selects DualSense. Nintendo clients stay Switch Pro. Turn it off to ignore the touchpad when choosing.",
+      "With Automatic, a touchpad selects DualSense. Nintendo devices stay Switch Pro. Turn it off to ignore the touchpad when choosing.",
     category: 'input',
     group: 'Controllers',
     control: { kind: 'toggle' },
@@ -610,7 +610,7 @@ const input: Setting[] = [
   {
     key: 'forward_rumble',
     label: 'Vibration',
-    description: "Send vibration from games back to the client's controller.",
+    description: "Send vibration from games back to the device's controller.",
     category: 'input',
     group: 'Controllers',
     control: { kind: 'toggle' },
@@ -632,7 +632,7 @@ const input: Setting[] = [
     key: 'steam_deck_controller',
     label: 'Steam Deck controller',
     description:
-      "How a Steam Deck's controls reach the host. Steam Deck attaches a real Steam Deck controller through usbip-win2, so Steam on the host sees a Steam Deck with its trackpads, gyro and back grips and applies its Steam Input layout; it needs usbip-win2 installed. Automatic does that while Steam is running on the host. Virtual pad always uses the virtual DualSense or Xbox pad.",
+      "How a Steam Deck's controls reach the host. Steam Deck attaches a real Steam Deck controller through usbip-win2, so Steam on the host sees a Steam Deck with its trackpads, motion sensors and back grips and applies its Steam Input layout; it needs usbip-win2 installed. Automatic does that while Steam is running on the host. Virtual controller always uses the virtual DualSense or Xbox controller.",
     category: 'input',
     group: 'Steam Deck and back grips',
     control: {
@@ -640,7 +640,7 @@ const input: Setting[] = [
       options: [
         { value: 'auto', label: 'Automatic' },
         { value: 'steam_deck', label: 'Steam Deck' },
-        { value: 'virtual_pad', label: 'Virtual pad' },
+        { value: 'virtual_pad', label: 'Virtual controller' },
       ],
     },
     default: 'auto',
@@ -665,7 +665,7 @@ const commands: Setting[] = [
   },
   {
     key: 'global_state_cmd',
-    label: 'State commands',
+    label: 'Pause and resume commands',
     description:
       "Commands run when any app's stream resumes (do) and when it pauses (undo), before the app's own state commands. Apps can opt out in their settings.",
     category: 'commands',
@@ -675,11 +675,11 @@ const commands: Setting[] = [
   },
   {
     key: 'server_cmd',
-    label: 'Server commands',
+    label: 'Host commands',
     description:
-      'Commands a client can run on the host from its stream menu, in clients that support it such as Artemis. Only devices with the Server commands permission see them.',
+      'Commands a device can run on the host from its stream menu, in streaming apps that support it, such as Artemis. Only devices with the Host commands permission see them.',
     category: 'commands',
-    group: 'From clients',
+    group: 'From devices',
     control: { kind: 'server-commands' },
     default: [],
   },

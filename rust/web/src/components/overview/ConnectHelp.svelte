@@ -23,7 +23,7 @@
           </span>
         {/if}
       {:else}
-        <span class="muted">loading…</span>
+        <span class="muted">Loading the host address…</span>
       {/if}
     </li>
     <li>Pair with the PIN the device shows, then choose an app.</li>

@@ -26,7 +26,7 @@ test('stream card renders the backend and actionable warnings as escaped text', 
     { code: 'capture', message: 'Capturing with Desktop Duplication: WGC unavailable. Sign in again.' },
     { code: 'encoder', message: 'Driver failed: <script>alert(1)</script>' },
   ] });
-  assert.match(result, /Encoder: amf/);
+  assert.match(result, /Encoder: AMD AMF/);
   assert.match(result, /role="status"[^>]*>Capturing with Desktop Duplication/);
   assert.match(result, /&lt;script/);
   assert.doesNotMatch(result, /<script>alert/);

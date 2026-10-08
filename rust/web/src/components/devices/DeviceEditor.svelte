@@ -84,11 +84,11 @@
         [display.device_id, display.display_name].some((value) => value.toLowerCase() === current.toLowerCase());
       const value = isCurrent ? current : display.device_id || display.display_name;
       if (!value || options.some((option) => option.value === value)) continue;
-      const name = display.friendly_name ? `${display.friendly_name} (${display.display_name})` : display.display_name;
+      const name = display.friendly_name || `Display ${options.length + 1}`;
       options.push({ value, label: display.primary ? `${name}, primary` : name });
     }
     if (current && !options.some((option) => option.value === current)) {
-      options.unshift({ value: current, label: displays ? `${current} (not connected)` : current });
+      options.unshift({ value: current, label: displays ? 'Saved display (not connected)' : 'Saved display' });
     }
     return options;
   });
@@ -144,7 +144,7 @@
       </Field>
       <div class="toggle-cell">
         <Toggle
-          label="Enabled"
+          label="Allow this device to connect"
           hint="When off, this device cannot connect. Saving with it off disconnects the device."
           bind:checked={draft.enabled}
         />
@@ -162,7 +162,7 @@
       </div>
     </div>
     <p class="note">
-      The first paired device gets everything. Later ones start with List apps and View streams.
+      The first paired device gets full control. Later devices can only list apps and view streams.
     </p>
     <div class="groups">
       {#each PERMISSION_GROUPS as group (group.name)}
@@ -206,15 +206,15 @@
       <Field
         label="Display mode"
         id="{uid}-display-mode"
-        hint="Width, height and refresh for this device's display, such as 2560x1600x120. Empty uses the mode the device asks for. The stream keeps the device's frame rate."
-        error={modeInvalid ? 'Use WIDTHxHEIGHTxREFRESH, such as 1920x1080x59.94.' : undefined}
+        hint="Width, height and refresh rate for this device's display, such as 2560x1600x120. Empty uses the mode the device asks for. The stream keeps the device's frame rate."
+        error={modeInvalid ? 'Enter width × height × refresh rate, such as 1920x1080x59.94.' : undefined}
       >
         <input
           id="{uid}-display-mode"
           class="input mono"
           autocomplete="off"
           spellcheck="false"
-          placeholder="The device's own"
+          placeholder="Use the device’s display mode"
           bind:value={draft.display_mode}
         />
       </Field>
@@ -248,7 +248,7 @@
       <Field
         label="Prefer 10-bit SDR"
         id="{uid}-sdr"
-        hint="When on, HDR requests from this device stream as 10-bit SDR and the display stays in SDR. Needs HEVC or AV1."
+        hint="When on, high dynamic range (HDR) requests from this device stream as 10-bit standard dynamic range (SDR) and the display stays in SDR. Needs HEVC or AV1."
       >
         <select id="{uid}-sdr" class="select" bind:value={draft.prefer_10bit_sdr}>
           <option value="">Use the host setting</option>

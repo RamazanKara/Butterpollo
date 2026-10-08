@@ -72,7 +72,7 @@
     font-weight: 800;
   }
   .card {
-    width: min(400px, calc(100vw - 40px));
+    width: min(440px, calc(100vw - 48px));
     display: grid;
     gap: var(--space-4);
     padding: var(--space-6);
@@ -80,6 +80,11 @@
     border: 1px solid var(--line);
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow);
+  }
+  @media (max-width: 520px) {
+    .card {
+      padding: var(--space-5);
+    }
   }
   h1 {
     font-size: var(--text-xl);

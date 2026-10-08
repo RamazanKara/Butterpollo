@@ -91,7 +91,7 @@
           bind:value={newPassword}
         />
       </Field>
-      <Field label="Confirm new password" id="pw-confirm" error={mismatch ? 'The passwords differ.' : undefined}>
+      <Field label="Confirm new password" id="pw-confirm" error={mismatch ? 'The passwords do not match.' : undefined}>
         <input id="pw-confirm" class="input" type="password" autocomplete="new-password" required bind:value={confirmation} />
       </Field>
     </div>

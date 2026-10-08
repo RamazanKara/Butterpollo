@@ -154,8 +154,6 @@
               </div>
               <div class="meta muted">
                 <span title={grantedLabels(client.perm) || 'No permissions'}>{permissionSummary(client.perm)}</span>
-                <span aria-hidden="true">·</span>
-                <span class="mono" title={client.uuid}>{client.uuid.slice(0, 8)}</span>
               </div>
             </div>
             <div class="actions">
@@ -240,10 +238,6 @@
     gap: 6px;
     flex-wrap: wrap;
     font-size: var(--text-sm);
-  }
-  .meta .mono {
-    font-size: var(--text-xs);
-    align-self: center;
   }
   .actions {
     display: flex;
