@@ -2037,11 +2037,12 @@ impl VirtualDisplay {
         let actual = current_timing(&self.name);
         let requested = format_timing(self.mode);
         match mode_outcome(self.mode, actual.as_ref().ok().copied()) {
+            // Applied tolerates rational rates: log what Windows shows.
             ModeOutcome::Applied => tracing::info!(
                 output = %self.name,
                 stage,
                 requested = %requested,
-                actual = %requested,
+                actual = %actual.as_ref().map_or(requested.clone(), |t| format_timing(*t)),
                 "virtual display mode applied"
             ),
             outcome => {
