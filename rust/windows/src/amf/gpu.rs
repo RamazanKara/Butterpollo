@@ -220,7 +220,7 @@ impl Drop for D3d12Context {
         // SAFETY: `self.0` holds the one reference QueryInterface added in `new`, and entry 1 of
         // AMFContext1's table is Release.
         unsafe {
-            let release: unsafe extern "C" fn(*mut std::ffi::c_void) -> i64 =
+            let release: unsafe extern "C" fn(*mut std::ffi::c_void) -> amf_long =
                 std::mem::transmute((*(*self.0).vtable)._context1[1]);
             release(self.0.cast());
         }
