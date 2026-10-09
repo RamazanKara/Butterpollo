@@ -30,10 +30,10 @@ MUTED = (150, 157, 172)
 DIM = (68, 74, 90)
 RULE = (36, 40, 52)
 CARD = (19, 22, 30)
-STARTS = (0, 6, 16, 25, 37, 44, 49, 55)
+STARTS = (0, 7, 16, 27, 36, 44, 52)
 ENDS = STARTS[1:] + (60,)
-CHAPTERS = ('MEET RUBYLIGHT', 'FOLLOW ONE FRAME', 'RADEON COMPUTE', 'BESIDE A GAME',
-            'PYROWAVE', 'BUILT TOGETHER', 'GET STARTED', 'RUBYLIGHT')
+CHAPTERS = ('MEET RUBYLIGHT', 'FOLLOW ONE FRAME', 'BESIDE A GAME', 'RADEON COMPUTE',
+            'PYROWAVE', 'GET STARTED', 'RUBYLIGHT')
 WIPE = .7
 
 # rust/PERFORMANCE_WORK.md, "October 8 real-client picture age over Wi-Fi":
@@ -181,7 +181,7 @@ def glow_sprite():
 
 
 # Where the warm light sits in each scene; it drifts between them.
-GLOW = ((1480, 300), (1650, 980), (260, 920), (960, 900), (1500, 760), (300, 220), (1600, 300), (960, 560))
+GLOW = ((1480, 300), (1650, 980), (960, 900), (260, 920), (1500, 760), (1600, 300), (960, 560))
 
 
 def glow_at(t):
@@ -373,8 +373,8 @@ def bars(im, x, y, width, heading_text, values, t, delay=0., unit='ms', top=60.)
 
 
 def compute(t):
-    im = base(t+STARTS[2])
-    title(im, 'Radeon compute, measured.', t,
+    im = base(t+STARTS[3])
+    title(im, 'Radeon compute: 7.5 ms sooner.', t,
           'Same Rubylight build, one setting changed, beside a game-like GPU load.')
     bars(im, 104, 360, 760, 'Average picture age', COMPUTE['mean'], t, .5)
     bars(im, 1056, 360, 760, 'Mean per-run 95th percentile', COMPUTE['p95'], t, 1.6)
@@ -393,9 +393,9 @@ def compute(t):
 
 
 def comparison(t):
-    im = base(t+STARTS[3])
-    title(im, 'On Radeon, beside a game.', t,
-          'Rubylight and Vibepollo 2.0 on the same GPU, at 1968×2184 HDR and 120 fps.')
+    im = base(t+STARTS[2])
+    title(im, 'Faster than Vibepollo, beside a game.', t,
+          'Same RX 7900 XT, same settings, at 1968×2184 HDR and 120 fps.')
     txt(im, 104, 346, 'PICTURE AGE · 60 FPS GAME RUNNING', 22, MUTED, 'mono')
     txt(im, 1170, 338, 'Vibepollo 2.0', 38, INK, 'bold', 'center')
     txt(im, 1630, 338, 'Rubylight', 38, RUBY, 'bold', 'center')
@@ -448,30 +448,11 @@ def pyrowave(t):
     return im
 
 
-def together(t):
-    im = base(t+STARTS[5])
-    title(im, 'Built together.', t, 'A fork of Vibepollo, rebuilt in Rust around Radeon.')
-    names = (('Sunshine', 'LizardByte and contributors'), ('Apollo', 'ClassicOldSong'),
-             ('Vibepollo', 'Nonary'), ('PyroWave', 'Themaister · joemossjr16'))
-    for i, (name, who) in enumerate(names):
-        p = ease((t-.4-i*.15)/.6)
-        x = 104+i*434
-        rect(im, (x, 400+20*(1-p), x+404, 540+20*(1-p)), mix(BG, CARD, p), mix(BG, RULE, p), 2, radius=20)
-        txt(im, x+30, 426+20*(1-p), name, 38, INK, 'bold', opacity=p)
-        txt(im, x+30, 482+20*(1-p), who, 24, MUTED, opacity=p)
-    reveal(im, 104, 616, 'Thank you to Sunshine, Apollo and Vibepollo for the foundations.', 38, t,
-           at=1, color=INK, weight='semibold')
-    reveal(im, 104, 728, 'On NVIDIA, use Vibepollo.', 62, t, at=1.3, color=RUBY)
-    foot(im, 'Open source, with improvements available for other projects to use.',
-         'Project credits and license: README.md')
-    return im
-
-
 def get_started(t):
-    im = base(t+STARTS[6])
+    im = base(t+STARTS[5])
     title(im, 'Install. Pair. Play.', t, 'Start with Rubylight on your Windows gaming PC.')
     steps = (('Install Rubylight.', 'Run the installer and create your local account in the web console.'),
-             ('Pair Moonlight.', 'Add your PC in Moonlight and enter its pairing PIN in Devices.'),
+             ('Pair your device.', 'Add your PC in Rubylight Android or Moonlight, then enter its PIN in Devices.'),
              ('Launch Desktop.', 'Choose your game, then make the stream settings your own.'))
     for i, (label, detail) in enumerate(steps):
         y = 366+i*166
@@ -485,10 +466,10 @@ def get_started(t):
     return im
 
 
-# 8 · Ending -------------------------------------------------------------------
+# 7 · Ending -------------------------------------------------------------------
 
 def ending(t):
-    im = base(t+STARTS[7])
+    im = base(t+STARTS[6])
     p = ease((t-.1)/.7)
     mark = width_of('Rubylight', 156, 'bold')
     left = (W-(150+48+mark))/2
@@ -511,7 +492,7 @@ def ending(t):
     return im
 
 
-SCENES = (hook, pipeline, compute, comparison, pyrowave, together, get_started, ending)
+SCENES = (hook, pipeline, comparison, compute, pyrowave, get_started, ending)
 
 def scene_at(t):
     index = next((i for i, end in enumerate(ENDS) if t < end), len(ENDS)-1)
