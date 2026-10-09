@@ -190,10 +190,10 @@ unsafe extern "system" fn window(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    // SAFETY: Windows supplies CREATESTRUCTW for WM_NCCREATE; lpCreateParams points
-    // to the boxed State retained by the tray thread until GWLP_USERDATA is cleared.
-    // Menu strings and sized outputs live through their calls. The mutable State
-    // borrow additionally requires no reentrancy, which TrackPopupMenu does not ensure.
+    // SAFETY: Windows supplies CREATESTRUCTW for WM_NCCREATE. The tray thread
+    // keeps its boxed State alive until message dispatch ends and clears
+    // GWLP_USERDATA before destroying the window. State borrows stay within
+    // handlers and do not cross the reentrant popup-menu calls.
     unsafe {
         if message == WM_NCCREATE {
             let create = &*(lparam.0 as *const CREATESTRUCTW);
@@ -201,19 +201,21 @@ unsafe extern "system" fn window(
         }
         let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut State;
         if !state.is_null() {
-            let s = &mut *state;
+            let taskbar = (*state).taskbar;
             // Explorer announces a new taskbar (at sign-in, or after it
             // restarts); until the icon is in, retry every few seconds.
-            if message == s.taskbar || (message == WM_TIMER && wparam.0 == RETRY_TIMER) {
+            if message == taskbar || (message == WM_TIMER && wparam.0 == RETRY_TIMER) {
+                let s = &mut *state;
                 s.show();
                 if Shell_NotifyIconW(NIM_ADD, &s.icon).as_bool() {
                     let _ = KillTimer(Some(hwnd), RETRY_TIMER);
-                } else if message == s.taskbar {
+                } else if message == taskbar {
                     SetTimer(Some(hwnd), RETRY_TIMER, 3000, None);
                 }
                 return LRESULT(0);
             }
             if message == APP_CHANGED {
+                let s = &mut *state;
                 s.show();
                 let _ = Shell_NotifyIconW(NIM_MODIFY, &s.icon);
                 return LRESULT(0);
@@ -222,20 +224,21 @@ unsafe extern "system" fn window(
                 match (lparam.0 & 0xffff) as u32 {
                     NIN_BALLOONUSERCLICK => {
                         if let Some(action) = NOTICE_ACTION.lock().unwrap().take() {
-                            let _ = s.sender.send(action);
+                            let _ = (*state).sender.send(action);
                         }
                     }
                     NIN_BALLOONTIMEOUT => {
                         NOTICE_ACTION.lock().unwrap().take();
                     }
                     WM_LBUTTONDBLCLK => {
-                        let _ = s.sender.send(Action::Open);
+                        let _ = (*state).sender.send(Action::Open);
                     }
                     WM_RBUTTONUP | WM_CONTEXTMENU => {
+                        let hide_controls = (*state).hide_controls;
                         if let Ok(menu) = CreatePopupMenu() {
                             let _ = AppendMenuW(menu, MF_STRING, 1, w!("Open Butterpollo"));
                             let _ = AppendMenuW(menu, MF_STRING, 6, w!("Check for updates"));
-                            if !s.hide_controls {
+                            if !hide_controls {
                                 let _ = AppendMenuW(menu, MF_STRING, 2, w!("Disconnect clients"));
                                 let app = APP.lock().unwrap().app.clone();
                                 let label: Vec<u16> = match &app {
@@ -258,6 +261,8 @@ unsafe extern "system" fn window(
                             }
                             let mut point = POINT::default();
                             let _ = GetCursorPos(&mut point);
+                            // These calls can re-enter `window`; keep only copied
+                            // values and the raw state pointer across them.
                             let _ = SetForegroundWindow(hwnd);
                             let id = TrackPopupMenu(
                                 menu,
@@ -279,6 +284,7 @@ unsafe extern "system" fn window(
                                 _ => None,
                             };
                             if let Some(action) = action {
+                                let s = &*state;
                                 let _ = s.sender.send(action);
                             }
                             let _ = DestroyMenu(menu);
