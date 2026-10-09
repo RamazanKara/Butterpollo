@@ -114,6 +114,400 @@ using the result as a matched hotplug comparison: Vibepollo can join another
 game client's existing output (`src/remote_session.cpp:263-268`), so
 `per_client` and three connections alone do not prove three new displays.
 
+## October 9 AMF settings review
+
+Source audit of `59bcc477` plus the two fixes below, for the RX 7900 XT
+(RDNA3, two VCN instances). No encoder workload, quality probe, ignored test
+or stream was run, and the installed service was untouched. The GPU still
+needs a reboot; the workspace test run encountered an additional non-ignored
+GPU-discovery test, documented under verification below.
+The target is 1968x2184 HDR 120 fps in HEVC/AV1, plus 1080p60 and 1440p120.
+Performance numbers in this section are earlier measurements, not new results.
+
+The build takes its AMF **1.5.2.0** headers from
+`C:\Users\ramaz\git\butterpollo-pw-build\build\_deps\ffmpeg-v2026.516.30821\ffmpeg\include\AMF`.
+The three encoder headers and `ColorSpace.h` match upstream tag `v1.5.2`
+(`eae4a4b7efc35f8b0a3977a0984c0d642efc4e63`) after normalizing line endings.
+The tables below use those exact contracts:
+[H.264](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/blob/v1.5.2/amf/public/include/components/VideoEncoderVCE.h),
+[HEVC](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/blob/v1.5.2/amf/public/include/components/VideoEncoderHEVC.h),
+[AV1](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/blob/v1.5.2/amf/public/include/components/VideoEncoderAV1.h),
+and [colour definitions](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/blob/v1.5.2/amf/public/include/components/ColorSpace.h).
+SDK availability does not prove that this GPU/driver implements a property.
+
+### Findings and scope of the fixes
+
+- **Fixed: nonexistent HEVC B-frame property.** The generic setter prefixed
+  `BPicturesPattern`, sending `HevcBPicturesPattern=0`. The HEVC header has
+  neither that property nor a B-picture enum. Policy now requests zero B-frames
+  only through `BPicturesPattern` and `Av1BPicturesPattern`. The latter really
+  exists in this SDK, but is labelled a VCN5 feature, so it can be unsupported
+  and redundant on this RDNA3 host. Both remain optional; failures now use the
+  policy's normal warning/readback path. Commit `e8af3a99`, with a CPU unit test
+  covering all three codecs. No supported HEVC encoding setting changed.
+- **Fixed: misleading AV1 frame-skip diagnostics.** `log_effective` queried
+  `Av1RateControlSkipFrame`, while the SDK string is
+  `Av1RateControlSkipFrameEnable`. The old `?` could not establish lack of driver
+  support. Commit `7f0b4b86` corrects the query and tests all three log names
+  without constructing an encoder. AV1 frame-skip policy remains untouched;
+  its actual support/value must be read after reboot.
+- **No wrong usage, preset, rate-control, colour or intra-refresh enum found.**
+  In particular AV1 swaps low/ultra-low usage numbers relative to AVC/HEVC,
+  and AVC swaps CBR/latency-VBR numbers relative to HEVC/AV1. The code handles
+  both. No proven HDR metadata unit bug was found; preserve the AV1 workaround
+  described below.
+- **Main latency/quality risks are optional tuning.** PA/lookahead, pre-encode,
+  slower usage/presets, extra slices/tiles and large recovery frames can cost
+  time or bits. CBR, HRD and a smaller VBV/AU cap trade quality against bursts.
+  The current defaults and the existing measured H.264 VBAQ exception stay.
+- **Known gaps remain visible in this review.** The full-range setters only
+  warn on failure; matrix signalling is inferred from the colour profile;
+  HDR metadata write success is not a bitstream inspection. The console's
+  input-queue help still incorrectly claims zero forces one for VRR. Its SAV
+  help mentions only integrated/discrete sharing, although AMD also describes
+  multiple VCNs within one GPU. These are recorded, without expanding this
+  patch into console or driver-policy changes.
+
+### AMD guidance and the measured baseline
+
+AMD distinguishes interactive game streaming from broadcasting gameplay.
+Its game-streaming recommendations include no B-frames, an infinite GOP,
+intra refresh, AQ, CBR and a 0.1-second VBV. At 120 fps that VBV is twelve
+frame budgets. Butterpollo leaves VBV driver-derived by default; its explicit
+buffer settings request 0.5-2 frame budgets. It agrees on no reordering and
+on-demand keyframes, but enables intra refresh only when negotiated and uses
+latency-constrained VBR. Those are deliberate streaming tradeoffs.
+[AMD recommended settings](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/wiki/Recommended-FFmpeg-Encoder-Settings).
+
+The usage preset is applied first, then the explicit settings override it.
+Consequently `amd_usage=high_quality` alone still gets the host's speed
+preset, latency VBR and PA-off policy unless those are also changed. AMD
+identifies ultra-low latency and speed as appropriate to interactive use;
+PA/TAQ can override VBAQ, and adaptive mini-GOP can override a B-picture
+pattern. Changing usage therefore requires checking effective settings and
+the resulting bitstream, not just the dropdown label.
+[AMD tuning and priorities](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/wiki/AMF-Encoder-Settings-and-Tuning-in-FFmpeg).
+
+Earlier evidence in **AMF settings per codec: quality at a given bitrate**
+below: speed to quality cost about 0.7 ms HEVC, 6.1 ms AV1 and 1.9 ms H.264
+mean encode time in the SDR sweep, without consistent VMAF gain; low-latency
+usage cost 6-8 ms. CBR spent more of the target budget and enlarged p99 frames
+by 30-67% in the SDR clips and 10-42% in HDR. Turning H.264 VBAQ off improved
+VMAF by up to 9.42 at 20 Mbps and is already the default. The later **48 HDR
+encodes** found no consistent reason to change HEVC/AV1 AQ, balanced preset
+or CBR; AQ-off ranged -0.30 to +0.90 VMAF for HEVC and -0.03 to +0.31 for AV1.
+Those HDR clips were SDR sources converted to PQ, not native HDR game scenes.
+
+Two VCNs do not establish two-engine acceleration of this session. The
+[October 7 split-frame sweep](PERFORMANCE.md#october-7-amf-split-frame-encoding)
+found no consistent gain from on/off/untouched across 720 runs, including
+sizes up to 7680x2160; readback was already on. Treat a split as unproven until
+timing or engine activity shows it. AMD's SAV description covers both
+multi-VCN GPUs and multi-device systems; SAV and the per-codec split-frame
+property are separate controls.
+[AMD SAV primer](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/wiki/Smart-Access-Video-Primer).
+
+### Complete encoder-property inventory
+
+Sources: `core/src/encoder_policy.rs::{amf,amf_rate_control,amf_split_frame}`,
+`windows/src/amf.rs::{create,configure_ltr,prepare_surface,set_bitrate,write_hdr_metadata}`
+and `web/src/lib/schema/video.ts`. Names below are literal AMF strings, not
+the SDK macro identifiers. Unless noted, properties are set before `Init`.
+`auto` omits a write; **unset** below means policy does not write it, even if
+`AMF encoder settings` reads it. Policy writes are read back: required failures
+abort creation, optional failures warn. Direct `property` calls generally
+check only SetProperty success, with the exceptions specified below.
+
+| Setting | H.264 | HEVC | AV1 | Value, SDK comparison and verdict |
+|---|---|---|---|---|
+| Usage | `Usage` | `HevcUsage` | `Av1Usage` | Default ultra-low = **1 / 1 / 2**. Transcoding 0; low-latency **2 / 2 / 1**; webcam 3; high-quality 4; low-latency-high-quality 5. Correct, required unless auto. Other usages may buffer frames. |
+| Quality | `QualityPreset` | `HevcQualityPreset` | `Av1QualityPreset` | Speed **1 / 10 / 100**; balanced **0 / 5 / 70**; quality **2 / 0 / 30**. Correct; default speed, required unless auto. SDK also has high-quality presets, which the console does not offer; no new option proposed. |
+| Rate control | `RateControlMethod` | `HevcRateControlMethod` | `Av1RateControlMethod` | Default latency VBR **3 / 1 / 1**; CBR **1 / 3 / 3**; CQP 0; peak VBR 2; QVBR 4; HQVBR 5; HQCBR 6. Correct. Explicit choice is required; default rejection warns. HDR demotes modes 4-6 to peak VBR. CQP ignores the stream bitrate budget. |
+| QVBR target | `QvbrQualityLevel` | `HevcQvbrQualityLevel` | `Av1QvbrQualityLevel` | Only QVBR: explicit 1-51, zero leaves default (SDK 23). This is not AV1's 1-255 QIndex. Names/range correct. The headers do not substantiate the console's low/high quality endpoint labels. |
+| Adaptive quantization | `EnableVBAQ` | `HevcEnableVBAQ` | `Av1AQMode` | Default false / true / **1 (CAQ)**; AV1 0 = none. Disabled for explicit CQP; auto omitted. Correct codec distinction, though the common console label says VBAQ for AV1 too. AQ may redistribute distortion rather than improve PSNR. |
+| Pre-analysis | `EnablePreAnalysis` | `HevcEnablePreAnalysis` | `Av1EnablePreAnalysis` | False by default and for HDR; true on SDR when requested or RC >=4. Required when true. Correct names. The AVC/HEVC header comment saying peak VBR only is stale relative to AMD's documented PA-dependent quality RC modes. |
+| PA lookahead | `PALookAheadBufferDepth` | `PALookAheadBufferDepth` | `PALookAheadBufferDepth` | Shared name, **1** only when PA is enabled, required. Adds analysis/buffering risk. No codec prefix belongs here. |
+| HRD | `EnforceHRD` | `HevcEnforceHRD` | `Av1EnforceHRD` | False by default, configurable bool; explicit setting required. Correct. Off permits looser buffering; on may raise QP. It is not a network packet pacer. |
+| RC frame skipping | `RateControlSkipFrameEnable` | `HevcRateControlSkipFrameEnable` | `Av1RateControlSkipFrameEnable` | Writes false optionally for AVC/HEVC. AV1 **unset**, now logged with the correct SDK name. Confirm actual value/support; do not infer it from the old log. |
+| Input queue | `InputQueueSize` | `HevcInputQueueSize` | `Av1InputQueueSize` | `amd_input_queue_size=0` writes nothing for **all** clients; positive requests are clamped to 1-32 and required. SDK default 16 is capacity, not a mandatory 16-frame delay. The VRR claim in console help is stale. |
+| Query timeout | `QueryTimeout` | `HevcQueryTimeout` | `Av1QueryTimeout` | **1 ms**, optional direct write; SDK default 0 = no wait. Correct units. QueryOutput may return earlier on output; this does not deliberately delay every frame by 1 ms. A pending query can still occupy the capture/encode thread until timeout. |
+| Internal latency | `LowLatencyInternal` | `LowLatencyInternal` | — | Shared **unprefixed** bool for AVC/HEVC, explicit only, required. Correct exception to prefixing. AVC also selects POC mode 2. Under ultra-low usage the driver commonly already enables it; forcing on can be redundant. |
+| AV1 latency | — | — | `Av1EncodingLatencyMode` | Auto omitted; none 0, power-saving 1, realtime 2, lowest 3. Correct. SDK targets respectively no deadline, 1/fps, 1/(2*fps), fastest possible; these are effort/power modes, not guaranteed timing. |
+| SmartAccess Video | `EnableEncoderSmartAccessVideo` | `HevcEnableEncoderSmartAccessVideo` | `Av1EnableEncoderSmartAccessVideo` | Auto omitted; explicit bool, required only when enabling. Guard forces SAV off (required) when AVC/HEVC **explicitly** requests internal low latency. It does not inspect the usage-derived effective latency value; keep this driver-interaction question separate from a proven reset cause. |
+| Split frame | — | `HevcMultiHwInstanceEncode` | `Av1MultiHwInstanceEncode` | Optional bool after other policy: only if `HevcNumOfHwInstances` / `Av1CapNumOfHwInstances` >1; auto asks only if not already on. Correct names; accepted hint is not proof of a split. On this host normally redundant. |
+| High motion | `HighMotionQualityBoostEnable` | `HevcHighMotionQualityBoostEnable` | `Av1HighMotionQualityBoost` | Explicit bool only, optional. Correct AV1 exception. Existing sweep cost 0.2-1.1 ms without consistent quality gain. |
+| Profile | `Profile` | `HevcProfile` | — | AVC **100 (High)** always; HEVC **2 (Main10)** for ten-bit, otherwise driver Main. AV1 profile left to driver (Main =1). Correct; AVC ten-bit/HDR and all AMF 4:4:4 are rejected. No level/tier override is made. |
+| AVC entropy coding | `CABACEnable` | — | — | Auto omitted; CABAC 1, CAVLC 2. Correct enum despite the Enable name; do not replace with a bool. High profile's automatic coding is CABAC in the SDK. |
+| Screen-content tools | — | — | `Av1ScreenContentTools` | Explicit bool only, required. SDK defaults true and gates palette/integer-MV tools; turning this on alone need not change anything. `Av1PaletteMode` and `Av1ForceIntegerMv` are not written. |
+| Slices/tiles | `SlicesPerFrame` | `HevcSlicesPerFrame` | `Av1NumTilesPerFrame` | AVC/HEVC write negotiated count only if >1. AV1 explicit 1/2/4, or negotiated slices capped at 4 if >1; zero/one automatic leaves driver alone. Correct: tiles are a suggestion, and readback accepts any positive result. Extra partitions may cost coding efficiency; no slice/tile output mode is enabled. |
+| References | `MaxNumRefFrames` | `HevcMaxNumRefFrames` | `Av1MaxNumRefFrames` | Negotiated positive count is required; zero leaves driver default. AVC intra refresh requires at least two; a one-reference client falls back to IDR. Correct budget handling; more slots are not evidence that the encoder actually uses extra predictors. |
+| B-frame pattern | `BPicturesPattern` | **No property** | `Av1BPicturesPattern` | Optional zero for AVC/AV1 only after this fix. AV1 property is VCN5-only per header and may be absent here; HEVC had an invalid prefixed write. No B-reference, maximum-B, or adaptive-mini-GOP setting is written. |
+| Size | `FrameSize` | `HevcFrameSize` | `Av1FrameSize` | Negotiated width/height as AMFSize, required. Correct. |
+| Rate | `FrameRate` | `HevcFrameRate` | `Av1FrameRate` | `fps_millihz()/1000` as AMFRate, required; preserves fractional refresh. Correct. |
+| Target | `TargetBitrate` | `HevcTargetBitrate` | `Av1TargetBitrate` | Requested kbps *1000 bits/s, required initially; updated dynamically. Correct units. Failed live update warns and retains driver state. |
+| Peak | `PeakBitrate` | `HevcPeakBitrate` | `Av1PeakBitrate` | Default unset; configured ratio 1-2 * target bits/s, required if requested. Not an individual-frame limit; its relevance depends on RC mode. |
+| VBV | `VBVBufferSize` | `HevcVBVBufferSize` | `Av1VBVBufferSize` | Default unset; configured 0.5-2 * bits/frame, required if requested. Written after frame rate and target; **bits**, not bytes or milliseconds. Correct. Small buffers can hurt detail/scene changes. |
+| Maximum AU/frame | `MaxAUSize` | `HevcMaxAUSize` | `Av1MaxCompressedFrameSize` | Default unset; configured 1-8 * bits/frame, required if requested. Correct names and bit units. Zero config means omit, not actively clear. HEVC header's default-60 comment disagrees with API guide's zero; read driver state instead of assuming either. |
+| GOP/IDR | `IDRPeriod` | `HevcGOPSize` | `Av1GOPSize` | **0**, AVC failure ignored, HEVC/AV1 required. No scheduled recovery IDRs; request on surfaces. `HevcGOPSPerIDR`, AVC `IntraPeriod`, `Av1IntraPeriod` and insertion cadence stay unwritten. Finite-GOP stalls are a retained host workaround, not an AMD guarantee for every driver. |
+| Intra refresh | `IntraRefreshMBsNumberPerSlot` | `HevcIntraRefreshCTBsNumberPerSlot` | `Av1IntraRefreshMode`, `Av1IntraRefreshNumOfStripes` | Only when negotiated: AVC 16x16 MBs, HEVC 64x64 CTBs; N=ceil(w/block)*ceil(h/block), request ceil(N/clamp(N,1,299)) per slot. AV1 **continuous=2**, **300 stripes**. Correct enums/block units; approximately 300 pictures means ~2.5 s at 120 fps or 5 s at 60, not immediate full recovery. Small pictures/granularity change the AVC/HEVC duration. |
+| AV1 alignment | — | — | `Av1AlignmentMode` | **3 (no restrictions)** on public constructors, required. Correct enum, but this driver still pads 1968x2184 to 1984x2186 without render-size signalling; already measured below. Changing alignment is not a proven fix. |
+
+LTR uses additional component and surface properties; all names and the
+reset-unused enum agree with the SDK. `amd_ltr_frames=0` leaves them alone.
+A positive request (maximum four) is limited to negotiated references minus
+one rolling reference, to property limits and, for AV1, `Av1CapMaxNumLTRFrames`.
+Intra refresh disables LTR. Failed setup restores the maximum to zero and
+falls back to IDRs. This is loss recovery, not a free steady-state quality gain.
+
+| Purpose | H.264 | HEVC | AV1 | Value |
+|---|---|---|---|---|
+| LTR capacity | `MaxOfLTRFrames` | `HevcMaxOfLTRFrames` | `Av1MaxNumLTRFrames` | Limited positive count before Init, read back. |
+| LTR lifetime | `LTRMode` | `HevcLTRMode` | `Av1LTRMode` | **0 = reset unused**; `core/src/ltr.rs` drops other anchors when recovering, matching the driver rule. |
+| Mark surface | `MarkCurrentWithLTRIndex` | `HevcMarkCurrentWithLTRIndex` | `Av1MarkCurrentWithLTRIndex` | Slot index on keyframe/selected every-fourth frames when LTR is active. |
+| Recover surface | `ForceLTRReferenceBitfield` | `HevcForceLTRReferenceBitfield` | `Av1ForceLTRReferenceBitfield` | **1 << slot**, not the slot number. Correct. Surface failure disables LTR and requests IDR. |
+| Force recovery frame | `ForcePictureType` | `HevcForcePictureType` | `Av1ForceFrameType` | **2 = IDR / 2 = IDR / 1 = KEY** on requested keyframes. Correct. |
+| Repeat headers | `InsertSPS`, `InsertPPS` | `HevcInsertHeader` | `Av1ForceInsertSequenceHeader` | True on those keyframes so a reset decoder can start independently. Correct. |
+
+Not written: pre-encode (`RateControlPreanalysisEnable`,
+`HevcRateControlPreAnalysisEnable`, `Av1RateControlPreEncode`), filler
+(`FillerDataEnable`, `HevcFillerDataEnable`, `Av1FillerData`), and initial
+fullness (`InitialVBVBufferFullness`, `HevcInitialVBVBufferFullness`,
+`Av1InitialVBVBufferFullness`; SDK scale 0-64). The first two groups are logged
+only. PA-off does **not** explicitly switch pre-encode off. Filler can consume
+wire budget without picture detail, particularly under a CBR/usage change;
+confirm effective values before attributing an actual-bitrate gain to quality.
+
+QP limits are also **unset**, not clamped by the host: AVC `MinQP`/`MaxQP`
+and `QPI`/`QPP`/`QPB` (0-51); HEVC `HevcMinQP_I`, `HevcMaxQP_I`,
+`HevcMinQP_P`, `HevcMaxQP_P`, `HevcQP_I`, `HevcQP_P` (QP scale 0-51);
+AV1 `Av1MinQIndex_Intra`, `Av1MaxQIndex_Intra`, `Av1MinQIndex_Inter`,
+`Av1MaxQIndex_Inter`, `Av1MinQIndex_Inter_B`, `Av1MaxQIndex_Inter_B`,
+`Av1QIndex_Intra`, `Av1QIndex_Inter`, `Av1QIndex_Inter_B` (SDK 1-255).
+Do not reuse an AVC QP number as an AV1 QIndex. These and colour/GOP details
+are not all in the settings log; an omitted field is not evidence of a default.
+
+Live bitrate changes also scale positive read-back peak/VBV/AU values by the
+new/old bitrate ratio, including driver-derived values, clamped to property
+limits. Partial update failure leaves mixed driver state and a warning.
+Do rate-control comparisons on fresh sessions at a fixed bitrate.
+
+The session admits two pending pictures; AMF's native ownership limit is
+eight. Neither equals the driver's input-queue capacity. `poll` queries only
+with work in flight and returns one result promptly. AMD recommends separate
+submission/output threads for overlap; this host uses a combined capture/encode
+loop with separate sending. A 1 ms query can therefore affect claim timing,
+but a threading rewrite is outside this review.
+[AMD asynchronous application guide](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/wiki/Guide-for-Video-CODEC-Encoder-App-Developers#53-amf-asynchronous-and-synchronous-model).
+
+PA remains a low-priority experiment. AMD documents NV12 analysis and warns
+that PA adaptive quantization can supersede VBAQ. The code gates PA and quality
+RC on `hdr`, not `ten_bit()`, so optional **ten-bit SDR** can still request PA
+with P010; this needs a format-support check before using that combination.
+Auto-LTR/TAQ/adaptive mini-GOP are not explicitly controlled by this host.
+Keep PA off for the HDR baseline; no broader policy change is justified here.
+[AMD PA guide](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/blob/master/amf/doc/AMF_Video_PreAnalysis_API.md).
+The [HEVC API guide's rate-control section](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/blob/master/amf/doc/AMF_Video_Encode_HEVC_API.md)
+explicitly requires PA for QVBR/HQVBR/HQCBR, explaining the discrepancy with
+the older peak-VBR-only header comment; the same guide specifies MaxAUSize
+in bits with default zero.
+
+### HDR and colour from capture to Moonlight
+
+`Negotiated::color_matrix()` forces BT.2020 for HDR; `ten_bit()` selects P010
+and `full_range()` takes bit zero of negotiated `csc_mode`. The D3D11 and
+D3D12 paths use the same `gpu_color::constants` and `shaders/color.hlsl`:
+scRGB FP16 (Rec.709 primaries, 1.0 = 80 nits) is converted to Rec.2020 and
+absolute ST.2084 PQ before 4:2:0 subsampling. An already-PQ `Rgba10Pq` source
+is not PQ-encoded twice. Limited P010 uses Y 64-940 and nominal chroma
+64-960; full range uses 0-1023, with neutral chroma 512, stored in the high
+ten bits. CPU fallback in `encoder.rs::Convert`/`color.rs` uses the matching
+matrix/range and PQ conversion. Input AMF colour properties describe these
+**already-converted NV12/P010 surfaces**, not the original scRGB texture.
+
+| Property purpose | H.264 | HEVC | AV1 | Write and assessment |
+|---|---|---|---|---|
+| Bit depth | No ten-bit write; rejected | `HevcColorBitDepth` | `Av1ColorBitDepth` | 10 for HDR or ten-bit SDR; otherwise SDK default 8. Correct; HEVC also sets Main10. |
+| Input profile | `InColorProfile` | `HevcInColorProfile` | `Av1InputColorProfile` | AMF profiles limited 601/709/2020 = **0/1/2**, full = **3/7/8**. Correct. Optional input description is largely redundant with our own conversion. |
+| Output profile | `OutColorProfile` | `HevcOutColorProfile` | `Av1OutputColorProfile` | Same values; HDR uses 2 or 8. Correct names, including AV1's Input/Output rather than In/Out. Failed output writes abort HDR creation; SDR warns. |
+| Input transfer | `InColorTransferChar` | `HevcInColorTransferChar` | `Av1InputColorTransferChar` | HDR **16 (PQ)**; SDR 601/709/2020 = **6/1/14**. Input failure only debug-logged. |
+| Output transfer | `OutColorTransferChar` | `HevcOutColorTransferChar` | `Av1OutputColorTransferChar` | Same values, correct per `ColorSpace.h`; output failure handled as above. |
+| Input primaries | `InColorPrimaries` | `HevcInColorPrimaries` | `Av1InputColorPrimaries` | 601/709/2020 = **6/1/9**; HDR always 9. Correct; input optional. |
+| Output primaries | `OutColorPrimaries` | `HevcOutColorPrimaries` | `Av1OutputColorPrimaries` | Same values; HDR BT.2020. Correct, required for HDR. |
+| Input range | `InputFullRangeColor` | `HevcInputFullRangeColor` | `Av1InputFullRangeColor` | Negotiated bool. Correct names/type; failures tolerated because some drivers reject the input hint. |
+| Output range | `FullRangeColor` | `HevcNominalRange` | `Av1NominalRange` | Same bool. These literal names remain correct even though old macro aliases are deprecated. HEVC explicitly permits bool (legacy integer 0/1 also works); no enum/type fix needed. **Failure is only a warning for full range**, so verify actual bitstream range. |
+| Matrix coefficient | `InMatrixCoeff`, `OutMatrixCoeff` | `HevcInMatrixCoeff`, `HevcOutMatrixCoeff` | `Av1InMatrixCoeff`, `Av1OutMatrixCoeff` | **Unset**. The driver derives matrix signalling from profile; expected 601/709/2020-NCL = **6/1/9**, distinct from AMF profile numbers. The existing hardware test asserts BT.2020-NCL; no unconditional new property required without driver testing. |
+| Static HDR payload | None sent | `HevcInHDRMetadata` | `Av1InHDRMetadata` | AMFBuffer interface containing AMFHDRMetadata, after Init and before first input; updated when changed. AV1 still uses **InHDRMetadata**, not InputHDRMetadata. HEVC's OutHDRMetadata is commented out in the SDK. Correct names. |
+
+`capture.rs::Device::hdr_metadata()` reads the selected output's DXGI
+maximum/minimum/full-frame luminance, with bounded finite conversion in
+`core/src/hdr.rs`. Primaries are synthesized as Rec.2020 and D65, not copied
+from DXGI panel primaries or a game's mastering metadata. Fallback is 1000
+nits peak, 0.0001 nit minimum, unknown full-frame luminance. The live path
+leaves **MaxCLL and MaxFALL at zero (unknown)**; the quality probe and tests
+can supply nonzero values. Display full-frame luminance is not content MaxFALL
+and is correctly kept separate. This is valid synthetic desktop metadata,
+not preservation of original HDR10/HDR10+ game metadata.
+
+The same `Metadata` value is stored in the session and sent to the encoder
+before the first frame (`stream.rs` startup). It is refreshed once per second;
+encoder recreation sets `metadata_due` to now, so the first recovery frame
+also receives metadata. `set_hdr_metadata` skips SDR/AVC and duplicate values.
+On failure it warns and caches the attempted value rather than retrying it
+every frame; control metadata can therefore be correct while bitstream
+metadata is absent. Even a successful SetProperty/log line does not prove
+that every subsequent keyframe carries the metadata. The AV1 header labels
+the input HDR property static, while this implementation uses it after Init;
+retain the known driver path and check an independent keyframe after updates
+on any new runtime before claiming portable dynamic support.
+
+Metadata units are intentionally codec-specific:
+
+| Field | Internal/control value | HEVC AMFHDRMetadata / SEI | AV1 AMFHDRMetadata / metadata OBU |
+|---|---|---|---|
+| RGB primaries, D65 white | Integer x/y in 1/50000 | Unchanged | floor(value *65536/50000), capped at 65535: 0.16 fixed point |
+| Mastering peak | Whole nits (`u16`) | nits *10000 (`u32`) | nits *256 (`u32`): 24.8 fixed point |
+| Mastering minimum | 1/10000 nit (`u16`) | Unchanged in 1/10000 nit | floor(value *16384/10000): 18.14 fixed point |
+| MaxCLL / MaxFALL | Whole nits, zero unknown | Unchanged | Unchanged |
+| Display full-frame peak | Whole nits, zero unknown | No AMFHDRMetadata member; control only | Control only |
+
+The shared AMF header describes HEVC units for AMFHDRMetadata. The retained
+AV1 implementation documents that this driver copies those fields straight
+into the OBU, so the host pre-scales them to the
+[AV1 mastering-display syntax](https://github.com/AOMediaCodec/av1-spec/blob/master/07.bitstream.semantics.md#metadata-high-dynamic-range-mastering-display-color-volume-semantics).
+For 1015 nits, minimum 0.005 nit and red x=0.708, the existing ignored test
+expects HEVC **10150000/10000**, **50/10000**, **35400/50000**; AV1
+**259840/256**, **81/16384**, **46399/65536**. Using HEVC's peak scale on AV1
+would signal 39,062.5 nits for a 1000-nit source. The small AV1 truncation is
+quantization, not a factor-of-10,000 bug. Hardware tests were not rerun here.
+
+HEVC carries mastering-display and, when known, content-light metadata in
+prefix SEI. AV1 carries HDR_MDCV (type 2) and HDR_CLL (type 1) metadata OBUs.
+`amf.rs::poll` copies these encoder bytes unchanged for HEVC/AV1; the host
+passes them to `VideoPacketizer::encode_recovery`, which frames/FECs/encrypts
+the payload without filtering SEI/OBUs. H.264 is SDR-only in this backend,
+with colour signalling in its SPS VUI and no HDR buffer.
+
+The retained Moonlight fixture (`performance-probe/moonlight-vrr-common`,
+commit `d6a11bc685b41037b352a96f29d08276fe5359ba`) explains the apparent gap
+at the receiver: `VideoDepacketizer.c` strips H.264/HEVC leading AUD/prefix-SEI
+NALs, including HEVC NAL type 39, before delivering decode units. It does not
+parse the AV1 bitstream that way. Thus a Moonlight HEVC decode-unit dump may
+lose the metadata that was present on the wire; a dump is not sufficient to
+accuse the host of omitting SEI. The client's renderer/decoder can use the
+separate control metadata; actual tone mapping is client-specific.
+
+`stream.rs` sends encrypted reliable ENet control type **0x010e** once an
+output is selected, and again whenever the 27-byte metadata payload changes.
+`Metadata::wire` and Moonlight `ControlStream.c` agree exactly:
+
+| Payload offsets | Field | Representation |
+|---|---|---|
+| 0 | HDR enabled | 0 or 1 from negotiated `config.hdr`, including 0 for SDR |
+| 1-12 | R, G, B x/y | Six little-endian u16, normalized to 50000 |
+| 13-16 | White x/y | Two little-endian u16, normalized to 50000 |
+| 17-18 | Mastering peak | Little-endian u16, whole nits |
+| 19-20 | Mastering minimum | Little-endian u16, 1/10000 nit |
+| 21-24 | MaxCLL, MaxFALL | Two little-endian u16, whole nits |
+| 25-26 | Display full-frame peak | Little-endian u16, whole nits |
+
+Moonlight saves those fields, updates HDR state and invokes `setHdrMode`;
+`LiGetHdrMetadata` exposes the copy. Decode units get `hdrActive` and Rec.2020
+from that state (SDR uses negotiated colour space); the payload does not
+separately carry transfer/matrix/full-range flags. Bitstream signalling and
+negotiation still matter. `tests/moonlight_client.c` checks HDR notifications,
+metadata validity and decoded ten-bit/PQ/BT.2020 frames. The existing ignored
+`hdr10_metadata_and_range_reach_the_bitstream` checks encoder output directly,
+both codecs, both ranges, D3D11/D3D12 and independently decodable keyframes
+0 and 4, including nonzero/unknown CLL. It is the post-reboot validation to
+use, not a test to execute while the GPU is down.
+
+### Ranked host A/B plan, after reboot
+
+Keep ultra-low usage, speed, latency VBR, PA off, the existing per-codec AQ
+default, automatic queue/latency/SAV/split-frame and negotiated references as
+the control. Use separate fresh sessions; change one setting at a time.
+These rankings are expected opportunities, not claims of measured gains:
+
+| Rank | Concrete A/B values | Expected benefit and required observations |
+|---|---|---|
+| 1 | `amd_max_frame_size=0,4,2` (1 only if the others help) | Best candidate for recovery/scene-change **picture-age tails on a constrained link**. In amf_quality compare IDR bytes, p99 P-frame bytes, actual bitrate and detail loss; in streaming request recovery and measure sender/FEC time, picture-age p95/p99, decode errors and held pictures. A cap may reduce quality or be ignored; readback alone is insufficient. |
+| 2 | `amd_ltr_frames=0,1,2`, only with a client reference budget allowing it, intra refresh off | Potentially large loss-recovery benefit, little expected idle gain. Probe steady-state quality/bytes/encode cost first; then controlled packet loss and repeat recovery on a separate client. Measure recovery-frame bytes, time to clean picture and picture-age p99. One-reference clients cannot test LTR; amf_quality does not simulate loss. |
+| 3 | HEVC/AV1 `amd_vbaq=enabled,disabled`; H.264 retain disabled as control | Cheap quality opportunity on **native HDR** gradients, particles, foliage and UI. Earlier synthetic HDR changes were small/mixed, max +0.90/+0.31 VMAF for HEVC/AV1. Compare PSNR/SSIM-style plane metrics, visual temporal stability and actual bytes, with no regression in encode p99 or picture age. Do not assume AV1 CAQ is identical to AVC VBAQ. |
+| 4 | First `amd_rc=vbr_latency,vbr_peak,cbr`; then, separately with the selected RC, `amd_peak_bitrate_ratio=0,1,1.5`, `amd_vbv_buffer_frames=0,2,1`, `amd_enforce_hrd=false,true` | Better use of bitrate or smaller bursts, with a quality tradeoff. Existing CBR gains mostly came from spending more bits and produced larger frames. Measure actual bitrate, scene-cut/IDR sizes, PSNR/SSIM/VMAF, encode p99 and on-wire picture-age tails; compare both equal requested and equal actual bitrate. Do not switch all four knobs together. |
+| 5 | AV1 `amd_av1_tiles=0,1,2,4`; separately `amd_av1_screen_content=auto,disabled,enabled` | Possible coding-efficiency or client decode improvement, especially if automatic tiles exceed one. Inspect effective tile count and screen-tool use; quality-probe bits/text edges and separate-client decode time/picture age. Extra tiles do not make this full-frame sender transmit early and did not unlock split-frame gain in earlier sweeps. AVC/HEVC slice 1/2/4 requires a negotiated test-client change; no host config knob exists. |
+| 6 | `amd_input_queue_size=0,4,2`, then 1 only in an isolated run; separate source-only `QueryTimeout=1` vs 0 | Possible submission/claim-tail gain under game load; near-zero expected idle gain when backlog is already small. Measure INPUT_FULL/NEED_MORE_INPUT counts, claim wait, output gaps, CPU time, encode p99 and picture age. Stop at a stall. `amf_quality` submits one picture at a time and cannot establish a queue-depth win. QueryTimeout has no console setting; an experimental build is needed, not a new shipped flag. |
+| 7 | `amd_quality=speed,balanced,quality`, starting at 1080p60/low bitrate; optionally `amd_high_motion_quality_boost=auto,enabled,disabled` in separate cells | Low expected return at the owner's normal rates; quality already cost up to 6.1 ms in AV1. Only keep a slower choice if new native content shows a visible gain and encode/picture-age tails still meet 16.67 ms at 60 or 8.33 ms at 120 fps. This is a frame budget, not a guarantee that the full pipeline fits in one frame. |
+| 8 | AVC/HEVC `amd_lowlatency_mode=auto,enabled`; AV1 `amd_av1_latency_mode=auto,lowest,realtime`; split `auto,disabled,enabled` | Mostly redundancy checks: effective internal latency/AV1 lowest and split were already selected by the default usage/driver. Read settings first and skip pairs with identical effective state. Compare encode/picture-age p99 and power. Revisit split primarily after a driver change; two reported VCNs alone predict no gain. |
+
+SAV and PA/HQ are last, separate investigations, not recommended changes to
+the HDR baseline. Prior SAV/split sweeps were neutral. Do not combine explicit
+SAV-on with forced internal low latency; the existing guard documents past
+HEVC HDR resets. An 8-bit SDR-only PA comparison would use
+`amd_rc=vbr_peak` with `amd_preanalysis=false,true`, then QVBR at 18/23/28 or
+HQVBR separately. Inspect PA's effective tools and reference/reorder behavior.
+The current one-picture-at-a-time quality probe may time out if a mode needs
+future input; such a timeout does not measure quality or throughput. A
+pipelined experiment would be separate work. HDR requests for these quality
+RC modes currently become peak VBR, so they are not genuine HDR QVBR A/Bs.
+
+For every feasible cell, use 1968x2184/120 at **80 Mbps** (also 30 for a
+quality-stressed cell), 2560x1440/120 at **50 Mbps** (also 20), and
+1920x1080/60 at **20 Mbps** (also 10). HEVC/AV1 get HDR and SDR; AVC gets SDR.
+At the normal rates one-frame budgets are respectively **666667, 416667 and
+333333 bits**, not bytes. E.g. native HDR VBV=1 requests about 83.3 kB and
+max-frame=2 requests about 166.7 kB before network/FEC overhead.
+
+Use `amf_quality`'s existing `--codec`, `--width`, `--height`, `--fps`,
+`--bitrate` (kbps), `--frames`, `--config`, `--out` and HDR `--hdr 1` options
+only after reboot. It writes the bitstream and reports non-IDR encode
+mean/p95/p99, frame bytes mean/p99 and separate IDR byte sizes; **it does not
+compute PSNR, SSIM or VMAF itself**. Score a matched decode against the exact
+converted reference with the existing quality harness/FFmpeg. Preserve
+bit depth, matrix, range, chroma siting and native-size cropping in both
+inputs. Its SDR path requests CSC 0 (601 limited), while HDR uses CSC 4
+(2020 limited); references must match. HDR input is planar linear gbrpf32le
+scaled to scRGB at 203-nit SDR white, so SDR clips merely converted to HDR
+do not test native highlights or wide-gamut content. Include native HDR
+material with known source/reference handling; default VMAF alone is not an
+HDR appearance metric. Score several clips and scene transitions, not only
+the original two upscaled 180-frame samples.
+
+Then alternate A/B/B/A streaming runs, at least three per cell, with the
+same display/stream refresh, bitrate/FEC, client and game load. Record
+rendered-picture-to-decoded-picture age **mean/p95/p99**, new pictures/s,
+host encode/claim/send timing, IDR/recovery spikes, decoder time and errors.
+This fixture age excludes client scanout and input latency. Use a separate
+hardware-decoding client under game load: loopback decoder starvation was
+already measured here and can dwarf encoder differences. For native AV1,
+check the known 1984x2186 padding/crop behavior before comparing scores.
+Archive effective settings after Init and independently inspect HDR headers
+and keyframes; do not call a lower requested rate or absent metadata a
+quality/latency improvement.
+
+### Verification of this review's changes
+
+All cargo commands used `C:\src\cargo-one.ps1`, the supplied `rust-env.ps1`
+and `CARGO_TARGET_DIR=D:\bp-build\amfreview-target`.
+
+- `fmt --all -- --check`: passed.
+- `clippy --workspace --all-targets --locked -j 2 -- -D warnings`: passed.
+- The focused core policy test passed. Both new non-hardware regression
+  tests also passed in the workspace run.
+- `test --workspace --locked -j 2 -- --skip heartbeat_check_finds_the_monitors`:
+  failed only in the existing `encoder::tests::encoders_open_on_the_configured_gpu`.
+  It expected an error naming the nonexistent configured adapter but instead
+  got `no desktop display or hardware GPU`. It stopped during adapter discovery,
+  before opening an encoder. The Windows suite reported 179 passed, one failed,
+  41 ignored and one filtered; preceding suites passed. The unrelated test is
+  unchanged.
+- `test --workspace --locked -j 2 -- --skip heartbeat_check_finds_the_monitors
+  --skip encoders_open_on_the_configured_gpu`: passed (550 tests, 44 ignored,
+  two filtered out; doc-tests also passed). Both new regression tests passed.
+
+Tuning proposals, encoder/HDR bitstream tests and hardware validation remain
+deferred until the GPU is healthy. The requested single-skip command needs
+a post-reboot rerun before it can be called green.
+
 ## October 9 job 7 split and stall diagnostics: host A/B, then a GPU reset
 
 Same setup as the job 4 A/B below (base `92afcce5`, 1968x2184 HDR 120,
