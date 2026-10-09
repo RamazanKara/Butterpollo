@@ -73,7 +73,7 @@ Carried over from Vibepollo, Apollo and Sunshine and rebuilt in Rust: per-device
 
 ## Full colour with PyroWave
 
-PyroWave carries **10-bit HDR with 4:4:4 chroma**: a colour sample for every pixel. Its GPU pipeline shares D3D11/Vulkan textures and sends the encoded stream over a fast wired LAN. Pair it with [Nonary's compatible Moonlight client](https://github.com/Nonary/moonlight-qt).
+PyroWave carries **10-bit HDR with 4:4:4 chroma**: a colour sample for every pixel. Its GPU pipeline shares D3D11/Vulkan textures and sends the encoded stream over a fast local network. Play it on [Rubylight Android](https://github.com/RamazanKara/rubylight-android), our own client, which offers PyroWave on Vulkan phones and tablets; on a PC, use [Nonary's compatible Moonlight client](https://github.com/Nonary/moonlight-qt) over a wired LAN.
 
 Standard Moonlight clients use H.264, HEVC or AV1. **Moonlight PC 6.2.0** has recorded codec and reconnect checks, including HEVC and AV1 HDR. [Pick the client and stream format for your setup](docs/getting-started.md#choose-your-stream-format).
 

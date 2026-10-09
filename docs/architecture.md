@@ -50,7 +50,7 @@ WGC requests an explicit zero minimum update interval where Windows supports it.
 
 The native HDR path captures FP16 scRGB, resizes in linear light and converts to ten-bit BT.2020/PQ. Shader math preserves absolute ST.2084 luminance. Windows HDR detection distinguishes an active HDR output from wide-gamut SDR colour management. [Independent decoding and reference-pixel checks](performance.md#hdr-and-pyrowave-validation) verify the tested pixel path.
 
-**PyroWave provides full 10-bit HDR 4:4:4** through its own shared D3D11/Vulkan path. A compute pass on the D3D12 compute queue that also prepares AMF's frames writes its planar textures, a shared fence orders that pass with the Vulkan import, and the encoded bitstream returns to the CPU. Full-resolution chroma gives each pixel its own colour samples. Use [Nonary's compatible Moonlight client](https://github.com/Nonary/moonlight-qt) and a fast wired LAN; [client selection](getting-started.md#choose-your-stream-format) explains the options.
+**PyroWave provides full 10-bit HDR 4:4:4** through its own shared D3D11/Vulkan path. A compute pass on the D3D12 compute queue that also prepares AMF's frames writes its planar textures, a shared fence orders that pass with the Vulkan import, and the encoded bitstream returns to the CPU. Full-resolution chroma gives each pixel its own colour samples. Use [Rubylight Android](https://github.com/RamazanKara/rubylight-android), our own client, or on a PC [Nonary's compatible Moonlight client](https://github.com/Nonary/moonlight-qt), over a fast local network; [client selection](getting-started.md#choose-your-stream-format) explains the options.
 
 ## Encoding beyond Radeon
 

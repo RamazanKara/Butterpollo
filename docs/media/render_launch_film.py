@@ -423,7 +423,7 @@ def comparison(t):
 
 def pyrowave(t):
     im = base(t+STARTS[4])
-    title(im, 'Full colour for a wired LAN.', t, 'PyroWave · 10-bit HDR 4:4:4 · a colour sample for every pixel.')
+    title(im, 'Full colour on your local network.', t, 'PyroWave · 10-bit HDR 4:4:4 · a colour sample for every pixel.')
     p = ease((t-.5)/.7)
     if p:
         rect(im, (104, 366, 974, 850), CARD, RULE, 2, radius=24)
@@ -440,7 +440,7 @@ def pyrowave(t):
             rect(im, (x, y, x+100, y+86), mix(CARD, color, q*.75), radius=12)
     reveal(im, 1130, 740, 'Fine coloured text. Clear edges.', 34, t,
            at=1.3, weight='semibold')
-    reveal(im, 104, 890, "Use Nonary's compatible Moonlight client on a fast wired LAN.", 32, t,
+    reveal(im, 104, 890, 'Play it on Rubylight Android, our own client, over a fast local network.', 32, t,
            at=1.7, color=INK, weight='semibold', rise=12)
     foot(im, 'RX 7900 XT · PyroWave 1080p · 10-bit HDR 4:4:4 · 400 Mbps · game-like GPU load',
          f'October 7, 2026 · two repeat-frame runs: {PYROWAVE[0]:.2f}–{PYROWAVE[1]:.2f} ms/frame · rust/PERFORMANCE.md',

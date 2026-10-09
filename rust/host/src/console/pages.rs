@@ -264,7 +264,7 @@ async fn overview(
     content += &card(
         "Streaming capabilities",
         &format!(
-            "<div class=\"badges\">{badges}</div><p>H.264, HEVC and AV1 work with Moonlight. PyroWave and VRR require <a href=\"https://github.com/Nonary/moonlight-qt\" target=\"_blank\" rel=\"noopener noreferrer\">Nonary’s version of Moonlight</a>. PyroWave is best suited to a fast wired local network.</p>"
+            "<div class=\"badges\">{badges}</div><p>H.264, HEVC and AV1 work with Moonlight. PyroWave works with <a href=\"https://github.com/RamazanKara/rubylight-android\" target=\"_blank\" rel=\"noopener noreferrer\">Rubylight Android</a>, our own client, and on a PC with <a href=\"https://github.com/Nonary/moonlight-qt\" target=\"_blank\" rel=\"noopener noreferrer\">Nonary’s version of Moonlight</a>, which VRR also requires. PyroWave is best suited to a fast local network.</p>"
         ),
     );
     content += &readiness(&meta);
