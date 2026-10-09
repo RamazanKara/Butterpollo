@@ -620,10 +620,8 @@ impl Encoder {
             },
         }
     }
-    /// The settings that decide encode time and the bits each frame gets, as
-    /// the driver applied them.
-    fn log_effective(&self) {
-        let names: &[&str] = match self.codec {
+    fn setting_names(codec: u8) -> &'static [&'static str] {
+        match codec {
             0 => &[
                 "Usage",
                 "QualityPreset",
@@ -702,9 +700,14 @@ impl Encoder {
                 "Av1IntraRefreshNumOfStripes",
                 "Av1EnforceHRD",
                 "Av1FillerData",
-                "Av1RateControlSkipFrame",
+                "Av1RateControlSkipFrameEnable",
             ],
-        };
+        }
+    }
+    /// The settings that decide encode time and the bits each frame gets, as
+    /// the driver applied them.
+    fn log_effective(&self) {
+        let names = Self::setting_names(self.codec);
         let mut settings: Vec<String> = names
             .iter()
             .map(|name| match self.read(name) {

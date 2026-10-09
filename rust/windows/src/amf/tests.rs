@@ -1,6 +1,22 @@
 use super::*;
 
 #[test]
+fn settings_log_queries_each_codecs_frame_skip_property() {
+    for (codec, expected) in [
+        (0, "RateControlSkipFrameEnable"),
+        (1, "HevcRateControlSkipFrameEnable"),
+        (2, "Av1RateControlSkipFrameEnable"),
+    ] {
+        let names: Vec<_> = Encoder::setting_names(codec)
+            .iter()
+            .copied()
+            .filter(|name| name.contains("RateControlSkipFrame"))
+            .collect();
+        assert_eq!(names, [expected]);
+    }
+}
+
+#[test]
 fn smart_access_video_excludes_only_forced_low_latency() -> Result<()> {
     use butterpollo_core::{config::Config, encoder_policy, rtsp::Negotiated};
     for codec in 0..=2 {

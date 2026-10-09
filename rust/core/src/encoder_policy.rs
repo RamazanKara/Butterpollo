@@ -273,8 +273,7 @@ pub fn amf(config: &Config, stream: &Negotiated) -> Result<Vec<Property>> {
     );
     // Rate control must not drop a frame to stay on budget: a VRR client
     // shows a dropped frame as a held picture. Vibepollo sets it off too.
-    // The RX 7900 XT's AV1 encoder has no such property; its settings log
-    // line shows the value where a driver has one.
+    // Keep AV1's existing driver policy until support is checked on hardware.
     if codec < 2 {
         add(
             format!("{prefix}RateControlSkipFrameEnable"),
