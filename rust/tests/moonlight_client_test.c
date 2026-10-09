@@ -1,7 +1,83 @@
+static void test_request_idr(void);
+#define LiRequestIdrFrame test_request_idr
 #define main receiver_main
 #include "moonlight_client.c"
 #undef main
+#undef LiRequestIdrFrame
 #include <assert.h>
+
+static int idr_requests,idr_immediate;
+static void test_request_idr(void){
+    idr_requests++;
+    assert(atomic_load(&idr_probe_pending)==idr_probe_sent);
+    if(idr_immediate){
+        uint64_t request=idr_probes[idr_probe_sent-1].request_us;
+        DECODE_UNIT unit={.frameNumber=100+idr_probe_sent,.frameType=FRAME_TYPE_IDR,
+            .receiveTimeUs=request+500,.enqueueTimeUs=request+1000};
+        idr_probe_arrived(&unit);idr_probe_decoded(unit.frameNumber,request+2000);
+    }
+}
+static void reset_idr_probe(int count){
+    memset(idr_probes,0,sizeof(idr_probes));
+    idr_probe_count=count;idr_probe_sent=0;idr_requests=0;idr_immediate=0;
+    atomic_store(&idr_probe_pending,0);
+}
+static void test_idr_probe(void){
+    assert(parse_idr_probe(NULL)==0);
+    assert(parse_idr_probe("1")==1&&parse_idr_probe("10")==10&&parse_idr_probe("2000")==MAX_IDR_PROBES);
+    const char *invalid[]={"","0","-1","+1"," 1","1 ","1.5","2x","2001","9999999999999999999999999999"};
+    for(unsigned i=0;i<sizeof(invalid)/sizeof(invalid[0]);i++)assert(parse_idr_probe(invalid[i])==-1);
+    reset_idr_probe(0);poll_idr_probe(3000000,1000000);
+    assert(!idr_requests&&summarize_idr_probe(NULL,NULL));
+    reset_idr_probe(3);warmup_seconds=2;
+    atomic_store(&decoded_frames,0);poll_idr_probe(3000000,1000000);assert(!idr_requests);
+    atomic_store(&decoded_frames,1);poll_idr_probe(2999999,1000000);assert(!idr_requests);
+    poll_idr_probe(3000000,1000000);assert(idr_requests==1&&idr_probes[0].request_us==3000000);
+    DECODE_UNIT unit={.frameNumber=101,.frameType=FRAME_TYPE_PFRAME,.receiveTimeUs=3001000,.enqueueTimeUs=3009000};
+    idr_probe_arrived(&unit);assert(!idr_probes[0].arrival_us);
+    unit.frameType=FRAME_TYPE_IDR;unit.receiveTimeUs=2999999;
+    idr_probe_arrived(&unit);assert(!idr_probes[0].arrival_us);
+    unit.receiveTimeUs=3001000;idr_probe_arrived(&unit);
+    assert(idr_probes[0].arrival_us==3009000);
+    unit.frameNumber=102;unit.enqueueTimeUs=3010000;idr_probe_arrived(&unit);
+    assert(idr_probes[0].wire_frame==101&&idr_probes[0].arrival_us==3009000);
+    idr_probe_decoded(102,3011000);assert(atomic_load(&idr_probe_pending)==1);
+    poll_idr_probe(4500000,1000000);assert(idr_requests==1);
+    idr_probe_decoded(101,3011000);assert(!atomic_load(&idr_probe_pending));
+    poll_idr_probe(4499999,1000000);assert(idr_requests==1);
+    idr_immediate=1;poll_idr_probe(4500000,1000000);
+    assert(idr_requests==2&&!atomic_load(&idr_probe_pending)&&idr_probes[1].decoded_us==4502000);
+    idr_immediate=0;poll_idr_probe(6000000,1000000);assert(idr_requests==3);
+    unit.frameNumber=103;unit.receiveTimeUs=6001000;unit.enqueueTimeUs=6005000;
+    idr_probe_arrived(&unit);idr_probe_decoded(103,6007000);
+    poll_idr_probe(9000000,1000000);assert(idr_requests==3);
+    FILE *output=fopen("test-idr-summary.txt","w+"),*csv=fopen("test-idr.csv","w+");assert(output&&csv);
+    assert(summarize_idr_probe(output,csv));rewind(output);rewind(csv);
+    char line[512];assert(fgets(line,sizeof(line),output));
+    assert(strcmp(line,"IDR_PROBE samples=3 mean_ms=5.000 p50_ms=5.000 p95_ms=5.000 max_ms=9.000 requested=3 sent=3 decoded=3\n")==0);
+    assert(!fgets(line,sizeof(line),output));
+    assert(fgets(line,sizeof(line),csv));
+    assert(strcmp(line,"sample,request_ms,arrival_ms,decoded_ms,request_to_arrival_ms,request_to_decoded_ms,wire_frame,status\n")==0);
+    assert(fgets(line,sizeof(line),csv)&&strcmp(line,"1,3000.000,3009.000,3011.000,9.000,11.000,101,ok\n")==0);
+    assert(fgets(line,sizeof(line),csv)&&strcmp(line,"2,4500.000,4501.000,4502.000,1.000,2.000,102,ok\n")==0);
+    assert(fgets(line,sizeof(line),csv)&&strcmp(line,"3,6000.000,6005.000,6007.000,5.000,7.000,103,ok\n")==0);
+    assert(!fgets(line,sizeof(line),csv));fclose(output);fclose(csv);
+    reset_idr_probe(3);poll_idr_probe(3000000,1000000);
+    output=fopen("test-idr-incomplete.txt","w+");csv=fopen("test-idr-incomplete.csv","w+");assert(output&&csv);
+    assert(!summarize_idr_probe(output,csv));rewind(output);rewind(csv);
+    assert(fgets(line,sizeof(line),output)&&strstr(line,"IDR_PROBE samples=0 ")&&strstr(line,"requested=3 sent=1 decoded=0"));
+    assert(fgets(line,sizeof(line),csv));
+    assert(fgets(line,sizeof(line),csv)&&strcmp(line,"1,3000.000,-1.000,-1.000,-1.000,-1.000,-1,no_idr\n")==0);
+    assert(fgets(line,sizeof(line),csv)&&strstr(line,"not_requested"));
+    fclose(output);fclose(csv);
+    unit.frameNumber=104;unit.receiveTimeUs=3001000;unit.enqueueTimeUs=3002000;idr_probe_arrived(&unit);
+    output=fopen("test-idr-undecoded.txt","w+");csv=fopen("test-idr-undecoded.csv","w+");assert(output&&csv);
+    assert(!summarize_idr_probe(output,csv));rewind(output);rewind(csv);
+    assert(fgets(line,sizeof(line),output)&&strstr(line,"IDR_PROBE samples=1 mean_ms=2.000 ")&&strstr(line,"decoded=0"));
+    assert(fgets(line,sizeof(line),csv));
+    assert(fgets(line,sizeof(line),csv)&&strstr(line,"not_decoded"));
+    fclose(output);fclose(csv);reset_idr_probe(0);
+}
 
 static void test_picture(int format,int width,int height,int padded_width,int padded_height,int valid){
     requested_format=format;requested_width=width;requested_height=height;
@@ -23,7 +99,7 @@ static void test_picture(int format,int width,int height,int padded_width,int pa
         for(int bit=0;bit<32;bit++)if(words[row]&(1u<<bit))data[y*padded_width+72+bit*16]=(char)255;
     }
     LENTRY entry={.data=data,.length=padded_width*padded_height,.bufferType=BUFFER_TYPE_PICDATA};
-    uint64_t received_us=(uint64_t)(clock_ms()*1000);
+    uint64_t received_us=LiGetMicroseconds();
     DECODE_UNIT unit={.frameNumber=1,.frameType=FRAME_TYPE_IDR,.frameHostProcessingLatency=22,
         .receiveTimeUs=received_us,.enqueueTimeUs=received_us,.presentationTimeUs=12345,
         .fullLength=entry.length,.bufferList=&entry};
@@ -149,6 +225,8 @@ static void test_measurements(void){
 }
 
 int main(void){
+    LiGetMicroseconds();
+    _putenv_s("BUTTERPOLLO_TEST_IDR_PROBE","");
     _putenv_s("BUTTERPOLLO_TEST_TIMING_CSV","test-video.csv");
     _putenv_s("BUTTERPOLLO_TEST_AUDIO_CSV","test-audio.csv");
     _putenv_s("BUTTERPOLLO_TEST_AUDIO_TONE","1");
@@ -169,7 +247,15 @@ int main(void){
     test_picture(VIDEO_FORMAT_H264,1920,1080,1920,1082,0);
     test_picture(VIDEO_FORMAT_H265,1920,1080,1920,1080,1);
     test_picture(VIDEO_FORMAT_H265,1920,1080,1984,1096,0);
-    test_audio();test_measurements();test_d3d11_readback();
-    puts("Receiver picture and time-series tests passed");
+    test_audio();test_measurements();test_idr_probe();
+    reset_idr_probe(1);warmup_seconds=0;atomic_store(&decoded_frames,1);
+    poll_idr_probe(LiGetMicroseconds(),0);
+    test_picture(VIDEO_FORMAT_H264,1920,1080,1920,1080,1);
+    assert(idr_probes[0].arrival_us>=idr_probes[0].request_us&&idr_probes[0].decoded_us>=idr_probes[0].arrival_us);
+    assert(!atomic_load(&idr_probe_pending));reset_idr_probe(0);
+    const char *hardware=getenv("BUTTERPOLLO_TEST_HW_DECODER");
+    if(hardware&&strcmp(hardware,"d3d11va")==0)test_d3d11_readback();
+    else puts("D3D11 barcode readback tests skipped: set BUTTERPOLLO_TEST_HW_DECODER=d3d11va to opt in");
+    puts("Receiver picture, time-series and IDR probe tests passed");
     return 0;
 }

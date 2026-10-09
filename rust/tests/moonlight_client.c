@@ -7,8 +7,8 @@
 #include <libavutil/hwcontext_d3d11va.h>
 #else
 #include <time.h>
-#include <errno.h>
 #endif
+#include <errno.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -54,6 +54,12 @@ static uint32_t picture_frames[MAX_MEASUREMENTS];
 static unsigned measured_frames;
 static FILE *timing_csv;
 static FILE *audio_csv;
+#define MAX_IDR_PROBES 2000
+#define IDR_PROBE_INTERVAL_US UINT64_C(1500000)
+static int idr_probe_count,idr_probe_sent;
+static atomic_int idr_probe_pending;
+static struct {uint64_t request_us,arrival_us,decoded_us;int wire_frame;} idr_probes[MAX_IDR_PROBES];
+static FILE *idr_csv;
 static double warmup_seconds=2.0;
 static int barcode_bottom;
 /* The host may scale the source; the barcode is drawn at source pixels. */
@@ -68,6 +74,58 @@ static double clock_ms(void){struct timespec n;clock_gettime(CLOCK_MONOTONIC,&n)
 static void wait_ms(unsigned milliseconds){struct timespec n={milliseconds/1000,(milliseconds%1000)*1000000L};while(nanosleep(&n,&n)<0&&errno==EINTR){}}
 #endif
 static int compare_double(const void*a,const void*b){double x=*(const double*)a,y=*(const double*)b;return(x>y)-(x<y);}
+static int parse_idr_probe(const char *text){
+    if(!text)return 0;
+    char *end;errno=0;long count=strtol(text,&end,10);
+    if(errno||text[0]<'0'||text[0]>'9'||*end||count<1||count>MAX_IDR_PROBES)return -1;
+    return (int)count;
+}
+static void poll_idr_probe(uint64_t now_us,uint64_t started_us){
+    if(idr_probe_sent>=idr_probe_count||atomic_load(&idr_probe_pending)||!atomic_load(&decoded_frames))return;
+    if(now_us-started_us<warmup_seconds*1000000.0)return;
+    if(idr_probe_sent&&now_us-idr_probes[idr_probe_sent-1].request_us<IDR_PROBE_INTERVAL_US)return;
+    idr_probes[idr_probe_sent].request_us=now_us;
+    // Publishing the slot before the API call also covers an immediate response.
+    atomic_store(&idr_probe_pending,++idr_probe_sent);
+    LiRequestIdrFrame();
+}
+static void idr_probe_arrived(PDECODE_UNIT unit){
+    int pending=atomic_load(&idr_probe_pending);
+    if(!pending||unit->frameType!=FRAME_TYPE_IDR)return;
+    int index=pending-1;
+    // Exclude IDRs already in flight or queued when the request was made.
+    if(idr_probes[index].arrival_us||unit->receiveTimeUs<idr_probes[index].request_us)return;
+    idr_probes[index].arrival_us=unit->enqueueTimeUs;
+    idr_probes[index].wire_frame=unit->frameNumber;
+}
+static void idr_probe_decoded(int64_t wire_frame,uint64_t decoded_us){
+    int pending=atomic_load(&idr_probe_pending);
+    if(!pending)return;
+    int index=pending-1;
+    if(!idr_probes[index].arrival_us||wire_frame!=idr_probes[index].wire_frame)return;
+    idr_probes[index].decoded_us=decoded_us;
+    atomic_store(&idr_probe_pending,0);
+}
+static int summarize_idr_probe(FILE *output,FILE *csv){
+    if(!idr_probe_count)return 1;
+    double values[MAX_IDR_PROBES],sum=0;unsigned count=0,decoded=0;
+    fprintf(csv,"sample,request_ms,arrival_ms,decoded_ms,request_to_arrival_ms,request_to_decoded_ms,wire_frame,status\n");
+    for(int i=0;i<idr_probe_count;i++){
+        uint64_t request=idr_probes[i].request_us,arrival=idr_probes[i].arrival_us,done=idr_probes[i].decoded_us;
+        double arrival_ms=arrival?(arrival-request)/1000.0:-1,decoded_ms=done?(done-request)/1000.0:-1;
+        if(arrival){values[count++]=arrival_ms;sum+=arrival_ms;}
+        if(done)decoded++;
+        fprintf(csv,"%d,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%s\n",i+1,
+            i<idr_probe_sent?request/1000.0:-1,arrival?arrival/1000.0:-1,done?done/1000.0:-1,
+            arrival_ms,decoded_ms,arrival?idr_probes[i].wire_frame:-1,
+            i>=idr_probe_sent?"not_requested":!arrival?"no_idr":!done?"not_decoded":"ok");
+    }
+    qsort(values,count,sizeof(double),compare_double);
+    fprintf(output,"IDR_PROBE samples=%u mean_ms=%.3f p50_ms=%.3f p95_ms=%.3f max_ms=%.3f requested=%d sent=%d decoded=%u\n",
+        count,count?sum/count:NAN,count?values[(count-1)/2]:NAN,count?values[(count-1)*95/100]:NAN,
+        count?values[count-1]:NAN,idr_probe_count,idr_probe_sent,decoded);
+    return count==(unsigned)idr_probe_count&&decoded==(unsigned)idr_probe_count;
+}
 static unsigned luma_sample(const AVFrame *frame,int x,int y){
     const AVPixFmtDescriptor *desc=av_pix_fmt_desc_get(frame->format);
     if(!desc||desc->comp[0].plane!=0||x>=frame->width||y>=frame->height)return 0;
@@ -251,6 +309,7 @@ static int video_setup(int format,int width,int height,int rate,void*context,int
 }
 static int video_frame(PDECODE_UNIT unit){
     double decode_started=clock_ms();
+    if(idr_probe_count)idr_probe_arrived(unit);
     // Preserve arrival's local-clock epoch without including the decoder queue.
     double arrival_ms=hardware_format!=AV_PIX_FMT_NONE?decode_started-(LiGetMicroseconds()/1000.0-unit->enqueueTimeUs/1000.0):decode_started;
     uint32_t picture_sequence=0;uint64_t picture_ticks=0;double age_ms=-1;
@@ -260,6 +319,7 @@ static int video_frame(PDECODE_UNIT unit){
         av_packet_free(&packet);av_frame_free(&frame);av_frame_free(&decoded);
         atomic_fetch_add(&frames,1);atomic_fetch_add(&failures,1);return DR_OK;
     }
+    if(idr_probe_count)packet->pts=unit->frameNumber;
     int offset=0,complete=1;for(PLENTRY entry=unit->bufferList;entry;entry=entry->next){
 #ifdef BUTTERPOLLO_PYROWAVE
         if(entry->bufferType==BUFFER_TYPE_LOST){partial_frames++;complete=0;break;}
@@ -278,7 +338,7 @@ static int video_frame(PDECODE_UNIT unit){
 #ifdef BUTTERPOLLO_PYROWAVE
     if(pyro_decoder){
         if(!complete||decode_pyrowave(packet,unit,decoded)<0)atomic_fetch_add(&failures,1);
-        else received=0;
+        else{decoded->pts=packet->pts;received=0;}
     }else
 #endif
     {
@@ -306,6 +366,8 @@ static int video_frame(PDECODE_UNIT unit){
                 received=avcodec_receive_frame(decoder,decoded);continue;
             }
         }else av_frame_move_ref(frame,decoded);
+        // Readback above waits for hardware decoding; PTS also matches delayed output.
+        if(idr_probe_count)idr_probe_decoded(frame->pts,LiGetMicroseconds());
         crop_picture(frame);
         if(frame->width!=requested_width||frame->height!=requested_height)atomic_fetch_add(&failures,1);
         const AVFrame *samples=strip.data[0]?&strip:frame;
@@ -471,12 +533,24 @@ int main(int argc,char**argv){
     }
     int duration=argc>6?atoi(argv[6]):0;
     if(getenv("BUTTERPOLLO_TEST_WARMUP_SECONDS"))warmup_seconds=atof(getenv("BUTTERPOLLO_TEST_WARMUP_SECONDS"));
+    idr_probe_count=parse_idr_probe(getenv("BUTTERPOLLO_TEST_IDR_PROBE"));
+    if(idr_probe_count<0){fprintf(stderr,"BUTTERPOLLO_TEST_IDR_PROBE must be an integer from 1 to %d\n",MAX_IDR_PROBES);return 2;}
+    if(idr_probe_count&&(!isfinite(warmup_seconds)||duration<warmup_seconds+idr_probe_count*1.5)){
+        fprintf(stderr,"IDR probe requires an explicit duration of at least warmup + N * 1.5 seconds\n");return 2;
+    }
     barcode_bottom=getenv("BUTTERPOLLO_TEST_BARCODE_BOTTOM")&&strcmp(getenv("BUTTERPOLLO_TEST_BARCODE_BOTTOM"),"1")==0;
     if(getenv("BUTTERPOLLO_TEST_BARCODE_SCALE"))barcode_scale=atof(getenv("BUTTERPOLLO_TEST_BARCODE_SCALE"));
     if(getenv("BUTTERPOLLO_TEST_BARCODE_LEFT"))barcode_left=atof(getenv("BUTTERPOLLO_TEST_BARCODE_LEFT"));
     if(getenv("BUTTERPOLLO_TEST_BARCODE_BOTTOM_MARGIN"))barcode_bottom_margin=atof(getenv("BUTTERPOLLO_TEST_BARCODE_BOTTOM_MARGIN"));
     if(!(barcode_scale>0.0&&barcode_scale<=1.0))barcode_scale=1.0;
     if(warmup_seconds<0||warmup_seconds>60)return 2;
+    if(idr_probe_count){
+        const char *timing_path=getenv("BUTTERPOLLO_TEST_TIMING_CSV");
+        size_t length=(timing_path?strlen(timing_path):0)+32;
+        char *path=malloc(length);if(!path)return 2;
+        if(timing_path)snprintf(path,length,"%s.idr.csv",timing_path);else snprintf(path,length,"idr-probe.csv");
+        idr_csv=fopen(path,"w");free(path);if(!idr_csv){perror("IDR probe CSV");return 2;}
+    }
     if(getenv("BUTTERPOLLO_TEST_TIMING_CSV")){
         timing_csv=fopen(getenv("BUTTERPOLLO_TEST_TIMING_CSV"),"w");if(!timing_csv){perror("timing CSV");return 2;}
         fprintf(timing_csv,"wire_frame,arrival_ms,host_ms,decode_ms,render_frame,render_qpc,picture_age_ms,first_packet_us,assembled_us,presentation_us,frame_type,bytes\n");
@@ -518,10 +592,20 @@ int main(int argc,char**argv){
     }
 #endif
     double started=clock_ms();
-    while(clock_ms()-started<(duration?duration*1000.0:10000)&&!atomic_load(&ended)&&(duration||atomic_load(&frames)<30))wait_ms(100);
+    uint64_t probe_started=idr_probe_count?LiGetMicroseconds():0;
+    while(clock_ms()-started<(duration?duration*1000.0:10000)&&!atomic_load(&ended)&&(duration||atomic_load(&frames)<30)){
+        if(idr_probe_count)poll_idr_probe(LiGetMicroseconds(),probe_started);
+        wait_ms(100);
+    }
     double seconds=(clock_ms()-started)/1000.0;
     int premature=atomic_load(&ended)||(duration&&seconds<duration*0.98);
     LiStopConnection();
+    if(idr_probe_count){
+        if(!summarize_idr_probe(stdout,idr_csv)){
+            fprintf(stderr,"IDR probe incomplete: not every request received and decoded an IDR\n");atomic_fetch_add(&failures,1);
+        }
+        if(fclose(idr_csv))atomic_fetch_add(&failures,1);
+    }
 #ifdef BUTTERPOLLO_PYROWAVE
     if(pyro_decoder)printf("PYROWAVE framing=records bitstream=%s encrypted=1 record_frames=%u partial_frames=%u hdr_frames=%u\n",PYROWAVE_BITSTREAM_ID,record_frames,partial_frames,hdr_frames);
 #endif
@@ -581,5 +665,5 @@ int main(int argc,char**argv){
     if(pyro_device)pyrowave_device_destroy(pyro_device);
 #endif
     avcodec_free_context(&decoder);if(opus_decoder)opus_multistream_decoder_destroy(opus_decoder);
-    return !premature&&motion_valid&&rate_valid&&atomic_load(&decoded_frames)>=30&&atomic_load(&audio_packets)>0&&atomic_load(&failures)==0&&(!getenv("BUTTERPOLLO_TEST_AUDIO_TONE")||audio_peak>0.01)&&(!getenv("BUTTERPOLLO_TEST_REQUIRE_PICTURE")||atomic_load(&detailed_frames)>0)?0:1;
+    return !premature&&motion_valid&&rate_valid&&(idr_probe_count||atomic_load(&decoded_frames)>=30)&&atomic_load(&audio_packets)>0&&atomic_load(&failures)==0&&(!getenv("BUTTERPOLLO_TEST_AUDIO_TONE")||audio_peak>0.01)&&(!getenv("BUTTERPOLLO_TEST_REQUIRE_PICTURE")||atomic_load(&detailed_frames)>0)?0:1;
 }
