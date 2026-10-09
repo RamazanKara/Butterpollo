@@ -153,12 +153,19 @@ impl Resampler {
 }
 /// Audio the host lost before it reached the network. Windows keeps about
 /// 22 ms of loopback audio (1056 frames at 48 kHz, on five endpoints of a
-/// test PC including Steam Streaming Speakers) and drops what arrives while
-/// that is full, without an error. The sender empties it on every pass, so
-/// with 5 ms packets the backlog trim above never reaches its 30 ms: a
-/// sender that runs late loses the audio inside Windows instead. A datagram
+/// test PC including Steam Streaming Speakers) and drops a packet that
+/// arrives while that is full, without an error; the next packet then starts
+/// further on in the device's stream, skipping what it dropped. A datagram
 /// Winsock refuses is dropped too. Neither left a trace in the log, so a
 /// stalled sender could not be told from network loss.
+///
+/// Waiting longer than the buffer alone lost nothing: Windows delivers whole
+/// 10 ms packets, so a read 23 to 27 ms after the last still found both in a
+/// 22 ms buffer, and an endpoint with nothing playing delivers nothing to
+/// lose. Counting those waits filled an idle host's log with warnings. Only
+/// a skip counts, and only one the sender's wait explains: away for more than
+/// half the buffer, and at least as long as the skip. A skip while it read on
+/// time is the endpoint falling quiet and starting again.
 #[derive(Default)]
 pub struct HostLoss {
     late_reads: u32,
@@ -170,27 +177,62 @@ pub struct HostLoss {
 }
 #[derive(Debug, PartialEq, Eq)]
 pub struct HostLossReport {
-    /// Reads that came after the capture buffer had filled.
+    /// Reads that came so late that Windows had dropped audio.
     pub late_reads: u32,
-    /// Audio Windows had no room for: each late wait beyond the buffer.
+    /// The audio Windows dropped before those reads.
     pub lost: Duration,
+    /// The longest of their waits.
     pub longest: Duration,
     pub buffer: Duration,
     /// Audio datagrams Winsock refused.
     pub unsent: u64,
 }
+impl HostLossReport {
+    pub fn message(&self) -> String {
+        let ms = |d: Duration| d.as_secs_f64() * 1000.;
+        let plural = |n: u64| if n == 1 { "" } else { "s" };
+        let mut lost = Vec::new();
+        let mut advice = Vec::new();
+        if self.late_reads > 0 {
+            lost.push(format!(
+                "Windows dropped {:.0} ms of captured sound because the audio sender read late {} time{} (longest wait {:.1} ms; Windows keeps {:.1} ms)",
+                ms(self.lost),
+                self.late_reads,
+                plural(u64::from(self.late_reads)),
+                ms(self.longest),
+                ms(self.buffer)
+            ));
+            advice.push("A late read means the host's audio thread was held up, by a busy CPU or the host itself, not by video bitrate or GPU load; if it repeats on an idle PC, report it with this log.");
+        }
+        if self.unsent > 0 {
+            lost.push(format!(
+                "the network adapter refused {} audio packet{}",
+                self.unsent,
+                plural(self.unsent)
+            ));
+            advice.push("Refused packets mean the adapter's send queue was full: lower the video bitrate or check the network adapter and its driver.");
+        }
+        format!(
+            "Audio lost on the host before sending: {}. You may hear short gaps. {}",
+            lost.join("; "),
+            advice.join(" ")
+        )
+    }
+}
 impl HostLoss {
     const EVERY: Duration = Duration::from_secs(5);
-    /// A read `waited` after the previous one emptied a capture buffer that
-    /// holds `buffer`; a zero buffer is unknown and never counts.
-    pub fn read_after(&mut self, waited: Duration, buffer: Duration) {
-        if buffer.is_zero() || waited <= buffer {
-            return;
+    /// Windows skipped `skipped` of audio before a read that came `waited`
+    /// after the previous one emptied a capture buffer holding `buffer`.
+    /// Returns whether the sender's wait explains it and it counted.
+    pub fn skipped(&mut self, skipped: Duration, waited: Duration, buffer: Duration) -> bool {
+        if skipped.is_zero() || waited <= buffer / 2 || skipped > waited {
+            return false;
         }
         self.late_reads += 1;
-        self.lost += waited - buffer;
+        self.lost += skipped;
         self.longest = self.longest.max(waited);
         self.buffer = buffer;
+        true
     }
     pub fn unsent(&mut self) {
         self.unsent += 1;
@@ -352,24 +394,29 @@ mod tests {
         assert_eq!(last[last.len() - 2], (48 * 50 - 1) as f32 / 1e6);
     }
     #[test]
-    fn host_audio_loss_counts_late_reads_and_refused_datagrams() {
+    fn host_audio_loss_counts_only_skips_a_late_read_explains() {
         let ms = Duration::from_millis;
         let buffer = ms(22);
         let start = Instant::now();
         let mut loss = HostLoss::default();
-        // On time, or with an unknown buffer: nothing to say.
-        loss.read_after(ms(10), buffer);
-        loss.read_after(buffer, buffer);
-        loss.read_after(ms(500), Duration::ZERO);
+        // The idle host's case: reads up to 27 ms apart, but Windows skipped
+        // nothing because both 10 ms packets still fit, or nothing played.
+        for waited in [10, 23, 26, 27] {
+            assert!(!loss.skipped(Duration::ZERO, ms(waited), buffer));
+        }
+        // A skip while the sender read on time is the endpoint going quiet
+        // and starting again; so is one longer than the wait.
+        assert!(!loss.skipped(ms(10), ms(10), buffer));
+        assert!(!loss.skipped(ms(480), ms(30), buffer));
         assert_eq!(loss.report(start), None);
-        loss.read_after(ms(30), buffer);
-        loss.read_after(ms(52), buffer);
+        assert!(loss.skipped(ms(10), ms(32), buffer));
+        assert!(loss.skipped(ms(30), ms(52), buffer));
         loss.unsent();
         assert_eq!(
             loss.report(start),
             Some(HostLossReport {
                 late_reads: 2,
-                lost: ms(38),
+                lost: ms(40),
                 longest: ms(52),
                 buffer,
                 unsent: 1,
@@ -390,6 +437,35 @@ mod tests {
             })
         );
         assert_eq!(loss.report(start + ms(20000)), None);
+    }
+    #[test]
+    fn host_audio_loss_blames_the_cause_it_saw() {
+        let ms = Duration::from_millis;
+        let late = HostLossReport {
+            late_reads: 1,
+            lost: ms(10),
+            longest: ms(32),
+            buffer: ms(22),
+            unsent: 0,
+        };
+        let text = late.message();
+        assert!(text.contains("Windows dropped 10 ms of captured sound because the audio sender read late 1 time (longest wait 32.0 ms; Windows keeps 22.0 ms)"), "{text}");
+        assert!(text.contains("not by video bitrate"), "{text}");
+        assert!(!text.contains("lower the video bitrate"), "{text}");
+        let unsent = HostLossReport {
+            late_reads: 0,
+            lost: Duration::ZERO,
+            longest: Duration::ZERO,
+            buffer: Duration::ZERO,
+            unsent: 3,
+        };
+        let text = unsent.message();
+        assert!(
+            text.contains("the network adapter refused 3 audio packets"),
+            "{text}"
+        );
+        assert!(text.contains("lower the video bitrate"), "{text}");
+        assert!(!text.contains("late"), "{text}");
     }
     #[test]
     fn surround_upmix_does_not_duplicate_right_channel() {

@@ -16,6 +16,12 @@ pub struct Loopback {
     /// Audio Windows holds for us; what arrives while it is full is lost.
     buffer: std::time::Duration,
     drained: Option<std::time::Instant>,
+    rate: u32,
+    /// Where the last packet started in the device's stream, and where the
+    /// next should; a later start skipped what Windows dropped.
+    position: Option<(u64, u64)>,
+    /// Frames skipped since `take_skipped`.
+    skipped: u64,
 }
 impl Loopback {
     pub fn new(output_channels: usize) -> Result<Self> {
@@ -125,6 +131,9 @@ impl Loopback {
                 output_channels,
                 buffer,
                 drained: None,
+                rate,
+                position: None,
+                skipped: 0,
             })
         }
     }
@@ -159,6 +168,12 @@ impl Loopback {
             .replace(now)
             .map(|at| now.saturating_duration_since(at))
     }
+    /// The audio Windows skipped since the last call because it had no room
+    /// for it.
+    pub fn take_skipped(&mut self) -> std::time::Duration {
+        let frames = std::mem::take(&mut self.skipped);
+        std::time::Duration::from_secs_f64(frames as f64 / f64::from(self.rate))
+    }
     pub fn read(&mut self, frames: usize) -> Result<Option<Vec<f32>>> {
         // SAFETY: GetBuffer returns `count` frames of `channels` samples of `bits` bits each, read
         // only before ReleaseBuffer; each read is unaligned and inside that packet.
@@ -171,8 +186,24 @@ impl Loopback {
                 let mut data = std::ptr::null_mut();
                 let mut count = 0;
                 let mut flags = 0;
-                self.capture
-                    .GetBuffer(&mut data, &mut count, &mut flags, None, None)?;
+                let mut position = 0;
+                self.capture.GetBuffer(
+                    &mut data,
+                    &mut count,
+                    &mut flags,
+                    Some(&mut position),
+                    None,
+                )?;
+                // A packet split at the same position continues the last one.
+                let start = match self.position {
+                    Some((last, next)) if last == position => next,
+                    Some((_, next)) => {
+                        self.skipped += position.saturating_sub(next);
+                        position
+                    }
+                    None => position,
+                };
+                self.position = Some((position, start + u64::from(count)));
                 let step = (self.bits / 8) as usize;
                 let silent = flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0;
                 if flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0 {

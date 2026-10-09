@@ -2746,3 +2746,55 @@ physical monitor must come back as before, and a following extended-layout
 stream must leave it on. Then the real case: an
 exclusive-fullscreen game, press Win, Alt+Tab and Ctrl+Alt+Del; the host log
 shows "displays the stream layout switched off came back on; reapplying it".
+
+## October 9 user report: audio_loss warnings on an idle host
+
+Report (the owner, any playback device, idle PC, video perfect): the log
+fills with `Audio lost on the host before sending: 4 late reads, 5.6 ms
+beyond the capture buffer, 0 unsent packets (longest wait 26.6 ms, buffer
+22.0 ms)`, a new line every 5 s.
+
+Cause, from code and not yet measured on the host:
+
+- The warning counted every sender pass that came more than the 22 ms
+  capture buffer after the previous one and called the excess lost. Windows
+  delivers loopback audio in whole 10 ms packets and the sender empties the
+  buffer on every pass, so a third packet, and real loss, needs a wait of
+  20 to 30 ms depending on phase; at 23 to 27 ms both packets usually still
+  fit. With nothing playing, the endpoint delivers nothing to lose at all.
+- About once a second the sender itself ran the audio route's upkeep before
+  reading: keeping the streaming speakers the Windows default
+  (`Route::maintain_default`) or following a moved default device
+  (`Route::capture_sink`), each a fresh `MMDeviceEnumerator` and three
+  `GetDefaultAudioEndpoint` calls into the Windows audio service. 4 late
+  reads in 5 s averaging 1.4 ms over 22 ms fits a check taking about
+  15-20 ms once a second.
+
+Change:
+
+- The upkeep runs on its own `audio route` thread (`RouteUpkeep`); the
+  sender only reads the sink it found. The first round still runs before
+  capture opens, so capture starts on the right device.
+- Loss is what Windows reports: `GetBuffer`'s device position. A packet
+  that starts later than the previous one ended skipped what Windows
+  dropped (Chromium's WASAPI input counts loopback glitches the same way).
+  `HostLoss::skipped` counts a skip only when the sender's wait explains
+  it: more than half the buffer, and at least as long as the skip. A skip
+  while it read on time is the endpoint falling quiet and starting again.
+- The warning names the cause it saw: late reads (a busy CPU or the host,
+  not bitrate) or datagrams the adapter refused (bitrate or adapter).
+- Debug logs `audio sender read late or Windows skipped audio` for every
+  pass more than the buffer late and every skip, with `waited_ms`,
+  `skipped_ms` and `lost`. Debug builds take a one-shot `audio stall`
+  fault (milliseconds) in `BUTTERPOLLO_TEST_FAULT_DIR`.
+
+To confirm on the host (idle): `rust/release/e2e.py` streams with the
+virtual-speaker tone; run 60 s HEVC 1080p60 twice on each of eef9754 and
+this change with `BUTTERPOLLO_E2E_RUST_LOG=info,butterpollo=debug`. Pass:
+base shows `audio_loss` lines as the owner sees; the change shows none and
+few or no late passes. Positive control on a debug build: write `40` to
+`<fault dir>/audio stall` every 2 s during a 30 s stream; pass: an
+`audio_loss` warning with about one late read per stall and 10-20 ms lost
+each. If it stays silent, Windows does not skip the loopback position on
+overflow and the detector is deaf; the debug lines then show what it saw.
+

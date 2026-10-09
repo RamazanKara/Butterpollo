@@ -22,6 +22,33 @@ pub fn check(kind: &str) -> Result<()> {
     Ok(())
 }
 
+/// Hold up the audio sender once, for the milliseconds written to
+/// `audio stall`, as a stalled thread would.
+#[cfg(debug_assertions)]
+pub fn audio_stall() -> Result<Option<Duration>> {
+    let Some(directory) = directory() else {
+        return Ok(None);
+    };
+    let request = directory.join("audio stall");
+    match std::fs::read_to_string(&request) {
+        Ok(duration) => {
+            let duration = Duration::from_millis(
+                duration
+                    .trim()
+                    .parse()
+                    .context("audio stall must contain milliseconds")?,
+            );
+            std::fs::remove_file(request)?;
+            tracing::info!(
+                duration_ms = duration.as_millis(),
+                "soak injected audio stall"
+            );
+            Ok(Some(duration))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
 /// Withhold completed output at the session's encoder boundary. Held frames
 /// count as backlog; recreating the encoder discards them but not the fault.
 pub struct EncoderStall {

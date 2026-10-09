@@ -518,6 +518,93 @@ impl std::ops::Deref for Source {
         &self.latest
     }
 }
+type Route = butterpollo_windows::audio_route::Route;
+/// Keep the streaming speakers the Windows default and find the device to
+/// capture; the previous sink when Windows cannot say.
+fn route_upkeep(
+    route: &Route,
+    config: &Config,
+    warnings: &butterpollo_core::session::Warnings,
+    previous: &str,
+) -> String {
+    match route.maintain_default() {
+        Ok(()) => warnings.clear("audio_default"),
+        Err(error) => warnings.set("audio_default", format!("Could not keep the streaming playback device as default ({error:#}); game audio may go to another device. Check the Windows default playback device.")),
+    }
+    match route.capture_sink(config) {
+        Ok(selected) => {
+            warnings.clear("audio_device_query");
+            selected
+        }
+        Err(error) => {
+            warnings.set("audio_device_query", format!("Could not find the current audio capture device ({error:#}); retaining the previous route. Check the Windows default playback device if sound is missing."));
+            previous.to_owned()
+        }
+    }
+}
+/// The audio route's once-a-second upkeep, on its own thread. Each round
+/// asks the Windows audio service for the default devices, several COM calls;
+/// on the audio sender they held up the read after them about once a second.
+struct RouteUpkeep {
+    sink: Arc<Mutex<String>>,
+    stop: Arc<AtomicBool>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+impl RouteUpkeep {
+    /// The first round runs on the caller, so capture opens on the right sink.
+    fn start(
+        route: Arc<Route>,
+        config: Config,
+        warnings: Arc<butterpollo_core::session::Warnings>,
+    ) -> Result<Self> {
+        let sink = Arc::new(Mutex::new(route_upkeep(
+            &route,
+            &config,
+            &warnings,
+            &route.sink,
+        )));
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = thread::Builder::new().name("audio route".into()).spawn({
+            let sink = sink.clone();
+            let stop = stop.clone();
+            move || {
+                let _com = match ComGuard::new() {
+                    Ok(com) => com,
+                    Err(error) => {
+                        tracing::warn!(%error, "audio route upkeep unavailable");
+                        return;
+                    }
+                };
+                loop {
+                    thread::park_timeout(Duration::from_secs(1));
+                    if stop.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let previous = sink.lock().unwrap().clone();
+                    let selected = route_upkeep(&route, &config, &warnings, &previous);
+                    *sink.lock().unwrap() = selected;
+                }
+            }
+        })?;
+        Ok(Self {
+            sink,
+            stop,
+            thread: Some(thread),
+        })
+    }
+    fn sink(&self) -> String {
+        self.sink.lock().unwrap().clone()
+    }
+}
+impl Drop for RouteUpkeep {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = self.thread.take() {
+            worker.thread().unpark();
+            finish_worker(worker, "audio route");
+        }
+    }
+}
 /// A session's QoS tag on a shared socket, moved along when the client's
 /// address changes.
 #[derive(Default)]
@@ -1962,6 +2049,7 @@ impl Media {
         let mut audio_qos = Tagged::default();
         let mut loss = butterpollo_core::audio::HostLoss::default();
         let mut last_loss = None;
+        let mut upkeep: Option<RouteUpkeep> = None;
         let mut next = Instant::now();
         let timer = butterpollo_windows::timing::Timer::new()?;
         let silence = vec![0.; frames * s.config.audio_channels as usize];
@@ -1977,6 +2065,10 @@ impl Media {
                         .clamp(Duration::from_millis(1), Duration::from_millis(5)),
                 ),
                 None => timer.until(Instant::now() + Duration::from_millis(1)),
+            }
+            #[cfg(debug_assertions)]
+            if let Some(stall) = crate::soak_fault::audio_stall()? {
+                thread::sleep(stall);
             }
             if !muted && Instant::now() >= audio_check {
                 audio_check = Instant::now() + Duration::from_secs(1);
@@ -2012,19 +2104,15 @@ impl Media {
                     } else {
                         s.launch.warnings.clear("audio_virtual_sink");
                     }
-                    match route.maintain_default() {
-                        Ok(()) => s.launch.warnings.clear("audio_default"),
-                        Err(error) => s.launch.warnings.set("audio_default", format!("Could not keep the streaming playback device as default ({error:#}); game audio may go to another device. Check the Windows default playback device.")),
-                    }
-                    let selected = match route.capture_sink(&config) {
-                        Ok(selected) => {
-                            s.launch.warnings.clear("audio_device_query");
-                            selected
-                        }
-                        Err(error) => {
-                            s.launch.warnings.set("audio_device_query", format!("Could not find the current audio capture device ({error:#}); retaining the previous route. Check the Windows default playback device if sound is missing."));
-                            route.sink.clone()
-                        }
+                    let selected = match &upkeep {
+                        Some(upkeep) => upkeep.sink(),
+                        None => upkeep
+                            .insert(RouteUpkeep::start(
+                                route.clone(),
+                                config.clone(),
+                                s.launch.warnings.clone(),
+                            )?)
+                            .sink(),
                     };
                     if selected != sink {
                         if !sink.is_empty() {
@@ -2075,11 +2163,7 @@ impl Media {
             // Sunshine sends them. On a fixed tick each waited up to a packet,
             // and a tick just before a late chunk sent silence in its place.
             let mut packets = Vec::new();
-            if let Some(capturing) = capture.as_mut()
-                && let Some(waited) = capturing.since_drained()
-            {
-                loss.read_after(waited, capturing.buffer());
-            }
+            let waited = capture.as_mut().and_then(Loopback::since_drained);
             while let Some(capturing) = capture.as_mut() {
                 match capturing.read(frames) {
                     Ok(Some(samples)) => packets.push(samples),
@@ -2088,6 +2172,22 @@ impl Media {
                         s.launch.warnings.set("audio_capture", format!("Audio capture interrupted ({error:#}); reopening WASAPI and sending silence until it recovers. Check the playback device if this repeats."));
                         capture = None;
                         capture_failed = true;
+                    }
+                }
+            }
+            if let Some(capturing) = capture.as_mut() {
+                let skipped = capturing.take_skipped();
+                if let Some(waited) = waited {
+                    let lost = loss.skipped(skipped, waited, capturing.buffer());
+                    // A skip the wait does not explain is the endpoint falling
+                    // quiet and starting again.
+                    if waited > capturing.buffer() || !skipped.is_zero() {
+                        tracing::debug!(
+                            waited_ms = waited.as_secs_f64() * 1000.,
+                            skipped_ms = skipped.as_secs_f64() * 1000.,
+                            lost,
+                            "audio sender read late or Windows skipped audio"
+                        );
                     }
                 }
             }
@@ -2125,7 +2225,7 @@ impl Media {
             let now = Instant::now();
             if let Some(report) = loss.report(now) {
                 last_loss = Some(now);
-                s.launch.warnings.set("audio_loss", format!("Audio lost on the host before sending: {} late reads, {:.1} ms beyond the capture buffer, {} unsent packets (longest wait {:.1} ms, buffer {:.1} ms). You may hear gaps; lower video bitrate and game GPU load, and check the network adapter.", report.late_reads, report.lost.as_secs_f64() * 1000., report.unsent, report.longest.as_secs_f64() * 1000., report.buffer.as_secs_f64() * 1000.));
+                s.launch.warnings.set("audio_loss", report.message());
             } else if last_loss.is_some_and(|at| now.duration_since(at) >= Duration::from_secs(10))
             {
                 s.launch.warnings.clear("audio_loss");
