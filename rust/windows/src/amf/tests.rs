@@ -1,8 +1,10 @@
 use super::*;
 
 #[test]
-fn rate_limits_scale_from_the_applied_bitrate_after_a_rejected_request() {
-    // 80 -> rejected 40 -> accepted 20 Mbps must quarter the old limits.
+fn rate_limits_scale_by_the_requested_over_the_last_applied_bitrate() {
+    // The arithmetic set_bitrate uses after 80 applied, 40 rejected and 20
+    // accepted: the divisor is the applied 80, so the limits are quartered.
+    // The applied/requested bookkeeping itself needs an AMF component.
     for (current, expected) in [
         (96_000_000, 24_000_000),
         (666_667, 166_666),
@@ -140,6 +142,8 @@ fn hdr10_metadata_and_range_reach_the_bitstream() -> Result<()> {
                     let mut encoder = Encoder::new_gpu(&config, gpu.clone(), options, queue)?;
                     assert_eq!(
                         encoder.supports_invalidation(),
+                        // `references` sets the client's limit; whether LTR
+                        // recovery is enabled also depends on the options.
                         butterpollo_core::encoder_policy::amf_ltr_frames(options, &config) > 0
                     );
                     let changes = [
@@ -252,8 +256,22 @@ fn hdr10_metadata_and_range_reach_the_bitstream() -> Result<()> {
                         let light = side
                             .iter()
                             .find(|s| s["side_data_type"] == "Content light level metadata");
-                        if metadata.max_cll == 0 {
+                        if metadata.max_cll == 0 && frame == 0 {
                             assert!(light.is_none(), "{name}: unexpected content light level");
+                        } else if metadata.max_cll == 0 {
+                            // After a known value, AMF keeps the SEI/OBU and writes
+                            // 0/0, which means unknown (CTA-861.3). Only a stale
+                            // non-zero level would be wrong.
+                            if let Some(light) = light {
+                                assert_eq!(
+                                    light["max_content"], 0,
+                                    "{name}: stale content light level"
+                                );
+                                assert_eq!(
+                                    light["max_average"], 0,
+                                    "{name}: stale content light level"
+                                );
+                            }
                         } else {
                             let light =
                                 light.with_context(|| format!("{name}: no content light level"))?;
