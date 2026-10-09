@@ -4,6 +4,28 @@ import re
 from collections import Counter
 
 
+def display_refresh(display_name):
+    import ctypes
+    # DEVMODEW from wingdi.h; retain the unused printer/colour fields so the
+    # read-only query has the same layout as Windows' structure.
+    class Mode(ctypes.Structure):
+        _fields_ = [('device', ctypes.c_uint16 * 32), ('version', ctypes.c_uint16 * 2),
+                    ('size', ctypes.c_uint16), ('extra', ctypes.c_uint16),
+                    ('fields', ctypes.c_uint32), ('position', ctypes.c_int32 * 2),
+                    ('orientation', ctypes.c_uint32), ('fixed_output', ctypes.c_uint32),
+                    ('printer', ctypes.c_int16 * 5), ('form', ctypes.c_uint16 * 32),
+                    ('log_pixels', ctypes.c_uint16), ('bits', ctypes.c_uint32),
+                    ('width', ctypes.c_uint32), ('height', ctypes.c_uint32),
+                    ('flags', ctypes.c_uint32), ('frequency', ctypes.c_uint32),
+                    ('colour_and_panning', ctypes.c_uint32 * 8)]
+    mode = Mode(size=ctypes.sizeof(Mode))
+    query = ctypes.windll.user32.EnumDisplaySettingsW
+    query.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.POINTER(Mode)]
+    query.restype = ctypes.c_int
+    assert query(display_name, 0xffffffff, ctypes.byref(mode)), 'cannot read source refresh'
+    return mode.frequency
+
+
 def active_clients(log):
     active = Counter()
     for line in log.splitlines():
@@ -44,7 +66,37 @@ def claims(log):
     return found
 
 
-def evaluate(client, rc, codec, mode, vrr=False, tone_log='', host_frames=None, recovery=0, host_log=''):
+def capture_integrity(log, requested_capture=None, requested_source=None):
+    """Keep fallback/changed-source runs out of matched benchmark comparisons."""
+    backends, sources = [], []
+    for line in log.splitlines():
+        fields = dict((key, value.strip('"')) for key, value in re.findall(r'(\w+)=("[^"]*"|\S+)', line))
+        if 'capture backend opened' in line and 'backend' in fields:
+            backends.append(fields['backend'])
+        if 'stream configured' in line:
+            sources.append({key: fields.get('source_' + key) for key in ('width', 'height', 'refresh_hz', 'pixel')})
+    failures = []
+    requested_capture = 'ddx' if requested_capture == 'dxgi' else requested_capture
+    fallback = bool(requested_capture not in (None, '', 'auto') and backends
+                    and any(backend != requested_capture for backend in backends))
+    if requested_capture is not None and not backends:
+        failures.append('missing actual capture backend')
+    if fallback:
+        failures.append(f'capture fallback: requested {requested_capture}, opened {", ".join(sorted(set(backends)))}')
+    if requested_source is not None:
+        if not sources or any(value is None for source in sources for value in source.values()):
+            failures.append('missing actual capture source measurements')
+        for key, expected in requested_source.items():
+            if sources and any(source.get(key) != str(expected) for source in sources):
+                failures.append(f'capture source {key} differs from requested {expected}')
+    return dict(capture_backends=backends, capture_sources=sources,
+                requested_capture=requested_capture, requested_source=requested_source,
+                comparison='fallback' if fallback else 'unmatched' if failures else 'matched'
+                if requested_capture is not None and requested_source is not None else 'unverified'), failures
+
+
+def evaluate(client, rc, codec, mode, vrr=False, tone_log='', host_frames=None, recovery=0, host_log='',
+             requested_capture=None, requested_source=None):
     def find(pattern, cast=float):
         match = re.search(pattern, client, re.MULTILINE)
         return cast(match.group(1)) if match else None
@@ -99,6 +151,14 @@ def evaluate(client, rc, codec, mode, vrr=False, tone_log='', host_frames=None, 
                       host_pictures_encoded_again=sum(not new for *_, new in encodes) if encodes else None)
     failures = []
     missing = [key for key, value in result.items() if value is None]
+    # Older conventional-codec fixtures lack picture age; report it without
+    # changing their acceptance rules. PyroWave still requires it above.
+    result.update({f'picture_age_{key}': find(r'^PICTURE_AGE .*?' + key + r'=([0-9.]+)', cast)
+                   for key, cast in [('samples', int), ('mean_ms', float), ('p95_ms', float),
+                                     ('p99_ms', float), ('max_ms', float)]})
+    integrity, integrity_failures = capture_integrity(host_log, requested_capture, requested_source)
+    result.update(integrity)
+    failures.extend(integrity_failures)
     if recovery:
         # Reported for comparison between releases, not judged here. With the
         # strip at the stream rate the fixture alone repeats and skips 5-28

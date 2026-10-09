@@ -1391,6 +1391,8 @@ impl Media {
                     let mut first_seen: Option<(usize, Instant, Option<Duration>, Option<Instant>)> = None;
                     let mut video_qos = Tagged::default();
                     let mut batch = butterpollo_windows::net::Batch::default();
+                    let trace_send = tracing::enabled!(target: "pacing", tracing::Level::TRACE);
+                    batch.waits = trace_send.then(Default::default);
                     let mut network_pacer = butterpollo_core::network_pacing::Pacer::new(Instant::now());
                     let mut link = None;
                     let mut link_due = Instant::now();
@@ -1470,6 +1472,12 @@ impl Media {
                                 }
                             }
                             let dropped = batch.dropped;
+                            let waits_before = batch.waits;
+                            let mut pacing_wait = Duration::ZERO;
+                            let mut send_time = Duration::ZERO;
+                            let mut batches = 0;
+                            let mut first_send = None;
+                            let mut last_send = None;
                             let mut remaining = packets.as_slice();
                             while !remaining.is_empty() {
                                 if s.stopping() || h.stop.load(Ordering::Acquire) {
@@ -1478,13 +1486,22 @@ impl Media {
                                 let now = Instant::now();
                                 if network_pacer.due() > now {
                                     timer.until_precise(network_pacer.due());
+                                    if trace_send { pacing_wait += now.elapsed(); }
                                 }
                                 let budget = (bps / 4000)
                                     .clamp(remaining[0].len() as u64, batch_kb * 1024)
                                     as usize;
                                 let count =
                                     butterpollo_windows::net::Batch::count(remaining, budget);
+                                let send_started = trace_send.then(Instant::now);
                                 let bytes = batch.send(&m.video, &remaining[..count], peer)?;
+                                if let Some(send_started) = send_started {
+                                    let finished = Instant::now();
+                                    first_send.get_or_insert(send_started);
+                                    last_send = Some(finished);
+                                    send_time += finished.duration_since(send_started);
+                                    batches += 1;
+                                }
                                 remaining = &remaining[count..];
                                 network_pacer.sent(Instant::now(), bytes, if bytes > 0 { count } else { 0 }, peer.ip().to_canonical().is_ipv6(), bps);
                                 s.stats.packets.fetch_add(count as u64, Ordering::Relaxed);
@@ -1495,6 +1512,13 @@ impl Media {
                             }
                             s.stats.frames.fetch_add(1, Ordering::Relaxed);
                             let sent = Instant::now();
+                            if let (Some(first), Some(last), Some(before), Some(after)) = (first_send, last_send, waits_before, batch.waits) {
+                                tracing::trace!(target: "pacing", frame=packetizer.frame.wrapping_sub(1), packets=packets.len(), batches,
+                                    pacing_wait_us=micros(pacing_wait), send_us=micros(send_time),
+                                    first_send_us=micros(first.saturating_duration_since(start)), last_send_us=micros(last.saturating_duration_since(start)),
+                                    writable_waits=after.count-before.count, writable_wait_us=micros(after.elapsed-before.elapsed),
+                                    dropped=batch.dropped-dropped, stream_id=%s.launch.id, "send");
+                            }
                             s.stats.performance.lock().unwrap().record_timing(sent,butterpollo_core::performance::Timing{period,encode:latency,host:processing,age,sent:micros(sent.saturating_duration_since(claimed))},frame_bytes);
                             // The interface lookup takes a moment: refresh the
                             // link speed after the frame is out, for the next one.

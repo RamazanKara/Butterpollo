@@ -106,7 +106,12 @@ finally:
         f.close()
 
 client = (case / 'client.log').read_text(errors='replace')
+config = dict(line.split('=', 1) for line in (profile / 'sunshine.conf').read_text().splitlines() if '=' in line)
+config = {key.strip(): value.strip() for key, value in config.items()}
+requested_source = dict(width=display['width'], height=display['height'], refresh_hz=display['refresh_hz'],
+                        pixel='RgbaF16' if display['hdr'] else 'Bgra8')
 result = evaluate(client, rc, args.codec, args.mode, args.vrr, recovery=args.recovery,
+                  requested_capture=config['capture'], requested_source=requested_source,
                   host_log=log.read_text(errors='replace') if log.exists() else '',
                   tone_log=(case / 'tone.log').read_text(errors='replace'),
                   host_frames=host_frames(case / 'receiver'))

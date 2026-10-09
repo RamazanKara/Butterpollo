@@ -266,7 +266,13 @@ pub fn wait_readable(
         )),
     }
 }
-fn writable(socket: &UdpSocket) -> bool {
+#[derive(Clone, Copy, Default)]
+pub struct WritableWaits {
+    pub count: u64,
+    pub elapsed: std::time::Duration,
+}
+fn writable(socket: &UdpSocket, trace: Option<&mut WritableWaits>) -> bool {
+    let started = trace.as_ref().map(|_| std::time::Instant::now());
     let mut poll = [WSAPOLLFD {
         fd: SOCKET(socket.as_raw_socket() as usize),
         events: POLLWRNORM,
@@ -274,8 +280,13 @@ fn writable(socket: &UdpSocket) -> bool {
     }];
     // SAFETY: `poll` is a one-element array that outlives the call, for a socket the borrow keeps
     // open.
-    (unsafe { WSAPoll(poll.as_mut_ptr(), 1, WRITABLE_WAIT_MS) }) > 0
-        && poll[0].revents.0 & POLLWRNORM.0 != 0
+    let ready = (unsafe { WSAPoll(poll.as_mut_ptr(), 1, WRITABLE_WAIT_MS) }) > 0
+        && poll[0].revents.0 & POLLWRNORM.0 != 0;
+    if let (Some(trace), Some(started)) = (trace, started) {
+        trace.count += 1;
+        trace.elapsed += started.elapsed();
+    }
+    ready
 }
 /// One datagram, retried once when the socket buffer is full. The inner
 /// error is Winsock's.
@@ -283,6 +294,7 @@ fn send_one(
     socket: &UdpSocket,
     packet: &[u8],
     peer: SocketAddr,
+    trace: Option<&mut WritableWaits>,
 ) -> Result<std::result::Result<(), WSA_ERROR>> {
     let send = || {
         socket
@@ -290,7 +302,7 @@ fn send_one(
             .map_err(|e| WSA_ERROR(e.raw_os_error().unwrap_or(WSAEINVAL.0)))
     };
     let mut result = send();
-    if result == Err(WSAEWOULDBLOCK) && writable(socket) {
+    if result == Err(WSAEWOULDBLOCK) && writable(socket, trace) {
         result = send();
     }
     Ok(match result {
@@ -306,7 +318,7 @@ fn send_one(
 }
 /// One datagram; `Ok(false)` when a transient error dropped it.
 pub fn send_datagram(socket: &UdpSocket, packet: &[u8], peer: SocketAddr) -> Result<bool> {
-    match send_one(socket, packet, peer)? {
+    match send_one(socket, packet, peer, None)? {
         Ok(()) => Ok(true),
         Err(error) if transient(error) => Ok(false),
         Err(error) => Err(std::io::Error::from_raw_os_error(error.0).into()),
@@ -540,6 +552,8 @@ pub struct Batch {
     pub system_calls: u64,
     /// Datagrams lost to transient send errors.
     pub dropped: u64,
+    /// Enabled by the sender only for pacing traces.
+    pub waits: Option<WritableWaits>,
     unreported: u64,
     reported: Option<std::time::Instant>,
 }
@@ -549,6 +563,7 @@ impl Default for Batch {
             offload: true,
             system_calls: 0,
             dropped: 0,
+            waits: None,
             unreported: 0,
             reported: None,
         }
@@ -622,7 +637,7 @@ impl Batch {
         let mut sent = 0;
         for packet in packets {
             self.system_calls += 1;
-            match send_one(socket, packet, peer)? {
+            match send_one(socket, packet, peer, self.waits.as_mut())? {
                 Ok(()) => sent += packet.len(),
                 Err(error) if transient(error) => self.dropped(1, error),
                 Err(error) => return Err(std::io::Error::from_raw_os_error(error.0).into()),
@@ -698,7 +713,7 @@ impl Batch {
             }
             // SAFETY: WSAGetLastError only reads this thread's last Winsock error.
             let error = unsafe { WSAGetLastError() };
-            if error != WSAEWOULDBLOCK || attempt == 1 || !writable(socket) {
+            if error != WSAEWOULDBLOCK || attempt == 1 || !writable(socket, self.waits.as_mut()) {
                 return Ok(Err(error));
             }
         }
@@ -709,6 +724,20 @@ impl Batch {
 mod tests {
     use super::*;
     use windows::Win32::NetworkManagement::{IpHelper::*, Ndis::*};
+
+    #[test]
+    fn writable_waits_are_counted_only_when_traced() -> Result<()> {
+        let socket = UdpSocket::bind("127.0.0.1:0")?;
+        assert!(Batch::default().waits.is_none());
+        assert!(writable(&socket, None));
+        let mut waits = WritableWaits::default();
+        let started = std::time::Instant::now();
+        assert!(writable(&socket, Some(&mut waits)));
+        assert!(writable(&socket, Some(&mut waits)));
+        assert_eq!(waits.count, 2);
+        assert!(waits.elapsed <= started.elapsed());
+        Ok(())
+    }
 
     fn interface(kind: u32, hardware: bool) -> MIB_IF_ROW2 {
         let mut row = MIB_IF_ROW2 {

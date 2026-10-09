@@ -1,4 +1,5 @@
 import json, pathlib, subprocess, sys, tempfile, unittest
+from unittest.mock import patch
 from e2e_result import active_clients, evaluate, host_frames
 
 
@@ -29,6 +30,57 @@ PICTURE_AGE samples=1621 mean_ms=12.000 p50_ms=11.000 p95_ms=18.000 p99_ms=22.00
 
 
 class ReleaseMeasurements(unittest.TestCase):
+    def test_source_refresh_query_uses_the_current_windows_mode_without_setting_it(self):
+        from e2e_result import display_refresh
+        def query(name, current, pointer):
+            self.assertEqual((name, current), ('DISPLAY1', 0xffffffff))
+            mode = pointer._obj
+            self.assertEqual(mode.size, 220)
+            self.assertEqual(type(mode).frequency.offset, 184)
+            mode.frequency = 240
+            return 1
+        with patch('ctypes.windll', create=True) as native:
+            native.user32.EnumDisplaySettingsW.side_effect = query
+            self.assertEqual(display_refresh('DISPLAY1'), 240)
+            native.user32.EnumDisplaySettingsW.assert_called_once()
+
+    def test_capture_integrity_rejects_fallback_missing_and_changed_sources(self):
+        source = dict(width=1968, height=2184, refresh_hz=240, pixel='RgbaF16')
+        opened = 'INFO capture backend opened requested=wgc backend="wgc" output=DISPLAY1\n'
+        configured = ('INFO stream configured width=1920 height=1080 requested_capture=wgc '
+                      'source_width=1968 source_height=2184 source_refresh_hz=240 source_pixel=RgbaF16\n')
+        check = lambda log: evaluate(GOOD, 0, 'hevc', '1920x1080x60', host_log=log,
+                                     requested_capture='wgc', requested_source=source)
+        matched = check(opened + configured)
+        self.assertTrue(matched['passed'], matched['failures'])
+        self.assertEqual(matched['comparison'], 'matched')
+        self.assertEqual(matched['capture_sources'], [{k: str(v) for k, v in source.items()}])
+        fallback = opened.replace('backend="wgc"', 'backend="ddx"')
+        for log in (fallback + configured, opened + configured + fallback):
+            result = check(log)
+            self.assertFalse(result['passed'])
+            self.assertEqual(result['comparison'], 'fallback')
+            self.assertIn('ddx', result['capture_backends'])
+        for log in ('', configured, opened, opened + configured.replace('source_pixel=RgbaF16', ''),
+                    opened + configured + configured.replace('source_width=1968', 'source_width=1920')):
+            self.assertFalse(check(log)['passed'])
+        for key, wrong in [('width', '1920'), ('height', '1080'), ('refresh_hz', '120'), ('pixel', 'Bgra8')]:
+            with self.subTest(key=key):
+                self.assertFalse(check(opened + configured.replace(f'source_{key}={source[key]}', f'source_{key}={wrong}'))['passed'])
+        alias = evaluate(GOOD, 0, 'hevc', '1920x1080x60', host_log=fallback + configured,
+                         requested_capture='dxgi', requested_source=source)
+        self.assertTrue(alias['passed'], alias['failures'])
+
+    def test_picture_age_is_reported_for_every_codec(self):
+        for codec in ('h264', 'hevc', 'av1', 'pyrowave'):
+            result = evaluate(PYROWAVE, 0, codec, '1920x1080x60')
+            self.assertTrue(result['passed'], result['failures'])
+            self.assertEqual([result[f'picture_age_{key}_ms'] for key in ('mean', 'p95', 'p99')], [12, 18, 22])
+        legacy = evaluate(GOOD, 0, 'hevc', '1920x1080x60')
+        self.assertTrue(legacy['passed'])
+        self.assertIsNone(legacy['picture_age_mean_ms'])
+        self.assertEqual(legacy['comparison'], 'unverified')
+
     def test_one_disconnect_does_not_hide_another_active_client(self):
         log = ('INFO CLIENT CONNECTED client=phone\n'
                'INFO CLIENT CONNECTED client="living room"\n'

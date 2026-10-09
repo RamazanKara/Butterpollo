@@ -2,9 +2,10 @@
 import hashlib, json, os, pathlib, shutil, subprocess
 import xml.etree.ElementTree as ET
 import requests
-from e2e_result import active_clients
+from e2e_result import active_clients, display_refresh
 
 INSTALLED_LOG = pathlib.Path(r'C:\ProgramData\Butterpollo\config\logs\butterpollo.log')
+
 
 def stage_fault_host(package, binary, directory):
     # Opus is loaded beside the executable, so PATH alone cannot supply the
@@ -34,6 +35,7 @@ def prepare(args, case, port=48523, rust_log='info'):
     diag = json.loads(subprocess.check_output([str(host_exe), '--diagnostics'], env=env, text=True))
     monitor = next(m for m in diag['monitors'] if m['primary'])
     display = next(d for d in diag['displays'] if d['display_name'] == monitor['display_name'])
+    display = dict(display, refresh_hz=display_refresh(display['display_name']), hdr=monitor['hdr_enabled'])
     if args.mode is None:
         args.mode = f"{round(display['width'] * 720 / display['height'] / 2) * 2}x720x60"
     width, height, fps = args.mode.split('x')
