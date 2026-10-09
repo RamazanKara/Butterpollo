@@ -729,6 +729,8 @@ impl Encoder {
             ._device
             .device
             .cast::<windows::Win32::Graphics::Dxgi::IDXGIDevice>()
+            // SAFETY: `device` is a live IDXGIDevice obtained by `cast` from this
+            // encoder's D3D11 device; the call only reads its priority.
             .and_then(|device| unsafe { device.GetGPUThreadPriority() });
         tracing::info!(
             settings = %settings.join(" "),
@@ -742,6 +744,8 @@ impl Encoder {
     /// Snapshot only at failure/recreation, before dropping the driver state.
     pub fn log_stall(&self) {
         let oldest = self.in_flight.front();
+        // SAFETY: the D3D11 device is owned by this encoder and outlives the
+        // call; GetDeviceRemovedReason only reads its state.
         let removed = unsafe { self._device.device.GetDeviceRemovedReason() };
         let result_name = |code| match code {
             Some(AMF_RESULT_AMF_OK) => "AMF_OK",
