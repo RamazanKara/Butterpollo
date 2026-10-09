@@ -7,14 +7,18 @@ and stops. A narrow moving strip and a virtual-speaker tone exercise capture.
 No display-mode, HDR or default-audio change; the installed host must be idle.
 
 usage: e2e.py --package DIR --work DIR --client EXE --codec CODEC [--mode 1280x720x60] [--seconds 12]
-              [--vrr] [--recovery N]
-Writes WORK/e2e-CODEC[-vrr][-recovery]/result.json.
+              [--vrr] [--recovery N] [--motion-at-rate]
+Writes WORK/e2e-CODEC[-vrr][-recovery|-at-rate]/result.json.
 
 --recovery N: the receiver asks for a keyframe N times, every
 RECOVERY_INTERVAL_MS, as a client losing packets does, while the moving
 strip runs at the stream rate (a game held there by a frame limit) and the
 minimum frame rate keeps its default of 20. Each request must ride the
 next new frame: no picture sent twice, no game frame skipped.
+
+--motion-at-rate: the same strip and minimum frame rate without requests,
+the control for --recovery. BUTTERPOLLO_E2E_RUST_LOG replaces the host's
+RUST_LOG (info), e.g. info,pacing=trace for a claim-by-claim trace.
 """
 import argparse, json, pathlib, subprocess, sys, time
 import xml.etree.ElementTree as ET
@@ -33,9 +37,11 @@ parser.add_argument('--bitrate', default='20000')
 parser.add_argument('--vrr', action='store_true', help='launch as a client asking for VRR')
 parser.add_argument('--config', action='append', default=[], metavar='KEY=VALUE', help='an extra sunshine.conf line for the host, e.g. wgc_user_helper=true')
 parser.add_argument('--recovery', type=int, default=0, metavar='N', help='keyframe requests during the stream, with the motion strip at the stream rate')
+parser.add_argument('--motion-at-rate', action='store_true', help='the strip at the stream rate without requests: the control for --recovery')
 args = parser.parse_args()
 RECOVERY_INTERVAL_MS = 500
-if args.recovery:
+at_rate = bool(args.recovery) or args.motion_at_rate
+if at_rate:
     # The default an unconfigured host has; the release streams resend at the
     # full rate, which would add repeats of their own.
     args.config.insert(0, 'minimum_fps_target=20')
@@ -44,7 +50,8 @@ interop = pathlib.Path(__file__).resolve().parents[1] / 'tests' / 'interop.py'
 installed_idle()
 plain = requests.Session(); plain.trust_env = False
 
-case = args.work / (f'e2e-{args.codec}' + ('-vrr' if args.vrr else '') + ('-recovery' if args.recovery else ''))
+case = args.work / (f'e2e-{args.codec}' + ('-vrr' if args.vrr else '')
+                    + ('-recovery' if args.recovery else '-at-rate' if args.motion_at_rate else ''))
 assert case.resolve().parent == args.work.resolve(), 'test output must stay inside the work directory'
 if case.exists():
     import shutil; shutil.rmtree(case)
@@ -74,7 +81,7 @@ try:
         time.sleep(.2)
     fixture_seconds = str(int(args.seconds) + 90)
     tone = spawn([str(audio_probe), fixture_seconds, sink['id'], '--render-only'], 'tone.log', env=env)
-    motion_rate = int(fps) if args.recovery else int(fps) * 2
+    motion_rate = int(fps) if at_rate else int(fps) * 2
     motion = spawn([str(motion_probe), display['display_name'], fixture_seconds, str(case / 'motion.json'), str(motion_rate), '128'], 'motion.log', env=env)
     time.sleep(.5)
     assert tone.poll() is None and motion.poll() is None, 'audio or motion fixture exited'

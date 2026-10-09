@@ -29,7 +29,7 @@ def installed_idle():
 
 def prepare(args, case, port=48523):
     profile = case / 'config'; (profile / 'logs').mkdir(parents=True)
-    env = os.environ.copy(); env.update(PATH=str(args.package) + ';' + env['PATH'], RUST_LOG='info', NO_PROXY='*')
+    env = os.environ.copy(); env.update(PATH=str(args.package) + ';' + env['PATH'], RUST_LOG=os.environ.get('BUTTERPOLLO_E2E_RUST_LOG', 'info'), NO_PROXY='*')
     host_exe = args.package / 'butterpollo.exe'
     diag = json.loads(subprocess.check_output([str(host_exe), '--diagnostics'], env=env, text=True))
     monitor = next(m for m in diag['monitors'] if m['primary'])
