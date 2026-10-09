@@ -23,6 +23,28 @@ Both neutral (host mean 3.2-3.4 ms HEVC, 3.0 ms AV1 everywhere, 120.0 fps, no
 drops) and shipped. The resume fix is also covered by the GPU-free reconnect
 matrix (`reconnect_tests.rs`), now with no ignored cases.
 
+Second batch, against main `33d4a11f` plus the two fixes above (October 9
+07:25-07:55), same setup:
+
+| Build | HEVC r1 | HEVC r2 | AV1 r1 | AV1 r2 |
+| --- | --- | --- | --- | --- |
+| main | 11.23 / 11.72 / 12.09 | 11.22 / 11.64 / 11.92 | 10.61 / 11.19 / 11.51 | 11.36 / 11.74 / 11.85 |
+| GPU-reset recovery (`c2fa482f`, re-applied) | 10.96 / 11.52 / 11.84 | 11.29 / 11.90 / 12.06 | 10.68 / 11.32 / 11.74 | 11.01 / 11.59 / 11.82 |
+| main (second pair) | 11.14 / 11.79 / 12.05 | 10.91 / 11.51 / 11.90 | 10.87 / 11.48 / 11.74 | 10.85 / 11.50 / 11.81 |
+| recovery-request wake (`81c8fb3a`, re-applied) | 11.10 / 11.74 / 12.03 | 11.34 / 11.66 / 11.85 | 10.79 / 11.43 / 15.43 | 10.66 / 11.19 / 11.41 |
+
+Both neutral on moving pictures (the single 15.4 ms AV1 p99 did not repeat:
+a third wake run gave 10.85 / 11.45 / 11.73). The wake's target, measured with
+the receiver's `IDR_PROBE` on a still 1080p120 desktop (10 keyframe requests
+per run, request to complete IDR arrival, mean / p95 / max): main 5.80 / 7.50
+/ 8.83 and 6.02 / 7.35 / 8.35 ms, with the wake 2.44 / 2.51 / 2.83 and 2.39 /
+2.46 / 2.77 ms. A client recovering from loss on a still or slow screen gets
+its keyframe about 3.5 ms sooner instead of waiting for the next frame period.
+GPU-reset recovery has no host trigger short of a real driver reset; its
+fault-injection tests cover it. Both together (the two commits touched the
+same capture subscription and were merged by hand): HEVC 11.21 / 11.63 /
+11.79 ms, IDR 2.37 / 2.41 / 2.73 ms. Shipped as `aebecdda` and `5a7f7641`.
+
 Batched virtual display apply (`d685d085`, opt-in), same second-client
 fixture as on October 8 (WGC HEVC 1080p60, three other clients each creating a
 1280x720 display): with the setting on, each creation made 1 whole-topology
