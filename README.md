@@ -71,6 +71,38 @@ Carried over from Vibepollo, Apollo and Sunshine and rebuilt in Rust: per-device
 
 [Benchmarks, current WGC results and HDR validation →](docs/performance.md)
 
+## What users say
+
+Quotes from Reddit, lightly edited for typos. Several were written while the project was still called Butterpollo.
+
+> WTF. Runs like Butterchicken (that's where it got the original name from)
+>
+> **u/Closef35** on Reddit
+
+> From 10 ms encoding to 5 ms in 4K 60 fps, btw :) I tried it with PyroWave and it was close to native. Really impressive.
+>
+> **u/3stwie4** on Reddit
+
+> My encoding times are actually slashed in half, which is incredible. I thought PyroWave on Vibeshine was the best I was gonna get, but my max encode would still spike to 7-8 ms at 2K 100 fps. Still below the 10 ms cutoff, but I wanted more headroom for higher quality or if a game is more demanding. My max is now 3.5 ms with the occasional pip to 5 ms every few minutes. Image quality is top notch, and combined with Nonary's work on VRR Moonlight smoothing that out, my setup has finally been something I am not itchy to improve or tweak anymore.
+>
+> **u/astero-dax** on Reddit
+
+> Dude... What the fuck is this host? I could not believe it. It's the lowest latency I got after testing a ton of hosts. Congratulations, dude. The only problem I have is that the sound keeps cracking randomly. (We fixed that thanks to his logs.)
+>
+> **u/LukasSTM** on Reddit
+
+> Fantastic job! Host processing latency has never been this low 🎉 Clean UI too 🔥 Well done! Thanks for your time and the effort you put into this! I'll report feedback if I find any issue. (9070 XT)
+>
+> **u/Short_Dimension7967** on Reddit
+
+> Thanks. Going to try this. Edit: Runs amazing on my 6900 XT. There is a noticeable improvement in latency, and the host latency is now much better too. Edit: Switched to PyroWave on RC19. I honestly see no difference between host and client. Amazing work!
+>
+> **u/ChartFlashy6299** on Reddit
+
+> Running pretty good so far on my 6900 XT, no framedrops, no stutter, and a good migration from Vibepollo. And I love that it is written in Rust, one of the best optimized languages! Thank you for the work!
+>
+> **u/almosgeci** on Reddit
+
 ## Full colour with PyroWave
 
 PyroWave carries **10-bit HDR with 4:4:4 chroma**: a colour sample for every pixel. Its GPU pipeline shares D3D11/Vulkan textures and sends the encoded stream over a fast local network. Play it on [Rubylight Android](https://github.com/RamazanKara/rubylight-android), our own client, which offers experimental PyroWave on Vulkan phones and tablets; on a PC, use [Nonary's compatible Moonlight client](https://github.com/Nonary/moonlight-qt) over a wired LAN.
