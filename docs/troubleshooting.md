@@ -153,7 +153,7 @@ Issue closure is distinguished from a verified driver fix here. Settings from an
 
 ### RX 9070 XT test checklist and logs
 
-1. Record Butterpollo/client versions, Windows build, **Adrenalin version and Windows DriverVersion**, GPU names, selected display/adapter, physical or virtual display, HDR/VRR, resolution/rate and bitrate. On dual-GPU machines include the second adapter and which GPU owns the display. Read-only driver inventory: `Get-CimInstance Win32_VideoController | Select-Object Name, DriverVersion`.
+1. Record Rubylight/client versions, Windows build, **Adrenalin version and Windows DriverVersion**, GPU names, selected display/adapter, physical or virtual display, HDR/VRR, resolution/rate and bitrate. On dual-GPU machines include the second adapter and which GPU owns the display. Read-only driver inventory: `Get-CimInstance Win32_VideoController | Select-Object Name, DriverVersion`.
 2. Start one wired **1080p60 SDR AV1** session with the baseline above. Run a moving scene and leave a menu/desktop still for several minutes. Repeat with HEVC, then H.264, for **at least ten minutes each**; also run the normal gaming workload for **30–60 minutes**. Record whether audio/input continue during any frozen picture and whether reconnecting restores video. Do not deliberately re-enable the reported freeze/reset combinations.
 3. If those pass, compare AV1 and HEVC at the actual target resolution/rate, first SDR then HDR, including a dark/grey/bright chart and text. Include **1920×1080** when checking AV1 dimensions. Keep the scene, bitrate and client identical. High-rate 4K and simultaneous streams are separate tests, not assumed single-engine capacity.
 4. For a failure or performance comparison, change one existing setting per reconnect: WGC versus Desktop Duplication; then `gpu_compute_conversion=true` versus `false` with capture held constant. Leave global realtime off. Run **A/B/A/B**, at least three minutes per leg, and report the range of each leg's timings rather than only the best run. Note other streams, GPU benchmarks, recording or video playback competing for the GPU.
@@ -194,7 +194,7 @@ Check **Restore displays on disconnect**, **Restore delay** and **Keep a disconn
 
 When all streams have ended, use **Maintenance → Displays** to inspect whether the current layout matches the saved one. **Restore saved layout** applies that saved layout; **Save current layout** replaces it with the arrangement you currently want. Saving, restoring and resetting are unavailable during streaming.
 
-**Disconnect virtual displays** stops every stream and removes Butterpollo-created virtual displays. **Reset display settings memory** forgets pending display changes that Rubylight would otherwise undo. Use those recovery actions deliberately after recording the problem; resetting memory is not the same as restoring a layout.
+**Disconnect virtual displays** stops every stream and removes Rubylight-created virtual displays. **Reset display settings memory** forgets pending display changes that Rubylight would otherwise undo. Use those recovery actions deliberately after recording the problem; resetting memory is not the same as restoring a layout.
 
 rc.10 has a brief startup guard for a reproduced case where creating a virtual display reactivated a dormant monitor. That guard is not continuous enforcement and does not establish that every phone/client display report is fixed. Record the client, chosen layout, active monitors and log time when reporting another case.
 
