@@ -712,25 +712,25 @@ mod tests {
             assert_eq!(installer(&release).unwrap().url, url);
         }
         // The current name wins when a release carries both.
-        let mut release = release();
-        let mut current = release["assets"][0].clone();
+        let mut both = release();
+        let mut current = both["assets"][0].clone();
         current["name"] = json!("rubylight-setup-2.0.0-rc.7.exe");
         current["browser_download_url"] = json!(
             "https://github.com/RamazanKara/Rubylight/releases/download/2.0.0-rc.7/rubylight-setup-2.0.0-rc.7.exe"
         );
-        release["assets"].as_array_mut().unwrap().push(current);
+        both["assets"].as_array_mut().unwrap().push(current);
         assert!(
-            installer(&release)
+            installer(&both)
                 .unwrap()
                 .url
                 .ends_with("/rubylight-setup-2.0.0-rc.7.exe")
         );
         // Another repository's copy is refused.
-        let mut release = release();
-        release["assets"][0]["browser_download_url"] = json!(
+        let mut foreign = release();
+        foreign["assets"][0]["browser_download_url"] = json!(
             "https://github.com/someone/Rubylight/releases/download/2.0.0-rc.7/butterpollo-setup-2.0.0-rc.7.exe"
         );
-        assert!(installer(&release).is_err());
+        assert!(installer(&foreign).is_err());
     }
     #[test]
     fn only_the_two_newest_update_transactions_are_kept() {
