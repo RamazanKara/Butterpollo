@@ -1,10 +1,15 @@
-# Rubylight 2.0.0-rc.29 release candidate for Windows
+# Rubylight 2.0.0-rc.30 release candidate for Windows
 
 [Documentation](../docs/README.md) · [Install and migrate](../docs/getting-started.md) · [Configuration](../docs/configuration.md) · [Compatibility](PARITY.md)
 
-**Release history:** [rc.29](#new-in-rc29) · [rc.28](#new-in-rc28) · [rc.27](#new-in-rc27) · [rc.26](#new-in-rc26) · [rc.25](#new-in-rc25) · [rc.24](#new-in-rc24) · [rc.23](#new-in-rc23) · [rc.22](#new-in-rc22) · [rc.21](#new-in-rc21) · [rc.20](#new-in-rc20) · [rc.19](#new-in-rc19) · [rc.18](#new-in-rc18) · [rc.17](#new-in-rc17) · [rc.16](#new-in-rc16) · [rc.15](#new-in-rc15) · [rc.14](#new-in-rc14) · [rc.13](#new-in-rc13) · [rc.12](#new-in-rc12) · [rc.11](#new-in-rc11) · [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
+**Release history:** [rc.30](#new-in-rc30) · [rc.29](#new-in-rc29) · [rc.28](#new-in-rc28) · [rc.27](#new-in-rc27) · [rc.26](#new-in-rc26) · [rc.25](#new-in-rc25) · [rc.24](#new-in-rc24) · [rc.23](#new-in-rc23) · [rc.22](#new-in-rc22) · [rc.21](#new-in-rc21) · [rc.20](#new-in-rc20) · [rc.19](#new-in-rc19) · [rc.18](#new-in-rc18) · [rc.17](#new-in-rc17) · [rc.16](#new-in-rc16) · [rc.15](#new-in-rc15) · [rc.14](#new-in-rc14) · [rc.13](#new-in-rc13) · [rc.12](#new-in-rc12) · [rc.11](#new-in-rc11) · [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
 
-Rubylight, called Butterpollo until rc.29, is written in Rust: host, native helpers, service and setup, with a Svelte web console. The rc.29 installer is named `butterpollo-setup-2.0.0-rc.29.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+Rubylight, called Butterpollo until rc.29, is written in Rust: host, native helpers, service and setup, with a Svelte web console. The rc.30 installer is named `rubylight-setup-2.0.0-rc.30.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+
+## New in rc.30
+
+- **Butterpollo is now Rubylight.** The name nods to Ruby, the red-haired mascot of ATI's Radeon cards. Updating changes only the names Windows shows: the console, tray, setup, the Start menu entry, the Apps entry, the service's display name and the firewall rule. Your settings, paired devices, apps, the `ApolloService` service, the install and profile folders and the file names (`butterpollo.exe`, **Start Butterpollo.exe**) stay as they are, so the update installs in place. New installs go to `C:\Program Files\Rubylight`. The installer is now `rubylight-setup-<version>.exe`; releases keep a `butterpollo-setup` copy so older hosts still find the update in-app, and the updater knows both repository names. Links to the old GitHub address will keep working when the repository is renamed. Checked on the RX 7900 XT host: an in-app style update kept all 9 paired clients, 4 apps and identical settings, and a 12 s HEVC stream delivered 706 of 706 frames. Known leftovers: a firewall rule named "Butterpollo Rust - local network streaming" from an early installer keeps its name, and rolling back to rc.29 keeps the Rubylight names in Windows Services and the Start menu. Both are harmless.
+- **The audio loss warning reports real drops again.** rc.29's warning missed them: Windows reports a dropped packet on the read after the late one, and it is now counted. On the host, 15 of 16 injected 40 ms stalls were reported, each with the 18-28 ms Windows dropped; normal streams stay silent. The device check rc.29 moved off the audio thread took 7.8 ms on average (max 11 ms) on the host.
 
 ## New in rc.29
 
@@ -394,8 +399,8 @@ Current automated validation: 263 ordinary tests passed, with 27 environment-dep
 
 ## Install
 
-- `butterpollo-setup-2.0.0-rc.29.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
-- For a portable copy, extract `butterpollo-rust-2.0.0-rc.29-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
+- `rubylight-setup-2.0.0-rc.30.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
+- For a portable copy, extract `rubylight-2.0.0-rc.30-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
 - These are unsigned test builds. Keep a copy of your configuration and the previous installer for rollback.
 
 ## Lower latency
