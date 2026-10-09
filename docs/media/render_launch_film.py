@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Butterpollo's 60-second launch film, rendered deterministically with Pillow.
+"""Rubylight's 60-second launch film, rendered deterministically with Pillow.
 
 No service, game, display or GPU access. Requires Pillow and FFmpeg.
 Diagrams are schematic; measured results name their fixture in the footer.
@@ -31,8 +31,8 @@ RULE = (36, 40, 52)
 CARD = (19, 22, 30)
 STARTS = (0, 6, 16, 25, 37, 44, 49, 55)
 ENDS = STARTS[1:] + (60,)
-CHAPTERS = ('MEET BUTTERPOLLO', 'FOLLOW ONE FRAME', 'RADEON COMPUTE', 'UNDER LOAD',
-            'PYROWAVE', 'BUILT TOGETHER', 'GET STARTED', 'BUTTERPOLLO')
+CHAPTERS = ('MEET RUBYLIGHT', 'FOLLOW ONE FRAME', 'RADEON COMPUTE', 'UNDER LOAD',
+            'PYROWAVE', 'BUILT TOGETHER', 'GET STARTED', 'RUBYLIGHT')
 WIPE = .7
 
 # docs/performance.md:85; WGC on the October 7 idle fixture.
@@ -213,15 +213,15 @@ def badge(im, x, y, size, opacity=1.):
     if opacity <= 0:
         return
     rect(im, (x, y, x+size, y+size), mix(BG, BUTTER, opacity), radius=round(size*.26))
-    glyph = lettering('B', round(size*.66), BG, 'bold')
-    txt(im, x+size/2, y+(size-glyph.height)/2, 'B', round(size*.66), BG, 'bold', 'center', opacity)
+    glyph = lettering('R', round(size*.66), BG, 'bold')
+    txt(im, x+size/2, y+(size-glyph.height)/2, 'R', round(size*.66), BG, 'bold', 'center', opacity)
 
 
 def chrome(im, index, t):
     alpha = 1-smooth((t-STARTS[-1]-.2)/.5)
     if alpha > 0:
         badge(im, 104, 58, 42, alpha)
-        txt(im, 160, 60, 'Butterpollo', 30, INK, 'bold', opacity=alpha)
+        txt(im, 160, 60, 'Rubylight', 30, INK, 'bold', opacity=alpha)
         txt(im, 1816, 70, f'{index+1:02d} / {CHAPTERS[index]}', 22, MUTED, 'mono', 'right', alpha)
     # Film progress, a hairline along the top edge.
     line(im, (0, 1, W*t/DURATION, 1), BUTTER, 3)
@@ -242,7 +242,7 @@ def token(im, x, y, size=34, lit=1.):
 def hook(t):
     t += .9  # The first frame already carries the message.
     im = base(t-.9)
-    reveal(im, 100, 186, 'Meet Butterpollo.', 120, t, at=0)
+    reveal(im, 100, 186, 'Meet Rubylight.', 120, t, at=0)
     reveal(im, 100, 322, 'Built for Radeon.', 120, t, at=.2, color=BUTTER)
     reveal(im, 106, 498, 'A Moonlight host for Windows, written in Rust.', 40, t,
            at=.55, color=INK, weight='semibold')
@@ -348,7 +348,7 @@ def pipeline(t):
         txt(im, 104, y, 'GRAPHICS QUEUE', 22, MUTED, 'mono', opacity=p)
         txt(im, 104, y+44, 'The game renders.', 42, INK, 'bold', opacity=p)
         txt(im, 910, y, 'D3D12 COMPUTE QUEUES', 22, BUTTER, 'mono', opacity=p)
-        txt(im, 910, y+44, 'Butterpollo prepares the frame.', 42, BUTTER, 'bold', opacity=p)
+        txt(im, 910, y+44, 'Rubylight prepares the frame.', 42, BUTTER, 'bold', opacity=p)
     foot(im, 'Schematic order of work · copies and colour conversion run alongside the game',
          'The game and desktop composition can still delay the source picture · rust/PERFORMANCE.md')
     return im
@@ -372,7 +372,7 @@ def bars(im, x, y, width, heading_text, values, t, delay=0., unit='ms', top=60.)
 def compute(t):
     im = base(t+STARTS[2])
     title(im, 'Radeon compute, measured.', t,
-          'Same Butterpollo build, one setting changed, beside a game-like GPU load.')
+          'Same Rubylight build, one setting changed, beside a game-like GPU load.')
     bars(im, 104, 360, 760, 'Average picture age', COMPUTE['mean'], t, .5)
     bars(im, 1056, 360, 760, 'Mean per-run 95th percentile', COMPUTE['p95'], t, 1.6)
     p = ease((t-3.4)/.7)
@@ -395,7 +395,7 @@ def comparison(t):
           'A matched whole-host comparison with Vibepollo, a Sunshine-based host.')
     txt(im, 104, 346, 'CONTROLLED GPU LOAD', 22, MUTED, 'mono')
     txt(im, 1170, 338, 'Vibepollo', 38, INK, 'bold', 'center')
-    txt(im, 1630, 338, 'Butterpollo', 38, BUTTER, 'bold', 'center')
+    txt(im, 1630, 338, 'Rubylight', 38, BUTTER, 'bold', 'center')
     rows = (('Average render-to-decode delay', 'mean', 'ms'),
             ('Mean per-run 95th-percentile delay', 'p95', 'ms'),
             ('Fresh pictures per second', 'fresh', ''),
@@ -411,7 +411,7 @@ def comparison(t):
         line(im, (104, y+66, 1816, y+66), RULE)
     reveal(im, 104, 844, 'Most of the loaded gap is not the compute path.', 34, t,
            at=2.7, color=BUTTER, weight='semibold')
-    reveal(im, 104, 894, "Both use native AMF; that encoder came from Butterpollo's author.", 28, t,
+    reveal(im, 104, 894, "Both use native AMF; that encoder came from Rubylight's author.", 28, t,
            at=2.9, color=MUTED, weight='regular', rise=12)
     foot(im, 'RX 7900 XT · DDX · 1080p60 HEVC HDR · 20 Mbps · 120 Hz virtual display · October 4, 2026',
          'Game-like load · matched AMF / ultra-low latency / realtime GPU priority · three alternating runs/host',
@@ -467,8 +467,8 @@ def together(t):
 
 def get_started(t):
     im = base(t+STARTS[6])
-    title(im, 'Install. Pair. Play.', t, 'Start with Butterpollo on your Windows gaming PC.')
-    steps = (('Install Butterpollo.', 'Run the installer and create your local account in the web console.'),
+    title(im, 'Install. Pair. Play.', t, 'Start with Rubylight on your Windows gaming PC.')
+    steps = (('Install Rubylight.', 'Run the installer and create your local account in the web console.'),
              ('Pair Moonlight.', 'Add your PC in Moonlight and enter its pairing PIN in Devices.'),
              ('Launch Desktop.', 'Choose your game, then make the stream settings your own.'))
     for i, (label, detail) in enumerate(steps):
@@ -488,10 +488,10 @@ def get_started(t):
 def ending(t):
     im = base(t+STARTS[7])
     p = ease((t-.1)/.7)
-    mark = width_of('Butterpollo', 156, 'bold')
+    mark = width_of('Rubylight', 156, 'bold')
     left = (W-(150+48+mark))/2
     badge(im, left, 222+20*(1-p), 150, p)
-    reveal(im, left+198, 208, 'Butterpollo', 156, t, at=.15)
+    reveal(im, left+198, 208, 'Rubylight', 156, t, at=.15)
     reveal(im, 960, 378, 'WINDOWS · RADEON · MOONLIGHT', 28, t, at=.35,
            color=BUTTER, weight='mono', align='center')
     reveal(im, 960, 430, 'Written in Rust. Built for Radeon. Made for Moonlight.', 44, t, at=.45,
@@ -503,8 +503,9 @@ def ending(t):
         reveal(im, x, 540, value, 62, t, at=.8+i*.2, color=BUTTER)
         x += widths[i]+gap
     reveal(im, 960, 720, 'github.com/RamazanKara/Rubylight', 52, t, at=1.5, weight='bold', align='center')
-    txt(im, 960, 818, 'As long as AMD users are happy, Butterpollo is happy.', 32, MUTED, 'regular', 'center',
+    txt(im, 960, 818, 'As long as AMD users are happy, Rubylight is happy.', 32, MUTED, 'regular', 'center',
         ease((t-2)/.6))
+    txt(im, 960, 872, 'Formerly Butterpollo.', 26, DIM, 'regular', 'center', ease((t-2.3)/.6))
     return im
 
 

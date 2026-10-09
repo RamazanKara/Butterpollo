@@ -21,7 +21,7 @@ def encode_gif(source, destination):
     if not ffmpeg:
         raise RuntimeError('FFmpeg is required to encode the preview.')
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='butterpollo-demo-') as directory:
+    with tempfile.TemporaryDirectory(prefix='rubylight-demo-') as directory:
         palette = str(Path(directory) / 'palette.png')
         base = [ffmpeg, '-hide_banner', '-loglevel', 'error', '-y', '-threads', '4']
         subprocess.run(base + ['-i', str(source), '-vf',
@@ -61,7 +61,7 @@ def main():
         if not ffmpeg:
             parser.error('FFmpeg is required.')
         scripts = Path(__file__).resolve().parent
-        with tempfile.TemporaryDirectory(prefix='butterpollo-film-') as directory:
+        with tempfile.TemporaryDirectory(prefix='rubylight-film-') as directory:
             score = Path(directory) / 'score.wav'
             subprocess.run([sys.executable, str(scripts / 'demo_audio.py'),
                             '--output', str(score), '--duration', str(film.DURATION)], check=True)
