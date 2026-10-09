@@ -420,6 +420,66 @@ impl Arrangement {
         Ok(result)
     }
 }
+/// Displays a stream's layout switched off that are on again. Windows puts
+/// back the layout it has saved for the connected displays when an
+/// exclusive-fullscreen game loses focus (the Win key, Alt+Tab, Ctrl+Alt+Del),
+/// and that layout has the physical monitor on. `before`: the user's layout
+/// from before the stream; `applied`: the stream's; `active`: the displays on
+/// now. A display that was already off before the stream is the user's to
+/// switch on, and one the stream never laid out (another client's display on
+/// its way in) is not counted.
+pub fn switched_back_on(before: &[Node], applied: &[Node], active: &[String]) -> Vec<String> {
+    applied
+        .iter()
+        .filter(|n| !n.active && active.contains(&n.device_id))
+        .filter(|n| {
+            before
+                .iter()
+                .any(|b| b.device_id == n.device_id && b.active)
+        })
+        .map(|n| n.device_id.clone())
+        .collect()
+}
+
+/// When the heartbeat checks [`switched_back_on`] and puts the stream's layout
+/// back. A display must stay on for [`LayoutWatch::SETTLE`] first, so a game's
+/// own mode switch passes without a fight; a failed attempt (the secure
+/// desktop refuses display changes) waits [`LayoutWatch::RETRY`].
+#[derive(Debug, Default)]
+pub struct LayoutWatch {
+    next_check: Option<std::time::Instant>,
+    since: Option<std::time::Instant>,
+}
+impl LayoutWatch {
+    pub const INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+    pub const SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
+    pub const RETRY: std::time::Duration = std::time::Duration::from_secs(2);
+    /// Whether to query the displays now.
+    pub fn due(&mut self, now: std::time::Instant) -> bool {
+        if self.next_check.is_some_and(|next| now < next) {
+            return false;
+        }
+        self.next_check = Some(now + Self::INTERVAL);
+        true
+    }
+    /// Record a check; true when the layout should be put back now.
+    pub fn observe(&mut self, switched_on: bool, now: std::time::Instant) -> bool {
+        if !switched_on {
+            self.since = None;
+            return false;
+        }
+        let since = *self.since.get_or_insert(now);
+        if now.duration_since(since) < Self::SETTLE {
+            return false;
+        }
+        self.since = None;
+        true
+    }
+    pub fn failed(&mut self, now: std::time::Instant) {
+        self.since = None;
+        self.next_check = Some(now + Self::RETRY);
+    }
+}
 #[cfg(test)]
 mod tests {
     #[test]
@@ -772,5 +832,58 @@ mod tests {
         assert!(exclusive[1].active && exclusive[1].primary);
         assert_eq!(exclusive[1].desired_position, Position { x: 0, y: 0 });
         assert!(exclusive[2].active);
+    }
+    #[test]
+    fn a_display_the_exclusive_layout_switched_off_is_put_back_off_after_it_settles() {
+        use std::time::{Duration, Instant};
+        // Before the stream: the physical monitor on its own, a TV switched
+        // off. The exclusive layout keeps only the virtual display on.
+        let mut phys = node("phys", 0);
+        phys.primary = true;
+        let mut tv = node("tv", 1920);
+        tv.active = false;
+        let mut vdd = node("vdd", 0);
+        vdd.active = false;
+        let before = vec![phys.clone(), tv.clone(), vdd.clone()];
+        let applied = Arrangement::Exclusive
+            .compose(&[phys.clone(), tv.clone(), node("vdd", 3840)], "vdd", &[])
+            .unwrap();
+        let on = |ids: &[&str]| ids.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(switched_back_on(&before, &applied, &on(&["vdd"])).is_empty());
+        // The Win key over an exclusive-fullscreen game: Windows recalls its
+        // saved layout and the physical monitor comes back beside the stream.
+        assert_eq!(
+            switched_back_on(&before, &applied, &on(&["vdd", "phys"])),
+            ["phys"]
+        );
+        // The TV was off before the stream: switching it on is the user's call.
+        assert!(switched_back_on(&before, &applied, &on(&["vdd", "tv"])).is_empty());
+        // Another client's display arriving was never laid out by this stream.
+        assert!(switched_back_on(&before, &applied, &on(&["vdd", "vdd2"])).is_empty());
+        // The extended layout switches nothing off, so there is nothing to keep off.
+        let extended = Arrangement::Extended
+            .compose(&[phys.clone(), tv, node("vdd", 3840)], "vdd", &[])
+            .unwrap();
+        assert!(switched_back_on(&before, &extended, &on(&["vdd", "phys"])).is_empty());
+
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut watch = LayoutWatch::default();
+        assert!(watch.due(at(0)));
+        assert!(!watch.due(at(100)));
+        assert!(watch.due(at(250)));
+        // A game's own mode switch that settles within the window is left alone.
+        assert!(!watch.observe(true, at(0)));
+        assert!(!watch.observe(true, at(250)));
+        assert!(!watch.observe(false, at(500)));
+        assert!(!watch.observe(true, at(750)));
+        assert!(!watch.observe(true, at(1000)));
+        // Still on after the settle time: put the layout back once.
+        assert!(watch.observe(true, at(1250)));
+        assert!(!watch.observe(true, at(1500)));
+        // A refused attempt waits before the next check.
+        watch.failed(at(1500));
+        assert!(!watch.due(at(3000)));
+        assert!(watch.due(at(3500)));
     }
 }

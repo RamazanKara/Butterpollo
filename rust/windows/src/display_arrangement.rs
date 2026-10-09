@@ -306,6 +306,24 @@ impl Lease {
             target: Mutex::new(target_id),
         })
     }
+    /// Displays this stream's layout switched off that Windows has switched
+    /// back on, such as when an exclusive-fullscreen game loses focus and
+    /// Windows recalls its saved layout for the connected displays.
+    pub fn switched_back_on(&self) -> Result<Vec<String>> {
+        let active: Vec<_> = crate::display::monitors()?
+            .into_iter()
+            .map(|m| m.device_id)
+            .collect();
+        let state = state().lock().unwrap();
+        let Some(before) = &state.before else {
+            return Ok(Vec::new());
+        };
+        Ok(butterpollo_core::display_policy::switched_back_on(
+            &before.nodes,
+            &state.applied,
+            &active,
+        ))
+    }
     /// Reapply the stream layout after an owned VDD is recreated, retaining the
     /// original restoration snapshot and recovery journal.
     pub fn reapply(&self, output: &str, retained: &[String]) -> Result<()> {

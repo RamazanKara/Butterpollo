@@ -309,6 +309,7 @@ pub struct Prepared {
     mode: (u32, u32, u32, bool, bool),
     revision: u64,
     recovery: Recovery,
+    layout_watch: butterpollo_core::display_policy::LayoutWatch,
     mode_report: ModeReport,
     recovery_scale: i64,
     recovery_dimensions: (u32, u32),
@@ -352,19 +353,7 @@ impl Prepared {
                 )?;
             }
             if let Some(arrangement) = &self._arrangement {
-                let retained = self
-                    .host
-                    .upgrade()
-                    .map(|h| {
-                        h.monitors
-                            .lock()
-                            .unwrap()
-                            .values()
-                            .map(|m| m.current_output())
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                arrangement.reapply(&self.output, &retained)?;
+                arrangement.reapply(&self.output, &self.remote_monitors())?;
             }
             if self.recovery.take_mode() {
                 if let Some(display) = &self.display {
@@ -377,8 +366,53 @@ impl Prepared {
                 self._profile = Some(hdr_profile::Lease::acquire(&self.output, profile)?);
             }
             self.recovery.finish();
+        } else {
+            self.keep_layout()?;
         }
         fed.map(|_| ())
+    }
+    fn remote_monitors(&self) -> Vec<String> {
+        self.host
+            .upgrade()
+            .map(|h| {
+                h.monitors
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .map(|m| m.current_output())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+    /// Put the stream's layout back when Windows switches on a display it
+    /// turned off. An exclusive-fullscreen game losing focus (the Win key,
+    /// Alt+Tab) makes Windows recall its saved layout, which has the physical
+    /// monitor on; the virtual display stays on, so the recovery above never
+    /// starts.
+    fn keep_layout(&mut self) -> Result<()> {
+        let now = std::time::Instant::now();
+        if self.recovery.pending || !self.layout_watch.due(now) {
+            return Ok(());
+        }
+        let Some(arrangement) = &self._arrangement else {
+            return Ok(());
+        };
+        let switched_on = match arrangement.switched_back_on() {
+            Ok(switched_on) => switched_on,
+            Err(error) => {
+                self.layout_watch.failed(now);
+                return Err(error);
+            }
+        };
+        if !self.layout_watch.observe(!switched_on.is_empty(), now) {
+            return Ok(());
+        }
+        tracing::info!(displays = ?switched_on, "displays the stream layout switched off came back on; reapplying it");
+        let result = arrangement.reapply(&self.output, &self.remote_monitors());
+        if result.is_err() {
+            self.layout_watch.failed(now);
+        }
+        result
     }
     fn create(
         h: &Shared,
@@ -871,6 +905,7 @@ impl Prepared {
                 mode: stream_mode(stream),
                 revision,
                 recovery: Recovery::new(),
+                layout_watch: Default::default(),
                 mode_report,
                 recovery_scale: config.integer("dd_virtual_display_scale", 0),
                 recovery_dimensions: (width, height),

@@ -2601,3 +2601,34 @@ streams, one-shot and persistent
 `BUTTERPOLLO_TEST_FAULT_DIR`, the stream-card warning/IDR, and responsive console
 and serverinfo throughout recovery. Actual TDR/Code 31 recovery remains a
 hardware acceptance check; no forced TDR was attempted here.
+
+## October 9 user report: physical monitor comes back on when a game loses focus
+
+Report (the owner): streaming with the game in exclusive fullscreen, pressing
+the Win key turns the physical monitor back on. Borderless and windowed games
+do not. Cause, inferred from code and not yet reproduced: the exclusive layout
+is applied without `SDC_SAVE_TO_DATABASE`, so the Windows display database for
+"physical + virtual display" still has the physical monitor on. An
+exclusive-fullscreen game losing focus (Win key, Alt+Tab, Ctrl+Alt+Del) makes
+Windows apply that saved layout. The virtual display stays on, so the
+heartbeat's recovery (which only starts when the virtual display is switched
+off or recreated) never noticed.
+
+- The stream heartbeat now checks the active displays every 250 ms. When a
+  display the stream's layout switched off (on before the stream, off in its
+  layout) has been on for 500 ms, it reapplies the layout; a refused attempt
+  waits 2 s. Displays that were off before the stream, another client's
+  display arriving, and the extended and primary layouts are left alone
+  (`display_policy::switched_back_on`, `LayoutWatch`; `display_session.rs`
+  `keep_layout`). Unit test: `a_display_the_exclusive_layout_switched_off_is_put_back_off_after_it_settles`.
+- Not done: persisting the stream layout with `SDC_SAVE_TO_DATABASE`. It would
+  stop the monitor flashing on at all, but a crash or unplug could then leave
+  the saved layout wrong. Only if the watchdog proves not enough.
+
+To confirm on the host (needs the exclusive layout, so only with the owner's
+OK): one virtual display stream with the exclusive layout, then
+`rust/tests/layout_recall.ps1`, which makes Windows apply its saved layout the
+way a focus loss does and times how long the physical monitor stays on
+(pass: off again within 1.5 s, expected ~0.5-0.8 s). Then the real case: an
+exclusive-fullscreen game, press Win, Alt+Tab and Ctrl+Alt+Del; the host log
+shows "displays the stream layout switched off came back on; reapplying it".
