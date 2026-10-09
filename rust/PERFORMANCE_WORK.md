@@ -5,6 +5,36 @@ without reducing features or picture quality. Opus took over from Codex in the
 evening of October 2. Performance acceptance on the customer's own sessions is
 still open; the measured fixture results below are local loopback evidence.
 
+## October 9 job 7 split and stall diagnostics: host A/B, then a GPU reset
+
+Same setup as the job 4 A/B below (base `92afcce5`, 1968x2184 HDR 120,
+240 Hz virtual display, hardware-decoding receiver), October 9 02:32-02:49.
+Picture age mean / p95 / p99 ms:
+
+| Build | HEVC rounds | AV1 rounds |
+| --- | --- | --- |
+| base | 12.40 / 13.12 / 13.39, 12.41 / 13.16 / 13.42, 13.82 / 17.84 / 19.03, 12.42 / 13.24 / 13.44, 12.27 / 12.92 / 13.36 | 11.90 / 12.52 / 12.80, 12.08 / 12.74 / 13.36 |
+| job 7 (display/input split) | 12.31 / 12.92 / 13.33, 12.37 / 13.16 / 13.39 | 11.90 / 12.53 / 13.00, 12.02 / 12.66 / 13.15 |
+| stall diagnostics | 13.46 / 17.72 / 18.36, 12.38 / 13.14 / 13.40, 12.38 / 13.18 / 13.39, 12.36 / 13.05 / 13.34 | 13.12 / 17.48 / 17.84, 12.01 / 12.63 / 13.20 |
+
+Both neutral: the 17-18 ms p95 tails appear in single runs of both the base
+and the stall build (a phase the fixture sometimes locks into), not
+systematically. Host mean was 3.6-3.7 ms (HEVC) and 3.2-3.3 ms (AV1) in every
+run. Shipped: job 7 as `66547532` and `68273f43`, the stall injection, tests
+and stall-time logging as `c35bcd28`.
+
+GPU reset: 25 s into the fifth base run (02:47:11 and again 02:48:03 local)
+the Radeon driver timed out (`C:\Windows\LiveKernelReports\WATCHDOG\
+WATCHDOG-20261009-0247.dmp` and `-0248.dmp`; the AMD Bug Report Tool opened).
+The host log shows audio late reads of up to 0.8 s at that moment, and the
+next run's host could not open an encoder within 60 s. The driver did not
+recover: the RX 7900 XT shows Code 31 and both virtual display adapters
+Code 43, Windows runs on the basic display, and every build's `--diagnostics`
+fails with 0x80070057. Over 60 identical runs earlier that night had no
+reset; the previous watchdog dumps on this PC are from October 8 00:31-00:43.
+Cause unknown: the base build predates every change measured here. It needs a
+reboot before any GPU work; the dumps are kept for analysis.
+
 ## October 9 job 4 split and two latency wakes: host A/B
 
 A/B/A/B on the RX 7900 XT host, October 9 02:05-02:16, against their common
