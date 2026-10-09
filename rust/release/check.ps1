@@ -11,7 +11,8 @@ the release workstation can do, run when its installed host is idle:
    SHA256SUMS.
 2. Streams H.264, HEVC, HEVC VRR, AV1 and PyroWave (SDR and HDR 4:4:4)
    through the packaged host with the independent moonlight-common-c client,
-   then runs the protocol checks (e2e.py, protocol.py).
+   plus HEVC with keyframe requests from the client while the picture moves
+   at the stream rate, then runs the protocol checks (e2e.py, protocol.py).
 3. The display self-test as SYSTEM and a quiet install over the running host
    (elevated.ps1): directly from an elevated shell, otherwise through the task
    elevation.ps1 installs, otherwise after one UAC prompt.
@@ -83,12 +84,15 @@ cargo build --release --locked --manifest-path "$checkout\Cargo.toml" --target-d
 Copy-Item "$checkout\target\ship\release\examples\audio_probe.exe", "$checkout\target\ship\release\examples\motion_probe.exe" $fixtures
 $client = "$fixtures\moonlight-client.exe"
 
-foreach ($case in 'h264', 'hevc', 'av1', 'hevc-vrr', 'pyrowave', 'pyrowave-hdr-444') {
+foreach ($case in 'h264', 'hevc', 'av1', 'hevc-vrr', 'hevc-recovery', 'pyrowave', 'pyrowave-hdr-444') {
     if ($SkipStreams -contains $case) { Write-Warning "stream $case skipped (-SkipStreams); recorded in VALIDATION.json"; continue }
-    $codec = $case -replace '-vrr$'
+    $codec = $case -replace '-(vrr|recovery)$'
     # 12 s of streaming each: enough for the steady-rate, motion and audio checks.
     $stream = @('--package', $package, '--work', $run, '--client', $client, '--codec', $codec, '--seconds', '12')
     if ($case.EndsWith('-vrr')) { $stream += '--vrr' }
+    # A client losing packets: 16 keyframe requests, one every 0.5 s, must
+    # not send pictures twice or skip new frames (rc.27-rc.28 did).
+    if ($case.EndsWith('-recovery')) { $stream += '--recovery', '16' }
     if ($codec.StartsWith('pyrowave')) {
         $stream = @('--package', $package, '--work', $run, '--client', "$fixtures\moonlight-pyrowave-client.exe",
                     '--codec', $codec, '--mode', '1920x1080x60', '--seconds', '12', '--bitrate', '400000')

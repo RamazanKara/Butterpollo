@@ -1612,7 +1612,7 @@ impl Media {
                             let reencode_at = if !recovering {
                                 repeat_due
                             } else if arrival_pacing {
-                                butterpollo_core::stream_policy::reencode_at(true, image.captured, period, repeat_due)
+                                butterpollo_core::stream_policy::reencode_at(true, image.captured, period, latest.source_interval(), repeat_due)
                             } else {
                                 Instant::now()
                             };

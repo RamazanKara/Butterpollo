@@ -29,14 +29,18 @@ results = sorted(work.glob('e2e-*/result.json'))
 streams = [json.loads(p.read_text()) for p in results if not p.parent.name.endswith('-failed')]
 assert streams and all(s['passed'] for s in streams), 'an end-to-end stream failed'
 skipped = set(args.skipped)
-required = {('h264', False), ('hevc', False), ('av1', False), ('hevc', True), ('pyrowave', False), ('pyrowave-hdr-444', False)}
-required -= {(case.removesuffix('-vrr'), case.endswith('-vrr')) for case in skipped}
-assert required <= {(s['codec'], s.get('vrr', False)) for s in streams}, 'the fixed-rate, VRR or PyroWave release matrix is incomplete'
+# (codec, VRR, keyframe requests while the picture moves)
+key = lambda s: (s['codec'], s.get('vrr', False), bool(s.get('recovery_requests')))
+required = {('h264', False, False), ('hevc', False, False), ('av1', False, False), ('hevc', True, False),
+            ('hevc', False, True), ('pyrowave', False, False), ('pyrowave-hdr-444', False, False)}
+required -= {(case.removesuffix('-vrr').removesuffix('-recovery'), case.endswith('-vrr'), case.endswith('-recovery'))
+             for case in skipped}
+assert required <= {key(s) for s in streams}, 'the fixed-rate, VRR, keyframe-request or PyroWave release matrix is incomplete'
 assert ({'pyrowave', 'pyrowave-hdr-444'} - skipped) <= {s['codec'] for s in streams if s.get('mode') == '1920x1080x60' and not s.get('vrr', False)}, '1080p60 SDR and HDR PyroWave results are required'
 assert all(s.get('audio_continuous') == 1 and s.get('motion_coverage', 0) >= .95 for s in streams), 'real audio and motion measurements are required'
 # A stream that failed once and passed when run again is recorded with both runs.
 for failed in (json.loads(p.read_text()) for p in results if p.parent.name.endswith('-failed')):
-    next(s for s in streams if (s['codec'], s['vrr']) == (failed['codec'], failed['vrr']))['first_attempt_failed'] = failed
+    next(s for s in streams if key(s) == key(failed))['first_attempt_failed'] = failed
 protocol = json.loads((work / 'protocol' / 'result.json').read_text())
 assert protocol['passed'], 'a protocol check failed'
 

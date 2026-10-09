@@ -12,6 +12,10 @@ VISUAL frames=1621 unique=1621 repeats=0 skipped_render_frames=1620 unique_fps=6
 PERFORMANCE seconds=30.000 received_fps=60.00 decoded_fps=60.00 host_mean_ms=1.500 decoder_mean_ms=4.000
 INTEROPERABILITY PASS
 '''
+# The strip moves at the stream rate here, so the receiver sees every frame.
+RECOVERY = GOOD.replace('skipped_render_frames=1620', 'skipped_render_frames=0') + '''IDR_PROBE samples=16 mean_ms=12.000 p50_ms=11.000 p95_ms=20.000 max_ms=24.000 requested=16 sent=16 decoded=16
+PICTURE_AGE samples=1621 mean_ms=12.000 p50_ms=11.000 p95_ms=18.000 p99_ms=22.000 max_ms=30.000
+'''
 PYROWAVE = GOOD + '''PYROWAVE framing=records bitstream=186f0393 encrypted=1 record_frames=1800 partial_frames=0 hdr_frames=0
 PICTURE_AGE samples=1621 mean_ms=12.000 p50_ms=11.000 p95_ms=18.000 p99_ms=22.000 max_ms=30.000
 '''
@@ -47,19 +51,30 @@ class ReleaseMeasurements(unittest.TestCase):
             protocol = work / 'protocol'
             protocol.mkdir(parents=True)
             (protocol / 'result.json').write_text(json.dumps(dict(passed=True, checks=[])))
-            cases = [('h264', False), ('hevc', False), ('av1', False), ('hevc', True),
-                     ('pyrowave', False), ('pyrowave-hdr-444', False)]
-            for codec, vrr in cases:
-                case = work / f'e2e-{codec}-{vrr}'
+            cases = [('h264', False, 0), ('hevc', False, 0), ('av1', False, 0), ('hevc', True, 0),
+                     ('hevc', False, 16), ('pyrowave', False, 0), ('pyrowave-hdr-444', False, 0)]
+            for codec, vrr, recovery in cases:
+                case = work / f'e2e-{codec}-{vrr}-{recovery}'
                 case.mkdir()
                 text = PYROWAVE.replace('hdr_frames=0', 'hdr_frames=1800') if '-hdr' in codec else PYROWAVE
-                (case / 'result.json').write_text(json.dumps(evaluate(text, 0, codec, '1920x1080x60', vrr)))
+                text = RECOVERY if recovery else text
+                (case / 'result.json').write_text(json.dumps(
+                    evaluate(text, 0, codec, '1920x1080x60', vrr, recovery=recovery)))
             command = [sys.executable, str(pathlib.Path(__file__).with_name('validation.py')), '--version', 'test',
                        '--package', str(package), '--work', str(work), '--out', str(root / 'VALIDATION.json')]
             result = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
+            # The keyframe-request stream is required unless skipped on purpose.
+            recovery = work / 'e2e-hevc-False-16'
+            recovery.rename(work / 'held')
+            run = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(run.returncode, 0)
+            self.assertIn('keyframe-request', run.stderr)
+            run = subprocess.run(command + ['--skipped', 'hevc-recovery'], capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            (work / 'held').rename(recovery)
             for codec in ('pyrowave', 'pyrowave-hdr-444'):
-                path = work / f'e2e-{codec}-False' / 'result.json'
+                path = work / f'e2e-{codec}-False-0' / 'result.json'
                 original = path.read_text()
                 for mode in ('1280x720x60', '1920x1080x30'):
                     with self.subTest(codec=codec, mode=mode):
@@ -130,6 +145,27 @@ class ReleaseMeasurements(unittest.TestCase):
         result = evaluate(GOOD, 0, 'hevc', '1280x720x60', tone_log=tone)
         self.assertTrue(result['passed'])
         self.assertEqual(result['audio_source_underruns'], 1)
+
+    def test_keyframe_requests_must_ride_the_next_new_frame(self):
+        moving = RECOVERY
+        result = evaluate(moving, 0, 'hevc', '1280x720x60', recovery=16)
+        self.assertTrue(result['passed'], result['failures'])
+        self.assertEqual((result['pictures_sent_again'], result['pictures_skipped']), (0, 0))
+        for before, after, failure in (
+                ('repeats=0', 'repeats=4', None), ('repeats=0', 'repeats=6', 'sent pictures twice'),
+                ('skipped_render_frames=0', 'skipped_render_frames=6', 'sent pictures twice'),
+                ('samples=16 mean', 'samples=15 mean', 'no decoded keyframe'),
+                ('decoded=16', 'decoded=15', 'no decoded keyframe'),
+                ('p95_ms=20.000 max_ms=24.000', 'p95_ms=51.000 max_ms=60.000', 'three frame periods'),
+                ('IDR_PROBE', 'NO_PROBE', 'missing measurements')):
+            with self.subTest(after=after):
+                result = evaluate(moving.replace(before, after), 0, 'hevc', '1280x720x60', recovery=16)
+                self.assertEqual(result['passed'], failure is None, result['failures'])
+                if failure:
+                    self.assertTrue(any(failure in f for f in result['failures']), result['failures'])
+        # Picture age is reported, not judged, and other streams ignore the probe.
+        self.assertEqual(evaluate(moving, 0, 'hevc', '1280x720x60', recovery=16)['picture_age_p99_ms'], 22)
+        self.assertNotIn('pictures_sent_again', evaluate(GOOD, 0, 'hevc', '1280x720x60'))
 
     def test_pyrowave_sdr_and_hdr_records_pass_with_picture_age(self):
         for codec, hdr in (('pyrowave', 0), ('pyrowave-hdr-444', 1800)):

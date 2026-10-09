@@ -57,6 +57,7 @@ static FILE *audio_csv;
 #define MAX_IDR_PROBES 2000
 #define IDR_PROBE_INTERVAL_US UINT64_C(1500000)
 static int idr_probe_count,idr_probe_sent;
+static uint64_t idr_probe_interval_us=IDR_PROBE_INTERVAL_US;
 static atomic_int idr_probe_pending;
 static struct {uint64_t request_us,arrival_us,decoded_us;int wire_frame;} idr_probes[MAX_IDR_PROBES];
 static FILE *idr_csv;
@@ -80,10 +81,17 @@ static int parse_idr_probe(const char *text){
     if(errno||text[0]<'0'||text[0]>'9'||*end||count<1||count>MAX_IDR_PROBES)return -1;
     return (int)count;
 }
+/* Milliseconds between requests, 100 to 10000; a lossy link asks several times a second. */
+static long parse_idr_probe_interval_ms(const char *text){
+    if(!text)return (long)(IDR_PROBE_INTERVAL_US/1000);
+    char *end;errno=0;long ms=strtol(text,&end,10);
+    if(errno||text[0]<'0'||text[0]>'9'||*end||ms<100||ms>10000)return -1;
+    return ms;
+}
 static void poll_idr_probe(uint64_t now_us,uint64_t started_us){
     if(idr_probe_sent>=idr_probe_count||atomic_load(&idr_probe_pending)||!atomic_load(&decoded_frames))return;
     if(now_us-started_us<warmup_seconds*1000000.0)return;
-    if(idr_probe_sent&&now_us-idr_probes[idr_probe_sent-1].request_us<IDR_PROBE_INTERVAL_US)return;
+    if(idr_probe_sent&&now_us-idr_probes[idr_probe_sent-1].request_us<idr_probe_interval_us)return;
     idr_probes[idr_probe_sent].request_us=now_us;
     // Publishing the slot before the API call also covers an immediate response.
     atomic_store(&idr_probe_pending,++idr_probe_sent);
@@ -535,8 +543,11 @@ int main(int argc,char**argv){
     if(getenv("BUTTERPOLLO_TEST_WARMUP_SECONDS"))warmup_seconds=atof(getenv("BUTTERPOLLO_TEST_WARMUP_SECONDS"));
     idr_probe_count=parse_idr_probe(getenv("BUTTERPOLLO_TEST_IDR_PROBE"));
     if(idr_probe_count<0){fprintf(stderr,"BUTTERPOLLO_TEST_IDR_PROBE must be an integer from 1 to %d\n",MAX_IDR_PROBES);return 2;}
-    if(idr_probe_count&&(!isfinite(warmup_seconds)||duration<warmup_seconds+idr_probe_count*1.5)){
-        fprintf(stderr,"IDR probe requires an explicit duration of at least warmup + N * 1.5 seconds\n");return 2;
+    long idr_probe_interval_ms=parse_idr_probe_interval_ms(getenv("BUTTERPOLLO_TEST_IDR_PROBE_INTERVAL_MS"));
+    if(idr_probe_interval_ms<0){fprintf(stderr,"BUTTERPOLLO_TEST_IDR_PROBE_INTERVAL_MS must be an integer from 100 to 10000\n");return 2;}
+    idr_probe_interval_us=(uint64_t)idr_probe_interval_ms*1000;
+    if(idr_probe_count&&(!isfinite(warmup_seconds)||duration<warmup_seconds+idr_probe_count*idr_probe_interval_ms/1000.0)){
+        fprintf(stderr,"IDR probe requires an explicit duration of at least warmup + N request intervals\n");return 2;
     }
     barcode_bottom=getenv("BUTTERPOLLO_TEST_BARCODE_BOTTOM")&&strcmp(getenv("BUTTERPOLLO_TEST_BARCODE_BOTTOM"),"1")==0;
     if(getenv("BUTTERPOLLO_TEST_BARCODE_SCALE"))barcode_scale=atof(getenv("BUTTERPOLLO_TEST_BARCODE_SCALE"));

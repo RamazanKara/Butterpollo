@@ -7,7 +7,14 @@ and stops. A narrow moving strip and a virtual-speaker tone exercise capture.
 No display-mode, HDR or default-audio change; the installed host must be idle.
 
 usage: e2e.py --package DIR --work DIR --client EXE --codec CODEC [--mode 1280x720x60] [--seconds 12]
-Writes WORK/e2e-CODEC/result.json.
+              [--vrr] [--recovery N]
+Writes WORK/e2e-CODEC[-vrr][-recovery]/result.json.
+
+--recovery N: the receiver asks for a keyframe N times, every
+RECOVERY_INTERVAL_MS, as a client losing packets does, while the moving
+strip runs at the stream rate (a game held there by a frame limit) and the
+minimum frame rate keeps its default of 20. Each request must ride the
+next new frame: no picture sent twice, no game frame skipped.
 """
 import argparse, json, pathlib, subprocess, sys, time
 import xml.etree.ElementTree as ET
@@ -25,13 +32,19 @@ parser.add_argument('--seconds', default='12')
 parser.add_argument('--bitrate', default='20000')
 parser.add_argument('--vrr', action='store_true', help='launch as a client asking for VRR')
 parser.add_argument('--config', action='append', default=[], metavar='KEY=VALUE', help='an extra sunshine.conf line for the host, e.g. wgc_user_helper=true')
+parser.add_argument('--recovery', type=int, default=0, metavar='N', help='keyframe requests during the stream, with the motion strip at the stream rate')
 args = parser.parse_args()
+RECOVERY_INTERVAL_MS = 500
+if args.recovery:
+    # The default an unconfigured host has; the release streams resend at the
+    # full rate, which would add repeats of their own.
+    args.config.insert(0, 'minimum_fps_target=20')
 interop = pathlib.Path(__file__).resolve().parents[1] / 'tests' / 'interop.py'
 
 installed_idle()
 plain = requests.Session(); plain.trust_env = False
 
-case = args.work / (f'e2e-{args.codec}' + ('-vrr' if args.vrr else ''))
+case = args.work / (f'e2e-{args.codec}' + ('-vrr' if args.vrr else '') + ('-recovery' if args.recovery else ''))
 assert case.resolve().parent == args.work.resolve(), 'test output must stay inside the work directory'
 if case.exists():
     import shutil; shutil.rmtree(case)
@@ -61,10 +74,14 @@ try:
         time.sleep(.2)
     fixture_seconds = str(int(args.seconds) + 90)
     tone = spawn([str(audio_probe), fixture_seconds, sink['id'], '--render-only'], 'tone.log', env=env)
-    motion = spawn([str(motion_probe), display['display_name'], fixture_seconds, str(case / 'motion.json'), str(int(fps) * 2), '128'], 'motion.log', env=env)
+    motion_rate = int(fps) if args.recovery else int(fps) * 2
+    motion = spawn([str(motion_probe), display['display_name'], fixture_seconds, str(case / 'motion.json'), str(motion_rate), '128'], 'motion.log', env=env)
     time.sleep(.5)
     assert tone.poll() is None and motion.poll() is None, 'audio or motion fixture exited'
     client_env = receiver_environment(env, display, args.mode, args.client, args.vrr)
+    if args.recovery:
+        client_env.update(BUTTERPOLLO_TEST_IDR_PROBE=str(args.recovery),
+                          BUTTERPOLLO_TEST_IDR_PROBE_INTERVAL_MS=str(RECOVERY_INTERVAL_MS))
     (case / 'receiver').mkdir()
     receiver = spawn([sys.executable, str(interop), str(case / 'receiver'), args.codec, width, height, fps, args.seconds, args.bitrate, '4'], 'client.log', env=client_env)
     rc = receiver.wait(timeout=int(args.seconds) + 120)
@@ -76,7 +93,7 @@ finally:
         f.close()
 
 client = (case / 'client.log').read_text(errors='replace')
-result = evaluate(client, rc, args.codec, args.mode, args.vrr,
+result = evaluate(client, rc, args.codec, args.mode, args.vrr, recovery=args.recovery,
                   tone_log=(case / 'tone.log').read_text(errors='replace'),
                   host_frames=host_frames(case / 'receiver'))
 (case / 'result.json').write_text(json.dumps(result, indent=2))

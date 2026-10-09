@@ -387,19 +387,22 @@ impl Pacer {
 /// When arrival pacing encodes an unchanged picture again. A static repeat
 /// is due at `repeat_due`. For a keyframe or reference invalidation the
 /// client asked for (`recovery`), a moving source's next new picture carries
-/// it, so the picture is held until a quarter period past
-/// the next frame at the stream rate, which absorbs frame time jitter and
-/// capture detection; one already unchanged that long (a still or slow
-/// screen) is encoded again at once. Encoding a moving picture again at once
-/// sent an extra keyframe and delayed the game's next frame behind it.
+/// it: the picture is held for two stream periods or one and a half of the
+/// source's own frame intervals after it was presented, whichever is longer,
+/// which leaves room for uneven frame times and capture detection. A picture
+/// already unchanged that long (a still or slow screen) is encoded again at
+/// once. Encoding a moving picture again at once sent an extra keyframe and
+/// delayed the game's next frame behind it.
 pub fn reencode_at(
     recovery: bool,
     presented: Instant,
     period: Duration,
+    source_interval: Option<Duration>,
     repeat_due: Instant,
 ) -> Instant {
     if recovery {
-        (presented + period.mul_f64(1.25)).min(repeat_due)
+        let hold = (period * 2).max(source_interval.unwrap_or(period).mul_f64(1.5));
+        (presented + hold).min(repeat_due)
     } else {
         repeat_due
     }

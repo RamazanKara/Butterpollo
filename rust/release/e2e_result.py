@@ -31,7 +31,7 @@ def host_frames(receiver):
     return None, None
 
 
-def evaluate(client, rc, codec, mode, vrr=False, tone_log='', host_frames=None):
+def evaluate(client, rc, codec, mode, vrr=False, tone_log='', host_frames=None, recovery=0):
     def find(pattern, cast=float):
         match = re.search(pattern, client, re.MULTILINE)
         return cast(match.group(1)) if match else None
@@ -72,8 +72,23 @@ def evaluate(client, rc, codec, mode, vrr=False, tone_log='', host_frames=None):
         )
         if host_frames is not None:
             result.update(host_frames_sent=host_frames[0], host_frames_replaced=host_frames[1])
+    if recovery:
+        result.update(
+            recovery_requests=recovery,
+            recovery_keyframes=find(r'^IDR_PROBE samples=(\d+)', int),
+            recovery_decoded=find(r'^IDR_PROBE .*?decoded=(\d+)', int),
+            recovery_mean_ms=find(r'^IDR_PROBE .*?mean_ms=([0-9.]+)'),
+            recovery_p95_ms=find(r'^IDR_PROBE .*?p95_ms=([0-9.]+)'),
+            recovery_max_ms=find(r'^IDR_PROBE .*?max_ms=([0-9.]+)'),
+            pictures_sent_again=find(r'^VISUAL .*?repeats=(\d+)', int),
+            pictures_skipped=find(r'^VISUAL .*?skipped_render_frames=(\d+)', int),
+        )
     failures = []
     missing = [key for key, value in result.items() if value is None]
+    if recovery:
+        # Reported for comparison between releases, not judged here.
+        result.update(picture_age_p95_ms=find(r'^PICTURE_AGE .*?p95_ms=([0-9.]+)'),
+                      picture_age_p99_ms=find(r'^PICTURE_AGE .*?p99_ms=([0-9.]+)'))
     if missing:
         failures.append('missing measurements: ' + ', '.join(missing))
     if rc != 0 or 'INTEROPERABILITY PASS' not in client:
@@ -103,6 +118,17 @@ def evaluate(client, rc, codec, mode, vrr=False, tone_log='', host_frames=None):
             # A replaced frame was still unsent when a newer one arrived.
             if host_frames is not None and result['host_frames_replaced'] > result['host_frames_sent'] * .01:
                 failures.append('the host replaced more than 1% of PyroWave frames before sending them')
+    if recovery and not missing:
+        if result['recovery_keyframes'] != recovery or result['recovery_decoded'] != recovery:
+            failures.append('a keyframe request got no decoded keyframe')
+        # The motion strip moves every frame at the stream rate, so a request
+        # rides the next new frame. rc.28 encoded the unchanged picture again
+        # at once and let it take that frame's slot: about one picture sent
+        # twice or one frame skipped per request.
+        if result['pictures_sent_again'] + result['pictures_skipped'] > max(3, recovery / 3):
+            failures.append('keyframe requests sent pictures twice or skipped new frames')
+        if result['recovery_p95_ms'] > 3000 / fps:
+            failures.append('requested keyframes took longer than three frame periods')
     # Older fixtures cannot distinguish a starving tone source from host loss.
     underruns = (len(re.findall(r'^AUDIO_RENDER_UNDERRUN\b', tone_log, re.MULTILINE))
                  if re.search(r'^AUDIO_RENDER\b', tone_log, re.MULTILINE) else None)

@@ -27,25 +27,39 @@ the code, not yet measured on the host:
 - Not affected: PyroWave (intra-only, no recovery requests reach pacing) and
   grid pacing.
 
-Model (`recovery_requests_do_not_hold_back_a_moving_picture`, a 120 fps
-source at the stream rate with 0.2-0.6 ms frame time jitter, 10 s):
+Model (`recovery_requests_do_not_hold_back_a_moving_picture`, 10 s,
+requests at every phase of the frame period):
 
-| Requests | Build | Encodes (1200 frames) | Frames sent | Game frame wait mean / p95 / p99 / max ms |
+| Source and requests | Build | Encodes | Frames sent | Game frame wait mean / p95 / p99 / max ms |
 | --- | --- | --- | --- | --- |
-| every 1.5 s | rc.28 | 1206 | 1200 | 0.50 / 2.83 / 3.38 / 3.90 |
+| 120 fps game at the stream rate, 0.2-0.6 ms jitter, request every 1.5 s | rc.28 | 1206 | 1200 of 1200 | 0.50 / 2.83 / 3.38 / 3.90 |
+| same, every 0.5 s | rc.28 | 1208 | 1193 | 1.61 / 5.62 / 6.87 / 8.42 |
+| same, every 0.25 s | rc.28 | 1213 | 1182 | 2.78 / 6.60 / 7.52 / 8.93 |
 | | fix | 1200 | 1200 | 0.02 / 0.05 / 0.05 / 0.05 |
-| every 1 s | rc.28 | 1207 | 1199 | 1.39 / 5.50 / 6.87 / 8.62 |
-| every 0.25 s | rc.28 | 1210 | 1181 | 3.16 / 6.92 / 7.67 / 8.22 |
-| | fix | 1200 | 1200 | 0.02 / 0.05 / 0.05 / 0.05 |
-| every 0.1 s | rc.28 | 1210 | 1151 | 3.50 / 7.25 / 7.77 / 8.57 |
+| 60 fps strip on a 144 Hz display (14/21 ms gaps), 60 fps stream, every 0.25 s | rc.28 | 601 | 581 of 600 | 6.39 / 10.45 / 11.86 / 11.87 |
+| | fix | 600 | 600 | 0.02 / 0.04 / 0.04 / 0.04 |
 
 Fix: while the source moves, a recovery request waits for the next new
-picture, up to 1.25 periods after the current one was presented
+picture, for two stream periods or 1.5 source frame intervals after the
+current one was presented, whichever is longer
 (`stream_policy::reencode_at`); a still or slow screen is still encoded
 again at once, keeping rc.28's 2.4 ms keyframe there. An unchanged picture
 encoded again for a recovery request spends no pacing credit
 (`counts_toward_rate`); static repeats still do, so the PyroWave VRR cap
 from rc.27 stays.
+
+How it got past the tests: every host A/B ran over loopback without loss,
+so no keyframe was requested while the picture moved; the rc.28 wake was
+measured with requests only on a still desktop; rc.27's counting change was
+A/B'd with PyroWave (no keyframes) and AV1 without loss; the release check
+streamed without requests and with its strip at twice the stream rate; the
+laptop smoke checks only average fps and host latency. The release check
+(`check.ps1`) now also streams `hevc-recovery`: HEVC with the strip at the
+stream rate, the minimum frame rate at its default, and 16 keyframe requests
+0.5 s apart (`BUTTERPOLLO_TEST_IDR_PROBE_INTERVAL_MS`). It fails when more
+than max(3, requests / 3) pictures are sent twice or frames skipped, when a
+request gets no decoded keyframe, or when the keyframe p95 exceeds three
+frame periods. Picture age is recorded for comparison.
 
 Host A/B to run (idle host, extended layout, never exclusive): rc.28 main
 against the fix, A/B/A/B, isolated extended virtual display at 240 Hz,

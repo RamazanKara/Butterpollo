@@ -27,6 +27,9 @@ static void test_idr_probe(void){
     assert(parse_idr_probe("1")==1&&parse_idr_probe("10")==10&&parse_idr_probe("2000")==MAX_IDR_PROBES);
     const char *invalid[]={"","0","-1","+1"," 1","1 ","1.5","2x","2001","9999999999999999999999999999"};
     for(unsigned i=0;i<sizeof(invalid)/sizeof(invalid[0]);i++)assert(parse_idr_probe(invalid[i])==-1);
+    assert(parse_idr_probe_interval_ms(NULL)==1500&&parse_idr_probe_interval_ms("100")==100&&parse_idr_probe_interval_ms("10000")==10000);
+    const char *invalid_interval[]={"","99","10001","-500","500ms"," 500","1.5"};
+    for(unsigned i=0;i<sizeof(invalid_interval)/sizeof(invalid_interval[0]);i++)assert(parse_idr_probe_interval_ms(invalid_interval[i])==-1);
     reset_idr_probe(0);poll_idr_probe(3000000,1000000);
     assert(!idr_requests&&summarize_idr_probe(NULL,NULL));
     reset_idr_probe(3);warmup_seconds=2;

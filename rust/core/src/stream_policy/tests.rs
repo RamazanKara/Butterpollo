@@ -249,8 +249,9 @@ fn repeats_count_toward_the_stream_rate() {
 /// A request served with a new picture skips the pacer, as the host does.
 /// `held`: an unchanged picture waits for the next new one per
 /// [`reencode_at`] and spends credit per [`counts_toward_rate`]; otherwise it
-/// is encoded at once and counted, as in rc.28. Returns the encodes and each
-/// game frame's wait from arrival to claim, in milliseconds.
+/// is encoded at once and counted, as in rc.28. Returns the encodes, each
+/// game frame's wait from arrival to claim in milliseconds, and the last
+/// encode's time.
 fn arrival_with_recovery(
     period: f64,
     frames: &[f64],
@@ -276,8 +277,14 @@ fn arrival_with_recovery(
             recovery = true;
             request += 1;
         }
-        let interval = (next >= 2)
-            .then(|| Duration::from_secs_f64((frames[next - 1] - frames[next - 2]) / 1000.));
+        // The capture worker's median of recent intervals.
+        let mut intervals: Vec<f64> = frames[next.saturating_sub(16)..next]
+            .windows(2)
+            .map(|w| w[1] - w[0])
+            .collect();
+        intervals.sort_by(f64::total_cmp);
+        let interval = (intervals.len() >= 4)
+            .then(|| Duration::from_secs_f64(intervals[intervals.len() / 2] / 1000.));
         if let Some(presented) = newest {
             if recovery || pacer.decide(at(now), at(presented), interval) == Pace::Claim {
                 pacer.claimed(at(now));
@@ -286,7 +293,7 @@ fn arrival_with_recovery(
                 (newest, shown, recovery) = (None, presented, false);
             }
         } else if recovery
-            && (!held || at(now) >= reencode_at(true, at(shown), span, at(end + 1000.)))
+            && (!held || at(now) >= reencode_at(true, at(shown), span, interval, at(end + 1e3)))
         {
             if !held || counts_toward_rate(false, true) {
                 pacer.claimed(at(now));
@@ -299,10 +306,15 @@ fn arrival_with_recovery(
 }
 #[test]
 fn recovery_requests_do_not_hold_back_a_moving_picture() {
-    // A game at the stream rate (an RTSS limit at 120 fps) with frame times
-    // a little uneven, and a client on a lossy link asking for recovery four
-    // times a second at every phase of the frame period.
-    let frames = source(PERIOD, 10., |i| [0.3, -0.2, 0.1, -0.3][i % 4]);
+    // A client on a lossy link asks for recovery four times a second, at
+    // every phase of the frame period. Sources: a game held at the stream
+    // rate by an RTSS limit, frame times a little uneven; and the release
+    // check's motion probe, 60 fps on a 144 Hz display (14 and 21 ms gaps)
+    // streamed at 60 fps.
+    let at_rate = source(PERIOD, 10., |i| [0.3, -0.2, 0.1, -0.3][i % 4]);
+    let on_144: Vec<f64> = (0..600)
+        .map(|i| (i * 144 / 60) as f64 * 1000. / 144.)
+        .collect();
     let requests: Vec<f64> = (0..40).map(|i| 100. + i as f64 * 251.3).collect();
     let vrr = |pacer: Pacer| pacer.with_prediction(false).with_spacing(0.5);
     let standard = |pacer: Pacer| pacer.with_prediction(true);
@@ -311,15 +323,22 @@ fn recovery_requests_do_not_hold_back_a_moving_picture() {
         sorted.sort_by(f64::total_cmp);
         sorted[((sorted.len() - 1) as f64 * p) as usize]
     };
-    for (name, configure) in [
-        ("vrr", &vrr as &dyn Fn(Pacer) -> Pacer),
-        ("standard", &standard),
-    ] {
+    let mean = |waits: &[f64]| waits.iter().sum::<f64>() / waits.len() as f64;
+    let cases = [
+        (
+            "120 fps game, vrr",
+            PERIOD,
+            &at_rate,
+            &vrr as &dyn Fn(Pacer) -> Pacer,
+        ),
+        ("120 fps game", PERIOD, &at_rate, &standard),
+        ("60 fps probe on 144 Hz", 1000. / 60., &on_144, &standard),
+    ];
+    for (name, period, frames, configure) in cases {
         let (before, before_waits, _) =
-            arrival_with_recovery(PERIOD, &frames, &requests, configure, false);
+            arrival_with_recovery(period, frames, &requests, configure, false);
         let (after, after_waits, _) =
-            arrival_with_recovery(PERIOD, &frames, &requests, configure, true);
-        let mean = |waits: &[f64]| waits.iter().sum::<f64>() / waits.len() as f64;
+            arrival_with_recovery(period, frames, &requests, configure, true);
         eprintln!(
             "{name}: encodes {before} -> {after}, game frames sent {} -> {} of {}; game frame wait mean {:.2} -> {:.2} ms, p95 {:.2} -> {:.2} ms, p99 {:.2} -> {:.2} ms, max {:.2} -> {:.2} ms",
             before_waits.len(),
@@ -338,8 +357,8 @@ fn recovery_requests_do_not_hold_back_a_moving_picture() {
         // credit held the following game frames back: at four requests a
         // second the deficit is never repaid, so frames wait milliseconds
         // and some are replaced by the next before they go out.
-        assert!(before > before_waits.len() + 20, "{name}: {before} encodes");
-        assert!(before_waits.len() < frames.len() - 10, "{name}");
+        assert!(before >= before_waits.len() + 8, "{name}: {before} encodes");
+        assert!(before_waits.len() < frames.len() - 5, "{name}");
         assert!(mean(&before_waits) > 1., "{name}");
         // Held: every request rides the next game frame, nothing extra is
         // sent, and no game frame waits.
