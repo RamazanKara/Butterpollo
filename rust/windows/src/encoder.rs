@@ -119,7 +119,9 @@ impl Convert {
         } else {
             4
         };
-        if image.stride < image.width as usize * pixel_bytes
+        if image.width == 0
+            || image.height == 0
+            || image.stride < image.width as usize * pixel_bytes
             || image.bytes.len() < image.stride * image.height as usize
         {
             bail!("invalid captured image layout");
@@ -138,14 +140,23 @@ impl Convert {
                 self.luminance,
                 &mut self.scratch,
             );
-        } else if image.pixel != crate::capture::Pixel::Bgra8 {
-            bail!("HDR surface supplied to an SDR converter");
+        } else {
+            if image.pixel != crate::capture::Pixel::Bgra8 {
+                bail!("HDR surface supplied to an SDR converter");
+            }
+            self.scratch.clear();
+            self.scratch
+                .extend_from_slice(&image.bytes[..image.stride * image.height as usize]);
         }
-        // SAFETY: self owns the frame and swscale context; make_writable provides
-        // exclusive destination planes, and letterbox keeps offsets within them.
-        // The layout check covers stored source rows. Nonempty HDR input dimensions
-        // and padding for swscale paths that read past a plane are also required;
-        // neither is guaranteed here, and zero-sized HDR input leaves scratch empty.
+        // AVFrame documents swscale reads up to 16 bytes past a plane; FFmpeg's
+        // input-buffer padding covers those reads for both RGBA64 and BGRA.
+        self.scratch.resize(
+            self.scratch.len() + ff::AV_INPUT_BUFFER_PADDING_SIZE as usize,
+            0,
+        );
+        // SAFETY: The source has a validated nonzero layout and initialized tail
+        // padding. The destination is owned by this converter and was allocated
+        // by av_frame_get_buffer with aligned, padded planes.
         unsafe {
             check(ff::av_frame_make_writable(self.frame))?;
             let source = if self.hdr {
@@ -197,16 +208,7 @@ impl Convert {
                 self.source = source;
                 self.content = (content_width, content_height);
             }
-            let src = [
-                if self.hdr {
-                    self.scratch.as_ptr()
-                } else {
-                    image.bytes.as_ptr()
-                },
-                ptr::null(),
-                ptr::null(),
-                ptr::null(),
-            ];
+            let src = [self.scratch.as_ptr(), ptr::null(), ptr::null(), ptr::null()];
             let strides = [
                 if self.hdr {
                     content_width as i32 * 8
@@ -1101,6 +1103,61 @@ impl Encoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn software_converter_rejects_zero_sized_images() {
+        for pixel in [
+            ff::AVPixelFormat_AV_PIX_FMT_YUV420P,
+            ff::AVPixelFormat_AV_PIX_FMT_YUV420P10LE,
+        ] {
+            let mut convert = Convert::new(8, 4, pixel).unwrap();
+            for (width, height) in [(0, 0), (0, 4), (8, 0)] {
+                let image = Image {
+                    width,
+                    height,
+                    stride: width as usize * 4,
+                    bytes: vec![],
+                    captured: std::time::Instant::now(),
+                    pixel: crate::capture::Pixel::Bgra8,
+                };
+                assert_eq!(
+                    convert.convert(&image).unwrap_err().to_string(),
+                    "invalid captured image layout"
+                );
+            }
+        }
+    }
+    #[test]
+    fn software_converter_pads_source_planes_after_resizing() {
+        for pixel in [
+            ff::AVPixelFormat_AV_PIX_FMT_YUV420P,
+            ff::AVPixelFormat_AV_PIX_FMT_YUV420P10LE,
+        ] {
+            let mut convert = Convert::new(8, 4, pixel).unwrap();
+            for (width, height) in [(8, 4), (2, 4), (8, 4)] {
+                let stride = width as usize * 4 + 4;
+                let image = Image {
+                    width,
+                    height,
+                    stride,
+                    bytes: vec![255; stride * height as usize],
+                    captured: std::time::Instant::now(),
+                    pixel: crate::capture::Pixel::Bgra8,
+                };
+                convert.convert(&image).unwrap();
+                let size = if convert.hdr {
+                    convert.content.0 as usize * convert.content.1 as usize * 8
+                } else {
+                    assert_eq!(&convert.scratch[..image.bytes.len()], &image.bytes);
+                    image.bytes.len()
+                };
+                assert_eq!(
+                    convert.scratch.len(),
+                    size + ff::AV_INPUT_BUFFER_PADDING_SIZE as usize
+                );
+                assert!(convert.scratch[size..].iter().all(|&byte| byte == 0));
+            }
+        }
+    }
     #[test]
     fn automatic_never_selects_a_software_codec() {
         for codec in 0..=2 {
