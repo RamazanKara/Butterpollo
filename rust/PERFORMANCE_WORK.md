@@ -5,6 +5,36 @@ without reducing features or picture quality. Opus took over from Codex in the
 evening of October 2. Performance acceptance on the customer's own sessions is
 still open; the measured fixture results below are local loopback evidence.
 
+## October 9 job 4 split and two latency wakes: host A/B
+
+A/B/A/B on the RX 7900 XT host, October 9 02:05-02:16, against their common
+base `92afcce5` (which predates the pacer fix, so some runs claim 121 fps on
+both sides): isolated extended virtual display at 240 Hz, motion probe at
+240 Hz, 1968x2184 HDR 120 fps at 80 Mb/s, hardware-decoding receiver, 35 s
+per run. Picture age is mean / p95 / p99 in ms; detect is the host's capture
+detection mean / p95.
+
+| Case | Build | Picture age r1 | Picture age r2 | Host mean ms | Detect ms |
+| --- | --- | --- | --- | --- | --- |
+| HEVC, DDX | base | 12.16 / 12.67 / 13.16 | 12.10 / 12.63 / 12.95 | 3.64, 3.51 | 0.49 / 0.82, 0.53 / 1.11 |
+| | job 4 | 12.22 / 12.83 / 13.31 | 12.77 / 14.78 / 17.08 | 3.59, 3.45 | 0.55 / 1.12, 0.47 / 0.99 |
+| AV1, DDX | base | 11.86 / 12.50 / 12.80 | 12.39 / 13.43 / 16.69 | 3.22, 3.09 | 0.56 / 1.12, 0.45 / 0.86 |
+| | job 4 | 11.85 / 12.46 / 12.70 | 12.40 / 13.36 / 16.70 | 3.22, 3.09 | 0.55 / 1.12, 0.43 / 0.74 |
+| HEVC, WGC | base | 12.89 / 13.65 / 16.90 | 12.86 / 13.51 / 15.16 | 3.43, 3.44 | 0.12 / 0.16, 0.12 / 0.16 |
+| | wakes (`dfc865c8`) | 12.88 / 13.56 / 15.24 | 12.89 / 13.56 / 16.94 | 3.43, 3.44 | 0.12 / 0.16, 0.12 / 0.16 |
+
+- Job 4 (`Media::start` split into named setup functions, per-frame code
+  moved unchanged): same within noise. AV1 matches to 0.1 ms; the HEVC r2
+  tail is a run where both host and receiver ran at 121 fps (the old pacer),
+  which shifts phase. Shipped as `7e9f8a22`.
+- The WGC helper skipping its 500 µs sleep after a delivery (`dfc865c8`)
+  changes nothing measurable here: detection is 0.12 / 0.16 ms on both. With
+  one frame per 4.2 ms, the next frame is never ready right after a delivery,
+  so the skipped sleep never mattered. The IDR/RFI wake (`81c8fb3a`) needs a
+  static screen with packet loss to show; that was not measured. Neither is
+  shipped yet: both stay on the local `codex/wake` branch until a loss test
+  shows the recovery frame coming sooner.
+
 ## October 9 pacer claims at the stream rate (bug hunt item 1): host A/B
 
 `stream_policy.rs` refilled pacing credit at 1.01x the stream rate, so a
