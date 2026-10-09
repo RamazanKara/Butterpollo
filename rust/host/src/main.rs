@@ -17,6 +17,7 @@ mod steam;
 mod stream;
 mod tls;
 mod updater;
+mod video_send;
 mod web;
 mod web_sessions;
 

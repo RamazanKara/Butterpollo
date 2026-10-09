@@ -93,18 +93,18 @@ impl Fixture {
             self.reset_done.store(true, Ordering::Release);
         }
     }
-    pub(super) fn stream(&self, media: &Media, h: &Shared, s: &Session) -> Result<()> {
-        let mut packetizer = VideoPacketizer {
-            sequence: 0,
-            iv_counter: 0,
-            frame: 1,
-            packet_size: 1024,
-            fec_percent: 0,
-            min_fec: 0,
-            key: None,
-        };
+    pub(super) fn stream(&self, media: &Media, h: &Shared, s: &Arc<Session>) -> Result<()> {
+        let sender = crate::video_send::Sender::new(
+            media.video.clone(),
+            s.clone(),
+            Config::default(),
+            h.clone(),
+            Instant::now(),
+            false,
+        )?;
         *s.encoder.write().unwrap() = "reconnect fixture".into();
         while !h.stop.load(Ordering::Acquire) && !s.stopping() {
+            sender.backlog()?;
             let peer = media
                 .peers
                 .lock()
@@ -112,15 +112,18 @@ impl Fixture {
                 .get(&(s.launch.id.clone(), false))
                 .copied();
             if let Some(peer) = peer {
-                // A synthetic encoded access unit still uses the production
-                // packetizer and video socket. No decoder or GPU is involved.
-                for packet in
-                    packetizer.encode_recovery(&[0, 0, 0, 1, 0x65, 0x80], true, false, 0, 0)?
-                {
-                    media.video.send_to(&packet, peer)?;
-                    s.stats.packets.fetch_add(1, Ordering::Relaxed);
-                }
-                s.stats.frames.fetch_add(1, Ordering::Relaxed);
+                // Exercise sender teardown and reconnect without a decoder or GPU.
+                sender.submit(
+                    vec![butterpollo_windows::encoder::Encoded {
+                        bytes: vec![0, 0, 0, 1, 0x65, 0x80],
+                        idr: true,
+                        after_invalidation: false,
+                        latency: None,
+                        presentation: None,
+                    }],
+                    peer,
+                    Duration::ZERO,
+                )?;
             }
             thread::sleep(Duration::from_millis(10));
         }

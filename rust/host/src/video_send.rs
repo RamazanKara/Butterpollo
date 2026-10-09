@@ -81,7 +81,6 @@ impl Sender {
         h: Shared,
         start: Instant,
         track_presents: bool,
-        link: Arc<Mutex<butterpollo_windows::net::Link>>,
     ) -> Result<Self> {
         Self::spawn(s.launch.id.clone(), move |shared| {
             let _priority = butterpollo_windows::capture::Priority::new();
@@ -107,6 +106,7 @@ impl Sender {
             let trace_send = tracing::enabled!(target: "pacing", tracing::Level::TRACE);
             batch.waits = trace_send.then(Default::default);
             let mut network_pacer = butterpollo_core::network_pacing::Pacer::new(Instant::now());
+            let mut link = None;
             let mut link_due = Instant::now();
             let mut reported_pacing = None;
             let mut fec_reported = None;
@@ -157,7 +157,7 @@ impl Sender {
                     s.launch.warnings.event("network_fec", "FEC was reduced or omitted for large video frames because they exceed Moonlight's four-block limit. Packet loss in those frames is harder to recover; lower bitrate or resolution to keep full FEC protection.", butterpollo_core::session::EVENT_PERIOD);
                 }
                 let frame_bytes = packets.iter().map(|p|p.len() as u64).sum();
-                let route = *link.lock().unwrap();
+                let route = *link.get_or_insert_with(|| butterpollo_windows::net::routed_link(peer));
                 let bps = butterpollo_core::network_pacing::rate_bps(
                     c.integer("pacing_max_bitrate_kbps", 0),
                     s.bitrate.load(Ordering::Relaxed),
@@ -180,7 +180,6 @@ impl Sender {
                 let mut first_send = None;
                 let mut last_send = None;
                 let mut remaining = packets.as_slice();
-                s.stats.video_frame.store(u64::from(packetizer.frame.wrapping_sub(1)) + 1, Ordering::Release);
                 while !remaining.is_empty() {
                     if shared.stop.load(Ordering::Acquire) || s.stopping() || h.stop.load(Ordering::Acquire) {
                         shared.stop();
@@ -223,7 +222,10 @@ impl Sender {
                         dropped=batch.dropped-dropped, stream_id=%s.launch.id, "send");
                 }
                 s.stats.performance.lock().unwrap().record_timing(sent,butterpollo_core::performance::Timing{period,encode:latency,host:processing,age,sent:micros(sent.saturating_duration_since(claimed))},frame_bytes);
+                // The interface lookup takes a moment: refresh the
+                // link speed after the frame is out, for the next one.
                 if Instant::now() >= link_due {
+                    link = Some(butterpollo_windows::net::routed_link(peer));
                     link_due = Instant::now() + Duration::from_secs(2);
                 }
                 Ok(packetizer.frame)
