@@ -5,6 +5,209 @@ without reducing features or picture quality. Opus took over from Codex in the
 evening of October 2. Performance acceptance on the customer's own sessions is
 still open; the measured fixture results below are local loopback evidence.
 
+## October 9 AV1 padding at 1968x2184
+
+**Investigation only; no encoder, shader, codec policy or service changes.**
+The RX 7900 XT's extra coded area is generated inside AMF/VCN, outside the
+host's logical input texture. The host already reuses textures and converts
+only the requested picture. There is no demonstrated uninitialised host
+padding to fix, and no measured benefit that justifies changing allocation,
+alignment mode or AV1 headers. No new size/alignment logic or unit tests were
+added. H.264 and HEVC are unchanged.
+
+This review used source, the installed SDK headers and saved October 2
+fixtures. The GPU remains unavailable pending reboot: no hardware tests,
+capture, encoding, live streams or service operations were run. New evidence
+is CPU-only decoding of an existing synthetic D3D11 AV1 fixture, not a fresh host
+measurement. Review artifacts and check logs are in
+`C:\Users\ramaz\.codex\artifacts\butterpollo-av1pad-20261009`.
+
+### Alignment and the actual padded picture
+
+The SDK used by `windows/build.rs` includes `AMF/components/VideoEncoderAV1.h`
+from `BUTTERPOLLO_FFMPEG_ROOT/include`. Its `Av1AlignmentMode` enum is:
+
+| Value | SDK suffix | Meaning for this RX 7900 XT |
+|---|---|---|
+| 1 | `64X16_ONLY` | Requires width divisible by 64 and height by 16; cannot accept 1968x2184. |
+| 2 | `64X16_1080P_CODED_1082` | Same restriction, with a 1920x1080 exception producing 1920x1082. |
+| 3 | `NO_RESTRICTIONS` | Current public constructors; accepts the requested input but permits padded output. |
+| 4 | `8X2_ONLY` | Smaller alignment exists in the API; the saved RDNA3 experiment still produced the same padded output. |
+
+AMD documents black padding and the older hardware restriction in its
+[AV1 guide](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/wiki/AV1-Encoder#av1-specific-api).
+The [SDK header](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/blob/8c648005e07d4309033282bfd9947df2c7e76104/amf/public/include/components/VideoEncoderAV1.h)
+also exposes `Av1WidthAlignmentFactor` and `Av1HeightAlignmentFactor`.
+AMD identifies newer hardware with smaller requirements in
+[issue 423](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/issues/423#issuecomment-2692368597);
+setting a newer enum does not remove the RX 7900 XT's hardware limitation.
+Read back those capabilities after reboot rather than opening AMF now.
+
+This is **not simply width-to-64 and height-to-2 rounding**: 2184 is already
+even. FFmpeg's [AMF crop calculation](https://github.com/FFmpeg/FFmpeg/commit/2128c1773956d96a9f6dad06aabd93ee4715b2e3)
+uses the reported alignment factors (64x16 fallback for Navi3x), rounds each
+dimension up, then replaces an eight-row bottom pad with two rows because of
+a hardware special case. Thus the usual 16 extra columns remain, while
+2184 would need eight rows to reach 2192 but gets two, reaching 2186.
+This explains more than the old guide's specifically named 1080p exception.
+It matches all saved SDR/HDR, mode-3/mode-4 cases in
+`butterpollo-rust-20260930/day-work-20261002/av1-geometry/geometry.json`:
+1920x1080 -> 1920x1082; 1968x2184 -> 1984x2186;
+2184x1968 -> 2240x1968. Property readback still reports the requested sizes.
+
+The saved HDR header has `use_128x128_superblock=0`, so its coding
+superblocks are 64x64. That is distinct from input alignment and signalled
+frame dimensions: 2186 is not a multiple of 64. Both 1968x2184 and
+1984x2186 occupy a 31x35 superblock grid, with partial edge superblocks.
+There is no additional whole superblock row or column here.
+
+### Who fills it, and what is converted each frame
+
+`windows/src/amf.rs` passes the requested width/height to `FrameSize`, AMF
+`Init` and the converters, and calls `SetCrop(0, 0, width, height)` before
+submission. That surface crop controls input; it has not produced an output
+crop in the saved bitstreams. In `amf/gpu.rs`, the native D3D11/D3D12 surface
+wrappers retain the converted texture without a host-side padded copy.
+
+- `compute.rs::Converter::target` allocates **1968x2184 P010** for HDR (NV12
+  for SDR), reuses free targets and caps the pool at eight. There is no
+  explicit host clear, but `shaders/color.hlsl::yuv420_cs` writes every logical
+  luma and chroma sample before submission; AMF waits on the conversion fence.
+- `Converter::convert` dispatches `ceil((width/2)/8)` by
+  `ceil((height/2)/8)`: **123x137 groups**, each with 8x8 threads, one thread
+  per 2x2 block. The `targetSize/2` bounds check rejects the last four thread
+  rows before reading or writing pixels. Conversion covers 1968x2184, not
+  1984x2186 or the dispatch envelope of 1968x2192.
+- The D3D11 fallback in `gpu_color.rs` likewise allocates the requested size
+  and draws full luma/chroma viewports at that size. The CPU input path copies
+  only logical rows into an AMF host surface. Resource pitch/tile alignment
+  is separate from coded image padding; the host does not fill those hidden
+  allocation bytes as pixels. Capture `CopyResource` operations copy capture
+  textures, not an AV1-sized 1984x2186 image.
+
+The black border is therefore supplied by AMF/VCN, not a host edge-replication
+or clear pass. To check actual pixels without the GPU, FFmpeg 9.0.2 decoded
+the existing `av1-1968x2184-hdrtrue-align3.obu` with `-hwaccel none`,
+`-c:v libdav1d -threads 2` to planar 10-bit raw samples. In all eight frames,
+every pixel in the 16 right columns and two bottom rows has Y=3 and U=V=512.
+The adjacent visible right-edge luma is 431/615 in the fixture's two halves.
+This is stable neutral, below-limited-range black after lossy decoding, not
+replicated picture content or evidence of uninitialised host pixels. It does
+not establish a universal raw fill value for every driver/input path.
+The input SHA-256 is
+`7ab9991b6ba3ab7802a108c856183a379ea7f0b2801169b4ce6dd34e16c003d0`;
+the sample counts are in `border-samples.json` in the review artifacts.
+
+### Cropping and the client
+
+The saved keyframe's sequence header says
+`max_frame_width_minus_1=1983`, `max_frame_height_minus_1=2185`.
+Its frame header has `frame_size_override_flag=0`,
+`render_and_frame_size_different=0`, and super-resolution is disabled.
+Consequently the decoded and render sizes are both 1984x2186. **Render size
+belongs to the frame header, not the sequence header, and is not a crop
+rectangle.** The [AV1 specification, section 6.8.5](https://github.com/AOMediaCodec/av1-spec/blob/5e04f3f75e73a5898d7616c47c52f032144b8f80/07.bitstream.semantics.md#render-size-semantics)
+defines it as an application display hint with no effect on decoding.
+FFmpeg's [libdav1d wrapper](https://github.com/FFmpeg/FFmpeg/blob/c766e0de78b0239a36e49e50573e2297a7b500b4/libavcodec/libdav1d.c#L413-L426)
+uses it to derive sample aspect ratio while retaining decoded dimensions.
+Rewriting it could therefore imply scaling/aspect changes rather than cutting
+off the border. The earlier render-size prototype below is not a general
+crop fix; changing coded dimensions without re-encoding the tiles is unsafe.
+FFmpeg's AMF container crop side data does not travel in this host's raw AV1
+GameStream packets (`amf.rs` output -> `host/src/stream.rs` -> `core/src/packet.rs`).
+
+[Moonlight Qt's FFmpeg path](https://github.com/moonlight-stream/moonlight-qt/blob/a57e947d7185fd01384f6973df4df59ae2968d01/app/streaming/video/ffmpeg.cpp#L1923)
+has an explicit RDNA3 workaround: compare decoded dimensions with the
+original requested dimensions, and crop right/bottom if each excess is
+nonnegative and less than 64. Here that removes exactly 16 columns and two
+rows with `av_frame_apply_cropping`. Its
+[D3D11 renderer](https://github.com/moonlight-stream/moonlight-qt/blob/a57e947d7185fd01384f6973df4df59ae2968d01/app/streaming/video/ffmpeg-renderers/d3d11va.cpp#L887)
+uses the resulting frame dimensions for the source rectangle and texture
+coordinates. This path should show the original 1968x2184 picture without a
+padding bar or squeezing the padded image; ordinary scaling to the client
+window remains. Check for the client's cropping log and a border/grid image
+after reboot to establish actual client acceptance.
+
+The owner's exact client/version was not supplied, so that conclusion cannot
+be applied to every Moonlight platform or fork. The inspected
+[Android MediaCodec path](https://github.com/moonlight-stream/moonlight-android/blob/b48494cb96bff23d8886c4775cc4f39a1075495d/app/src/main/java/com/limelight/binding/video/MediaCodecDecoderRenderer.java)
+configures the requested dimensions, uses scale-to-fit, and logs decoder
+output-format changes; it has no equivalent negotiated-size crop correction.
+Correct display there depends on the device decoder/output crop and needs a
+real client check. A requested-size overlay alone does not prove cropping.
+
+### Cost and post-reboot host A/B proposal
+
+| Quantity | Value |
+|---|---:|
+| Visible luma pixels | 1968 x 2184 = 4,298,112 |
+| Coded luma pixels | 1984 x 2186 = 4,337,024 |
+| Extra per frame | 38,912 = **0.9053%** of visible pixels, not 1.4% |
+| Extra at 120 fps | 4,669,440 luma pixels/s |
+| Equivalent extra tightly packed P010 storage | 116,736 bytes/frame; 14.0 MB/s for one write at 120 fps |
+
+The storage/bandwidth figures are arithmetic, not measured transfers. There
+is **no extra host conversion dispatch or host copy for this coded border**.
+A hypothetical full 1984x2186 conversion would use 124x137 groups instead of
+123x137. VCN still codes the border and decoders reconstruct it, but constant
+black, the unchanged superblock count, internal layouts and possible driver
+copies prevent deriving an encode-time or bitrate penalty from pixel count.
+AMF's closed implementation may do additional preparation; source inspection
+cannot establish whether it clears or copies its internal padding per frame.
+
+Allocating an aligned surface once and clearing padding once would only help
+if it removed a measured AMF internal operation. The host already performs
+the proposed visible-only conversion and pool reuse. Edge replication would
+need updates when the edge changes. A one-time clear must initialize **each
+pool surface**, use correct YUV black (limited P010 Y=64<<6, U/V=512<<6;
+full-range Y=0), and finish before AMF reads it; clearing zero bytes would
+give incorrect chroma. Merely enlarging `targetSize` would scale the desktop
+and increase conversion work, so it is not a safe optimisation.
+
+After reboot, first rerun the existing ignored
+`amf::tests::native_av1_geometry_and_hdr_are_preserved` fixture with a fresh
+`BUTTERPOLLO_TEST_GEOMETRY_DIRECTORY` and explicit executable paths in
+`BUTTERPOLLO_TEST_FFMPEG` and `BUTTERPOLLO_TEST_FFPROBE`. It compares both
+alignment modes in SDR/HDR and is expected to fail strict decoded dimensions
+on this driver. Preserve that failure criterion. Record alignment capability
+readback and the actual client's output crop, including a one-pixel border
+and square grid to distinguish cropping from squeezing/scaling.
+
+Only if profiling identifies an internal padding/preparation cost, try a
+test-build A/B, **not a default or a new flag**:
+
+1. **A:** Current 1968x2184 HDR input, mode 3, 120 fps and the owner's normal
+   bitrate/settings/capture path. Save the bitstream and conversion, AMF
+   submit-to-output and end-to-end frame-age timings.
+2. **B:** AV1-only 1984x2192 (64x16) coded canvas and pool allocation, explicitly
+   black-initialized once per surface, with the 1968x2184 picture at the
+   top-left. Keep capture, negotiation, conversion coordinates and 123x137
+   dispatch unchanged; use the full canvas for AMF FrameSize/Init/input crop
+   and mode 1. This requires a confirmed client crop of 16 columns/eight rows.
+   It codes **more** pixels than A, so a win is not assumed. Do not substitute
+   a larger negotiated desktop, which would change content and scaling.
+3. Before implementing B, add CPU unit tests separating visible size, storage
+   size and dispatch: 1968x2184 -> 1984x2192 / 123x137;
+   1920x1080 -> 1920x1088 / 120x68; already-aligned 1984x2192 stays unchanged.
+   Verify all visible edge pixels and both chroma planes, pool reuse, first
+   frame initialization and crop on the real decoder in subsequent GPU tests.
+4. Alternate A/B/A/B with the same moving scene, refresh, HDR state, bitrate,
+   warm-up and sample count. Compare p50/p95/p99 conversion and encode times,
+   frame age, stalls/drops, frame bytes and cropped visible-image quality.
+   Reject missing edge pixels, bars, scaling changes, colour contamination or
+   gains inside run-to-run variance. Do not ship B without a repeatable win.
+
+Validation passed using the supplied `performance-probe/rust-env.ps1`,
+`CARGO_TARGET_DIR=D:\bp-build\av1pad-target` and the serialized
+`pwsh -NoProfile -File C:\src\cargo-one.ps1` wrapper:
+
+- `fmt --all -- --check`: passed.
+- `clippy --workspace --all-targets --locked -j 2 -- -D warnings`: passed.
+- `test --workspace --locked -j 2 -- --skip heartbeat_check_finds_the_monitors
+  --skip encoders_open_on_the_configured_gpu`: passed; 590 passed, 44 ignored,
+  two filtered out, zero failures. Ignored hardware fixtures were not enabled.
+- `git diff --check`: passed. Only this findings section changed.
+
 ## October 9 Vibepollo fixture failure
 
 Read-only investigation and fixture repair; no host, receiver, GPU workload,
