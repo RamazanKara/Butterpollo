@@ -46,7 +46,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
-$repo = 'RamazanKara/Butterpollo'
+$repo = 'RamazanKara/Rubylight'
 $started = Get-Date
 function Step($name) { Write-Host ('[{0:mm\:ss}] {1}' -f ((Get-Date) - $started), $name) -ForegroundColor Cyan }
 

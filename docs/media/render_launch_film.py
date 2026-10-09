@@ -502,7 +502,7 @@ def ending(t):
     for i, value in enumerate(words):
         reveal(im, x, 540, value, 62, t, at=.8+i*.2, color=BUTTER)
         x += widths[i]+gap
-    reveal(im, 960, 720, 'github.com/RamazanKara/Butterpollo', 52, t, at=1.5, weight='bold', align='center')
+    reveal(im, 960, 720, 'github.com/RamazanKara/Rubylight', 52, t, at=1.5, weight='bold', align='center')
     txt(im, 960, 818, 'As long as AMD users are happy, Butterpollo is happy.', 32, MUTED, 'regular', 'center',
         ease((t-2)/.6))
     return im

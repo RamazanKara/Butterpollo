@@ -164,4 +164,4 @@ Set `update_check_interval = 0` to disable scheduled checks; manual checks remai
 - [Measured performance and testing conditions](../rust/PERFORMANCE.md)
 - [Console settings definitions](../rust/web/src/lib/settings-schema.ts), including [video](../rust/web/src/lib/schema/video.ts), [display](../rust/web/src/lib/schema/display.ts) and [general settings](../rust/web/src/lib/schema/basics.ts)
 - [Configuration parser and allowed overrides](../rust/core/src/config.rs)
-- [Historical C++ configuration reference](https://github.com/RamazanKara/Butterpollo/blob/2.0.0-rc.23/docs/legacy/configuration-cpp.md) — preserved for older installations; its defaults and platform advice do not describe the current Rust host.
+- [Historical C++ configuration reference](https://github.com/RamazanKara/Rubylight/blob/2.0.0-rc.23/docs/legacy/configuration-cpp.md) — preserved for older installations; its defaults and platform advice do not describe the current Rust host.

@@ -4,7 +4,7 @@
 
 The current Windows host, service, launcher and installer are built with Rust. Use [rust/build.ps1](../rust/build.ps1) for the complete build and package; [.github/workflows/rust-windows.yml](../.github/workflows/rust-windows.yml) records the CI environment. The [Rust developer guide](../rust/README.md) describes the workspace and implementation.
 
-To install a release and start streaming, use [Getting started](getting-started.md). The [archived C++ build guide](https://github.com/RamazanKara/Butterpollo/blob/2.0.0-rc.23/docs/legacy/building-cpp.md) covers the earlier CMake host, whose sources live at the 2.0.0-rc.23 tag.
+To install a release and start streaming, use [Getting started](getting-started.md). The [archived C++ build guide](https://github.com/RamazanKara/Rubylight/blob/2.0.0-rc.23/docs/legacy/building-cpp.md) covers the earlier CMake host, whose sources live at the 2.0.0-rc.23 tag.
 
 ## Windows prerequisites
 
@@ -19,7 +19,7 @@ The default MSYS2 path is `C:\msys64`; pass `-MsysRoot` if yours differs. The ho
 Clone the repository and install the pinned toolchains in PowerShell:
 
 ```powershell
-git clone https://github.com/RamazanKara/Butterpollo.git
+git clone https://github.com/RamazanKara/Rubylight.git
 cd Rubylight
 
 rustup toolchain install 1.98.1-x86_64-pc-windows-gnu --profile minimal --component rustfmt --component clippy
@@ -116,7 +116,7 @@ The development server proxies `/api` to `https://localhost:47990` by default. S
 
 ## Website
 
-[site/](../site) builds the project website at https://ramazankara.github.io/Butterpollo/: a landing page plus these guides, rendered from the repository's Markdown. [.github/workflows/pages.yml](../.github/workflows/pages.yml) publishes it whenever `site/`, `docs/`, `README.md` or the Markdown in `rust/` changes on `main`. Until **Settings → Pages → Source** is set to GitHub Actions, it builds and checks the site but skips the deployment. To preview it, from the repository root:
+[site/](../site) builds the project website at https://ramazankara.github.io/Rubylight/: a landing page plus these guides, rendered from the repository's Markdown. [.github/workflows/pages.yml](../.github/workflows/pages.yml) publishes it whenever `site/`, `docs/`, `README.md` or the Markdown in `rust/` changes on `main`. Until **Settings → Pages → Source** is set to GitHub Actions, it builds and checks the site but skips the deployment. To preview it, from the repository root:
 
 ```sh
 python3 -m pip install -r site/requirements.txt

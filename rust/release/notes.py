@@ -14,7 +14,7 @@ parser.add_argument('--out', required=True, type=pathlib.Path)
 parser.add_argument('--run', default='', help='the GitHub Actions run that built the release')
 args = parser.parse_args()
 root = pathlib.Path(__file__).resolve().parents[2]
-repo = 'RamazanKara/Butterpollo'
+repo = 'RamazanKara/Rubylight'
 version = args.version
 
 cargo = re.search(r'(?m)^version = "([^"]+)"', (root / 'Cargo.toml').read_text(encoding='utf-8'))[1]

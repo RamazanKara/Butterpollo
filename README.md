@@ -6,7 +6,7 @@
 
 Stream your gaming PC to a laptop, TV or phone. Rubylight is a Windows game-streaming host with Radeon compute, native AMD encoding and **full 10-bit HDR 4:4:4 through PyroWave**. The host, native helpers, Windows service and installer are written in Rust.
 
-**[Download rc.30](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.30)** · **[Get started](docs/getting-started.md)** · [Website](https://ramazankara.github.io/Butterpollo/) · [Documentation](docs/README.md) · [Release notes](rust/RELEASE_NOTES.md)
+**[Download rc.30](https://github.com/RamazanKara/Rubylight/releases/tag/2.0.0-rc.30)** · **[Get started](docs/getting-started.md)** · [Website](https://ramazankara.github.io/Rubylight/) · [Documentation](docs/README.md) · [Release notes](rust/RELEASE_NOTES.md)
 
 [![Meet Rubylight: a Windows Moonlight host built around Radeon, its frame pipeline, measured performance, a matched host comparison, PyroWave HDR and getting started](docs/media/demo.gif)](docs/media/demo.mp4)
 
@@ -24,7 +24,7 @@ There are far better Sunshine forks, like [Vibepollo](https://github.com/Nonary/
 
 ## Install. Pair Moonlight. Play.
 
-1. Run **`rubylight-setup-2.0.0-rc.30.exe`** from the [release](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.30).
+1. Run **`rubylight-setup-2.0.0-rc.30.exe`** from the [release](https://github.com/RamazanKara/Rubylight/releases/tag/2.0.0-rc.30).
 2. Open the Rubylight console at **`https://localhost:47990`** and create your local account.
 3. Add your PC in Moonlight, enter its pairing PIN in **Devices**, then launch **Desktop**.
 
@@ -87,7 +87,7 @@ Standard Moonlight clients use H.264, HEVC or AV1. **Moonlight PC 6.2.0** has re
 | Understand the implementation and evidence | [Architecture](docs/architecture.md) · [Performance](docs/performance.md) · [Compatibility](rust/PARITY.md) |
 | Build or integrate Rubylight | [Build guide](docs/building.md) · [Developer guide](rust/README.md) · [API reference](docs/api.md) |
 
-Share your Radeon setup, games and results in [Issues](https://github.com/RamazanKara/Butterpollo/issues). The [support guide](docs/troubleshooting.md) explains which logs and environment details make a report useful.
+Share your Radeon setup, games and results in [Issues](https://github.com/RamazanKara/Rubylight/issues). The [support guide](docs/troubleshooting.md) explains which logs and environment details make a report useful.
 
 ## Credits and license
 

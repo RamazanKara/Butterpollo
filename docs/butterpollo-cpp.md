@@ -1,8 +1,8 @@
 # Butterpollo 1.x: the C++ fork (history)
 
-[Current documentation](README.md) · [Archived C++ references](https://github.com/RamazanKara/Butterpollo/blob/2.0.0-rc.23/docs/legacy/README.md) · [Current architecture](architecture.md)
+[Current documentation](README.md) · [Archived C++ references](https://github.com/RamazanKara/Rubylight/blob/2.0.0-rc.23/docs/legacy/README.md) · [Current architecture](architecture.md)
 
-These are the notes from Butterpollo's C++ releases (`2.0.0-beta.3-butter.1` to `butter.4`), a fork of Vibepollo 2.0.0-beta.3. Butterpollo 2.0 replaced that host with the Rust host in [`rust/`](../rust/README.md); see the [main README](../README.md) for the current release. The C++ sources were removed from `main` after 2.0.0-rc.23; [that tag](https://github.com/RamazanKara/Butterpollo/tree/2.0.0-rc.23) keeps them. Some things below no longer apply: Butterpollo 2.0 brings back the Steam, Playnite and Lossless Scaling integrations, and installs with `butterpollo-setup-<version>.exe` instead of `VibepolloSetup.exe`.
+These are the notes from Butterpollo's C++ releases (`2.0.0-beta.3-butter.1` to `butter.4`), a fork of Vibepollo 2.0.0-beta.3. Butterpollo 2.0 replaced that host with the Rust host in [`rust/`](../rust/README.md); see the [main README](../README.md) for the current release. The C++ sources were removed from `main` after 2.0.0-rc.23; [that tag](https://github.com/RamazanKara/Rubylight/tree/2.0.0-rc.23) keeps them. Some things below no longer apply: Butterpollo 2.0 brings back the Steam, Playnite and Lossless Scaling integrations, and installs with `butterpollo-setup-<version>.exe` instead of `VibepolloSetup.exe`.
 
 Butterpollo is a Windows game-streaming host built on [Vibepollo](https://github.com/Nonary/Vibepollo), which builds on [Apollo](https://github.com/ClassicOldSong/Apollo) and [Sunshine](https://github.com/LizardByte/Sunshine). It has one job: get each frame from your PC to your Moonlight client as fast and as evenly as possible. Anything that doesn't serve that job has been taken out. A change goes in only if it makes streaming faster or smoother, and I measure it before it ships.
 
@@ -76,7 +76,7 @@ Phones decode PyroWave more slowly than hardware codecs. The Artemis fork measur
 
 ## Install
 
-Download `VibepolloSetup.exe` from [Releases](https://github.com/RamazanKara/Butterpollo/releases).
+Download `VibepolloSetup.exe` from [Releases](https://github.com/RamazanKara/Rubylight/releases).
 
 The first releases install as a drop-in replacement for Vibepollo: same install folder, same service, same config and paired devices. Back up `C:\Program Files\Apollo\config` first and keep your current installer in case you want to go back. The installers are unsigned test builds.
 

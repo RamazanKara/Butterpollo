@@ -17,7 +17,7 @@ The Windows host, Moonlight protocol implementation, native helpers, service and
 | [Web console](../rust/web) | Devices, games, settings, stream statistics, logs and maintenance. |
 | [TrueHDR runtime](../rust/truehdr-runtime) and [Vulkan layer](../rust/vulkan-layer) | Native HDR integration for their supported paths. |
 
-The earlier C++ host was removed after 2.0.0-rc.23; [that tag](https://github.com/RamazanKara/Butterpollo/tree/2.0.0-rc.23) keeps its sources. The [Rust build](building.md) uses the workspace at the repository root.
+The earlier C++ host was removed after 2.0.0-rc.23; [that tag](https://github.com/RamazanKara/Rubylight/tree/2.0.0-rc.23) keeps its sources. The [Rust build](building.md) uses the workspace at the repository root.
 
 ## The Radeon frame path
 

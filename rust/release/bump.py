@@ -53,8 +53,8 @@ for name in ('README.md', 'docs/README.md', 'docs/getting-started.md', 'rust/REA
     path = root / name
     text = path.read_text(encoding='utf-8')
     for link in (f'Download {label(old)}', 'release'):
-        text = text.replace(f'[{link}](https://github.com/RamazanKara/Butterpollo/releases/tag/{old})',
-                            f'[{link}](https://github.com/RamazanKara/Butterpollo/releases/tag/{new})')
+        text = text.replace(f'[{link}](https://github.com/RamazanKara/Rubylight/releases/tag/{old})',
+                            f'[{link}](https://github.com/RamazanKara/Rubylight/releases/tag/{new})')
     # Releases since rc.30 are named Rubylight; earlier ones Butterpollo.
     for setup in ('butterpollo-setup', 'rubylight-setup'):
         text = text.replace(f'{setup}-{old}.exe', f'rubylight-setup-{new}.exe')

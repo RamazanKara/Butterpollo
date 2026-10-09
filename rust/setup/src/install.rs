@@ -910,7 +910,7 @@ pub(crate) fn register(install: &Path, entries: &[payload::Entry]) -> Result<()>
             ("QuietUninstallString", Value::Text(&quiet)),
             (
                 "URLInfoAbout",
-                Value::Text("https://github.com/RamazanKara/Butterpollo"),
+                Value::Text("https://github.com/RamazanKara/Rubylight"),
             ),
             ("NoModify", Value::Number(1)),
             ("NoRepair", Value::Number(1)),

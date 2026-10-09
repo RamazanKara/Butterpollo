@@ -126,7 +126,7 @@ $result | ConvertTo-Json -Depth 5 | Set-Content $Out -Encoding utf8
 if ($Version -and (Get-Command gh -ErrorAction SilentlyContinue)) {
     $upload = Join-Path ([IO.Path]::GetTempPath()) 'REAL-CLIENT.json'
     Copy-Item $Out $upload -Force
-    try { gh release upload $Version -R RamazanKara/Butterpollo --clobber $upload } catch { Write-Warning "not uploaded: $_" }
+    try { gh release upload $Version -R RamazanKara/Rubylight --clobber $upload } catch { Write-Warning "not uploaded: $_" }
 }
 Write-Host "smoke test $(if ($result.passed) { 'passed' } else { 'FAILED' }): $Out"
 if (-not $result.passed) { exit 1 }

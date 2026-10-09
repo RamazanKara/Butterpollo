@@ -24,7 +24,7 @@ from mdit_py_plugins.anchors import anchors_plugin
 ROOT = Path(__file__).resolve().parent.parent
 SITE = ROOT / "site"
 OUT = ROOT / "_site"
-REPO = "https://github.com/RamazanKara/Butterpollo"
+REPO = "https://github.com/RamazanKara/Rubylight"
 
 # Markdown rendered as pages, repository paths.
 PAGES = sorted(

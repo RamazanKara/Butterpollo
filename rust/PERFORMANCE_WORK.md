@@ -1997,7 +1997,7 @@ SHA-256 `DB543650FC4824E0CDA61919E619E6419106E7B5D45A815AD0C541CB816ACA77`,
 58 package files, profile preserved). It contains the scheduling work below
 and the multi-stream and display fixes of October 3.
 Push only to the owned `butterpollo` remote. Draft PR:
-https://github.com/RamazanKara/Butterpollo/pull/1.
+https://github.com/RamazanKara/Rubylight/pull/1.
 
 ### Why the customer saw higher host latency than Vibepollo
 
@@ -2422,7 +2422,7 @@ Continued active work; no candidate has been installed or pushed.
   HTTP 403 and changed nothing. Subsequent work uses the owned Butterpollo fork.
 - Draft PR description/title now describe the final changes and current limits.
   Windows CI is running for the exact revision:
-  https://github.com/RamazanKara/Butterpollo/actions/runs/37028771427.
+  https://github.com/RamazanKara/Rubylight/actions/runs/37028771427.
 - Refreshed package with current documentation verified all 58 files again.
   Host bytes are unchanged from the validated candidate; package SHA-256 is
   `d196bca099e2212a599a6c554f992f02679f2b08253a0e1338490ee5765c63d7`.
@@ -2474,7 +2474,7 @@ Continued active work; no candidate has been installed or pushed.
   renderer rate is 119.999 Hz. This covers partial-window native SDR motion;
   full-game/native HDR and remote scanout remain separate acceptance checks.
 - Exact installed/pushed `36bff835a` Windows CI passed at
-  https://github.com/RamazanKara/Butterpollo/actions/runs/37028771427.
+  https://github.com/RamazanKara/Rubylight/actions/runs/37028771427.
 
 ### Matched SDR motion and customer regressions, 16:20–17:03 UTC
 
@@ -2854,7 +2854,7 @@ in place and rolling back to rc.29 still works. Fresh installs default to
 `C:\Program Files\Rubylight`.
 
 The in-app updater of rc.29 and older asks
-`api.github.com/repos/RamazanKara/Butterpollo` and only accepts
+`api.github.com/repos/RamazanKara/Rubylight` and only accepts
 `butterpollo-setup-<v>.exe` from that repository's download URL; after a repo
 rename GitHub answers with a redirect to `api.github.com/repositories/<id>`,
 which it refuses. So releases now carry the installer under both names, the

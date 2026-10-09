@@ -8,7 +8,7 @@ Rubylight is a Windows x64 streaming host written in Rust, with a GPU path tuned
 
 ## Install or run portable
 
-Download the Windows package from [Rubylight Releases](https://github.com/RamazanKara/Butterpollo/releases). For rc.30, choose:
+Download the Windows package from [Rubylight Releases](https://github.com/RamazanKara/Rubylight/releases). For rc.30, choose:
 
 | Package | How to start | Best fit |
 | --- | --- | --- |
