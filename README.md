@@ -20,7 +20,7 @@ So Radeon owners have spent years hearing their cards are just worse at streamin
 
 In practice that means a native AMF encoder instead of a generic wrapper, frame copies and colour conversion on Radeon compute queues, and someone reading AMD's driver release notes so you don't have to. When a driver freezes the stream, Rubylight works around it. When AMD fixes it, Rubylight removes the workaround and pretends nothing happened.
 
-There are far better Sunshine forks, like [Vibepollo](https://github.com/Nonary/Vibepollo), for anything that is not AMD work. Rubylight's mission is to speed up development on AMD streaming, which has gotten no traction for years. Rubylight is not here to win a big userbase. There is no growth plan and no campaign to convert the NVIDIA crowd. As long as AMD users are happy, Rubylight is happy.
+Rubylight is not here to win a big userbase. There is no growth plan and no campaign to convert the NVIDIA crowd. As long as AMD users are happy, Rubylight is happy.
 
 ## Install. Pair Moonlight. Play.
 
