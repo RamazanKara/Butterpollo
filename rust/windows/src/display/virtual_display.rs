@@ -245,8 +245,8 @@ fn configured_permanent_count(config: &butterpollo_core::config::Config) -> Resu
     else {
         return Ok(None);
     };
-    let count = value
-        .parse::<u32>()
+    let count = butterpollo_core::config::parse_integer(value)
+        .and_then(|count| u32::try_from(count).ok())
         .context("invalid permanent virtual display count")?;
     Ok(Some(count))
 }
@@ -721,12 +721,42 @@ mod tests {
         );
     }
     #[test]
-    #[ignore = "bug: quoted permanent display counts are parsed as raw u32 strings"]
     fn permanent_display_count_accepts_quoted_numbers_like_other_config_integers() {
-        let config =
-            butterpollo_core::config::Config::parse("dd_virtual_display_permanent_count=\"2\"")
-                .unwrap();
-        assert_eq!(configured_permanent_count(&config).unwrap(), Some(2));
+        for key in [
+            "dd_virtual_display_permanent_count",
+            "dd_vdd_static_monitor_count",
+        ] {
+            for (value, expected) in [
+                ("\"2\"", 2),
+                ("\" 2 \"", 2),
+                ("0x2", 2),
+                ("\"0X2\"", 2),
+                ("\"0\"", 0),
+                ("\"4294967295\"", u32::MAX),
+            ] {
+                let config =
+                    butterpollo_core::config::Config::parse(&format!("{key}={value}")).unwrap();
+                assert_eq!(
+                    configured_permanent_count(&config).unwrap(),
+                    Some(expected),
+                    "{key}={value}"
+                );
+            }
+            for value in [
+                "-1",
+                "\"-1\"",
+                "4294967296",
+                "\"4294967296\"",
+                "\"invalid\"",
+            ] {
+                let config =
+                    butterpollo_core::config::Config::parse(&format!("{key}={value}")).unwrap();
+                assert!(
+                    configured_permanent_count(&config).is_err(),
+                    "{key}={value}"
+                );
+            }
+        }
     }
     #[test]
     fn temporary_monitor_metadata_preserves_the_owned_identity_and_sanitizes_labels() {
