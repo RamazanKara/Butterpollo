@@ -2821,3 +2821,22 @@ calls directly (fresh enumerator, three default endpoints), read-only.
 To confirm: the control again (pass: about one late read per stall, 18-28
 ms lost each), and `audio_probe --default-cost 200` on the host.
 
+Host re-test of 0863e14, 2026-10-09: all pass.
+
+- Positive control (debug build, 16 landed 40 ms stalls): 15 late reads of
+  42-45 ms, each followed by a counted skip of 18 ms (13) or 28 ms (2); one
+  stall lost nothing. 6 `audio_loss` warnings 5 s apart, naming the late
+  read.
+- `audio_probe --default-cost 200`: avg 7.80, p50 7.73, p95 8.19, max
+  11.19 ms. On this host the upkeep held the sender about 8 ms a second;
+  the user's 23-27 ms reads fit a slower PC, but that is inferred.
+- Normal 60 s HEVC 1080p60 e2e: passed, continuous audio, 0 `audio_loss`
+  lines, 0 late or skip debug lines, 0 device warnings.
+
+Draft for the rc.30 notes: "rc.29's audio loss warning missed real drops:
+Windows reports a dropped packet on the read after the late one. It now
+counts them. On the host, 15 of 16 injected 40 ms stalls were reported, each
+with the 18-28 ms Windows dropped; normal streams stay silent. The device
+check rc.29 moved off the audio thread took 7.8 ms on average (max 11 ms) on
+the host."
+
