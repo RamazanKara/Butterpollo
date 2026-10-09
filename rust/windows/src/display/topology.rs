@@ -609,6 +609,22 @@ impl Topology {
             ))
         }
     }
+    /// Save the active layout to the Windows display database for the
+    /// connected displays, as the layout Windows recalls for them. Windows
+    /// recalls it when an exclusive-fullscreen game loses focus; a layout that
+    /// is only applied then loses to the saved one. The modes are the current
+    /// ones, so nothing is switched.
+    pub fn save_current() -> Result<()> {
+        let current = Self::query()?;
+        // SAFETY: The owned path and mode slices remain valid for this synchronous display configuration call.
+        unsafe {
+            check(SetDisplayConfig(
+                Some(&current.paths),
+                Some(&current.modes),
+                SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_SAVE_TO_DATABASE,
+            ))
+        }
+    }
     pub fn refresh(&self, id: &str) -> Result<butterpollo_core::framegen::Rate> {
         let monitor = self
             .monitors()

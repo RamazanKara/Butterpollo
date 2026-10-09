@@ -6,6 +6,9 @@
 # Run on the host while one virtual display stream with the exclusive layout is
 # running (only the virtual display active). The script makes Windows apply the
 # layout in its display database, then watches the number of active displays.
+# The host saves the stream's layout to that database, so the monitor should
+# not come on at all; a build without that (a588457) shows
+# it coming on, which confirms the recall reproduces the focus-loss case.
 param([int]$Rounds = 3, [int]$LimitMs = 1500, [int]$WatchMs = 5000)
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @'
@@ -55,5 +58,5 @@ for ($round = 1; $round -le $Rounds; $round++) {
 $failed = @($results | Where-Object { $null -ne $_.on -and ($null -eq $_.off -or ($_.off - $_.on) -gt $LimitMs) })
 $reproduced = @($results | Where-Object { $null -ne $_.on }).Count
 if ($failed.Count -ne 0) { throw "LAYOUT RECALL FAIL: $($failed.Count) of $Rounds rounds kept a display on longer than $LimitMs ms" }
-if ($reproduced -eq 0) { Write-Output 'LAYOUT RECALL INCONCLUSIVE: Windows did not switch a display on; test with an exclusive-fullscreen game and the Win key' ; exit 2 }
-Write-Output "LAYOUT RECALL PASS: $reproduced of $Rounds recalls switched a display on and the host switched it off within $LimitMs ms"
+if ($reproduced -eq 0) { Write-Output "LAYOUT RECALL PASS: no display came on in $Rounds recalls (the saved layout is the stream's)"; exit 0 }
+Write-Output "LAYOUT RECALL PASS (watchdog): $reproduced of $Rounds recalls switched a display on and the host switched it off within $LimitMs ms"

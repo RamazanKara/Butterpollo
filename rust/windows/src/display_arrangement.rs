@@ -14,6 +14,8 @@ struct State {
     owners: Vec<(String, usize)>,
     arrangement: Option<Arrangement>,
     retained: Vec<String>,
+    /// The layout is saved to the Windows display database (see `persist`).
+    persisted: bool,
 }
 fn state() -> &'static Mutex<State> {
     static STATE: OnceLock<Mutex<State>> = OnceLock::new();
@@ -130,6 +132,23 @@ fn retain_in(state: &mut State, current: &[Node], id: &str, on: bool) -> bool {
     }
     true
 }
+/// Whether a display on in `before` is connected but not on in `current`
+/// (a snapshot lists only the displays that are on).
+fn switched_off(before: &[Node], current: &[Node], connected: &[String]) -> bool {
+    before.iter().filter(|b| b.active).any(|b| {
+        connected.contains(&b.device_id)
+            && !current
+                .iter()
+                .any(|c| c.device_id == b.device_id && c.active)
+    })
+}
+fn connected() -> Result<Vec<String>> {
+    Ok(Topology::query_all()?
+        .monitors()
+        .into_iter()
+        .map(|m| m.device_id)
+        .collect())
+}
 fn active_ids(nodes: &[Node]) -> std::collections::BTreeSet<String> {
     nodes
         .iter()
@@ -172,7 +191,41 @@ fn apply(state: &mut State, arrangement: Arrangement, leaving: Option<&str>) -> 
             .collect(),
     )?;
     state.applied = desired;
+    save_layout(state);
     Ok(())
+}
+/// Whether to save a stream's layout to the Windows display database. Windows
+/// recalls the saved layout for the connected displays when an
+/// exclusive-fullscreen game loses focus (the Win key, Alt+Tab), which would
+/// switch the physical monitor back on. Only a layout with the stream's own
+/// virtual display: the database entry is keyed by the connected displays, so
+/// this changes only the entry for the user's displays plus that virtual
+/// display, never the one for the user's displays alone. The entry is put
+/// back when the last stream ends (`forget_saved_layout`).
+fn persist(arrangement: Arrangement, virtual_target: bool) -> bool {
+    virtual_target && arrangement == Arrangement::Exclusive
+}
+fn save_layout(state: &State) {
+    if state.persisted
+        && let Err(error) = Topology::save_current()
+    {
+        tracing::warn!(error = %format!("{error:#}"), "saving the stream layout for Windows to recall failed");
+    }
+}
+/// Put back the database entry a stream saved: the user's displays on with
+/// the virtual display beside them, as Windows lays out a new display.
+/// Called before the user's layout is restored, while the virtual display is
+/// still connected.
+fn forget_saved_layout(before: &Snapshot, target: &str) -> Result<()> {
+    let mut ids: Vec<_> = before
+        .nodes
+        .iter()
+        .filter(|n| n.active && n.device_id != target)
+        .map(|n| n.device_id.clone())
+        .collect();
+    ids.push(target.to_owned());
+    Topology::set_active(&ids)?;
+    Topology::save_current()
 }
 /// Retry while Windows is still applying another change, such as a virtual
 /// display being removed: reading its mode fails until the change settles.
@@ -268,13 +321,31 @@ impl Lease {
                 target: Mutex::new(target_id),
             });
         }
-        let current = Snapshot::capture()?;
-        let desired = arrangement.compose(&current.nodes, &target_id, &retained)?;
+        let mut current = Snapshot::capture()?;
         let before = if virtual_target {
             original_layout(original.unwrap_or_else(|| current.clone()), &target_id)
         } else {
             current.clone()
         };
+        // A host that stopped without putting back the layout it saved for
+        // Windows to recall (a crash, a power cut) left the user's displays
+        // off whenever this virtual display arrives. Put it back, unless this
+        // stream saves its own.
+        if virtual_target
+            && !persist(arrangement, virtual_target)
+            && switched_off(&before.nodes, &current.nodes, &connected()?)
+        {
+            tracing::info!(
+                "the saved layout for the virtual display left the user's displays off; putting it back"
+            );
+            match forget_saved_layout(&before, &target_id).and_then(|()| Snapshot::capture()) {
+                Ok(recaptured) => current = recaptured,
+                Err(error) => {
+                    tracing::warn!(error = %format!("{error:#}"), "putting back the saved display layout failed");
+                }
+            }
+        }
+        let desired = arrangement.compose(&current.nodes, &target_id, &retained)?;
         crate::display_recovery::arrangement(Some((before.clone(), desired.clone())))?;
         let apply = (|| -> Result<()> {
             let ids = active_ids(&desired);
@@ -301,6 +372,8 @@ impl Lease {
         state.owners = vec![(target_id.clone(), 1)];
         state.arrangement = Some(arrangement);
         state.retained = retained;
+        state.persisted = persist(arrangement, virtual_target);
+        save_layout(&state);
         Ok(Self {
             arrangement,
             target: Mutex::new(target_id),
@@ -385,9 +458,17 @@ impl Drop for Lease {
             return;
         }
         let restored = (|| -> Result<()> {
-            if settled(|| unchanged(&state.applied))?
+            // Put the saved entry back even when the user changed the layout:
+            // Windows recalls the entry for the remaining displays anyway once
+            // the virtual display is removed.
+            let unchanged = settled(|| unchanged(&state.applied))?;
+            if state.persisted
                 && let Some(before) = &state.before
+                && let Err(error) = settled(|| forget_saved_layout(before, &target))
             {
+                tracing::warn!(error = %format!("{error:#}"), "putting back the saved display layout failed");
+            }
+            if unchanged && let Some(before) = &state.before {
                 settled(|| before.restore())?;
             }
             crate::display_recovery::arrangement(None)
@@ -395,6 +476,7 @@ impl Drop for Lease {
         if let Err(error) = restored {
             tracing::warn!(error = %format!("{error:#}"), "display arrangement restoration remains pending");
         }
+        state.persisted = false;
         state.before = None;
         state.applied.clear();
         state.key.clear();
@@ -600,6 +682,30 @@ mod tests {
             true
         ));
         assert!(idle.applied.is_empty() && idle.retained.is_empty());
+    }
+    #[test]
+    fn a_saved_layout_left_behind_by_a_crash_is_noticed_when_the_virtual_display_arrives() {
+        let before = vec![node("phys", true, true), node("tv", false, false)];
+        let connected = ["phys", "tv", "vdd"].map(String::from);
+        // Windows recalled a stream's saved layout as the display arrived.
+        assert!(switched_off(
+            &before,
+            &[node("vdd", true, true)],
+            &connected
+        ));
+        // As Windows lays out a new display: everything stays on.
+        let extended = [node("phys", true, true), node("vdd", true, false)];
+        assert!(!switched_off(&before, &extended, &connected));
+        // A display unplugged since, or off before the stream, is no sign.
+        let unplugged = ["tv", "vdd"].map(String::from);
+        assert!(!switched_off(
+            &before,
+            &[node("vdd", true, true)],
+            &unplugged
+        ));
+        assert!(persist(Arrangement::Exclusive, true));
+        assert!(!persist(Arrangement::Exclusive, false));
+        assert!(!persist(Arrangement::Extended, true));
     }
     #[test]
     fn the_original_layout_leaves_out_the_streams_virtual_display() {

@@ -2621,14 +2621,25 @@ off or recreated) never noticed.
   display arriving, and the extended and primary layouts are left alone
   (`display_policy::switched_back_on`, `LayoutWatch`; `display_session.rs`
   `keep_layout`). Unit test: `a_display_the_exclusive_layout_switched_off_is_put_back_off_after_it_settles`.
-- Not done: persisting the stream layout with `SDC_SAVE_TO_DATABASE`. It would
-  stop the monitor flashing on at all, but a crash or unplug could then leave
-  the saved layout wrong. Only if the watchdog proves not enough.
+- Follow-up (the owner asked for the monitor not to come on at all): an
+  exclusive-layout stream on a virtual display now also saves its layout to
+  the Windows display database (`SDC_SAVE_TO_DATABASE`, `Topology::save_current`),
+  so the recall finds the stream's layout and switches nothing on. The entry is
+  keyed by the connected displays, so only "user's displays + this virtual
+  display" changes. When the last stream ends, the entry is put back (the
+  user's displays on, the virtual display extended beside them) before the
+  user's layout is restored. If the host died without putting it back, the
+  next non-exclusive stream notices the user's displays switched off as its
+  virtual display arrives and puts the entry back first. The watchdog stays
+  as the fallback (a refused save, Ctrl+Alt+Del).
 
 To confirm on the host (needs the exclusive layout, so only with the owner's
 OK): one virtual display stream with the exclusive layout, then
 `rust/tests/layout_recall.ps1`, which makes Windows apply its saved layout the
 way a focus loss does and times how long the physical monitor stays on
-(pass: off again within 1.5 s, expected ~0.5-0.8 s). Then the real case: an
+(pass: never on with the saved layout; off again within 1.5 s if only the
+watchdog acts; a588457 should show it staying on). After the stream, the
+physical monitor must come back as before, and a following extended-layout
+stream must leave it on. Then the real case: an
 exclusive-fullscreen game, press Win, Alt+Tab and Ctrl+Alt+Del; the host log
 shows "displays the stream layout switched off came back on; reapplying it".
