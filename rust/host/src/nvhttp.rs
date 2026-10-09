@@ -26,6 +26,8 @@ use std::{
     time::{Duration, Instant},
 };
 type Args = HashMap<String, String>;
+#[cfg(test)]
+mod parity_tests;
 #[derive(Debug)]
 struct LaunchFailure(u16, &'static str);
 impl std::fmt::Display for LaunchFailure {
@@ -207,7 +209,6 @@ async fn serverinfo(
     h.request_codec_probe();
     h.wait_for_video_codecs().await;
     let config = h.config.read().unwrap().clone();
-    let ports = config.ports().unwrap();
     let client = authenticated(&h, &connection, 0).ok();
     let paired = client.is_some();
     let pyrowave_link = if paired {
@@ -227,14 +228,38 @@ async fn serverinfo(
     }
     .unwrap_or_else(|| "00:00:00:00:00:00".into());
     let windows_11 = butterpollo_windows::display::windows_11();
-    let (limiter, virtual_limiter, limit) = butterpollo_core::framegen::advertised(
-        &config,
-        config.virtual_display_mode(windows_11) != "disabled",
-    );
     let driver_ready =
         tokio::task::spawn_blocking(butterpollo_windows::display::virtual_display_available)
             .await
             .unwrap_or(false);
+    serverinfo_response(
+        &h,
+        &connection,
+        &config,
+        client.as_ref(),
+        windows_11,
+        mac,
+        pyrowave_link,
+        driver_ready,
+    )
+}
+#[allow(clippy::too_many_arguments)]
+fn serverinfo_response(
+    h: &Shared,
+    connection: &Connection,
+    config: &butterpollo_core::config::Config,
+    client: Option<&Client>,
+    windows_11: bool,
+    mac: String,
+    pyrowave_link: u64,
+    driver_ready: bool,
+) -> Response {
+    let ports = config.ports().unwrap();
+    let paired = client.is_some();
+    let (limiter, virtual_limiter, limit) = butterpollo_core::framegen::advertised(
+        config,
+        config.virtual_display_mode(windows_11) != "disabled",
+    );
     let permission = client.as_ref().map_or(0, |client| client.perm);
     // Artemis lists these commands; a client runs one by its index.
     let commands: Vec<String> = if permission & 0x0010_0000 != 0 {
@@ -260,7 +285,7 @@ async fn serverinfo(
         std::net::IpAddr::V6(_) => "127.0.0.1".to_owned(),
         v4 => v4.to_string(),
     };
-    let game = remote_game(&h);
+    let game = remote_game(h);
     // GameStream's public state is scoped to the requesting client. Local
     // maintenance needs the actual session counts, including queued launches.
     let local = connection.peer.ip().to_canonical().is_loopback();
@@ -282,7 +307,7 @@ async fn serverinfo(
         .filter(|game| {
             client.as_ref().is_some_and(|client| {
                 (game.owner == client.uuid
-                    && remote_owner(&h, &client.uuid) == butterpollo_core::remote::Owner::None)
+                    && remote_owner(h, &client.uuid) == butterpollo_core::remote::Owner::None)
                     || h.confirmations.lock().unwrap().active(
                         &client.uuid,
                         butterpollo_core::remote::Confirmation::Replace,
@@ -297,7 +322,7 @@ async fn serverinfo(
         .map(|game| game.app.uuid.clone())
         .unwrap_or_default();
     let mut fields = vec![
-        ("hostname", crate::network::host_name(&config)),
+        ("hostname", crate::network::host_name(config)),
         ("appversion", "7.1.431.-1".into()),
         ("GfeVersion", "3.23.0.74".into()),
         ("uniqueid", h.paired.read().unwrap().unique_id.clone()),
@@ -861,7 +886,8 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
         };
         Ok((reply.into(), format!("{scheme}://{host}:{rtsp_port}")))
     })();
-    launch_response(result, requested, reply, resume)
+    let driver_ready = result.is_ok() && butterpollo_windows::display::virtual_display_available();
+    launch_response(result, requested, reply, resume, driver_ready)
 }
 fn validate_launch_client(
     h: &Shared,
@@ -1286,6 +1312,7 @@ fn launch_response(
     requested: u32,
     reply: &str,
     resume: bool,
+    driver_ready: bool,
 ) -> Response {
     match result {
         Ok((key, url)) => xml(
@@ -1293,10 +1320,7 @@ fn launch_response(
             &[
                 (key.as_str(), "1".into()),
                 ("sessionUrl0", url),
-                (
-                    "VirtualDisplayDriverReady",
-                    butterpollo_windows::display::virtual_display_available().to_string(),
-                ),
+                ("VirtualDisplayDriverReady", driver_ready.to_string()),
             ],
             None,
         ),

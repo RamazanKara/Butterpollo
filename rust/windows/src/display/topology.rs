@@ -964,6 +964,7 @@ mod tests {
     use super::super::monitor;
     use super::*;
     #[test]
+    #[ignore = "requires an interactive Windows desktop with connected displays"]
     fn heartbeat_check_finds_the_monitors_that_monitors_lists() -> Result<()> {
         let topology = Topology::query()?;
         // SAFETY: Topology::shows supplies a live source- or target-name structure with a matching header type and size.

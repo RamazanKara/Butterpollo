@@ -28,6 +28,26 @@ fn stream_mode(stream: &Negotiated) -> (u32, u32, u32, bool, bool) {
     )
 }
 
+fn virtual_display_mode<'a>(
+    config: &'a Config,
+    client: &'a butterpollo_core::state::Client,
+    app: Option<&'a butterpollo_core::state::App>,
+    windows_11: bool,
+) -> &'a str {
+    client
+        .extra
+        .get("virtual_display_mode")
+        .and_then(serde_json::Value::as_str)
+        // The old console stored "global" for the host setting.
+        .filter(|s| !s.is_empty() && *s != "global")
+        .or_else(|| {
+            app.and_then(|app| app.extra.get("virtual-display-mode"))
+                .and_then(serde_json::Value::as_str)
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or(config.virtual_display_mode(windows_11))
+}
+
 /// Resolution, refresh in millihertz and HDR a stream asked its display for.
 type RequestedMode = (Option<(u32, u32)>, Option<u32>, Option<bool>);
 /// Resolution, refresh in millihertz and HDR a display shows.
@@ -414,15 +434,12 @@ impl Prepared {
                 .and_then(serde_json::Value::as_str)
                 .filter(|s| !s.is_empty())
         };
-        let mode = launch
-            .client
-            .extra
-            .get("virtual_display_mode")
-            .and_then(serde_json::Value::as_str)
-            // The old console stored "global" for the host setting.
-            .filter(|s| !s.is_empty() && *s != "global")
-            .or_else(|| option("virtual-display-mode"))
-            .unwrap_or(config.virtual_display_mode(butterpollo_windows::display::windows_11()));
+        let mode = virtual_display_mode(
+            config,
+            &launch.client,
+            app.as_ref(),
+            butterpollo_windows::display::windows_11(),
+        );
         let client_virtual = launch
             .options
             .get("virtualDisplay")
@@ -1007,6 +1024,48 @@ mod tests {
     use super::*;
     use std::cell::Cell;
     use std::sync::mpsc;
+
+    #[test]
+    fn virtual_display_mode_keeps_device_app_host_precedence_and_legacy_global_inheritance() {
+        let config = Config::parse("virtual_display_mode=shared").unwrap();
+        let mut client: butterpollo_core::state::Client =
+            serde_json::from_value(serde_json::json!({"name":"Device","uuid":"device","cert":""}))
+                .unwrap();
+        let app = serde_json::from_value(
+            serde_json::json!({"name":"Game","virtual-display-mode":"per_client"}),
+        )
+        .unwrap();
+        assert_eq!(
+            virtual_display_mode(&Config::default(), &client, None, false),
+            "disabled"
+        );
+        assert_eq!(
+            virtual_display_mode(&Config::default(), &client, None, true),
+            "per_client"
+        );
+        assert_eq!(virtual_display_mode(&config, &client, None, true), "shared");
+        assert_eq!(
+            virtual_display_mode(&config, &client, Some(&app), true),
+            "per_client"
+        );
+        client
+            .extra
+            .insert("virtual_display_mode".into(), "disabled".into());
+        assert_eq!(
+            virtual_display_mode(&config, &client, Some(&app), true),
+            "disabled"
+        );
+        for inherited in ["global", ""] {
+            client
+                .extra
+                .insert("virtual_display_mode".into(), inherited.into());
+            assert_eq!(
+                virtual_display_mode(&config, &client, Some(&app), true),
+                "per_client"
+            );
+            assert_eq!(virtual_display_mode(&config, &client, None, true), "shared");
+        }
+    }
 
     #[test]
     fn vrr_negotiated_after_launch_requires_new_display_preparation() {

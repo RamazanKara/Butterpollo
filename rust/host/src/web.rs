@@ -4,6 +4,8 @@ mod config;
 mod displays;
 mod logs;
 mod maintenance;
+#[cfg(test)]
+mod parity_tests;
 mod session;
 
 use crate::{state::Shared, tls::Connection};

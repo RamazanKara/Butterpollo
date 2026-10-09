@@ -8,6 +8,19 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+fn compatible_release(release: &Value, config: &butterpollo_core::config::Config) -> bool {
+    release["draft"] != true
+        && (release["prerelease"] != true || config.boolean("notify_pre_releases", false))
+        && release["assets"].as_array().is_some_and(|assets| {
+            assets.iter().any(|asset| {
+                asset["name"].as_str().is_some_and(|name| {
+                    (name.starts_with("butterpollo-rust-") && name.ends_with(".zip"))
+                        || (name.starts_with("butterpollo-setup-") && name.ends_with(".exe"))
+                })
+            })
+        })
+}
+
 /// Look for a newer release. `tell` (the tray's "Check for updates")
 /// also reports the result in a notification, even an update already
 /// announced.
@@ -39,23 +52,7 @@ pub fn trigger_update(h: &Shared, tell: bool) {
             Ok::<_, anyhow::Error>(
                 releases
                     .into_iter()
-                    .filter(|r| {
-                        r["draft"] != true
-                            && (r["prerelease"] != true
-                                || h.config
-                                    .read()
-                                    .unwrap()
-                                    .boolean("notify_pre_releases", false))
-                            && r["assets"].as_array().is_some_and(|assets| {
-                                assets.iter().any(|a| {
-                                    a["name"].as_str().is_some_and(|s| {
-                                        (s.starts_with("butterpollo-rust-") && s.ends_with(".zip"))
-                                            || (s.starts_with("butterpollo-setup-")
-                                                && s.ends_with(".exe"))
-                                    })
-                                })
-                            })
-                    })
+                    .filter(|r| compatible_release(r, &h.config.read().unwrap()))
                     .collect::<Vec<_>>(),
             )
         }
@@ -335,6 +332,9 @@ pub fn log_path(h: &Shared) -> PathBuf {
     }
 }
 pub fn bundle(h: &Shared) -> Result<PathBuf> {
+    bundle_with_dump(h, || newest_dump(h))
+}
+fn bundle_with_dump(h: &Shared, dump: impl FnOnce() -> Option<Dump>) -> Result<PathBuf> {
     use zip::{ZipWriter, write::SimpleFileOptions};
     let directory = h.directory.join("support");
     std::fs::create_dir_all(&directory)?;
@@ -380,7 +380,7 @@ pub fn bundle(h: &Shared) -> Result<PathBuf> {
         .collect();
     writer.write_all(&serde_json::to_vec_pretty(&json!({"version":env!("CARGO_PKG_VERSION"),"platform":"windows","config":values,"codecs":h.codecs.load(std::sync::atomic::Ordering::Acquire)}))?)?;
     drop(config);
-    if let Some(dump) = newest_dump(h) {
+    if let Some(dump) = dump() {
         writer.start_file(
             format!(
                 "crashes/{}",
@@ -401,4 +401,69 @@ pub fn bundle(h: &Shared) -> Result<PathBuf> {
 }
 pub fn integration_status(h: &Shared) -> Value {
     butterpollo_windows::limiter::status(&h.config.read().unwrap())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use butterpollo_core::config::Config;
+
+    #[test]
+    fn release_notifications_require_a_rust_package_and_prereleases_require_opt_in() {
+        for asset in ["butterpollo-rust-2.0.0.zip", "butterpollo-setup-2.0.0.exe"] {
+            let mut release = json!({"draft":false,"prerelease":false,"assets":[{"name":asset}]});
+            assert!(compatible_release(&release, &Config::default()));
+            release["prerelease"] = true.into();
+            assert!(!compatible_release(&release, &Config::default()));
+            let opted_in = Config::parse("notify_pre_releases=true").unwrap();
+            assert!(compatible_release(&release, &opted_in));
+            release["draft"] = true.into();
+            assert!(!compatible_release(&release, &opted_in));
+        }
+        for assets in [
+            json!([]),
+            json!([{"name":"Vibepollo.exe"}]),
+            json!([{"name":"source.zip"}]),
+        ] {
+            assert!(!compatible_release(
+                &json!({"assets":assets}),
+                &Config::default()
+            ));
+        }
+        assert!(!Config::default().boolean("auto_update", false));
+    }
+    #[test]
+    fn support_bundle_contains_logs_and_redacts_configuration_secrets() {
+        use crate::state::test_support::Fixture;
+        use std::io::Read;
+        let f = Fixture::new();
+        let logs = f.host.directory.join("logs");
+        std::fs::create_dir(&logs).unwrap();
+        std::fs::write(logs.join("butterpollo.log"), "host log\n").unwrap();
+        std::fs::write(logs.join("service.log"), "service log fixture\n").unwrap();
+        *f.host.config.write().unwrap() = butterpollo_core::config::Config::parse("sunshine_name=Test PC\npassword=secret-password\nserver_cmd=[{\"cmd\":\"secret-command\"}]\napi_token=secret-token").unwrap();
+        let path = bundle_with_dump(&f.host, || None).unwrap();
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+        let names: Vec<_> = archive.file_names().map(str::to_owned).collect();
+        assert_eq!(names.len(), 3);
+        let mut diagnostics = String::new();
+        archive
+            .by_name("diagnostics.json")
+            .unwrap()
+            .read_to_string(&mut diagnostics)
+            .unwrap();
+        for secret in ["secret-password", "secret-command", "secret-token"] {
+            assert!(!diagnostics.contains(secret));
+        }
+        let diagnostics: Value = serde_json::from_str(&diagnostics).unwrap();
+        assert_eq!(diagnostics["config"]["sunshine_name"], "Test PC");
+        assert_eq!(diagnostics["config"]["server_cmd"], "[redacted]");
+        let mut log = String::new();
+        archive
+            .by_name("logs/butterpollo.log")
+            .unwrap()
+            .read_to_string(&mut log)
+            .unwrap();
+        assert_eq!(log, "host log\n");
+    }
 }

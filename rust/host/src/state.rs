@@ -14,6 +14,8 @@ use std::{
     time::{Duration, Instant},
 };
 pub type Shared = Arc<Host>;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub type Launch = butterpollo_core::session::Launch<
     crate::display_session::StreamPreparation,
     butterpollo_windows::audio_route::Route,
@@ -781,6 +783,33 @@ fn load_library(path: &std::path::Path, default: Value) -> Result<Value> {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn host_load_reuses_the_shared_virtual_display_guid_without_replacing_an_existing_one() {
+        use super::test_support::Fixture;
+        let f = Fixture::new();
+        let imported = "f773d31b-43da-470c-80d5-02e777a6d993";
+        let existing = "15ff84bd-9db8-45ef-bfde-e60337744358";
+        butterpollo_core::state::write_json(
+            &f.host.aliases_path,
+            &serde_json::json!({"root":{"shared_virtual_display_guid":imported}}),
+        )
+        .unwrap();
+        let load =
+            || super::Host::load(f.host.directory.clone(), f.host.assets.clone(), None).unwrap();
+        let host = load();
+        assert_eq!(
+            host.paired.read().unwrap().document["root"]["shared_virtual_display_guid"],
+            imported
+        );
+        let mut state = host.paired.write().unwrap();
+        state.document["root"]["shared_virtual_display_guid"] = existing.into();
+        state.save(&host.paired_path).unwrap();
+        drop(state);
+        assert_eq!(
+            load().paired.read().unwrap().document["root"]["shared_virtual_display_guid"],
+            existing
+        );
+    }
     use super::*;
     #[test]
     fn codecs_keep_retrying_with_capped_backoff_until_the_probe_recovers() {

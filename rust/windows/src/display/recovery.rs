@@ -175,6 +175,9 @@ impl Snapshot {
         let Ok(available) = Topology::query_all().map(|t| t.monitors()) else {
             return false;
         };
+        self.displays_present(&available)
+    }
+    fn displays_present(&self, available: &[Monitor]) -> bool {
         let mut active = self.nodes.iter().filter(|n| n.active).peekable();
         active.peek().is_some()
             && active.all(|n| available.iter().any(|m| m.device_id == n.device_id))
@@ -1013,6 +1016,19 @@ impl Drop for Retained {
 mod tests {
     use super::super::monitor;
     use super::*;
+    #[test]
+    fn golden_restore_requires_all_active_saved_displays_but_not_inactive_ones() {
+        let document = serde_json::json!({"topology":[["a"],["b"]],"primary":"a",
+            "modes":{"a":{"w":1920,"h":1080,"num":60,"den":1},"b":{"w":1920,"h":1080,"num":60,"den":1}}});
+        let mut snapshot = Snapshot::decode(&document).unwrap();
+        assert!(snapshot.displays_present(&[monitor("a", 1, false), monitor("b", 2, false)]));
+        assert!(!snapshot.displays_present(&[monitor("a", 1, false)]));
+        assert!(!snapshot.displays_present(&[]));
+        snapshot.nodes[1].active = false;
+        assert!(snapshot.displays_present(&[monitor("a", 1, false)]));
+        snapshot.nodes[0].active = false;
+        assert!(!snapshot.displays_present(&[monitor("a", 1, false)]));
+    }
     #[test]
     fn only_a_displays_sole_stream_changes_its_mode_or_hdr() {
         let (current, requested) = ((3840, 2160, 60000), (1920, 1080, 120000));

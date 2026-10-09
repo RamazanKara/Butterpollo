@@ -755,6 +755,37 @@ impl Ports {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn overrides_allow_stream_input_display_and_encoder_keys_but_not_host_settings() {
+        for key in [
+            "max_bitrate",
+            "stream_audio",
+            "keyboard",
+            "gamepad",
+            "dd_hdr_option",
+            "dd_mode_remapping",
+            "encoder",
+            "nvenc_preset",
+            "amd_quality",
+            "frame_limiter_fps_limit",
+        ] {
+            assert!(super::override_allowed(key), "{key}");
+        }
+        for key in [
+            "port",
+            "bind_address",
+            "file_apps",
+            "cert",
+            "pkey",
+            "enable_pairing",
+            "server_cmd",
+            "global_prep_cmd",
+            "log_path",
+            "unknown",
+        ] {
+            assert!(!super::override_allowed(key), "{key}");
+        }
+    }
     use super::*;
     /// A change saved to sunshine.conf, as the settings API does it.
     fn change(config: &mut Config, key: &str, value: &str) -> Result<()> {

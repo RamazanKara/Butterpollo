@@ -17,6 +17,36 @@ pub(crate) const RTX_KEYS: &[&str] = &[
     "rtx_hdr_middle_gray",
     "rtx_hdr_peak_brightness",
 ];
+fn server_command(
+    h: &Shared,
+    client: &butterpollo_core::state::Client,
+    payload: &[u8],
+    command_at: &mut Option<Instant>,
+) -> Option<(String, bool)> {
+    if !client.allows(1 << 20) || payload.len() != 1 {
+        return None;
+    }
+    if h.current_app
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|app| !app.allow_client_commands)
+        || command_at.is_some_and(|last| last.elapsed() < Duration::from_secs(1))
+    {
+        return None;
+    }
+    *command_at = Some(Instant::now());
+    let commands: serde_json::Value =
+        serde_json::from_str(h.config.read().unwrap().get("server_cmd", "[]")).unwrap_or_default();
+    let command = commands.as_array()?.get(payload[0] as usize)?;
+    Some((
+        command.get("cmd")?.as_str()?.to_owned(),
+        command
+            .get("elevated")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+    ))
+}
 /// How often completed encoder output is collected while a frame is in flight.
 const OUTPUT_POLL: Duration = Duration::from_micros(100);
 /// How long an encoder that fails mid-stream is recreated before the session
@@ -2151,44 +2181,21 @@ impl Media {
                         };
                         p.seen = Instant::now();
                         match kind {
-                            0x3000 if s.launch.client.allows(1 << 20) && payload.len() == 1 => {
-                                if h.current_app
-                                    .lock()
-                                    .unwrap()
-                                    .as_ref()
-                                    .is_some_and(|app| !app.allow_client_commands)
+                            0x3000 => {
+                                if let Some((value, elevated)) = server_command(
+                                    &h,
+                                    &s.launch.client,
+                                    &payload,
+                                    &mut p.command_at,
+                                ) && let Err(e) =
+                                    butterpollo_windows::process::Process::shell_detached(
+                                        &value,
+                                        None,
+                                        elevated,
+                                        &Default::default(),
+                                    )
                                 {
-                                    continue;
-                                }
-                                if p.command_at
-                                    .is_some_and(|last| last.elapsed() < Duration::from_secs(1))
-                                {
-                                    continue;
-                                }
-                                p.command_at = Some(Instant::now());
-                                let commands: serde_json::Value = serde_json::from_str(
-                                    h.config.read().unwrap().get("server_cmd", "[]"),
-                                )
-                                .unwrap_or_default();
-                                if let Some(command) =
-                                    commands.as_array().and_then(|a| a.get(payload[0] as usize))
-                                    && let Some(value) =
-                                        command.get("cmd").and_then(serde_json::Value::as_str)
-                                {
-                                    let elevated = command
-                                        .get("elevated")
-                                        .and_then(serde_json::Value::as_bool)
-                                        .unwrap_or(false);
-                                    if let Err(e) =
-                                        butterpollo_windows::process::Process::shell_detached(
-                                            value,
-                                            None,
-                                            elevated,
-                                            &Default::default(),
-                                        )
-                                    {
-                                        tracing::warn!(error=%e, "configured server command failed");
-                                    }
+                                    tracing::warn!(error=%e, "configured server command failed");
                                 }
                             }
                             // SS_RFI_REQUEST: first frame, a reserved word, last
@@ -2519,6 +2526,116 @@ fn feedback_packets(id: u16, kind: u16, data: &[u8]) -> Vec<(u16, Vec<u8>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ignored_config_values_and_host_wide_overrides_are_logged() {
+        use crate::state::test_support::Fixture;
+        let f = Fixture::new();
+        let path = f.host.directory.join("warnings.log");
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .without_time()
+            .with_ansi(false)
+            .with_target(false)
+            .with_writer(std::sync::Mutex::new(std::fs::File::create(&path).unwrap()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let mut config = Config::parse("parity_number=not-a-number").unwrap();
+            assert_eq!(config.integer("parity_number", 7), 7);
+            apply_overrides(
+                &mut config,
+                serde_json::json!({"port":50000}).as_object().unwrap(),
+            )
+            .unwrap();
+            assert!(!config.values.contains_key("port"));
+        });
+        let log = std::fs::read_to_string(path).unwrap();
+        assert!(log.contains("parity_number"), "{log}");
+        assert!(log.contains("not-a-number"), "{log}");
+        assert!(
+            log.contains("port") && log.contains("ignoring an override"),
+            "{log}"
+        );
+    }
+    #[test]
+    fn server_commands_require_permission_app_opt_in_and_a_valid_index_and_are_throttled() {
+        use crate::state::test_support::Fixture;
+        use serde_json::json;
+        let f = Fixture::new();
+        let mut client = f.client(1 << 20);
+        f.host.config.write().unwrap().values.insert("server_cmd".into(), json!([
+            {"name":"First","cmd":"echo first"}, {"name":"Second","cmd":"echo second","elevated":true}
+        ]).to_string());
+        let mut at = None;
+        assert_eq!(
+            server_command(&f.host, &client, &[1], &mut at),
+            Some(("echo second".into(), true))
+        );
+        assert!(at.is_some());
+        assert_eq!(server_command(&f.host, &client, &[0], &mut at), None);
+        at = Some(Instant::now() - Duration::from_secs(2));
+        assert_eq!(
+            server_command(&f.host, &client, &[0], &mut at),
+            Some(("echo first".into(), false))
+        );
+        for payload in [vec![], vec![0, 1], vec![2]] {
+            at = None;
+            assert_eq!(server_command(&f.host, &client, &payload, &mut at), None);
+        }
+        for (permission, enabled) in [(0, true), (1 << 20, false)] {
+            client.perm = permission;
+            client.enabled = enabled;
+            at = None;
+            assert_eq!(server_command(&f.host, &client, &[0], &mut at), None);
+            assert!(at.is_none());
+        }
+        client.perm = 1 << 20;
+        client.enabled = true;
+        let app =
+            serde_json::from_value(json!({"name":"No commands","allow-client-commands":false}))
+                .unwrap();
+        *f.host.current_app.lock().unwrap() =
+            Some(crate::process::RunningApp::with_environment(&app, Default::default()).unwrap());
+        assert_eq!(server_command(&f.host, &client, &[0], &mut at), None);
+        assert!(at.is_none());
+    }
+    #[test]
+    fn app_overrides_win_over_device_and_host_without_changing_saved_configuration() {
+        use crate::state::test_support::Fixture;
+        use serde_json::json;
+        let f = Fixture::new();
+        *f.host.config.write().unwrap() =
+            Config::parse("max_bitrate=10000\ncapture=ddx\nport=47989\nkeyboard=true").unwrap();
+        let original = f.host.config.read().unwrap().values.clone();
+        let mut client = f.client(u32::MAX);
+        client.extra.insert(
+            "config_overrides".into(),
+            json!({"max_bitrate":20000,"capture":"wgc","port":50000,"keyboard":false}),
+        );
+        let launch = f.launch(client, Role::Stream);
+        let device = effective_config(&f.host, &launch).unwrap();
+        assert_eq!(device.integer("max_bitrate", 0), 20000);
+        assert_eq!(device.get("capture", ""), "wgc");
+        assert!(!device.boolean("keyboard", true));
+        assert_eq!(device.integer("port", 0), 47989);
+        f.host.apps.write().unwrap()[0].extra.insert(
+            "config-overrides".into(),
+            json!({"max_bitrate":30000,"capture":"","port":51000,"keyboard":true}),
+        );
+        let app = effective_config(&f.host, &launch).unwrap();
+        assert_eq!(app.integer("max_bitrate", 0), 30000);
+        assert_eq!(app.get("capture", ""), "wgc");
+        assert!(app.boolean("keyboard", false));
+        assert_eq!(app.integer("port", 0), 47989);
+        assert_eq!(f.host.config.read().unwrap().values, original);
+        assert_eq!(
+            launch.client.extra["config_overrides"]["max_bitrate"],
+            20000
+        );
+        assert_eq!(
+            f.host.apps.read().unwrap()[0].extra["config-overrides"]["port"],
+            51000
+        );
+    }
     #[test]
     fn capture_waits_for_its_display_and_shows_the_primary_only_after_the_timeout() {
         let start = Instant::now();

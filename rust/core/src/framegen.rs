@@ -244,6 +244,64 @@ impl Policy {
 mod tests {
     use super::*;
     #[test]
+    fn advertised_limiter_flags_follow_manual_provider_virtual_policy_and_fractional_limits() {
+        for (text, virtual_display, expected) in [
+            ("", false, (false, true, 0)),
+            ("", true, (true, true, 0)),
+            (
+                "frame_limiter_auto_virtual_framegen=disabled",
+                true,
+                (false, false, 0),
+            ),
+            (
+                "frame_limiter_enable=true\nframe_limiter_provider=none",
+                false,
+                (false, true, 0),
+            ),
+            (
+                "frame_limiter_enable=true\nframe_limiter_provider=rtss\nframe_limiter_fps_limit=59.94",
+                false,
+                (true, true, 59940),
+            ),
+            (
+                "frame_limiter_enable=true\nframe_limiter_provider=nvcp\nframe_limiter_fps_limit=120",
+                false,
+                (true, true, 120000),
+            ),
+        ] {
+            assert_eq!(
+                advertised(&Config::parse(text).unwrap(), virtual_display),
+                expected,
+                "{text}"
+            );
+        }
+    }
+    #[test]
+    fn dummy_plug_hdr_workaround_disables_vsync_without_requesting_hdr() {
+        let config = Config::parse("dd_wa_dummy_plug_hdr10=true").unwrap();
+        let policy = Policy::resolve(
+            &config,
+            Rate(60000),
+            false,
+            "none",
+            false,
+            false,
+            true,
+            false,
+        )
+        .unwrap();
+        assert!(policy.disable_vsync);
+        for hdr in [false, true] {
+            assert_eq!(
+                config
+                    .display_request_rate(1920, 1080, Rate(60000), hdr, false)
+                    .unwrap()
+                    .hdr,
+                Some(hdr)
+            );
+        }
+    }
+    #[test]
     fn automatic_capture_prefers_wgc_on_physical_and_virtual_displays() {
         for text in ["", "capture=", "capture=auto", "capture= Auto "] {
             let config = Config::parse(text).unwrap();

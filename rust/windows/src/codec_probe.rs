@@ -42,6 +42,13 @@ fn early_exit(code: u32) -> anyhow::Error {
         anyhow::anyhow!(message)
     }
 }
+fn check_worker(exit_code: Option<u32>, now: Instant, deadline: Instant) -> Result<()> {
+    if let Some(code) = exit_code {
+        return Err(early_exit(code));
+    }
+    ensure!(now < deadline, "optional codec probe timed out");
+    Ok(())
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -80,10 +87,7 @@ pub fn pyrowave(config: &Config) -> Result<u32> {
     .map_err(|error| SessionNotReady(format!("start optional codec probe: {error:#}")))?;
     let deadline = Instant::now() + TIMEOUT;
     let check = || -> Result<()> {
-        if let Some(code) = worker.exit_code()? {
-            return Err(early_exit(code));
-        }
-        ensure!(Instant::now() < deadline, "optional codec probe timed out");
+        check_worker(worker.exit_code()?, Instant::now(), deadline)?;
         std::thread::sleep(Duration::from_millis(5));
         Ok(())
     };
@@ -216,6 +220,23 @@ pub fn worker(name: &str, parent: u32) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn optional_codec_worker_exit_and_stall_end_the_probe_with_an_error() {
+        let start = Instant::now();
+        let deadline = start + TIMEOUT;
+        assert!(check_worker(None, start, deadline).is_ok());
+        for code in [0, 1, 0xc0000005] {
+            let error = check_worker(Some(code), start, deadline).unwrap_err();
+            assert!(error.to_string().contains("exited before replying"));
+            assert!(!error.is::<SessionNotReady>());
+        }
+        for now in [deadline, deadline + Duration::from_secs(1)] {
+            assert_eq!(
+                check_worker(None, now, deadline).unwrap_err().to_string(),
+                "optional codec probe timed out"
+            );
+        }
+    }
     #[test]
     fn only_a_session_desktop_failure_is_worth_probing_again() {
         let failed = early_exit(0xC000_0142);

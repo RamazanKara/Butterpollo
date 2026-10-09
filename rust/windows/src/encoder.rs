@@ -1260,6 +1260,7 @@ mod tests {
     }
     /// Opens a GPU device.
     #[test]
+    #[ignore = "requires an interactive desktop display and a hardware GPU"]
     fn encoders_open_on_the_configured_gpu() {
         let stream = Negotiated {
             width: 640,

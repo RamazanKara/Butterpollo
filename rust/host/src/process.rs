@@ -1,4 +1,6 @@
 use anyhow::{Result, bail};
+#[cfg(test)]
+mod parity_tests;
 use butterpollo_core::state::{App, PrepCommand};
 use butterpollo_windows::process::Process;
 use std::{
@@ -691,7 +693,20 @@ pub fn launch(
     app: &App,
     args: &HashMap<String, String>,
 ) -> Result<RunningApp> {
-    let mut environment = match butterpollo_windows::process::user_environment() {
+    launch_with_environment(
+        h,
+        app,
+        args,
+        butterpollo_windows::process::user_environment(),
+    )
+}
+fn launch_with_environment(
+    h: &crate::state::Shared,
+    app: &App,
+    args: &HashMap<String, String>,
+    environment: Result<BTreeMap<String, String>>,
+) -> Result<RunningApp> {
+    let mut environment = match environment {
         Ok(environment) => environment,
         Err(error) => {
             // Before anyone signs in (a service after a reboot) the sign-in

@@ -228,21 +228,27 @@ fn permanent_response(bytes: &[u8]) -> Result<u32> {
 /// Persistent driver setting, applied only when the administrator explicitly
 /// configured this key. It is independent of temporary streaming leases.
 pub fn configure_permanent(config: &butterpollo_core::config::Config) -> Result<()> {
+    let Some(count) = configured_permanent_count(config)? else {
+        return Ok(());
+    };
+    if permanent_display_count()? == count {
+        return Ok(());
+    }
+    set_permanent_display_count(count)
+}
+fn configured_permanent_count(config: &butterpollo_core::config::Config) -> Result<Option<u32>> {
     // dd_vdd_static_monitor_count is the key's older name.
     let Some(value) = config
         .values
         .get("dd_virtual_display_permanent_count")
         .or_else(|| config.values.get("dd_vdd_static_monitor_count"))
     else {
-        return Ok(());
+        return Ok(None);
     };
     let count = value
         .parse::<u32>()
         .context("invalid permanent virtual display count")?;
-    if permanent_display_count()? == count {
-        return Ok(());
-    }
-    set_permanent_display_count(count)
+    Ok(Some(count))
 }
 /// The driver's persistent display count.
 pub fn permanent_display_count() -> Result<u32> {
@@ -691,6 +697,37 @@ impl Drop for VirtualDisplay {
 mod tests {
     use super::super::modes::timing_matches;
     use super::*;
+    #[test]
+    fn permanent_display_count_accepts_the_legacy_key_and_prefers_the_current_key() {
+        use butterpollo_core::config::Config;
+        for (text, expected) in [
+            ("", None),
+            ("dd_vdd_static_monitor_count=2", Some(2)),
+            (
+                "dd_virtual_display_permanent_count=0\ndd_vdd_static_monitor_count=2",
+                Some(0),
+            ),
+        ] {
+            assert_eq!(
+                configured_permanent_count(&Config::parse(text).unwrap()).unwrap(),
+                expected
+            );
+        }
+        assert!(
+            configured_permanent_count(
+                &Config::parse("dd_virtual_display_permanent_count=invalid").unwrap()
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    #[ignore = "bug: quoted permanent display counts are parsed as raw u32 strings"]
+    fn permanent_display_count_accepts_quoted_numbers_like_other_config_integers() {
+        let config =
+            butterpollo_core::config::Config::parse("dd_virtual_display_permanent_count=\"2\"")
+                .unwrap();
+        assert_eq!(configured_permanent_count(&config).unwrap(), Some(2));
+    }
     #[test]
     fn temporary_monitor_metadata_preserves_the_owned_identity_and_sanitizes_labels() {
         let options = VirtualOptions {

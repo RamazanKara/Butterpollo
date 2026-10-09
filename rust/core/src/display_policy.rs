@@ -423,6 +423,34 @@ impl Arrangement {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn virtual_opt_in_preserves_host_policy_and_device_force_overrides_physical_output() {
+        use super::VirtualDisplayRequest;
+        let host = VirtualDisplayRequest {
+            configured: true,
+            ..Default::default()
+        };
+        assert!(host.uses_virtual(false, || true));
+        let physical_app = VirtualDisplayRequest {
+            output_override: Some("physical-monitor"),
+            ..host
+        };
+        assert!(!physical_app.requested());
+        let forced = VirtualDisplayRequest {
+            client_forced: true,
+            ..physical_app
+        };
+        assert!(forced.uses_virtual(false, || true));
+        let opt_in = VirtualDisplayRequest {
+            client_requested: true,
+            client_forced: false,
+            ..forced
+        };
+        assert!(opt_in.uses_virtual(false, || true));
+        assert!(!opt_in.uses_virtual(true, || panic!(
+            "physical fallback must not query the driver"
+        )));
+    }
+    #[test]
     fn a_requested_virtual_display_without_its_driver_streams_the_physical_display() {
         use super::VirtualDisplayRequest;
         let client = VirtualDisplayRequest {
