@@ -2798,3 +2798,26 @@ few or no late passes. Positive control on a debug build: write `40` to
 each. If it stays silent, Windows does not skip the loopback position on
 overflow and the detector is deaf; the debug lines then show what it saw.
 
+Host A/B, 2026-10-09 (local release builds in the rc.28 package, HEVC
+1080p60, 60 s, 2 runs each): a164f72 and eef9754 both passed with the tone
+decoded at 60.0 fps and 0 `audio_loss` lines; the branch logged no late
+reads and no `audio_default`/`audio_device_query` warnings. The base never
+showed the warning because the e2e profile sets `keep_sink_default=false`,
+`auto_capture_sink=false` and a fixed virtual sink, so the once-a-second
+upkeep never asked Windows anything: consistent with the upkeep being the
+stall, but its cost is not measured. rc.29 shipped a164f72 (380c177).
+
+Positive control (debug a164f72, 14 injected 40 ms stalls): 0 warnings.
+Each stall logged `waited_ms=41-45 skipped_ms=0`, then 5-10 ms later a read
+with `waited_ms~1 skipped_ms=18` (28 three times). The late read still finds
+the packets that fit, in order; the skip shows on the next packet. rc.29's
+detector only credited a skip to the read it arrived on, so it missed every
+real drop. Fix: a late read stays pending for one buffer, and the first skip
+in that time counts against it (`HostLoss::read`, which now also takes
+whether Windows delivered anything; a late read with an empty buffer lost
+nothing). `audio_probe --default-cost [rounds]` times the upkeep's Windows
+calls directly (fresh enumerator, three default endpoints), read-only.
+
+To confirm: the control again (pass: about one late read per stall, 18-28
+ms lost each), and `audio_probe --default-cost 200` on the host.
+

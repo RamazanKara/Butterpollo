@@ -2176,15 +2176,17 @@ impl Media {
                 }
             }
             if let Some(capturing) = capture.as_mut() {
-                let skipped = capturing.take_skipped();
+                let delivered = capturing.take_delivered();
                 if let Some(waited) = waited {
-                    let lost = loss.skipped(skipped, waited, capturing.buffer());
-                    // A skip the wait does not explain is the endpoint falling
+                    let lost = loss.read(waited, delivered, capturing.buffer());
+                    // A skip no late read explains is the endpoint falling
                     // quiet and starting again.
+                    let skipped = delivered.unwrap_or_default();
                     if waited > capturing.buffer() || !skipped.is_zero() {
                         tracing::debug!(
                             waited_ms = waited.as_secs_f64() * 1000.,
                             skipped_ms = skipped.as_secs_f64() * 1000.,
+                            delivered = delivered.is_some(),
                             lost,
                             "audio sender read late or Windows skipped audio"
                         );

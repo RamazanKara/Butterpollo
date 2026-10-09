@@ -163,9 +163,12 @@ impl Resampler {
 /// 10 ms packets, so a read 23 to 27 ms after the last still found both in a
 /// 22 ms buffer, and an endpoint with nothing playing delivers nothing to
 /// lose. Counting those waits filled an idle host's log with warnings. Only
-/// a skip counts, and only one the sender's wait explains: away for more than
-/// half the buffer, and at least as long as the skip. A skip while it read on
-/// time is the endpoint falling quiet and starting again.
+/// a skip counts, and only one a late read explains: away for more than half
+/// the buffer, and at least as long as the skip. The late read itself still
+/// finds the packets that fit, in order; the skip shows on the next packet,
+/// a read or two later (on the host, 40 ms stalls skipped 18-28 ms there), so
+/// a late read explains skips for one buffer after it. A skip with no late
+/// read before it is the endpoint falling quiet and starting again.
 #[derive(Default)]
 pub struct HostLoss {
     late_reads: u32,
@@ -174,6 +177,9 @@ pub struct HostLoss {
     buffer: Duration,
     unsent: u64,
     reported: Option<Instant>,
+    /// A late read whose skip Windows has not delivered yet: its wait, and
+    /// the time since.
+    pending: Option<(Duration, Duration)>,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub struct HostLossReport {
@@ -221,16 +227,42 @@ impl HostLossReport {
 }
 impl HostLoss {
     const EVERY: Duration = Duration::from_secs(5);
-    /// Windows skipped `skipped` of audio before a read that came `waited`
-    /// after the previous one emptied a capture buffer holding `buffer`.
-    /// Returns whether the sender's wait explains it and it counted.
-    pub fn skipped(&mut self, skipped: Duration, waited: Duration, buffer: Duration) -> bool {
-        if skipped.is_zero() || waited <= buffer / 2 || skipped > waited {
+    /// A read `waited` after the previous one emptied a capture buffer
+    /// holding `buffer`. `delivered` is None when Windows had no audio, else
+    /// what it skipped before the audio it delivered. Returns whether a late
+    /// read explains the skip and it counted.
+    pub fn read(
+        &mut self,
+        waited: Duration,
+        delivered: Option<Duration>,
+        buffer: Duration,
+    ) -> bool {
+        let pending = self.pending.take().and_then(|(wait, since)| {
+            let since = since + waited;
+            (since <= buffer).then_some((wait, since))
+        });
+        // An empty buffer did not overflow while the sender waited.
+        let Some(skipped) = delivered else {
+            self.pending = pending;
             return false;
-        }
+        };
+        let late = waited > buffer / 2;
+        let explains = pending
+            .map(|(wait, _)| wait)
+            .into_iter()
+            .chain(late.then_some(waited))
+            .max();
+        let Some(wait) = explains.filter(|wait| !skipped.is_zero() && skipped <= *wait) else {
+            if late {
+                self.pending = Some((waited, Duration::ZERO));
+            } else {
+                self.pending = pending;
+            }
+            return false;
+        };
         self.late_reads += 1;
         self.lost += skipped;
-        self.longest = self.longest.max(waited);
+        self.longest = self.longest.max(wait);
         self.buffer = buffer;
         true
     }
@@ -255,6 +287,7 @@ impl HostLoss {
         };
         *self = Self {
             reported: Some(now),
+            pending: self.pending,
             ..Self::default()
         };
         Some(report)
@@ -398,30 +431,48 @@ mod tests {
         let ms = Duration::from_millis;
         let buffer = ms(22);
         let start = Instant::now();
+        let none = Duration::ZERO;
         let mut loss = HostLoss::default();
+        // A skip with no late read before it is the endpoint going quiet and
+        // starting again.
+        assert!(!loss.read(ms(10), Some(ms(10)), buffer));
+        assert!(!loss.read(ms(5), Some(ms(480)), buffer));
         // The idle host's case: reads up to 27 ms apart, but Windows skipped
         // nothing because both 10 ms packets still fit, or nothing played.
         for waited in [10, 23, 26, 27] {
-            assert!(!loss.skipped(Duration::ZERO, ms(waited), buffer));
+            assert!(!loss.read(ms(waited), Some(none), buffer));
+            for _ in 0..5 {
+                assert!(!loss.read(ms(5), None, buffer));
+            }
         }
-        // A skip while the sender read on time is the endpoint going quiet
-        // and starting again; so is one longer than the wait.
-        assert!(!loss.skipped(ms(10), ms(10), buffer));
-        assert!(!loss.skipped(ms(480), ms(30), buffer));
         assert_eq!(loss.report(start), None);
-        assert!(loss.skipped(ms(10), ms(32), buffer));
-        assert!(loss.skipped(ms(30), ms(52), buffer));
+        // The host's 40 ms stall: the late read finds the packets that fit,
+        // and the skip arrives a read or two later.
+        assert!(!loss.read(ms(43), Some(none), buffer));
+        assert!(!loss.read(ms(5), None, buffer));
+        assert!(loss.read(ms(1), Some(ms(18)), buffer));
+        // Counted once.
+        assert!(!loss.read(ms(5), Some(ms(10)), buffer));
+        // A skip on the late read itself counts too, unless it is longer
+        // than the wait.
+        assert!(loss.read(ms(52), Some(ms(30)), buffer));
+        assert!(!loss.read(ms(30), Some(ms(480)), buffer));
         loss.unsent();
         assert_eq!(
             loss.report(start),
             Some(HostLossReport {
                 late_reads: 2,
-                lost: ms(40),
+                lost: ms(48),
                 longest: ms(52),
                 buffer,
                 unsent: 1,
             })
         );
+        // A late read explains skips for one buffer after it, not later.
+        assert!(!loss.read(ms(40), Some(none), buffer));
+        assert!(!loss.read(ms(10), Some(none), buffer));
+        assert!(!loss.read(ms(10), None, buffer));
+        assert!(!loss.read(ms(5), Some(ms(10)), buffer));
         // Further loss waits five seconds and then reports only what is new.
         loss.unsent();
         assert_eq!(loss.report(start + ms(4999)), None);

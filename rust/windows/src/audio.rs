@@ -20,8 +20,9 @@ pub struct Loopback {
     /// Where the last packet started in the device's stream, and where the
     /// next should; a later start skipped what Windows dropped.
     position: Option<(u64, u64)>,
-    /// Frames skipped since `take_skipped`.
-    skipped: u64,
+    /// Whether audio arrived since `take_delivered`, and the frames
+    /// skipped before it.
+    delivered: Option<u64>,
 }
 impl Loopback {
     pub fn new(output_channels: usize) -> Result<Self> {
@@ -133,7 +134,7 @@ impl Loopback {
                 drained: None,
                 rate,
                 position: None,
-                skipped: 0,
+                delivered: None,
             })
         }
     }
@@ -168,11 +169,12 @@ impl Loopback {
             .replace(now)
             .map(|at| now.saturating_duration_since(at))
     }
-    /// The audio Windows skipped since the last call because it had no room
-    /// for it.
-    pub fn take_skipped(&mut self) -> std::time::Duration {
-        let frames = std::mem::take(&mut self.skipped);
-        std::time::Duration::from_secs_f64(frames as f64 / f64::from(self.rate))
+    /// None when no audio arrived since the last call, else how much
+    /// Windows skipped before it because it had no room.
+    pub fn take_delivered(&mut self) -> Option<std::time::Duration> {
+        self.delivered
+            .take()
+            .map(|frames| std::time::Duration::from_secs_f64(frames as f64 / f64::from(self.rate)))
     }
     pub fn read(&mut self, frames: usize) -> Result<Option<Vec<f32>>> {
         // SAFETY: GetBuffer returns `count` frames of `channels` samples of `bits` bits each, read
@@ -195,10 +197,11 @@ impl Loopback {
                     None,
                 )?;
                 // A packet split at the same position continues the last one.
+                let delivered = self.delivered.get_or_insert(0);
                 let start = match self.position {
                     Some((last, next)) if last == position => next,
                     Some((_, next)) => {
-                        self.skipped += position.saturating_sub(next);
+                        *delivered += position.saturating_sub(next);
                         position
                     }
                     None => position,

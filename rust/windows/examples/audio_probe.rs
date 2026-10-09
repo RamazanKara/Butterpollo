@@ -31,6 +31,9 @@ fn main() -> Result<()> {
         println!("{}", serde_json::to_string(&audio_route::endpoints()?)?);
         return Ok(());
     }
+    if duration == "--default-cost" {
+        return default_cost(args.next().as_deref().unwrap_or("100").parse()?);
+    }
     let seconds: u64 = duration.parse()?;
     let selected = args.next();
     let render_only = args.next().as_deref() == Some("--render-only");
@@ -130,5 +133,33 @@ fn main() -> Result<()> {
     if !render_only && (samples < 48000 || peak < 0.01 || rms < 0.005) {
         bail!("WASAPI did not capture the rendered tone");
     }
+    Ok(())
+}
+/// Time what the audio route's once-a-second upkeep asks Windows: a fresh
+/// device enumerator and the default playback device for each role. Until
+/// rc.29 the audio sender did this before reading. Reads only.
+fn default_cost(rounds: usize) -> Result<()> {
+    let mut costs = Vec::with_capacity(rounds);
+    for _ in 0..rounds.max(1) {
+        let start = Instant::now();
+        unsafe {
+            let enumerator: IMMDeviceEnumerator =
+                CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+            for role in [eConsole, eMultimedia, eCommunications] {
+                if let Ok(device) = enumerator.GetDefaultAudioEndpoint(eRender, role) {
+                    let id = device.GetId()?;
+                    CoTaskMemFree(Some(id.0.cast()));
+                }
+            }
+        }
+        costs.push(start.elapsed().as_secs_f64() * 1000.);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    costs.sort_by(f64::total_cmp);
+    let at = |q: f64| costs[((costs.len() - 1) as f64 * q).round() as usize];
+    println!(
+        "{}",
+        serde_json::json!({"rounds":costs.len(),"avg_ms":costs.iter().sum::<f64>() / costs.len() as f64,"p50_ms":at(0.5),"p95_ms":at(0.95),"max_ms":at(1.)})
+    );
     Ok(())
 }
