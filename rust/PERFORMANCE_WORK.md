@@ -5,6 +5,32 @@ without reducing features or picture quality. Opus took over from Codex in the
 evening of October 2. Performance acceptance on the customer's own sessions is
 still open; the measured fixture results below are local loopback evidence.
 
+## October 9 held fixes: host A/B after the reboot
+
+RX 7900 XT, after the 06:27 reboot, rc.27 installed. Each fix was cherry-picked
+onto main `235c3fac` and compared with main itself, A/B/A/B: isolated extended
+virtual display at 240 Hz, motion probe at 240 Hz, 1968x2184 HDR 120 fps at
+80 Mb/s, hardware-decoding receiver, 35 s per run. Picture age mean / p95 /
+p99 ms.
+
+| Build | HEVC r1 | HEVC r2 | AV1 r1 | AV1 r2 |
+| --- | --- | --- | --- | --- |
+| main | 11.58 / 11.99 / 12.23 | 11.21 / 12.03 / 12.29 | 10.90 / 11.57 / 11.91 | 10.92 / 11.55 / 11.94 |
+| resume waits for teardown (`0a5a85f5`) | 11.34 / 12.05 / 12.43 | 11.10 / 11.93 / 12.11 | 10.94 / 11.66 / 12.05 | 10.88 / 11.58 / 11.92 |
+| no H.264 B-frame property on HEVC (`e8af3a99`) | 11.04 / 11.69 / 12.11 | 11.61 / 12.06 / 12.29 | - | - |
+
+Both neutral (host mean 3.2-3.4 ms HEVC, 3.0 ms AV1 everywhere, 120.0 fps, no
+drops) and shipped. The resume fix is also covered by the GPU-free reconnect
+matrix (`reconnect_tests.rs`), now with no ignored cases.
+
+Batched virtual display apply (`d685d085`, opt-in), same second-client
+fixture as on October 8 (WGC HEVC 1080p60, three other clients each creating a
+1280x720 display): with the setting on, each creation made 1 whole-topology
+apply of 304-514 ms. Picture age on the first stream was not better: p99 /
+max 57.5 / 252 and 79.1 / 364 ms with it, 54.1 / 308 and 43.8 / 298 ms
+without. The hitch is the topology change itself, not the number of calls, so
+the change is not shipped; it stays on the local `codex/hitchfix` branch.
+
 ## October 9 AV1 padding at 1968x2184
 
 **Investigation only; no encoder, shader, codec policy or service changes.**
