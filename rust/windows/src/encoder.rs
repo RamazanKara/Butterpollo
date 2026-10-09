@@ -44,6 +44,19 @@ pub(crate) fn check(code: i32) -> Result<()> {
 pub(crate) fn c(s: &str) -> CString {
     CString::new(s).expect("internal codec string contains NUL")
 }
+/// # Safety
+/// Non-null `data` must hold `size` initialized bytes, with a nonnegative size
+/// no greater than `isize::MAX`, valid and unmodified for the packet's borrow.
+#[inline]
+unsafe fn packet_bytes(packet: &ff::AVPacket) -> &[u8] {
+    if packet.size == 0 || packet.data.is_null() {
+        &[]
+    } else {
+        // SAFETY: The caller guarantees a readable, initialized buffer for the
+        // packet's lifetime; null pointers and empty payloads are handled above.
+        unsafe { std::slice::from_raw_parts(packet.data, packet.size as usize) }
+    }
+}
 pub struct Convert {
     pub(crate) frame: *mut ff::AVFrame,
     context: *mut ff::SwsContext,
@@ -615,7 +628,9 @@ impl Ffmpeg {
                 if !(0..=64 * 1024 * 1024).contains(&n) {
                     bail!("invalid encoder output size");
                 }
-                let bytes = std::slice::from_raw_parts((*self.packet).data, n as usize).to_vec();
+                // SAFETY: The received packet owns its payload until av_packet_unref
+                // below, and its size has been checked before borrowing the bytes.
+                let bytes = packet_bytes(&*self.packet).to_vec();
                 output.push(Encoded {
                     bytes,
                     idr: (*self.packet).flags & ff::AV_PKT_FLAG_KEY as i32 != 0,
@@ -1103,6 +1118,28 @@ impl Encoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn packet_slices_handle_empty_payloads_without_copying_nonempty_data() {
+        let mut data = [1, 2, 3];
+        // SAFETY: AVPacket is a C struct of integers and pointers that admit zero.
+        let mut packet: ff::AVPacket = unsafe { std::mem::zeroed() };
+        for (pointer, size) in [
+            (ptr::null_mut(), 0),
+            (data.as_mut_ptr(), 0),
+            (ptr::null_mut(), data.len() as i32),
+        ] {
+            packet.data = pointer;
+            packet.size = size;
+            // SAFETY: Each payload is null or a zero-length borrow of live data.
+            assert!(unsafe { packet_bytes(&packet) }.is_empty());
+        }
+        packet.data = data.as_mut_ptr();
+        packet.size = data.len() as i32;
+        // SAFETY: The packet borrows all of `data`, which remains live and unchanged.
+        let bytes = unsafe { packet_bytes(&packet) };
+        assert_eq!(bytes, data);
+        assert_eq!(bytes.as_ptr(), data.as_ptr());
+    }
     #[test]
     fn software_converter_rejects_zero_sized_images() {
         for pixel in [
