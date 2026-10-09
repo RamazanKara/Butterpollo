@@ -5,11 +5,26 @@ without reducing features or picture quality. Opus took over from Codex in the
 evening of October 2. Performance acceptance on the customer's own sessions is
 still open; the measured fixture results below are local loopback evidence.
 
-## October 9 user report: constant jitter (recovery requests)
+## October 9 user report: constant jitter, and recovery requests
 
 Report (a user, relayed by the owner, 2026-10-09 08:54Z): "constant jitter".
-No version, codec or client details yet; logs requested. Lead suspect from
-the code, not yet measured on the host:
+Their log (rc.28 host on a Legion Go, Radeon 890M, on Wi-Fi; AYN Odin 2
+Portal client; 1080p60 H.264, virtual display at 120 Hz, RTSS limit 60;
+Hogwarts Legacy through Steam Big Picture) points at the game's frame rate,
+not at the host's pacing. In the 8.5 min game session only 26 of 101
+five-second windows reach 58 fps or more; 37 sit at 39.7 fps and 10 near
+30 fps, the 120 Hz V-Sync steps, with frames claimed on arrival (claim wait
+0.8 ms mean in the 40 fps windows) and encoded in 3.0 ms. A 40 fps game in
+a 60 fps stream is shown for one or two refreshes in turn. Their rc.22 log
+from October 8 shows the same steps (12 of 28 windows at 40 fps), before
+the rc.27 and rc.28 changes. Recovery requests: 8 in the session, each
+within 5 s of the host's Wi-Fi socket dropping video packets
+(WSAEWOULDBLOCK, 11 to 371 packets at a time), and no reference
+invalidations.
+
+Looking for the report turned up a regression that costs a hitch after
+each of those drops (from the code and the model below, not yet measured on
+the host):
 
 - rc.27 (`88d1decf`) made arrival pacing (the default, and VRR) spend a
   frame of pacing credit on every encode, including an unchanged picture
