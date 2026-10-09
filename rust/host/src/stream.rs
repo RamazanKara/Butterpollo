@@ -1605,18 +1605,27 @@ impl Media {
                             } else {
                                 encoded_at + static_period
                             };
+                            // A recovery request on a moving picture rides the
+                            // next new frame; only a still one is encoded again
+                            // at once. Grid pacing serves it at the next slot.
+                            let recovering = s.idr.load(Ordering::Acquire) || s.invalidation.lock().unwrap().is_some();
+                            let reencode_at = if !recovering {
+                                repeat_due
+                            } else if arrival_pacing {
+                                butterpollo_core::stream_policy::reencode_at(true, image.captured, period, repeat_due)
+                            } else {
+                                Instant::now()
+                            };
                             if !rebuild_encoder
                                 && (s.config.vrr_low_latency || limit_static_rate || arrival_pacing)
-                                && !s.idr.load(Ordering::Acquire)
-                                && s.invalidation.lock().unwrap().is_none()
                                 && last_image
                                     .as_ref()
                                     .is_some_and(|previous| Arc::ptr_eq(previous, &image))
-                                && Instant::now() < repeat_due
+                                && Instant::now() < reencode_at
                             {
                                 if encoder.as_ref().is_some_and(|e| recovery.pending(e)) { send_frames(recovery.collect(&mut encoder, &s.launch.warnings, Instant::now)?, peer, Duration::ZERO, latest)?; }
                                 let wait = if encoder.as_ref().is_some_and(|e| recovery.pending(e)) { OUTPUT_POLL } else { period };
-                                latest.wait_if_current(&timer, &capture_wake, &image, Instant::now() + wait.min(repeat_due.saturating_duration_since(Instant::now())))?;
+                                latest.wait_if_current(&timer, &capture_wake, &image, Instant::now() + wait.min(reencode_at.saturating_duration_since(Instant::now())))?;
                                 continue;
                             }
                             // A picture claimed while the encoder is behind only
@@ -1770,12 +1779,14 @@ impl Media {
                                 active.set_hdr_metadata(metadata);
                                 metadata_due = Instant::now() + Duration::from_secs(1);
                             }
-                            if let Some((first, last)) = s.invalidation.lock().unwrap().take()
+                            let invalidation = s.invalidation.lock().unwrap().take();
+                            if let Some((first, last)) = invalidation
                                 && !active.invalidate_ref_frames(first, last)
                             {
                                 s.request_idr();
                             }
                             let idr = s.idr.swap(false, Ordering::AcqRel);
+                            let recovering = idr || invalidation.is_some();
                             let bitrate = s.bitrate.load(Ordering::Acquire);
                             let converted = truehdr.is_some()
                                 && image.pixel == butterpollo_windows::capture::Pixel::Bgra8;
@@ -1851,12 +1862,16 @@ impl Media {
                             // does not extend the interval between static frames.
                             encoded_at = begin;
                             if arrival_pacing {
-                                // Every picture sent counts toward the stream rate,
-                                // a repeat of an unchanged one too: a repeat that
-                                // spent nothing let the game's next frame follow
-                                // it at once, so VRR streams went past the rate
-                                // whenever a frame came late.
-                                pacer.claimed(begin);
+                                // New pictures and static repeats count toward the
+                                // stream rate: a repeat that spent nothing let the
+                                // game's next frame follow it at once, so VRR
+                                // streams went past the rate whenever a frame came
+                                // late. An unchanged picture encoded again for the
+                                // client's recovery request does not, or a client
+                                // losing packets left every game frame late.
+                                if butterpollo_core::stream_policy::counts_toward_rate(fresh, recovering) {
+                                    pacer.claimed(begin);
+                                }
                                 latest.grid.lock().unwrap().anchor = pacer.allowed_at(begin);
                             } else {
                                 cadence.submitted(begin);

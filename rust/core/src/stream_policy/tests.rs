@@ -244,6 +244,115 @@ fn repeats_count_toward_the_stream_rate() {
     assert!(claimed * 100 >= frames.len() * 95, "{claimed} claimed");
     assert!(longest <= 10., "{longest} ms");
 }
+/// The host's arrival-paced loop with recovery requests (a keyframe or a
+/// reference invalidation) from a client losing packets, at `requests` ms.
+/// A request served with a new picture skips the pacer, as the host does.
+/// `held`: an unchanged picture waits for the next new one per
+/// [`reencode_at`] and spends credit per [`counts_toward_rate`]; otherwise it
+/// is encoded at once and counted, as in rc.28. Returns the encodes and each
+/// game frame's wait from arrival to claim, in milliseconds.
+fn arrival_with_recovery(
+    period: f64,
+    frames: &[f64],
+    requests: &[f64],
+    configure: impl Fn(Pacer) -> Pacer,
+    held: bool,
+) -> (usize, Vec<f64>, f64) {
+    let start = Instant::now();
+    let at = |ms: f64| start + Duration::from_secs_f64(ms / 1000.);
+    let mut pacer = configure(Pacer::new(start, Duration::from_secs_f64(period / 1000.)));
+    let span = Duration::from_secs_f64(period / 1000.);
+    let (mut encodes, mut waits) = (0, vec![]);
+    let (mut next, mut request, mut newest, mut shown) = (0, 0, None, 0.);
+    let (mut recovery, mut encoded_at) = (false, 0.);
+    let end = frames.last().unwrap().max(*requests.last().unwrap_or(&0.)) + period;
+    for step in 0..=(end * 20.) as usize {
+        let now = step as f64 / 20.;
+        while next < frames.len() && frames[next] <= now {
+            newest = Some(frames[next]);
+            next += 1;
+        }
+        while request < requests.len() && requests[request] <= now {
+            recovery = true;
+            request += 1;
+        }
+        let interval = (next >= 2)
+            .then(|| Duration::from_secs_f64((frames[next - 1] - frames[next - 2]) / 1000.));
+        if let Some(presented) = newest {
+            if recovery || pacer.decide(at(now), at(presented), interval) == Pace::Claim {
+                pacer.claimed(at(now));
+                (encodes, encoded_at) = (encodes + 1, now);
+                waits.push(now - presented);
+                (newest, shown, recovery) = (None, presented, false);
+            }
+        } else if recovery
+            && (!held || at(now) >= reencode_at(true, at(shown), span, at(end + 1000.)))
+        {
+            if !held || counts_toward_rate(false, true) {
+                pacer.claimed(at(now));
+            }
+            (encodes, encoded_at) = (encodes + 1, now);
+            recovery = false;
+        }
+    }
+    (encodes, waits, encoded_at)
+}
+#[test]
+fn recovery_requests_do_not_hold_back_a_moving_picture() {
+    // A game at the stream rate (an RTSS limit at 120 fps) with frame times
+    // a little uneven, and a client on a lossy link asking for recovery four
+    // times a second at every phase of the frame period.
+    let frames = source(PERIOD, 10., |i| [0.3, -0.2, 0.1, -0.3][i % 4]);
+    let requests: Vec<f64> = (0..40).map(|i| 100. + i as f64 * 251.3).collect();
+    let vrr = |pacer: Pacer| pacer.with_prediction(false).with_spacing(0.5);
+    let standard = |pacer: Pacer| pacer.with_prediction(true);
+    let percentile = |waits: &[f64], p: f64| {
+        let mut sorted = waits.to_vec();
+        sorted.sort_by(f64::total_cmp);
+        sorted[((sorted.len() - 1) as f64 * p) as usize]
+    };
+    for (name, configure) in [
+        ("vrr", &vrr as &dyn Fn(Pacer) -> Pacer),
+        ("standard", &standard),
+    ] {
+        let (before, before_waits, _) =
+            arrival_with_recovery(PERIOD, &frames, &requests, configure, false);
+        let (after, after_waits, _) =
+            arrival_with_recovery(PERIOD, &frames, &requests, configure, true);
+        let mean = |waits: &[f64]| waits.iter().sum::<f64>() / waits.len() as f64;
+        eprintln!(
+            "{name}: encodes {before} -> {after}, game frames sent {} -> {} of {}; game frame wait mean {:.2} -> {:.2} ms, p95 {:.2} -> {:.2} ms, p99 {:.2} -> {:.2} ms, max {:.2} -> {:.2} ms",
+            before_waits.len(),
+            after_waits.len(),
+            frames.len(),
+            mean(&before_waits),
+            mean(&after_waits),
+            percentile(&before_waits, 0.95),
+            percentile(&after_waits, 0.95),
+            percentile(&before_waits, 0.99),
+            percentile(&after_waits, 0.99),
+            percentile(&before_waits, 1.),
+            percentile(&after_waits, 1.),
+        );
+        // A request between frames re-encoded the unchanged picture, and its
+        // credit held the following game frames back: at four requests a
+        // second the deficit is never repaid, so frames wait milliseconds
+        // and some are replaced by the next before they go out.
+        assert!(before > before_waits.len() + 20, "{name}: {before} encodes");
+        assert!(before_waits.len() < frames.len() - 10, "{name}");
+        assert!(mean(&before_waits) > 1., "{name}");
+        // Held: every request rides the next game frame, nothing extra is
+        // sent, and no game frame waits.
+        assert_eq!(after, frames.len(), "{name}");
+        assert_eq!(after_waits.len(), frames.len(), "{name}");
+        assert!(percentile(&after_waits, 1.) < 0.1, "{name}");
+    }
+    // A still screen still gets its keyframe at once.
+    let still = [0.];
+    let requests = [500.];
+    let (encodes, _, encoded_at) = arrival_with_recovery(PERIOD, &still, &requests, vrr, true);
+    assert_eq!((encodes, encoded_at), (2, 500.));
+}
 #[test]
 fn a_source_at_the_stream_rate_is_never_skipped_despite_jitter() {
     let frames = source(PERIOD, 2., |i| if i % 3 == 0 { 0.3 } else { -0.2 });

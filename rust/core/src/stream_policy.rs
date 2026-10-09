@@ -384,6 +384,34 @@ impl Pacer {
         self.last_claim = Some(now);
     }
 }
+/// When arrival pacing encodes an unchanged picture again. A static repeat
+/// is due at `repeat_due`. For a keyframe or reference invalidation the
+/// client asked for (`recovery`), a moving source's next new picture carries
+/// it, so the picture is held until a quarter period past
+/// the next frame at the stream rate, which absorbs frame time jitter and
+/// capture detection; one already unchanged that long (a still or slow
+/// screen) is encoded again at once. Encoding a moving picture again at once
+/// sent an extra keyframe and delayed the game's next frame behind it.
+pub fn reencode_at(
+    recovery: bool,
+    presented: Instant,
+    period: Duration,
+    repeat_due: Instant,
+) -> Instant {
+    if recovery {
+        (presented + period.mul_f64(1.25)).min(repeat_due)
+    } else {
+        repeat_due
+    }
+}
+/// Whether an encode spends arrival pacing credit. New pictures and static
+/// repeats do, so repeats stay within the stream rate. A picture encoded
+/// again only for the client's recovery request does not: it would hold the
+/// game's next frame back by up to a period, and leave every frame for about
+/// a second after it late while the credit is repaid.
+pub fn counts_toward_rate(fresh: bool, recovery: bool) -> bool {
+    fresh || !recovery
+}
 /// An HDR request stays HDR when RTX HDR converts an SDR source for it;
 /// otherwise `prefer_sdr_10bit` streams it as ten-bit SDR. As in Vibepollo
 /// 2.0, RTX HDR needs the client to ask for HDR and the retired

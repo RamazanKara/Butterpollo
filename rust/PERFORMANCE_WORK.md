@@ -5,6 +5,57 @@ without reducing features or picture quality. Opus took over from Codex in the
 evening of October 2. Performance acceptance on the customer's own sessions is
 still open; the measured fixture results below are local loopback evidence.
 
+## October 9 user report: constant jitter (recovery requests)
+
+Report (a user, relayed by the owner, 2026-10-09 08:54Z): "constant jitter".
+No version, codec or client details yet; logs requested. Lead suspect from
+the code, not yet measured on the host:
+
+- rc.27 (`88d1decf`) made arrival pacing (the default, and VRR) spend a
+  frame of pacing credit on every encode, including an unchanged picture
+  encoded again as a keyframe or after a reference invalidation.
+- rc.28 (`5a7f7641`) wakes the stream for every recovery request, so on a
+  moving picture the unchanged one is encoded again at once instead of the
+  request riding the next new frame. Already in rc.27, a request that came
+  in while the previous frame was encoding did the same.
+- Together: each request from a client losing packets sends an extra
+  keyframe of the old picture and takes the next game frame's slot. With a
+  source at the stream rate (an RTSS limit at the stream fps, which rc.27
+  made work on RTSS 7.3.7) the credit refills only 1% faster than it is
+  spent, so the deficit lingers for about a second and frames go out late
+  and uneven; at several requests a second it is never repaid.
+- Not affected: PyroWave (intra-only, no recovery requests reach pacing) and
+  grid pacing.
+
+Model (`recovery_requests_do_not_hold_back_a_moving_picture`, a 120 fps
+source at the stream rate with 0.2-0.6 ms frame time jitter, 10 s):
+
+| Requests | Build | Encodes (1200 frames) | Frames sent | Game frame wait mean / p95 / p99 / max ms |
+| --- | --- | --- | --- | --- |
+| every 1.5 s | rc.28 | 1206 | 1200 | 0.50 / 2.83 / 3.38 / 3.90 |
+| | fix | 1200 | 1200 | 0.02 / 0.05 / 0.05 / 0.05 |
+| every 1 s | rc.28 | 1207 | 1199 | 1.39 / 5.50 / 6.87 / 8.62 |
+| every 0.25 s | rc.28 | 1210 | 1181 | 3.16 / 6.92 / 7.67 / 8.22 |
+| | fix | 1200 | 1200 | 0.02 / 0.05 / 0.05 / 0.05 |
+| every 0.1 s | rc.28 | 1210 | 1151 | 3.50 / 7.25 / 7.77 / 8.57 |
+
+Fix: while the source moves, a recovery request waits for the next new
+picture, up to 1.25 periods after the current one was presented
+(`stream_policy::reencode_at`); a still or slow screen is still encoded
+again at once, keeping rc.28's 2.4 ms keyframe there. An unchanged picture
+encoded again for a recovery request spends no pacing credit
+(`counts_toward_rate`); static repeats still do, so the PyroWave VRR cap
+from rc.27 stays.
+
+Host A/B to run (idle host, extended layout, never exclusive): rc.28 main
+against the fix, A/B/A/B, isolated extended virtual display at 240 Hz,
+1968x2184 HDR 120 fps HEVC at 80 Mb/s, hardware-decoding receiver with
+`BUTTERPOLLO_TEST_IDR_PROBE=20` (one request every 1.5 s), 35 s per run:
+motion probe at 120 Hz (source at the stream rate) and at 240 Hz. Compare
+picture age mean / p95 / p99 / max, receiver fps, frames carrying an
+already-sent picture, host claim wait, and IDR request-to-arrival. Then the
+still 1080p120 desktop IDR probe, which should stay near 2.4 ms.
+
 ## October 9 held fixes: host A/B after the reboot
 
 RX 7900 XT, after the 06:27 reboot, rc.27 installed. Each fix was cherry-picked
