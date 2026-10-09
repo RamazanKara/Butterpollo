@@ -1,5 +1,6 @@
 use crate::state::{Launch, Session, Shared};
 mod capture;
+mod device_recovery;
 #[cfg(test)]
 mod encoder_tests;
 #[cfg(test)]
@@ -11,6 +12,7 @@ use butterpollo_core::{
     packet::{AudioPacketizer, VideoPacketizer},
     session::Role,
 };
+use butterpollo_windows::device_loss::DeviceLost;
 pub(crate) const RTX_KEYS: &[&str] = &[
     "rtx_hdr",
     "rtx_hdr_sdr_brightness",
@@ -82,6 +84,9 @@ trait EncoderOutput {
     fn pending(&self) -> bool;
     fn backlog(&self) -> usize;
     fn log_stall(&self);
+    fn device_removed(&self) -> Option<DeviceLost> {
+        None
+    }
 }
 impl EncoderOutput for Encoder {
     fn poll(&mut self) -> Result<Vec<butterpollo_windows::encoder::Encoded>> {
@@ -96,17 +101,24 @@ impl EncoderOutput for Encoder {
     fn log_stall(&self) {
         self.log_stall();
     }
+    fn device_removed(&self) -> Option<DeviceLost> {
+        self.device_removed()
+    }
 }
 #[derive(Default)]
 struct EncoderRecovery {
     failing: Option<Instant>,
     backlog_since: Option<Instant>,
     recreations: u32,
+    device_loss: Option<DeviceLost>,
     #[cfg(any(debug_assertions, test))]
     stall: crate::soak_fault::EncoderStall,
 }
 impl EncoderRecovery {
     fn pending(&self, encoder: &impl EncoderOutput) -> bool {
+        if self.device_loss.is_some() {
+            return false;
+        }
         #[cfg(any(debug_assertions, test))]
         if !self.stall.held.is_empty() {
             return true;
@@ -149,6 +161,14 @@ impl EncoderRecovery {
         match active.poll() {
             Ok(output) => self.output(output, now),
             Err(error) => {
+                if let Some(loss) = active
+                    .device_removed()
+                    .or_else(|| DeviceLost::from_error(&error))
+                {
+                    self.device_loss = Some(loss);
+                    self.failing.get_or_insert_with(&now);
+                    return Ok(vec![]);
+                }
                 let since = *self.failing.get_or_insert_with(&now);
                 if now().duration_since(since) >= ENCODER_RECOVERY {
                     return Err(error.context("the encoder kept failing"));
@@ -173,6 +193,11 @@ impl EncoderRecovery {
         let backlog_since = *self.backlog_since.get_or_insert_with(&now);
         if now().duration_since(backlog_since) >= limit {
             self.backlog_since = None;
+            if let Some(loss) = encoder.as_ref().unwrap().device_removed() {
+                self.device_loss = Some(loss);
+                self.failing.get_or_insert_with(&now);
+                return Ok(None);
+            }
             let since = *self.failing.get_or_insert_with(&now);
             if now().duration_since(since) >= ENCODER_RECOVERY {
                 anyhow::bail!("the encoder stopped returning frames");
@@ -465,11 +490,25 @@ struct Source {
     stop: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
 }
+fn finish_worker(worker: thread::JoinHandle<()>, name: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !worker.is_finished() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    if worker.is_finished() {
+        let _ = worker.join();
+    } else {
+        tracing::error!(
+            worker = name,
+            "teardown did not return within five seconds; detaching the driver worker"
+        );
+    }
+}
 impl Drop for Source {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
         if let Some(worker) = self.thread.take() {
-            let _ = worker.join();
+            finish_worker(worker, "capture");
         }
     }
 }
@@ -789,10 +828,11 @@ impl Media {
                         // Desktop Duplication reports the pointer's shape only
                         // when it changes; the new capture starts from this one.
                         let mut pointer = lost.pointer();
-                        drop(lost);
                         worker.begin_recovery()?;
+                        drop(lost);
                         let deadline = Instant::now() + Duration::from_secs(30);
                         while !worker.consumers_released() {
+                            worker.check()?;
                             if worker_stop.load(Ordering::Acquire) {
                                 anyhow::bail!("capture stopped while releasing resources");
                             }
@@ -800,8 +840,11 @@ impl Media {
                             timer.until(Instant::now() + Duration::from_millis(2));
                         }
                         let release_ms = recovery_started.elapsed().as_millis();
+                        thread::sleep(RECOVERY_RETRY);
                         let mut missing_since = None;
                         loop {
+                            worker.check()?;
+                            anyhow::ensure!(Instant::now() < deadline, "capture did not recover within 30 seconds");
                             if worker_stop.load(Ordering::Acquire) {
                                 anyhow::bail!("capture stopped while recovering");
                             }
@@ -862,7 +905,7 @@ impl Media {
                             user_desktop = available;
                             // Back from the primary display once the stream's returns.
                             let returned = on_primary && butterpollo_windows::capture::display_present(&next.0);
-                            if next != target || return_to_wgc || returned {
+                            if worker.take_device_restart()? || next != target || return_to_wgc || returned {
                                 let lost = std::mem::replace(&mut capture, Capture::Closed);
                                 (capture, on_primary, target) = match reopen(lost, &next) {
                                     Ok(capture) => capture,
@@ -905,7 +948,12 @@ impl Media {
                                 }
                             }
                             Err(e) => {
-                                capture_warnings.set("capture_recovery", format!("Capture interrupted ({e:#}); reopening capture, with a frozen picture until frames resume. If this repeats, keep the display mode stable and check the WGC helper and graphics driver."));
+                                if let Some(loss) = DeviceLost::from_error(&e) {
+                                    worker.device_lost(loss, &capture_warnings, Instant::now())?;
+                                    worker.take_device_restart()?;
+                                } else {
+                                    capture_warnings.set("capture_recovery", format!("Capture interrupted ({e:#}); reopening capture, with a frozen picture until frames resume. If this repeats, keep the display mode stable and check the WGC helper and graphics driver."));
+                                }
                                 let lost = std::mem::replace(&mut capture, Capture::Closed);
                                 (capture, on_primary, target) = match reopen(lost, &target) {
                                     Ok(capture) => capture,
@@ -919,6 +967,9 @@ impl Media {
                     Ok(())
                 })();
                 if let Err(e) = result {
+                    if DeviceLost::from_error(&e).is_some() {
+                        capture_warnings.set("gpu_recovery", format!("{e:#}"));
+                    }
                     let _ = worker.fail(format!("{e:#}"));
                     tracing::error!(error=%format!("{e:#}"),"capture worker stopped");
                 }
@@ -945,7 +996,7 @@ impl Media {
     }
     fn open_session_capture<'a>(
         &self,
-        s: &Session,
+        s: &Arc<Session>,
         c: &Config,
         prepared: &Arc<crate::display_session::Ready>,
         latest: &'a mut Option<Arc<Source>>,
@@ -959,7 +1010,7 @@ impl Media {
             prepared.clone(),
         )?);
         *s.capture_warnings.write().unwrap() = latest.warnings.clone();
-        let capture_wake = latest.subscribe()?;
+        let capture_wake = latest.subscribe(Arc::downgrade(s))?;
         Ok((latest, capture_wake))
     }
     fn configure_encoder(
@@ -1264,9 +1315,13 @@ impl Media {
                     };
                     let mut send_frames = |output: Vec<butterpollo_windows::encoder::Encoded>,
                                            peer: std::net::SocketAddr,
-                                           call_latency: Duration|
+                                           call_latency: Duration,
+                                           source: &Source|
                      -> Result<()> {
-                        if !output.is_empty() { s.launch.warnings.clear("encoder_recovery"); }
+                        if !output.is_empty() {
+                            s.launch.warnings.clear("encoder_recovery");
+                            source.device_recovered(&source.warnings);
+                        }
                         if let Some(sender) = &pyrowave_sender { return sender.submit(output,peer,call_latency); }
                         let polled = Instant::now();
                         let micros = |d: Duration| d.as_micros().min(u128::from(u64::MAX)) as u64;
@@ -1364,6 +1419,10 @@ impl Media {
                     };
                     (|| -> Result<()> {
                         while !s.stopping() && !h.stop.load(Ordering::Acquire) {
+                            if let Some(loss) = recovery.device_loss.take() {
+                                latest.latest.device_lost(loss, &latest.warnings, Instant::now())?;
+                                encoder = None;
+                            }
                             if Instant::now() >= live_at {
                                 live_at = Instant::now() + Duration::from_millis(250);
                                 runtime_config = effective_config(&h, &s.launch)?;
@@ -1384,7 +1443,7 @@ impl Media {
                                         prepared.clone(),
                                     )?;
                                     *s.capture_warnings.write().unwrap() = latest.warnings.clone();
-                                    capture_wake = latest.subscribe()?;
+                                    capture_wake = latest.subscribe(Arc::downgrade(&s))?;
                                     use_truehdr = enabled;
                                     rebuild_encoder = true;
                                 }
@@ -1467,7 +1526,7 @@ impl Media {
                             if !arrival_pacing && now < due {
                                 while Instant::now() < due {
                                     if encoder.as_ref().is_some_and(|e| recovery.pending(e)) {
-                                        send_frames(recovery.collect(&mut encoder, &s.launch.warnings, Instant::now)?, peer, Duration::ZERO)?;
+                                        send_frames(recovery.collect(&mut encoder, &s.launch.warnings, Instant::now)?, peer, Duration::ZERO, latest)?;
                                         if encoder.as_ref().is_some_and(|e| recovery.pending(e)) {
                                             timer.until(
                                                 (Instant::now() + OUTPUT_POLL)
@@ -1523,7 +1582,7 @@ impl Media {
                                 if encoder.as_ref().is_some_and(|e| recovery.pending(e))
                                     && deadline.saturating_duration_since(Instant::now()) >= Duration::from_millis(1)
                                 {
-                                    send_frames(recovery.collect(&mut encoder, &s.launch.warnings, Instant::now)?, peer, Duration::ZERO)?;
+                                    send_frames(recovery.collect(&mut encoder, &s.launch.warnings, Instant::now)?, peer, Duration::ZERO, latest)?;
                                 }
                                 let until = if encoder.as_ref().is_some_and(|e| recovery.pending(e)) {
                                     deadline.min(Instant::now() + OUTPUT_POLL)
@@ -1553,7 +1612,7 @@ impl Media {
                                     .is_some_and(|previous| Arc::ptr_eq(previous, &image))
                                 && Instant::now() < repeat_due
                             {
-                                if encoder.as_ref().is_some_and(|e| recovery.pending(e)) { send_frames(recovery.collect(&mut encoder, &s.launch.warnings, Instant::now)?, peer, Duration::ZERO)?; }
+                                if encoder.as_ref().is_some_and(|e| recovery.pending(e)) { send_frames(recovery.collect(&mut encoder, &s.launch.warnings, Instant::now)?, peer, Duration::ZERO, latest)?; }
                                 let wait = if encoder.as_ref().is_some_and(|e| recovery.pending(e)) { OUTPUT_POLL } else { period };
                                 latest.wait_if_current(&timer, &capture_wake, &image, Instant::now() + wait.min(repeat_due.saturating_duration_since(Instant::now())))?;
                                 continue;
@@ -1570,7 +1629,7 @@ impl Media {
                                 // stream choppy. A recreated one that is still
                                 // silent gets longer each time.
                                 if let Some(output) = recovery.poll_full(&mut encoder, &s.launch.warnings, Instant::now)? {
-                                    send_frames(output, peer, Duration::ZERO)?;
+                                    send_frames(output, peer, Duration::ZERO, latest)?;
                                 }
                                 continue;
                             }
@@ -1635,6 +1694,11 @@ impl Media {
                                         encoder = Some(created);
                                     },
                                     Err(error) => {
+                                        if let Some(loss) = DeviceLost::d3d11(&image.gpu.device).or_else(|| DeviceLost::from_error(&error)) {
+                                            recovery.device_loss = Some(loss);
+                                            recovery.failing.get_or_insert_with(Instant::now);
+                                            continue;
+                                        }
                                         let since = *recovery.failing.get_or_insert_with(Instant::now);
                                         if since.elapsed() >= ENCODER_RECOVERY {
                                             return Err(error.context("the encoder could not be recreated"));
@@ -1735,6 +1799,8 @@ impl Media {
                             let encoded = (|| -> Result<Vec<butterpollo_windows::encoder::Encoded>> {
                                 #[cfg(debug_assertions)]
                                 crate::soak_fault::check("encoder failure")?;
+                                #[cfg(debug_assertions)]
+                                crate::soak_fault::check("DXGI_ERROR_DEVICE_REMOVED")?;
                                 Ok(if let Ok(Some(transformed)) = transformed.as_ref() {
                                     active.encode_gpu(transformed, idr, bitrate)?
                                 } else if let Err(error) = transformed {
@@ -1757,6 +1823,14 @@ impl Media {
                                     recovery.output(output, Instant::now)?
                                 }
                                 Err(error) => {
+                                    if let Some(loss) = active.device_removed()
+                                        .or_else(|| DeviceLost::d3d11(&image.gpu.device))
+                                        .or_else(|| DeviceLost::from_error(&error))
+                                    {
+                                        recovery.device_loss = Some(loss);
+                                        recovery.failing.get_or_insert_with(Instant::now);
+                                        continue;
+                                    }
                                     // A stalled or reset GPU costs these frames and a
                                     // keyframe; the rebuild requests it. Only failures
                                     // that keep coming end the session.
@@ -1790,12 +1864,13 @@ impl Media {
                             // An allocation can later reuse this image's address;
                             // its trace observation belongs only to this submission.
                             first_seen = None;
-                            send_frames(output, peer, call_latency)?;
+                            send_frames(output, peer, call_latency, latest)?;
                         }
                         Ok(())
                     })()
                 })();
                 if let Err(e) = result {
+                    s.launch.warnings.set("stream_failure", format!("Stream ended: {e:#}"));
                     s.fail();
                     tracing::error!(error=%format!("{e:#}"),client=%s.launch.client.name,"session failed; check the reported encoder, capture or socket error before reconnecting");
                 }
@@ -1808,7 +1883,7 @@ impl Media {
                 // Keep capture and display leases owned until the encoder has
                 // terminated, even if a driver blocks its drop indefinitely.
                 if let Some(audio) = audio {
-                    let _ = audio.join();
+                    finish_worker(audio, "audio");
                 }
                 drop(pyrowave_sender);
                 drop(client_commands);

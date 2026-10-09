@@ -619,6 +619,9 @@ impl Ffmpeg {
             }
             let mut output = vec![];
             loop {
+                if output.len() >= 64 {
+                    bail!("codec did not stop returning output packets");
+                }
                 let code = ff::avcodec_receive_packet(self.context, self.packet);
                 if code == -11 || code == -541478725 {
                     break;
@@ -970,6 +973,12 @@ impl Encoder {
             encoder.log_stall();
         }
     }
+    pub fn device_removed(&self) -> Option<crate::device_loss::DeviceLost> {
+        match self {
+            Self::Amf(encoder) => encoder.device_removed(),
+            _ => None,
+        }
+    }
     /// A GPU encoder, rather than FFmpeg's software codecs.
     pub fn hardware(&self) -> bool {
         match self {
@@ -1258,7 +1267,7 @@ mod tests {
         let chroma = unsafe { *(*convert.frame).data[1].add(2) };
         assert_eq!(chroma, 128);
     }
-    /// Opens a GPU device.
+    /// Enumerates native adapters before rejecting a nonexistent GPU.
     #[test]
     #[ignore = "requires an interactive desktop display and a hardware GPU"]
     fn encoders_open_on_the_configured_gpu() {

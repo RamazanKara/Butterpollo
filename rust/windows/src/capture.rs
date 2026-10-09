@@ -822,6 +822,16 @@ impl GpuPool {
             {
                 Some(Ok(ready)) => Some(ready),
                 Some(Err(error)) => {
+                    if let Some(loss) = crate::device_loss::DeviceLost::d3d11(&gpu.device)
+                        .or_else(|| {
+                            self.compute
+                                .as_ref()
+                                .and_then(|handoff| handoff.device_removed())
+                        })
+                        .or_else(|| crate::device_loss::DeviceLost::from_error(&error))
+                    {
+                        return Err(error.context(loss));
+                    }
                     // Replace the shared textures and copy this same frame on
                     // D3D11. Waiting for another update can strand a stream on
                     // a static desktop. Consumers see an unshared texture and
@@ -1307,6 +1317,9 @@ impl Wgc {
             return Ok(());
         }
         self.color_check = Instant::now() + Duration::from_secs(1);
+        if let Some(loss) = crate::device_loss::DeviceLost::d3d11(&self.gpu.device) {
+            return Err(loss.into());
+        }
         // A display that returned has a new monitor handle; the old one's
         // capture stays silent, so reopen on the display that is there now.
         let mut info = windows::Win32::Graphics::Gdi::MONITORINFO {
@@ -1392,6 +1405,7 @@ fn open_stream_capture<T>(
             }
             Ok(capture)
         }
+        Err(error) if crate::device_loss::DeviceLost::from_error(&error).is_some() => Err(error),
         Err(error) if kind == "wgc" => {
             // WGC can be unavailable under SYSTEM or on a secure desktop.
             // Apply the same fallback at startup and after a capture restart.
@@ -1589,12 +1603,25 @@ impl Capture {
         }
     }
     pub fn next_gpu(&mut self) -> Result<Option<GpuImage>> {
-        match self {
+        let result = match self {
             Self::Wgc(w) => w.next_gpu(),
             Self::WgcWorker(w) => w.next_gpu(),
             Self::Dxgi(d) => d.next_gpu(),
             Self::Closed => bail!("capture is closed"),
-        }
+        };
+        result.map_err(|error| match self.device_removed() {
+            Some(loss) => error.context(loss),
+            None => error,
+        })
+    }
+    pub fn device_removed(&self) -> Option<crate::device_loss::DeviceLost> {
+        let gpu = match self {
+            Self::Wgc(w) => &w.gpu,
+            Self::WgcWorker(w) => &w.gpu,
+            Self::Dxgi(d) => &d.gpu,
+            Self::Closed => return None,
+        };
+        crate::device_loss::DeviceLost::d3d11(&gpu.device)
     }
 }
 

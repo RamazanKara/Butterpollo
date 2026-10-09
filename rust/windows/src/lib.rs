@@ -23,6 +23,7 @@ pub mod color;
 pub mod compute;
 pub mod crash;
 mod cursor;
+pub mod device_loss;
 pub mod display;
 pub mod display_arrangement;
 pub mod display_recovery;

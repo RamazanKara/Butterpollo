@@ -873,7 +873,7 @@ impl Drop for Guard {
 }
 
 /// A monitor lease outlives a streaming session. The feeder owns only the guard,
-/// so dropping the final lease can always stop and join it before removing VDD.
+/// so dropping the final lease stops it before removing VDD.
 pub struct Retained {
     pub output: String,
     pub mode: (u32, u32, u32, bool),
@@ -1006,6 +1006,18 @@ impl Drop for Retained {
     fn drop(&mut self) {
         self.stop.store(true, std::sync::atomic::Ordering::Release);
         if let Some(worker) = self.worker.take() {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !worker.is_finished() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if !worker.is_finished() {
+                // The worker owns the guard until the driver returns. Taking
+                // its lock here would turn a bounded join into another hang.
+                tracing::error!(
+                    "display teardown did not return within five seconds; retaining its lease in the driver worker"
+                );
+                return;
+            }
             let _ = worker.join();
         }
         self.guard.lock().unwrap().take();

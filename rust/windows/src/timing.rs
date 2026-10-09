@@ -180,8 +180,9 @@ impl Timer {
         // the call, and no completion routine is registered.
         unsafe {
             SetWaitableTimer(self.0, &ticks, 0, None, None, false)?;
-            let result = WaitForMultipleObjects(&[self.0, signal.0], false, INFINITE);
-            if result == WAIT_OBJECT_0 {
+            let timeout = (remaining.as_millis() + 100).min(u128::from(u32::MAX - 1)) as u32;
+            let result = WaitForMultipleObjects(&[self.0, signal.0], false, timeout);
+            if result == WAIT_OBJECT_0 || result == WAIT_TIMEOUT {
                 Ok(false)
             } else if result.0 == WAIT_OBJECT_0.0 + 1 {
                 Ok(true)

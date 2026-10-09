@@ -80,7 +80,7 @@ unsafe impl Sync for Compute {}
 fn completed_value(value: u64) -> Result<u64> {
     // D3D12 signals UINT64_MAX on device removal, including shared fences.
     if value == u64::MAX {
-        bail!("D3D12 device removed; GPU fence completion is invalid");
+        return Err(crate::device_loss::DeviceLost(DXGI_ERROR_DEVICE_REMOVED.0).into());
     }
     Ok(value)
 }
@@ -92,14 +92,19 @@ fn wait_fence(fence: &ID3D12Fence, value: u64) -> Result<()> {
     use windows::Win32::System::Threading::*;
     // SAFETY: `fence` is a live D3D12 fence, and the event is created here, used only by
     // SetEventOnCompletion and the wait, and closed once.
-    unsafe {
+    let result = (|| unsafe {
         if completed_value(fence.GetCompletedValue())? >= value {
             return Ok(());
         }
         let event = CreateEventW(None, false, false, PCWSTR::null())?;
-        let waited = fence
-            .SetEventOnCompletion(value, event)
-            .map(|()| WaitForSingleObject(event, 2000));
+        let waited = fence.SetEventOnCompletion(value, event).and_then(|()| {
+            let waited = WaitForSingleObject(event, 2000);
+            if waited == windows::Win32::Foundation::WAIT_FAILED {
+                Err(windows::core::Error::from_thread())
+            } else {
+                Ok(waited)
+            }
+        });
         let _ = CloseHandle(event);
         waited?;
         // Device removal wakes the event too; check the fence after any wake.
@@ -107,7 +112,19 @@ fn wait_fence(fence: &ID3D12Fence, value: u64) -> Result<()> {
             bail!("GPU work did not finish within two seconds");
         }
         Ok(())
-    }
+    })();
+    result.map_err(|error| {
+        let mut device: Option<ID3D12Device> = None;
+        // SAFETY: The fence owns its device and the out-parameter is a live local.
+        let _ = unsafe { fence.GetDevice(&mut device) };
+        match device
+            .as_ref()
+            .and_then(crate::device_loss::DeviceLost::d3d12)
+        {
+            Some(loss) => error.context(loss),
+            None => error,
+        }
+    })
 }
 /// Whether the copy and conversion queues ask for global realtime priority
 /// (`compute_queue_realtime`). Off by default: a realtime queue pre-empts the
@@ -343,6 +360,9 @@ pub struct Handoff {
 // command allocators and lists are used only through `&mut self` on one thread at a time.
 unsafe impl Send for Handoff {}
 impl Handoff {
+    pub(crate) fn device_removed(&self) -> Option<crate::device_loss::DeviceLost> {
+        crate::device_loss::DeviceLost::d3d12(&self.compute.device)
+    }
     /// A helper already created this texture's NT handle. Import that handle
     /// instead of calling CreateSharedHandle a second time on the resource.
     pub(crate) fn import_shared(
@@ -1287,8 +1307,8 @@ mod tests {
             assert_eq!(completed_value(value).unwrap(), value);
         }
         assert_eq!(
-            completed_value(u64::MAX).unwrap_err().to_string(),
-            "D3D12 device removed; GPU fence completion is invalid"
+            crate::device_loss::DeviceLost::from_error(&completed_value(u64::MAX).unwrap_err()),
+            Some(crate::device_loss::DeviceLost(DXGI_ERROR_DEVICE_REMOVED.0))
         );
     }
 }

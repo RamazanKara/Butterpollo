@@ -291,6 +291,20 @@ fn working_wgc_and_explicit_ddx_do_not_open_another_backend() {
 }
 
 #[test]
+fn wgc_device_removal_reaches_recovery_without_a_backend_fallback() {
+    let loss = crate::device_loss::DeviceLost(DXGI_ERROR_DEVICE_REMOVED.0);
+    let error = open_stream_capture::<()>("wgc", &Default::default(), |kind| {
+        assert_eq!(kind, "wgc");
+        Err(anyhow::Error::new(loss).context("frame pool failed"))
+    })
+    .unwrap_err();
+    assert_eq!(
+        crate::device_loss::DeviceLost::from_error(&error),
+        Some(loss)
+    );
+}
+
+#[test]
 #[ignore = "opens brief WGC sessions; requires Windows MinUpdateInterval support"]
 fn wgc_low_rate_explicitly_disables_the_windows_capture_throttle() -> Result<()> {
     enable_dpi_awareness();

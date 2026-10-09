@@ -6,6 +6,8 @@ use std::{collections::VecDeque, path::PathBuf};
 struct MockEncoder {
     queued: VecDeque<Encoded>,
     keep_backlog: bool,
+    fault_directory: Option<PathBuf>,
+    removed: Option<DeviceLost>,
 }
 fn frame(idr: bool) -> Encoded {
     Encoded {
@@ -18,6 +20,9 @@ fn frame(idr: bool) -> Encoded {
 }
 impl EncoderOutput for MockEncoder {
     fn poll(&mut self) -> Result<Vec<Encoded>> {
+        if let Some(directory) = &self.fault_directory {
+            crate::soak_fault::check_at(directory, "DXGI_ERROR_DEVICE_REMOVED")?;
+        }
         let output: Vec<_> = self.queued.pop_front().into_iter().collect();
         if self.keep_backlog && !output.is_empty() {
             self.queued.push_back(frame(false));
@@ -31,6 +36,9 @@ impl EncoderOutput for MockEncoder {
         self.queued.len()
     }
     fn log_stall(&self) {}
+    fn device_removed(&self) -> Option<DeviceLost> {
+        self.removed
+    }
 }
 
 struct Stream {
@@ -161,6 +169,132 @@ impl Drop for Stream {
 }
 
 #[test]
+fn device_removal_releases_capture_and_encoder_then_resumes_with_a_keyframe() -> Result<()> {
+    let mut stream = Stream::new()?;
+    let now = Instant::now();
+    stream.step(now)?;
+    let latest = Arc::new(capture::Latest::<u8>::new());
+    let warnings = Arc::new(butterpollo_core::session::Warnings::default());
+    *stream.session.capture_warnings.write().unwrap() = warnings.clone();
+    let consumer = latest.subscribe(Arc::downgrade(&stream.session))?;
+    latest.publish_captured(Arc::new(1), now)?;
+    let previous = latest.current()?.unwrap();
+    let weak = Arc::downgrade(&previous);
+    stream.encoder.as_mut().unwrap().fault_directory = Some(stream.directory.clone());
+    std::fs::write(stream.directory.join("DXGI_ERROR_DEVICE_REMOVED"), [])?;
+    assert!(
+        stream
+            .recovery
+            .collect(&mut stream.encoder, &warnings, || now)?
+            .is_empty()
+    );
+    let loss = stream.recovery.device_loss.take().unwrap();
+    latest.device_lost(loss, &warnings, now)?;
+    assert!(
+        stream.session.info()["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["code"] == "gpu_recovery")
+    );
+    assert!(latest.current()?.is_none());
+    assert!(latest.take_device_restart()?);
+    latest.begin_recovery()?;
+    assert!(!latest.consumers_released());
+    stream.encoder = None;
+    drop(previous);
+    latest.release_generation(&consumer);
+    assert!(weak.upgrade().is_none());
+    assert!(latest.consumers_released());
+    latest.publish_captured(Arc::new(2), now)?;
+    stream.step(now + RECOVERY_RETRY)?;
+    latest.device_recovered(&warnings);
+    assert!(stream.sent.last().unwrap().1);
+    assert!(!stream.session.failed());
+    assert!(
+        warnings
+            .snapshot()
+            .iter()
+            .all(|warning| warning.code != "gpu_recovery")
+    );
+    crate::soak_fault::check_at(&stream.directory, "DXGI_ERROR_DEVICE_REMOVED")?;
+    Ok(())
+}
+
+#[test]
+fn persistent_removal_ends_clients_even_when_the_gpu_worker_does_not_return() -> Result<()> {
+    let mut stream = Stream::new()?;
+    let now = Instant::now();
+    let request = stream
+        .directory
+        .join("DXGI_ERROR_DEVICE_REMOVED.persistent");
+    std::fs::write(&request, [])?;
+    stream.encoder.as_mut().unwrap().fault_directory = Some(stream.directory.clone());
+    for _ in 0..2 {
+        stream
+            .recovery
+            .collect(&mut stream.encoder, &Default::default(), || now)?;
+        assert_eq!(
+            stream.recovery.device_loss,
+            Some(DeviceLost(0x887a0005_u32 as i32))
+        );
+    }
+    assert!(request.exists());
+    let latest = Arc::new(capture::Latest::<u8>::new());
+    let warnings = Arc::new(butterpollo_core::session::Warnings::default());
+    let _consumer = latest.subscribe(Arc::downgrade(&stream.session))?;
+    let other = Stream::new()?;
+    let _other_consumer = latest.subscribe(Arc::downgrade(&other.session))?;
+    latest.device_lost(
+        stream.recovery.device_loss.take().unwrap(),
+        &warnings,
+        now - device_recovery::TIMEOUT,
+    )?;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while (!stream.session.failed() || !other.session.failed()) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(stream.session.failed());
+    assert!(stream.session.stopping());
+    assert!(other.session.failed());
+    assert!(latest.check().unwrap_err().to_string().contains("Code 31"));
+    assert!(
+        warnings
+            .snapshot()
+            .iter()
+            .any(|warning| warning.message.contains("stream has ended"))
+    );
+    Ok(())
+}
+
+#[test]
+fn an_amf_repeat_stall_checks_removal_before_recreating_only_the_encoder() -> Result<()> {
+    let now = Instant::now();
+    let loss = DeviceLost(0x887a0006_u32 as i32);
+    let mut recovery = EncoderRecovery {
+        backlog_since: Some(now),
+        ..Default::default()
+    };
+    let mut encoder = Some(MockEncoder {
+        removed: Some(loss),
+        ..Default::default()
+    });
+    assert!(
+        recovery
+            .poll_full(&mut encoder, &Default::default(), || now
+                + Duration::from_secs(1))?
+            .is_none()
+    );
+    assert_eq!(recovery.device_loss, Some(loss));
+    assert!(
+        encoder.is_some(),
+        "notify capture before entering vendor teardown"
+    );
+    assert!(!recovery.pending(encoder.as_ref().unwrap()));
+    Ok(())
+}
+
+#[test]
 fn a_300_ms_stall_recreates_requests_a_keyframe_and_resumes_sending() -> Result<()> {
     let mut stream = Stream::new()?;
     let start = Instant::now();
@@ -279,11 +413,13 @@ fn output_resets_the_stall_even_if_the_encoder_backlog_stays_full() -> Result<()
         failing: Some(start),
         backlog_since: Some(start),
         recreations: 3,
+        device_loss: None,
         stall: crate::soak_fault::EncoderStall::new(None),
     };
     let mut encoder = Some(MockEncoder {
         queued: [frame(true), frame(false)].into(),
         keep_backlog: true,
+        ..Default::default()
     });
     let output = recovery
         .poll_full(&mut encoder, &Default::default(), || {

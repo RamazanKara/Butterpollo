@@ -84,15 +84,29 @@ impl EncoderStall {
     }
 }
 
-fn check_at(directory: &Path, kind: &str) -> Result<()> {
+pub(crate) fn check_at(directory: &Path, kind: &str) -> Result<()> {
     if directory.join(format!("{kind}.persistent")).exists() {
-        anyhow::bail!("soak injected persistent {kind}");
+        return Err(fault(kind, true));
     }
     let request = directory.join(kind);
     match std::fs::remove_file(request) {
-        Ok(()) => anyhow::bail!("soak injected {kind}"),
+        Ok(()) => Err(fault(kind, false)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
+    }
+}
+fn fault(kind: &str, persistent: bool) -> anyhow::Error {
+    let error = if persistent {
+        anyhow::anyhow!("soak injected persistent {kind}")
+    } else {
+        anyhow::anyhow!("soak injected {kind}")
+    };
+    if kind == "DXGI_ERROR_DEVICE_REMOVED" {
+        error.context(butterpollo_windows::device_loss::DeviceLost(
+            0x887a0005_u32 as i32,
+        ))
+    } else {
+        error
     }
 }
 

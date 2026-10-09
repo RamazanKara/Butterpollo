@@ -2520,3 +2520,62 @@ was a separate accepted action. Customer streams and credentials were untouched.
 Update this file with concrete changes, measurements, failures and next steps.
 Record active work intervals separately from elapsed wall time and scheduled
 idle gaps. A schedule running for a day does not prove a day of active effort.
+
+## GPU reset recovery audit, 2026-10-09
+
+Audited base `ec6b0db0` without running a stream, GPU workload, installed service,
+or driver operation. Line references in this paragraph refer to that base:
+`host/src/stream.rs:440,1772` joined capture/audio without deadlines;
+`windows/src/display/recovery.rs:1007` likewise joined the display lease worker;
+`windows/src/timing.rs:185` used `INFINITE` despite arming a deadline timer;
+`host/src/state.rs:351` awaited codec readiness indefinitely on serverinfo/applist;
+`windows/src/encoder.rs:583` drained FFmpeg output without an iteration bound.
+These now have five-second joins, a timer wait ceiling, ten-second readiness
+timeout, and a 64-packet drain limit respectively. Capture reopen checked its
+deadline only after failed opens (`host/src/stream.rs:810`), so display-wait
+branches could bypass it; the deadline now covers every retry branch.
+
+Compute CPU fences already had two-second waits (`windows/src/compute.rs:92`),
+including handoff/converter destruction; removal's `UINT64_MAX` is now typed
+and failure paths query the device's removal reason. AMF already requested
+`QueryTimeout=1` ms (`amf.rs:336`), queried once per poll (`amf.rs:1055`), and
+bounded its three submission/capacity loops at 100 ms (`amf.rs:1201,1322,1407`).
+There is no Present in the stream path; DDX acquisition uses timeout zero.
+WGC pool errors retain HRESULTs, including across helper IPC, and its existing
+one-second health check now detects a removed device even with an empty pool.
+
+Previously generic encoder retries could reuse a dead capture device. Typed
+REMOVED/RESET/HUNG/DRIVER_INTERNAL_ERROR now starts one shared recovery incident:
+log the reason once through the stream-card warning, release all consumer GPU
+leases, back off 150 ms, recreate capture/device and the pinned encoder, request
+an IDR, and clear recovery only after encoded output. Repeated removal and
+successful capture opens cannot restart the 30-second budget. A supervisor
+created only on loss ends all affected clients even if vendor teardown stalls;
+the terminal warning explains unavailable adapters/Code 31 and rebooting.
+Healthy frames add no allocations or system calls; reason queries happen on
+errors/stalls or the existing WGC health interval. No service restart is needed.
+
+Synchronous driver calls cannot be forcibly cancelled safely in this process:
+D3D11 Map (`capture.rs:892`), AMF QueryOutput and Terminate (`amf.rs:1448,1454`),
+and COM/FFmpeg releases can still strand a worker until the driver or process
+exits. Bounded joins detach such workers while their owned resources remain
+alive. Unrelated lifetime waits remain: `display_recovery.rs:524` watches host
+exit in a separate process; `crash.rs:58,66` waits for the crash reporter process;
+`crash.rs:407,411,440` are crash-test synchronization. These are not GPU fences.
+This change contains resets; it does not establish or fix the cause of the TDR.
+
+GPU-free tests cover HRESULT/context classification, fence-removal sentinels,
+WGC IPC/fallback, one-shot/persistent debug fault files, resource release,
+recovery keyframes, fixed recovery deadlines, and client termination independent
+of a blocked worker. Native DXGI adapter/display-topology tests are now opt-in
+like the other hardware tests. The first ordinary workspace run unexpectedly
+ran the unmarked topology test and failed with `0x80070057` in the current
+environment; its assertions remain unchanged. Final validation passes: fmt
+check, workspace/all-target Clippy with warnings denied, and locked workspace
+tests (553 passed, 46 ignored), all through `C:\src\cargo-one.ps1` with
+`CARGO_TARGET_DIR=D:\bp-build\tdr-target`. After reboot, verify normal SDR/HDR
+streams, one-shot and persistent
+`DXGI_ERROR_DEVICE_REMOVED[.persistent]` files in an isolated debug host's
+`BUTTERPOLLO_TEST_FAULT_DIR`, the stream-card warning/IDR, and responsive console
+and serverinfo throughout recovery. Actual TDR/Code 31 recovery remains a
+hardware acceptance check; no forced TDR was attempted here.

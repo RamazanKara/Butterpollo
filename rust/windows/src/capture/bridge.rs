@@ -72,6 +72,8 @@ enum Reply {
     },
     Error {
         message: String,
+        #[serde(default)]
+        device_removed: Option<i32>,
     },
     ComputeFallback {
         message: String,
@@ -230,7 +232,7 @@ fn validate_texture(
 
 pub struct Session {
     pipe: Pipe,
-    gpu: Device,
+    pub(super) gpu: Device,
     textures: Vec<Texture>,
     owned: GpuPool,
     slots: Slots,
@@ -315,7 +317,10 @@ impl Session {
                     ensure!(version == VERSION, "WGC helper version mismatch");
                     break (handles, width, height, format, compute);
                 }
-                Some(Reply::Error { message }) => bail!("WGC helper: {message}"),
+                Some(Reply::Error {
+                    message,
+                    device_removed,
+                }) => return Err(helper_error(message, device_removed)),
                 Some(_) => bail!("WGC helper sent a frame before its textures"),
                 None => {}
             }
@@ -435,7 +440,10 @@ impl Session {
                     self.last_reply = now;
                     self.owned.warnings.set("capture_helper_compute", format!("WGC helper compute copy failed ({message}); transfer uses the graphics queue. Lower game GPU load or update the AMD driver if capture stutters."));
                 }
-                Some(Reply::Error { message }) => bail!("WGC helper: {message}"),
+                Some(Reply::Error {
+                    message,
+                    device_removed,
+                }) => return Err(helper_error(message, device_removed)),
                 Some(Reply::Ready { .. }) => bail!("WGC helper replaced live textures"),
                 None => break,
             }
@@ -530,7 +538,22 @@ impl Drop for NativeFrame {
 }
 fn next_native(capture: &mut Wgc) -> Result<Option<NativeFrame>> {
     capture.check_color_space()?;
-    Ok(capture.next_native_frame()?.map(NativeFrame))
+    capture
+        .next_native_frame()
+        .map(|frame| frame.map(NativeFrame))
+        .map_err(
+            |error| match crate::device_loss::DeviceLost::d3d11(&capture.gpu.device) {
+                Some(loss) => error.context(loss),
+                None => error,
+            },
+        )
+}
+fn helper_error(message: String, reason: Option<i32>) -> anyhow::Error {
+    let error = anyhow::anyhow!("WGC helper: {message}");
+    match reason {
+        Some(reason) => error.context(crate::device_loss::DeviceLost(reason)),
+        None => error,
+    }
 }
 fn native_texture(frame: &NativeFrame) -> Result<ID3D11Texture2D> {
     let access: IDirect3DDxgiInterfaceAccess = frame.0.Surface()?.cast()?;
@@ -546,6 +569,7 @@ pub fn run_worker(pipe: &str, parent: u32) -> Result<()> {
     if let Err(error) = &result {
         let _ = pipe.send(&Reply::Error {
             message: format!("{error:#}").chars().take(512).collect(),
+            device_removed: crate::device_loss::DeviceLost::from_error(error).map(|loss| loss.0),
         });
         // Give the parent a chance to read the failure before closing its last
         // client handle; never wait indefinitely for a vanished host.
@@ -724,6 +748,12 @@ fn worker(pipe: &Pipe) -> Result<()> {
                     if let Some(compute) = &mut copy
                         && let Err(error) = compute.copy(&texture.texture, &source)
                     {
+                        if let Some(loss) = crate::device_loss::DeviceLost::d3d11(&gpu.device)
+                            .or_else(|| compute.device_removed())
+                            .or_else(|| crate::device_loss::DeviceLost::from_error(&error))
+                        {
+                            return Err(error.context(loss));
+                        }
                         copy = None;
                         pipe.send(&Reply::ComputeFallback {
                             message: format!("{error:#}").chars().take(512).collect(),
@@ -773,6 +803,44 @@ fn worker(pipe: &Pipe) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn helper_reply_preserves_device_removal_and_accepts_older_errors() {
+        let loss = crate::device_loss::DeviceLost(0x887a0006_u32 as i32);
+        let reply = super::Reply::Error {
+            message: "frame pool failed".into(),
+            device_removed: Some(loss.0),
+        };
+        let json = serde_json::to_string(&reply).unwrap();
+        let super::Reply::Error {
+            message,
+            device_removed,
+        } = serde_json::from_str(&json).unwrap()
+        else {
+            panic!("wrong reply")
+        };
+        assert_eq!(
+            crate::device_loss::DeviceLost::from_error(&super::helper_error(
+                message,
+                device_removed
+            )),
+            Some(loss)
+        );
+        let old = r#"{"type":"Error","message":"capture unavailable"}"#;
+        let super::Reply::Error {
+            message,
+            device_removed,
+        } = serde_json::from_str(old).unwrap()
+        else {
+            panic!("wrong reply")
+        };
+        assert!(
+            crate::device_loss::DeviceLost::from_error(&super::helper_error(
+                message,
+                device_removed
+            ))
+            .is_none()
+        );
+    }
     use super::*;
     #[test]
     fn positive_mutex_wait_codes_never_grant_access_to_incomplete_pixels() {

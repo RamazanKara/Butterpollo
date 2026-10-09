@@ -743,6 +743,13 @@ impl Encoder {
             "AMF encoder settings"
         );
     }
+    pub fn device_removed(&self) -> Option<crate::device_loss::DeviceLost> {
+        crate::device_loss::DeviceLost::d3d11(&self._device.device).or_else(|| {
+            self.compute.as_ref().and_then(|input| {
+                crate::device_loss::DeviceLost::d3d12(&input.converter.compute().device)
+            })
+        })
+    }
     /// Snapshot only at failure/recreation, before dropping the driver state.
     pub fn log_stall(&self) {
         let oldest = self.in_flight.front();

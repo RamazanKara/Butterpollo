@@ -1,10 +1,11 @@
 //! Latest-frame ownership and notifications shared by capture consumers.
 use anyhow::{Result, bail};
+use butterpollo_windows::device_loss::DeviceLost;
 use butterpollo_windows::timing::{Signal, Timer};
 use std::{
     sync::{
         Arc, Mutex, Weak,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -45,11 +46,15 @@ struct State<T> {
     cadence: butterpollo_core::capture_policy::Freshness,
     generation: u64,
     trace: PublicationTrace<T>,
+    recovery: super::device_recovery::DeviceRecovery,
 }
 impl<T> State<T> {
     fn check(&self) -> Result<()> {
         if let Some(error) = &self.error {
             bail!("capture stopped: {error}");
+        }
+        if self.recovery.active() {
+            self.recovery.check(Instant::now())?;
         }
         Ok(())
     }
@@ -59,6 +64,7 @@ impl<T> State<T> {
 pub(super) struct Consumer {
     signal: Signal,
     released: AtomicU64,
+    session: Weak<crate::state::Session>,
 }
 impl std::ops::Deref for Consumer {
     type Target = Signal;
@@ -71,6 +77,7 @@ pub(super) struct Latest<T> {
     changed: Mutex<Vec<Weak<Consumer>>>,
     origin: Instant,
     trace_source_id: u64,
+    recovering: AtomicBool,
 }
 impl<T> Latest<T> {
     pub(super) fn new() -> Self {
@@ -83,18 +90,21 @@ impl<T> Latest<T> {
                 cadence: Default::default(),
                 generation: 0,
                 trace: PublicationTrace::new(),
+                recovery: Default::default(),
             }),
             changed: Mutex::new(Vec::new()),
             origin: Instant::now(),
             trace_source_id: NEXT_SOURCE_ID.fetch_add(1, Ordering::Relaxed),
+            recovering: AtomicBool::new(false),
         }
     }
-    pub(super) fn subscribe(&self) -> Result<Arc<Consumer>> {
+    pub(super) fn subscribe(&self, session: Weak<crate::state::Session>) -> Result<Arc<Consumer>> {
         let state = self.state.lock().unwrap();
         let signal = Arc::new(Consumer {
             signal: Signal::new()?,
             // A new subscriber owns nothing from an earlier generation.
             released: AtomicU64::new(state.generation),
+            session,
         });
         let mut waiters = self.changed.lock().unwrap();
         waiters.retain(|waiter| waiter.strong_count() > 0);
@@ -118,6 +128,73 @@ impl<T> Latest<T> {
         state.cadence = Default::default();
         self.notify()
     }
+    pub(super) fn device_lost(
+        self: &Arc<Self>,
+        loss: DeviceLost,
+        warnings: &Arc<butterpollo_core::session::Warnings>,
+        now: Instant,
+    ) -> Result<()>
+    where
+        T: Send + Sync + 'static,
+    {
+        let mut state = self.state.lock().unwrap();
+        state.check()?;
+        if state.recovery.lost(loss, now) {
+            warnings.set("gpu_recovery", format!("{loss}. Rebuilding capture and encoder; the picture may freeze for up to 30 seconds. If the adapter remains unavailable (Code 31), reboot Windows before reconnecting."));
+            // Vendor teardown can block inside a DLL. End the clients independently
+            // of that worker; Windows cannot safely cancel an in-process driver call.
+            let latest = Arc::downgrade(self);
+            let warnings = warnings.clone();
+            let started = state.recovery.started();
+            std::thread::Builder::new()
+                .name("gpu-recovery".into())
+                .spawn(move || {
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        let Some(latest) = latest.upgrade() else {
+                            break;
+                        };
+                        let state = latest.state.lock().unwrap();
+                        if state.recovery.started() != started || state.error.is_some() {
+                            break;
+                        }
+                        let result = state.recovery.check(Instant::now());
+                        drop(state);
+                        if let Err(error) = result {
+                            warnings.set("gpu_recovery", format!("{error:#}"));
+                            let _ = latest.fail(format!("{error:#}"));
+                            break;
+                        }
+                    }
+                })?;
+        }
+        self.recovering.store(true, Ordering::Release);
+        let image = state.image.take();
+        let result = self.notify();
+        drop(state);
+        drop(image);
+        result
+    }
+    pub(super) fn take_device_restart(&self) -> Result<bool> {
+        let mut state = self.state.lock().unwrap();
+        state.check()?;
+        Ok(std::mem::take(&mut state.recovery.restart))
+    }
+    pub(super) fn device_recovered(&self, warnings: &butterpollo_core::session::Warnings) {
+        if !self.recovering.load(Ordering::Acquire) {
+            return;
+        }
+        let mut state = self.state.lock().unwrap();
+        if state.error.is_none()
+            && state.recovery.check(Instant::now()).is_ok()
+            && state.recovery.recovered()
+        {
+            self.recovering.store(false, Ordering::Release);
+            warnings.clear("gpu_recovery");
+            warnings.event("gpu_reset", "The graphics device was reset; capture and encoding have resumed with a keyframe. Check the graphics driver if this repeats.", butterpollo_core::session::EVENT_PERIOD);
+            tracing::info!("GPU recovery completed; encoded output resumed");
+        }
+    }
     /// Call only after releasing every resource belonging to this capture.
     pub(super) fn release_generation(&self, consumer: &Consumer) {
         let state = self.state.lock().unwrap();
@@ -138,6 +215,10 @@ impl<T> Latest<T> {
             |duration: std::time::Duration| duration.as_nanos().min(u128::from(u64::MAX)) as u64;
         let mut state = self.state.lock().unwrap();
         state.check()?;
+        if state.recovery.restart {
+            return Ok(());
+        }
+        state.recovery.captured = true;
         state.cadence.observe(
             nanos(captured.saturating_duration_since(self.origin)),
             nanos(now.saturating_duration_since(captured)),
@@ -191,9 +272,27 @@ impl<T> Latest<T> {
     }
     pub(super) fn fail(&self, error: String) -> Result<()> {
         let mut state = self.state.lock().unwrap();
-        state.image = None;
+        for consumer in self
+            .changed
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(Weak::upgrade)
+        {
+            if let Some(session) = consumer.session.upgrade() {
+                session
+                    .launch
+                    .warnings
+                    .set("stream_failure", format!("Stream ended: {error}"));
+                session.fail();
+            }
+        }
+        let image = state.image.take();
         state.error = Some(error);
-        self.notify()
+        let result = self.notify();
+        drop(state);
+        drop(image);
+        result
     }
     pub(super) fn current(&self) -> Result<Option<Arc<T>>> {
         let state = self.state.lock().unwrap();
@@ -304,8 +403,8 @@ mod tests {
     fn publications_before_wait_and_independent_consumers_keep_the_latest_frame() -> Result<()> {
         let latest = Latest::new();
         let timer = Timer::new()?;
-        let first = latest.subscribe()?;
-        let second = latest.subscribe()?;
+        let first = latest.subscribe(Weak::new())?;
+        let second = latest.subscribe(Weak::new())?;
         let old = Arc::new(1u8);
         latest.publish_captured(old.clone(), Instant::now())?;
         latest.wait_if_current(
@@ -341,7 +440,7 @@ mod tests {
     fn terminal_capture_failure_wakes_waiters_and_cannot_return_a_stale_frame() -> Result<()> {
         let latest = Arc::new(Latest::<u8>::new());
         let timer = Timer::new()?;
-        let wake = latest.subscribe()?;
+        let wake = latest.subscribe(Weak::new())?;
         let worker = latest.clone();
         let failed = std::thread::spawn(move || worker.fail("device lost".into()).unwrap());
         let error = latest
@@ -355,7 +454,7 @@ mod tests {
                 .publish_captured(Arc::new(3), Instant::now())
                 .is_err()
         );
-        let late = latest.subscribe()?;
+        let late = latest.subscribe(Weak::new())?;
         assert!(
             latest
                 .wait_for_frame(&timer, &late, Instant::now())
@@ -367,8 +466,8 @@ mod tests {
     #[test]
     fn recovery_waits_for_all_owners_and_departing_consumers_release_their_lease() -> Result<()> {
         let latest = Latest::new();
-        let first = latest.subscribe()?;
-        let second = latest.subscribe()?;
+        let first = latest.subscribe(Weak::new())?;
+        let second = latest.subscribe(Weak::new())?;
         latest.publish_captured(Arc::new(1u8), Instant::now())?;
         let held = latest.current()?.unwrap();
         let old = Arc::downgrade(&held);
@@ -380,7 +479,7 @@ mod tests {
         assert!(old.upgrade().is_none());
         assert!(!latest.consumers_released());
         // A stream joining during recovery has no old resources to release.
-        let joining = latest.subscribe()?;
+        let joining = latest.subscribe(Weak::new())?;
         drop(second);
         assert!(latest.consumers_released());
         latest.publish_captured(Arc::new(2), Instant::now())?;
@@ -396,7 +495,7 @@ mod tests {
     #[test]
     fn reset_wakes_each_waiter_and_skips_waiting_until_resources_are_released() -> Result<()> {
         let latest = Arc::new(Latest::<u8>::new());
-        let consumer = latest.subscribe()?;
+        let consumer = latest.subscribe(Weak::new())?;
         let worker = latest.clone();
         let timer = Timer::new()?;
         let reset = std::thread::spawn(move || worker.begin_recovery().unwrap());

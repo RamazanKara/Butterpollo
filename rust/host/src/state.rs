@@ -358,7 +358,8 @@ impl Host {
             return;
         }
         let mut ready = self.video_codecs_ready.subscribe();
-        let _ = ready.wait_for(|ready| *ready).await;
+        // A stuck vendor probe must not hold /serverinfo or /applist open forever.
+        let _ = tokio::time::timeout(Duration::from_secs(10), ready.wait_for(|ready| *ready)).await;
     }
     pub fn request_codec_probe(&self) {
         if self.codecs.load(std::sync::atomic::Ordering::Acquire) & STANDARD_CODECS == 0 {
