@@ -1,10 +1,23 @@
-# Butterpollo 2.0.0-rc.27 release candidate for Windows
+# Butterpollo 2.0.0-rc.28 release candidate for Windows
 
 [Documentation](../docs/README.md) · [Install and migrate](../docs/getting-started.md) · [Configuration](../docs/configuration.md) · [Compatibility](PARITY.md)
 
-**Release history:** [rc.27](#new-in-rc27) · [rc.26](#new-in-rc26) · [rc.25](#new-in-rc25) · [rc.24](#new-in-rc24) · [rc.23](#new-in-rc23) · [rc.22](#new-in-rc22) · [rc.21](#new-in-rc21) · [rc.20](#new-in-rc20) · [rc.19](#new-in-rc19) · [rc.18](#new-in-rc18) · [rc.17](#new-in-rc17) · [rc.16](#new-in-rc16) · [rc.15](#new-in-rc15) · [rc.14](#new-in-rc14) · [rc.13](#new-in-rc13) · [rc.12](#new-in-rc12) · [rc.11](#new-in-rc11) · [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
+**Release history:** [rc.28](#new-in-rc28) · [rc.27](#new-in-rc27) · [rc.26](#new-in-rc26) · [rc.25](#new-in-rc25) · [rc.24](#new-in-rc24) · [rc.23](#new-in-rc23) · [rc.22](#new-in-rc22) · [rc.21](#new-in-rc21) · [rc.20](#new-in-rc20) · [rc.19](#new-in-rc19) · [rc.18](#new-in-rc18) · [rc.17](#new-in-rc17) · [rc.16](#new-in-rc16) · [rc.15](#new-in-rc15) · [rc.14](#new-in-rc14) · [rc.13](#new-in-rc13) · [rc.12](#new-in-rc12) · [rc.11](#new-in-rc11) · [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
 
-Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.27 installer is named `butterpollo-setup-2.0.0-rc.27.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.28 installer is named `butterpollo-setup-2.0.0-rc.28.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+
+## New in rc.28
+
+- **Crash reports work on processors with Intel AMX.** On a PC whose processor has AMX, such as recent Xeons, a crash from a Windows exception left no crash dump, only an error file: Windows' dump writer failed with "Only part of a ReadProcessMemory or WriteProcessMemory request was completed" every time it read the crash details from the host. The crash helper now copies those details out of the host itself and gives the dump writer its own copy. Checked on GitHub's Windows runners: on one with a Xeon 6973P-C, the crash test failed 20 of 20 runs before and 0 of 20 now; on eight runners without AMX it never failed. The dump no longer carries the AVX register contents, which a stack trace does not need.
+- **A quoted permanent virtual display count is applied.** `dd_virtual_display_permanent_count`, and its older name `dd_vdd_static_monitor_count`, was refused as invalid when written in quotes (`"2"`) or as hex (`0x2`), so the driver kept its previous count. It is now read like every other number setting. Checked with unit tests.
+- **Smaller fixes:**
+  - The software video conversion path no longer reads past the end of a captured picture, and refuses an empty one before converting it.
+  - An empty packet from the encoder is handled as empty instead of being read from a null pointer.
+  - The tray icon's menu no longer holds the tray's state while Windows runs the menu, which can call back into the tray.
+  - When the AMD encoder stalls, the log now records its queue and fence state. The encoder settings line in the log shows AV1's frame-skip setting; it asked the driver for a wrong property name before.
+
+  No user reported a problem from the first three; they came from a code review and have unit tests.
+- **Under the hood:** the display and input code and the stream startup are split into smaller parts. Host A/B runs on the RX 7900 XT matched the previous build within noise. New tests cover reconnecting clients without a GPU, and 92 of the 107 compatibility claims in [Compatibility](PARITY.md) now have automated tests, up from 60.
 
 ## New in rc.27
 
@@ -370,8 +383,8 @@ Current automated validation: 263 ordinary tests passed, with 27 environment-dep
 
 ## Install
 
-- `butterpollo-setup-2.0.0-rc.27.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
-- For a portable copy, extract `butterpollo-rust-2.0.0-rc.27-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
+- `butterpollo-setup-2.0.0-rc.28.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
+- For a portable copy, extract `butterpollo-rust-2.0.0-rc.28-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
 - These are unsigned test builds. Keep a copy of your configuration and the previous installer for rollback.
 
 ## Lower latency
