@@ -57,7 +57,7 @@
   async function remove() {
     const ok = await confirm({
       title: 'Delete the saved layout?',
-      message: 'Butterpollo stops restoring a layout after streams until you save one again.',
+      message: 'Rubylight stops restoring a layout after streams until you save one again.',
       confirm: 'Delete',
       danger: true,
     });
@@ -67,7 +67,7 @@
   async function disconnect() {
     const ok = await confirm({
       title: 'Disconnect virtual displays?',
-      message: 'This stops every stream and removes the virtual displays Butterpollo created.',
+      message: 'This stops every stream and removes the virtual displays Rubylight created.',
       confirm: 'Disconnect',
       danger: true,
     });
@@ -78,7 +78,7 @@
   onMount(load);
 </script>
 
-<Panel title="Displays" description="Butterpollo restores the saved layout after each stream, if all of its displays are connected.">
+<Panel title="Displays" description="Rubylight restores the saved layout after each stream, if all of its displays are connected.">
   {#snippet actions()}
     {#if golden?.exists}
       {#if golden.comparison_available && golden.current_mismatch_reason}
@@ -119,7 +119,7 @@
         <div class="action">
           <div>
             <p class="text">Disconnect virtual displays</p>
-            <p class="muted hint">Stops every stream and removes the virtual displays Butterpollo created.</p>
+            <p class="muted hint">Stops every stream and removes the virtual displays Rubylight created.</p>
           </div>
           <Button variant="danger" disabled={running !== null} busy={running === 'disconnect'} onclick={disconnect}>
             Disconnect
@@ -129,7 +129,7 @@
           <div>
             <p class="text">Reset display settings memory</p>
             <p class="muted hint">
-              Forgets the display changes Butterpollo would undo after a stream. Use it when displays keep returning to an
+              Forgets the display changes Rubylight would undo after a stream. Use it when displays keep returning to an
               old setup.
             </p>
           </div>

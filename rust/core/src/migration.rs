@@ -269,7 +269,7 @@ pub fn import(source: &Path, destination: &Path) -> Result<()> {
                 .insert("log_path".into(), "butterpollo.log".into());
         }
         state::atomic_write(&stage.join("sunshine.conf"), rewritten.text().as_bytes())?;
-        check(&stage).context("the imported settings would keep Butterpollo from starting")?;
+        check(&stage).context("the imported settings would keep Rubylight from starting")?;
         if destination.exists() {
             std::fs::remove_dir(&destination)?;
         }

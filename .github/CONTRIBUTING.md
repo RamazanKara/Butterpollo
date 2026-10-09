@@ -1,6 +1,6 @@
-# Contributing to Butterpollo
+# Contributing to Rubylight
 
-Butterpollo is a Windows Moonlight host built for AMD Radeon. Changes that make streaming faster, smoother or more reliable on Radeon are the priority; for NVIDIA-first work, [Vibepollo](https://github.com/Nonary/Vibepollo) is the better home.
+Rubylight is a Windows Moonlight host built for AMD Radeon. Changes that make streaming faster, smoother or more reliable on Radeon are the priority; for NVIDIA-first work, [Vibepollo](https://github.com/Nonary/Vibepollo) is the better home.
 
 ## Reporting problems
 
@@ -22,7 +22,7 @@ Search the existing issues first, then use the bug or crash form. Attach the sup
 
 ## Building and checking
 
-[Build Butterpollo](../docs/building.md) lists the prerequisites and the SDK environment. The first build fetches and verifies the pinned SDKs:
+[Build Rubylight](../docs/building.md) lists the prerequisites and the SDK environment. The first build fetches and verifies the pinned SDKs:
 
 ```powershell
 .\rust\build.ps1 -FetchDependencies -SkipTrueHdr

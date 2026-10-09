@@ -25,7 +25,7 @@
 
   const summary = $derived.by(() => {
     if (!status) return '';
-    if (!status.installed) return 'The Butterpollo plugin is not in Playnite yet.';
+    if (!status.installed) return 'The Rubylight plugin is not in Playnite yet.';
     const plugin = `plugin ${status.installed_version ?? ''}`.trim();
     if (!status.active) return `Not running · ${plugin}`;
     const games = status.game_count === 1 ? 'game' : 'games';

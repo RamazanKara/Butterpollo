@@ -1,4 +1,4 @@
-// Typed client for the Butterpollo admin API (/api on the console port).
+// Typed client for the Rubylight admin API (/api on the console port).
 // Sessions live in HttpOnly cookies; writes carry the session's CSRF token.
 
 export class ApiError extends Error {

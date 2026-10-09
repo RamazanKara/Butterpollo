@@ -1,4 +1,4 @@
-# Butterpollo developer guide
+# Rubylight developer guide
 
 [Documentation](../docs/README.md) · [Build guide](../docs/building.md) · [Architecture](../docs/architecture.md) · [API](../docs/api.md) · [Release notes](RELEASE_NOTES.md)
 

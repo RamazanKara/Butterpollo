@@ -57,7 +57,7 @@
         <div class="row">
           <Button {busy} onclick={register}>Register</Button>
           {#if !layer.available}
-            <span class="muted hint">The layer files are missing; reinstalling Butterpollo restores them.</span>
+            <span class="muted hint">The layer files are missing; reinstalling Rubylight restores them.</span>
           {/if}
         </div>
       {/if}

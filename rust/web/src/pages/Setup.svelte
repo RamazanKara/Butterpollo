@@ -32,7 +32,7 @@
 </script>
 
 <div class="auth">
-  <div class="brand"><span class="mark" aria-hidden="true">B</span>Butterpollo</div>
+  <div class="brand"><span class="mark" aria-hidden="true">R</span>Rubylight</div>
   <form class="card" onsubmit={submit}>
     <h1>Set up this host</h1>
     <p class="muted">

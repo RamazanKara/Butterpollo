@@ -55,8 +55,11 @@ for name in ('README.md', 'docs/README.md', 'docs/getting-started.md', 'rust/REA
     for link in (f'Download {label(old)}', 'release'):
         text = text.replace(f'[{link}](https://github.com/RamazanKara/Butterpollo/releases/tag/{old})',
                             f'[{link}](https://github.com/RamazanKara/Butterpollo/releases/tag/{new})')
-    text = text.replace(f'butterpollo-setup-{old}.exe', f'butterpollo-setup-{new}.exe')
-    text = text.replace(f'butterpollo-rust-{old}-windows-x64.zip', f'butterpollo-rust-{new}-windows-x64.zip')
+    # Releases since rc.30 are named Rubylight; earlier ones Butterpollo.
+    for setup in ('butterpollo-setup', 'rubylight-setup'):
+        text = text.replace(f'{setup}-{old}.exe', f'rubylight-setup-{new}.exe')
+    for package in ('butterpollo-rust', 'rubylight'):
+        text = text.replace(f'{package}-{old}-windows-x64.zip', f'rubylight-{new}-windows-x64.zip')
     text = text.replace(f'The workspace version is **{old}**', f'The workspace version is **{new}**')
     path.write_text(current.sub(label(new), text), encoding='utf-8', newline='')
 
@@ -70,14 +73,18 @@ if entry not in lines[history]:
     lines[history] = lines[history].replace('**Release history:** ',
                                             f'**Release history:** {entry} · ', 1)
 intro = next(i for i, l in enumerate(lines) if i > history and l.strip())
+for setup in ('butterpollo-setup', 'rubylight-setup'):
+    lines[intro] = lines[intro].replace(f'{setup}-{old}.exe', f'rubylight-setup-{new}.exe')
 lines[intro] = short.sub(label(new), lines[intro].replace(old, new))
 if f'## New in {label(new)}' not in lines:
     at = lines.index(f'## New in {label(old)}')
     body = args.notes.read_text(encoding='utf-8').strip().split('\n') if args.notes else ['- ']
     lines[at:at] = [f'## New in {label(new)}', '', *body, '']
 text = '\n'.join(lines)
-text = text.replace(f'butterpollo-setup-{old}.exe` installs', f'butterpollo-setup-{new}.exe` installs')
-text = text.replace(f'butterpollo-rust-{old}-windows-x64.zip`', f'butterpollo-rust-{new}-windows-x64.zip`')
+for setup in ('butterpollo-setup', 'rubylight-setup'):
+    text = text.replace(f'{setup}-{old}.exe` installs', f'rubylight-setup-{new}.exe` installs')
+for package in ('butterpollo-rust', 'rubylight'):
+    text = text.replace(f'{package}-{old}-windows-x64.zip`', f'rubylight-{new}-windows-x64.zip`')
 notes.write_text(text, encoding='utf-8', newline='')
 print(f'{old} -> {new}; {count} crates in Cargo.lock; fill in "## New in {label(new)}" in rust/RELEASE_NOTES.md'
       if not args.notes else f'{old} -> {new}; {count} crates in Cargo.lock')

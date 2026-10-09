@@ -25,7 +25,7 @@ const playniteSettings: Setting[] = [
     key: 'playnite_enabled',
     label: 'Playnite',
     description:
-      'Starts apps linked to a Playnite game through Playnite, with the stream’s settings, and ends the stream when Playnite reports the game closed. Needs the Butterpollo plugin in Playnite (Library › Install plugin).',
+      'Starts apps linked to a Playnite game through Playnite, with the stream’s settings, and ends the stream when Playnite reports the game closed. Needs the Rubylight plugin in Playnite (Library › Install plugin).',
     category: 'library',
     group: 'Playnite',
     control: { kind: 'toggle' },

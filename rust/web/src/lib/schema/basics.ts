@@ -83,7 +83,7 @@ const general: Setting[] = [
   {
     key: 'system_tray',
     label: 'Tray icon',
-    description: 'Show a Butterpollo icon in the Windows notification area, with a shortcut to this console.',
+    description: 'Show a Rubylight icon in the Windows notification area, with a shortcut to this console.',
     category: 'general',
     group: 'Tray',
     control: { kind: 'toggle' },
@@ -106,7 +106,7 @@ const general: Setting[] = [
     key: 'update_check_interval',
     label: 'Update check interval',
     description:
-      'How often the host looks for a new Butterpollo release. 0 turns off automatic checks; you can still check from Maintenance.',
+      'How often the host looks for a new Rubylight release. 0 turns off automatic checks; you can still check from Maintenance.',
     category: 'general',
     group: 'Updates',
     control: { kind: 'number', min: 0, step: 1, unit: 's' },

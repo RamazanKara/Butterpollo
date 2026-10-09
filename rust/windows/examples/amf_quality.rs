@@ -31,7 +31,7 @@ fn main() -> anyhow::Result<()> {
     while let Some(key) = args.next() {
         if key == "--help" {
             println!(
-                "Butterpollo encoder quality probe\n\
+                "Rubylight encoder quality probe\n\
 --codec hevc (h264/hevc/av1) --width 1920 --height 1080 --fps 120 --bitrate 20000\n\
 --frames N: frames to read from stdin (BGRA, or linear gbrpf32le with --hdr 1)\n\
 --config FILE: host settings; --out FILE: bitstream"

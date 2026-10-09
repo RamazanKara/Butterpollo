@@ -1,7 +1,7 @@
 #Requires -Version 7
 <#
 .SYNOPSIS
-Stream-test and install a published Butterpollo release on the Radeon host.
+Stream-test and install a published Rubylight release on the Radeon host.
 
 .DESCRIPTION
 Pushing a tag builds, tests, packages and publishes a release on GitHub
@@ -62,13 +62,18 @@ $qa = "$run\qa"
 # Kept between releases, so the receivers and probes only rebuild what changed.
 $fixtures = Join-Path $Work 'fixtures'
 $package = "$out\butterpollo-rust-release"
-$installer = "$out\butterpollo-setup-$Version.exe"
-$zip = "$out\butterpollo-rust-$Version-windows-x64.zip"
+$installer = "$out\rubylight-setup-$Version.exe"
+$zip = "$out\rubylight-$Version-windows-x64.zip"
 
 Step "download $Version"
 Remove-Item -Recurse -Force $out -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $out, $qa | Out-Null
-gh release download $Version -R $repo -D $out -p (Split-Path $installer -Leaf) -p (Split-Path $zip -Leaf) -p SHA256SUMS
+# Releases before rc.30 carry only the Butterpollo names.
+gh release download $Version -R $repo -D $out -p 'rubylight-setup-*.exe' -p 'rubylight-*-windows-x64.zip' -p 'butterpollo-setup-*.exe' -p 'butterpollo-rust-*-windows-x64.zip' -p SHA256SUMS
+if (-not (Test-Path $installer)) {
+    $installer = "$out\butterpollo-setup-$Version.exe"
+    $zip = "$out\butterpollo-rust-$Version-windows-x64.zip"
+}
 foreach ($line in Get-Content "$out\SHA256SUMS") {
     $hash, $name = $line -split '\s+', 2
     if ((Get-FileHash "$out\$name" -Algorithm SHA256).Hash -ne $hash) { throw "$name does not match SHA256SUMS" }

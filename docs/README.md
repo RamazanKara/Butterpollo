@@ -1,8 +1,8 @@
-# Butterpollo documentation
+# Rubylight documentation
 
-[Butterpollo](../README.md) · [Download rc.29](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.29) · [Release notes](../rust/RELEASE_NOTES.md)
+[Rubylight](../README.md) · [Download rc.29](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.29) · [Release notes](../rust/RELEASE_NOTES.md)
 
-Butterpollo is a Windows game-streaming host written in Rust, built around Radeon compute and Moonlight. Start with the setup guide, then choose the details that matter to your stream.
+Rubylight is a Windows game-streaming host written in Rust, built around Radeon compute and Moonlight. Start with the setup guide, then choose the details that matter to your stream.
 
 ## Start streaming
 
@@ -12,7 +12,7 @@ Butterpollo is a Windows game-streaming host written in Rust, built around Radeo
 | **[Configuration](configuration.md)** | Capture, codecs, HDR, virtual displays, frame limiting, overrides and updates. |
 | **[Troubleshooting](troubleshooting.md)** | Pairing, black screens, HDR colour, smoothness, RTSS and useful support reports. |
 
-## Understand Butterpollo
+## Understand Rubylight
 
 | Guide | What it covers |
 | --- | --- |

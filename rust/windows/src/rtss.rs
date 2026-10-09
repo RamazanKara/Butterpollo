@@ -156,7 +156,7 @@ fn start_with_elevation<T>(service: bool, mut spawn: impl FnMut(bool) -> Result<
         {
             if !service {
                 return Err(error).context(
-                    "RTSS requires administrator privileges. Start RTSS manually as administrator before streaming, or run Butterpollo through its installed Windows service",
+                    "RTSS requires administrator privileges. Start RTSS manually as administrator before streaming, or run Rubylight through its installed Windows service",
                 );
             }
             // RTSS can require elevation in its manifest or compatibility

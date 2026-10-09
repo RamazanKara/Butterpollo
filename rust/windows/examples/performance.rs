@@ -34,7 +34,7 @@ fn main() -> anyhow::Result<()> {
     while let Some(key) = args.next() {
         if matches!(key.as_str(), "--help" | "-h") {
             println!(
-                "Butterpollo encoder performance probe\n\
+                "Rubylight encoder performance probe\n\
 Repeat-frame throughput excludes capture, network, decoding and display latency.\n\
 --width 1920 --height 1080 --fps 120 --seconds 8 --bitrate 20000\n\
 --codec hevc (h264/hevc/av1/pyrowave) --encoder auto --capture wgc --display NAME\n\

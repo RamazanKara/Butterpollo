@@ -71,7 +71,7 @@ pub fn host_name(config: &Config) -> String {
     if !configured.is_empty() {
         return configured.to_owned();
     }
-    butterpollo_windows::net::host_name().unwrap_or_else(|| "Butterpollo".into())
+    butterpollo_windows::net::host_name().unwrap_or_else(|| "Rubylight".into())
 }
 pub fn bind_address(config: &Config, override_address: Option<IpAddr>) -> Result<IpAddr> {
     if let Some(address) = override_address {

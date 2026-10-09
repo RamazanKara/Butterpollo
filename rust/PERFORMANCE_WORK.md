@@ -2840,3 +2840,33 @@ with the 18-28 ms Windows dropped; normal streams stay silent. The device
 check rc.29 moved off the audio thread took 7.8 ms on average (max 11 ms) on
 the host."
 
+## Rename to Rubylight (2026-10-09)
+
+Ramazan picked Rubylight as the new name (analysis/rename-research.md in the
+project files). Everything people see is renamed: console, tray, setup,
+Start menu entry, Apps & features entry, the service's display name and the
+firewall rule; setup and in-app updates replace the old Start menu entry and
+firewall rule once the new ones exist. The service key (`ApolloService`),
+the profile (`%ProgramData%\Butterpollo\config`), binary names, pipe, mutex
+and task names, the Vulkan layer, the NVIDIA profile, the UPnP mapping
+description and the virtual display label keep their names, so upgrades stay
+in place and rolling back to rc.29 still works. Fresh installs default to
+`C:\Program Files\Rubylight`.
+
+The in-app updater of rc.29 and older asks
+`api.github.com/repos/RamazanKara/Butterpollo` and only accepts
+`butterpollo-setup-<v>.exe` from that repository's download URL; after a repo
+rename GitHub answers with a redirect to `api.github.com/repositories/<id>`,
+which it refuses. So releases now carry the installer under both names, the
+updater asks `RamazanKara/Rubylight` first and falls back to the old name, and
+the repository is renamed only after rc.30 is out, so rc.29 hosts can update
+to it in-app first.
+
+Draft for the rc.30 notes: "**Butterpollo is now Rubylight.** The name nods
+to Ruby, the red-haired mascot of ATI's Radeon cards. Updating keeps your
+settings, paired devices, apps, service and install folder as they are; only
+the names Windows shows change. The installer is now
+`rubylight-setup-<version>.exe`; releases keep a `butterpollo-setup` copy so
+older hosts can update in-app. Links to the old GitHub address keep
+working."
+

@@ -1,4 +1,4 @@
-// Embeds the Butterpollo icon (rust/assets/butterpollo.ico) as icon resource 1
+// Embeds the Rubylight icon (rust/assets/butterpollo.ico) as icon resource 1
 // of every binary in this crate: Explorer, Start, the taskbar and shortcuts
 // show it, and the tray loads it from the executable.
 fn main() {

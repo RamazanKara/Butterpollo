@@ -1,12 +1,14 @@
-# Butterpollo
+# Rubylight
 
 **Written in Rust. Built for Radeon. Made for Moonlight.**
 
-Stream your gaming PC to a laptop, TV or phone. Butterpollo is a Windows game-streaming host with Radeon compute, native AMD encoding and **full 10-bit HDR 4:4:4 through PyroWave**. The host, native helpers, Windows service and installer are written in Rust.
+*Formerly Butterpollo. Existing installs update in place and keep their settings, paired devices and apps; links to the old GitHub address keep working.*
+
+Stream your gaming PC to a laptop, TV or phone. Rubylight is a Windows game-streaming host with Radeon compute, native AMD encoding and **full 10-bit HDR 4:4:4 through PyroWave**. The host, native helpers, Windows service and installer are written in Rust.
 
 **[Download rc.29](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.29)** · **[Get started](docs/getting-started.md)** · [Website](https://ramazankara.github.io/Butterpollo/) · [Documentation](docs/README.md) · [Release notes](rust/RELEASE_NOTES.md)
 
-[![Meet Butterpollo: a Windows Moonlight host built around Radeon, its frame pipeline, measured performance, a matched host comparison, PyroWave HDR and getting started](docs/media/demo.gif)](docs/media/demo.mp4)
+[![Meet Rubylight: a Windows Moonlight host built around Radeon, its frame pipeline, measured performance, a matched host comparison, PyroWave HDR and getting started](docs/media/demo.gif)](docs/media/demo.mp4)
 
 <sub>Follow one frame from your game to Moonlight, see the dated Radeon measurements, then get started. 60 seconds · 1080p · 60 fps · original soundtrack. [Watch the film](docs/media/demo.mp4).</sub>
 
@@ -14,27 +16,27 @@ Stream your gaming PC to a laptop, TV or phone. Butterpollo is a Windows game-st
 
 AMD rarely gets any love in this space. The protocol started as NVIDIA's GameStream, and even after NVIDIA dropped GameStream in 2023, the hosts that replaced it kept NVIDIA first. Upstream Sunshine has had a native NVENC encoder since 2023, while AMD still goes through FFmpeg's generic AMF wrapper. AMD hasn't helped itself either. It shut down its own streaming app, AMD Link, in 2024, saying there are plenty of other ways to stream, and its drivers still have quirks like an RDNA4 freeze that hosts have to work around.
 
-So Radeon owners have spent years hearing their cards are just worse at streaming. That is where Butterpollo comes into play, and it is the sole reason Butterpollo exists. Most of the time the card was never the problem. Nobody had sat down with it.
+So Radeon owners have spent years hearing their cards are just worse at streaming. That is where Rubylight comes into play, and it is the sole reason Rubylight exists. Most of the time the card was never the problem. Nobody had sat down with it.
 
-In practice that means a native AMF encoder instead of a generic wrapper, frame copies and colour conversion on Radeon compute queues, and someone reading AMD's driver release notes so you don't have to. When a driver freezes the stream, Butterpollo works around it. When AMD fixes it, Butterpollo removes the workaround and pretends nothing happened.
+In practice that means a native AMF encoder instead of a generic wrapper, frame copies and colour conversion on Radeon compute queues, and someone reading AMD's driver release notes so you don't have to. When a driver freezes the stream, Rubylight works around it. When AMD fixes it, Rubylight removes the workaround and pretends nothing happened.
 
-There are far better Sunshine forks, like [Vibepollo](https://github.com/Nonary/Vibepollo), for anything that is not AMD work. Butterpollo's mission is to speed up development on AMD streaming, which has gotten no traction for years. Butterpollo is not here to win a big userbase. There is no growth plan and no campaign to convert the NVIDIA crowd. As long as AMD users are happy, Butterpollo is happy.
+There are far better Sunshine forks, like [Vibepollo](https://github.com/Nonary/Vibepollo), for anything that is not AMD work. Rubylight's mission is to speed up development on AMD streaming, which has gotten no traction for years. Rubylight is not here to win a big userbase. There is no growth plan and no campaign to convert the NVIDIA crowd. As long as AMD users are happy, Rubylight is happy.
 
 ## Install. Pair Moonlight. Play.
 
 1. Run **`butterpollo-setup-2.0.0-rc.29.exe`** from the [release](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.29).
-2. Open the Butterpollo console at **`https://localhost:47990`** and create your local account.
+2. Open the Rubylight console at **`https://localhost:47990`** and create your local account.
 3. Add your PC in Moonlight, enter its pairing PIN in **Devices**, then launch **Desktop**.
 
 **WGC capture and Radeon compute are enabled by default.** Start at 1080p/60, then choose your resolution, frame rate and HDR. Upgrades carry your settings, paired devices and library forward. Updates notify you first, with automatic installation available as an opt-in.
 
 [First-stream walkthrough, portable setup and migration →](docs/getting-started.md)
 
-## Why Butterpollo
+## Why Rubylight
 
-Butterpollo began as a fork of [Vibepollo](https://github.com/Nonary/Vibepollo), whose native AMF encoder came from the same author ([#342](https://github.com/Nonary/Vibepollo/pull/342)), and rebuilds the host in Rust around the Radeon frame path. Anything that works out here is GPL-3.0 for Vibepollo to take.
+Rubylight began as a fork of [Vibepollo](https://github.com/Nonary/Vibepollo), whose native AMF encoder came from the same author ([#342](https://github.com/Nonary/Vibepollo/pull/342)), and rebuilds the host in Rust around the Radeon frame path. Anything that works out here is GPL-3.0 for Vibepollo to take.
 
-**On NVIDIA, use Vibepollo.** Butterpollo includes NVENC, but it has not been tested on NVIDIA hardware.
+**On NVIDIA, use Vibepollo.** Rubylight includes NVENC, but it has not been tested on NVIDIA hardware.
 
 | What you get | How it helps |
 | --- | --- |
@@ -59,9 +61,9 @@ Carried over from Vibepollo, Apollo and Sunshine and rebuilt in Rust: per-device
 | Fresh pictures per second | 56.7 | **58.1** |
 | Host time, present to send | 16.2 ms | **11.2 ms** |
 
-<sub>Same Butterpollo build, one setting changed · RX 7900 XT · DDX · 120 Hz virtual display · 20 Mbps requested · two runs per path · October 4, 2026. Render-to-decode measures picture age through independent loopback decoding. [Method and recorded runs](rust/PERFORMANCE.md#1080p-at-60-fps).</sub>
+<sub>Same Rubylight build, one setting changed · RX 7900 XT · DDX · 120 Hz virtual display · 20 Mbps requested · two runs per path · October 4, 2026. Render-to-decode measures picture age through independent loopback decoding. [Method and recorded runs](rust/PERFORMANCE.md#1080p-at-60-fps).</sub>
 
-**Next to Vibepollo 2.0** in a matched setup, Butterpollo rc.2 averaged 42.4 ms against 96.4 ms beside the same load and delivered 51.4 fresh pictures a second against 23.9. Most of that gap is not the compute path: with compute off, Butterpollo still delivered about 57 fresh pictures a second in an earlier batch. Vibepollo handed its native AMF encoder about 24 frames a second, and the encoder logged that its output had not caught up. That encoder came from Butterpollo's author; where the frames are lost is still being traced, and the fix goes to Vibepollo. [Matched comparison →](docs/performance.md#next-to-vibepollo-20)
+**Next to Vibepollo 2.0** in a matched setup, Rubylight rc.2 averaged 42.4 ms against 96.4 ms beside the same load and delivered 51.4 fresh pictures a second against 23.9. Most of that gap is not the compute path: with compute off, Rubylight still delivered about 57 fresh pictures a second in an earlier batch. Vibepollo handed its native AMF encoder about 24 frames a second, and the encoder logged that its output had not caught up. That encoder came from Rubylight's author; where the frames are lost is still being traced, and the fix goes to Vibepollo. [Matched comparison →](docs/performance.md#next-to-vibepollo-20)
 
 **rc.17 against rc.2**, alternating on the same fixture on October 7: the same delay on the same capture path, and about 2 ms less beside the load with rc.17's default WGC capture (33.4 against 35.7 ms). [rc.17 against rc.2 →](docs/performance.md#rc17-against-rc2)
 
@@ -83,13 +85,13 @@ Standard Moonlight clients use H.264, HEVC or AV1. **Moonlight PC 6.2.0** has re
 | Set up displays, HDR, frame limits or updates | [Configuration](docs/configuration.md) |
 | Diagnose pairing, capture, colour or smoothness | [Troubleshooting](docs/troubleshooting.md) |
 | Understand the implementation and evidence | [Architecture](docs/architecture.md) · [Performance](docs/performance.md) · [Compatibility](rust/PARITY.md) |
-| Build or integrate Butterpollo | [Build guide](docs/building.md) · [Developer guide](rust/README.md) · [API reference](docs/api.md) |
+| Build or integrate Rubylight | [Build guide](docs/building.md) · [Developer guide](rust/README.md) · [API reference](docs/api.md) |
 
 Share your Radeon setup, games and results in [Issues](https://github.com/RamazanKara/Butterpollo/issues). The [support guide](docs/troubleshooting.md) explains which logs and environment details make a report useful.
 
 ## Credits and license
 
-Butterpollo is **GPL-3.0**. Thanks to **Nonary** for Vibepollo, **ClassicOldSong** for Apollo, and **LizardByte and the Sunshine contributors**. The AMD encoder's low-latency defaults draw on **qiin2333's** work in AlkaidLab's Foundation Sunshine. PyroWave and Granite are by **Themaister** (MIT); the PyroWave Moonlight protocol and clients are **joemossjr16's** work.
+Rubylight is **GPL-3.0**. Thanks to **Nonary** for Vibepollo, **ClassicOldSong** for Apollo, and **LizardByte and the Sunshine contributors**. The AMD encoder's low-latency defaults draw on **qiin2333's** work in AlkaidLab's Foundation Sunshine. PyroWave and Granite are by **Themaister** (MIT); the PyroWave Moonlight protocol and clients are **joemossjr16's** work.
 
 [License](LICENSE) · [Third-party components](rust/THIRD_PARTY.md) · [Project history](docs/butterpollo-cpp.md)
 

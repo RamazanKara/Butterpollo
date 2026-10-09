@@ -144,9 +144,9 @@ fn driver_problem(error: &anyhow::Error) -> String {
         .downcast_ref::<windows::core::Error>()
         .map(|e| e.code());
     if code == Some(ERROR_NO_MORE_ITEMS.to_hresult()) {
-        "The virtual display driver is not installed, or Windows must restart to finish installing it. The Butterpollo service sets it up again a minute after it starts; if it stays missing, run the Butterpollo installer.".into()
+        "The virtual display driver is not installed, or Windows must restart to finish installing it. The Rubylight service sets it up again a minute after it starts; if it stays missing, run the Rubylight installer.".into()
     } else if code == Some(ERROR_ACCESS_DENIED.to_hresult()) {
-        "Only the Butterpollo service may open the virtual display driver, and this host runs outside it. Install Butterpollo with its setup and let the service run the host.".into()
+        "Only the Rubylight service may open the virtual display driver, and this host runs outside it. Install Rubylight with its setup and let the service run the host.".into()
     } else {
         format!("{error:#}")
     }

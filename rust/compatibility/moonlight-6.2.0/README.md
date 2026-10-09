@@ -1,6 +1,6 @@
 # Moonlight 6.2.0 CSV shutdown compatibility patch
 
-The [client source patch](moonlight-v6.2.0-cli-cached-artwork.patch) targets Moonlight Qt `v6.2.0` (`de2467e433821664cdd2224aad8c89a625be1ad9`). It is optional source for a custom client build. The official Moonlight 6.2.0 binary is unchanged and still has the cold-cache CSV limitation; this is not a Butterpollo runtime fix.
+The [client source patch](moonlight-v6.2.0-cli-cached-artwork.patch) targets Moonlight Qt `v6.2.0` (`de2467e433821664cdd2224aad8c89a625be1ad9`). It is optional source for a custom client build. The official Moonlight 6.2.0 binary is unchanged and still has the cold-cache CSV limitation; this is not a Rubylight runtime fix.
 
 `list --csv` can print its rows and then hang on shutdown with missing artwork. The [CSV implementation](https://github.com/moonlight-stream/moonlight-qt/blob/v6.2.0/app/cli/listapps.cpp#L140) starts [asynchronous artwork workers](https://github.com/moonlight-stream/moonlight-qt/blob/v6.2.0/app/backend/boxartmanager.cpp#L72) immediately before exiting. In the isolated official-client reproduction, shutdown waited in the artwork thread pool while workers waited in Qt event loops; no artwork request reached the host.
 

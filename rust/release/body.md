@@ -1,6 +1,6 @@
 **Windows game streaming, written in Rust. Built for Radeon and Moonlight.**
 
-**[Download Windows x64 installer](https://github.com/RamazanKara/Butterpollo/releases/download/{version}/butterpollo-setup-{version}.exe)** · [Portable ZIP](https://github.com/RamazanKara/Butterpollo/releases/download/{version}/butterpollo-rust-{version}-windows-x64.zip)
+**[Download Windows x64 installer](https://github.com/RamazanKara/Butterpollo/releases/download/{version}/rubylight-setup-{version}.exe)** · [Portable ZIP](https://github.com/RamazanKara/Butterpollo/releases/download/{version}/rubylight-{version}-windows-x64.zip)
 
 ### New in {label}
 

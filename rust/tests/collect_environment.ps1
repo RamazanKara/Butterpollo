@@ -43,7 +43,7 @@ if (Test-Path -LiteralPath $binary -PathType Leaf) {
         $report.host_version = ((& $binary --version 2>$null) -join '').Trim()
         if ($LASTEXITCODE -ne 0) { throw 'Version command failed' }
     } catch { $report.errors += 'Host version: ' + $_.Exception.Message }
-} else { $report.errors += 'Butterpollo executable not found in the selected installation directory' }
+} else { $report.errors += 'Rubylight executable not found in the selected installation directory' }
 try {
     $service = Get-Service -Name ApolloService -ErrorAction Stop
     $report.service_state = [string]$service.Status

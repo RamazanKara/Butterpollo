@@ -181,7 +181,7 @@ mod probe {
                 let window = CreateWindowExW(
                     WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
                     w!("ButterpolloCapturePhaseProbe"),
-                    w!("Butterpollo capture phase probe"),
+                    w!("Rubylight capture phase probe"),
                     WS_POPUP | WS_VISIBLE,
                     x,
                     y,

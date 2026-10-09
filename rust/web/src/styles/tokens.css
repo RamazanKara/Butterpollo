@@ -1,5 +1,5 @@
 /*
- * Butterpollo console design tokens.
+ * Rubylight console design tokens.
  *
  * Decisions (deliberate, not defaults):
  * - Reference: a dense, status-first admin console in the manner of
@@ -8,7 +8,7 @@
  * - Colour: neutral graphite on cool grey; one brand accent, butter yellow
  *   (from the name), used for the current selection, primary actions and
  *   the live indicator. No gradients, no glow.
- * - Type: Segoe UI Variable, the host's own system face: Butterpollo is a
+ * - Type: Segoe UI Variable, the host's own system face: Rubylight is a
  *   Windows host and its console should feel native to that PC. Numbers,
  *   commands and logs use Cascadia Mono, which ships with Windows Terminal.
  *   Nothing is downloaded.

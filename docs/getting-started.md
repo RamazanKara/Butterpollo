@@ -2,20 +2,20 @@
 
 [Documentation](README.md) · [Configuration](configuration.md) · [Troubleshooting](troubleshooting.md)
 
-Butterpollo is a Windows x64 streaming host written in Rust, with a GPU path tuned and measured on AMD Radeon. Moonlight runs on the device you play from. Start with one client and a 1080p60 SDR stream, then add HDR, higher frame rates or a virtual display.
+Rubylight is a Windows x64 streaming host written in Rust, with a GPU path tuned and measured on AMD Radeon. Moonlight runs on the device you play from. Start with one client and a 1080p60 SDR stream, then add HDR, higher frame rates or a virtual display.
 
 **On this page:** [Install](#install-or-run-portable) · [Import a profile](#bring-an-existing-profile) · [Upgrading](#upgrading) · [Open the console](#open-the-console) · [Pair Moonlight](#pair-moonlight-and-start-desktop) · [Stream formats](#choose-your-stream-format) · [Displays and updates](#virtual-displays-and-updates)
 
 ## Install or run portable
 
-Download the Windows package from [Butterpollo Releases](https://github.com/RamazanKara/Butterpollo/releases). For rc.29, choose:
+Download the Windows package from [Rubylight Releases](https://github.com/RamazanKara/Butterpollo/releases). For rc.29, choose:
 
 | Package | How to start | Best fit |
 | --- | --- | --- |
-| `butterpollo-setup-2.0.0-rc.29.exe` | Run the installer, then open **Butterpollo** from the Start menu. | Normal use, automatic service startup and virtual displays. |
+| `butterpollo-setup-2.0.0-rc.29.exe` | Run the installer, then open **Rubylight** from the Start menu. | Normal use, automatic service startup and virtual displays. |
 | `butterpollo-rust-2.0.0-rc.29-windows-x64.zip` | Extract the whole ZIP and open **Start Butterpollo.exe**. | Trying the host with a physical display. |
 
-The installer sets up the host, the Windows service, the virtual display driver and, unless you untick it, the virtual gamepad driver that every emulated controller uses. An upgrade preserves the existing Butterpollo settings and paired devices and can migrate a detected Vibepollo installation. Disconnect streams and close host-launched games before installing.
+The installer sets up the host, the Windows service, the virtual display driver and, unless you untick it, the virtual gamepad driver that every emulated controller uses. An upgrade preserves the existing Rubylight settings and paired devices and can migrate a detected Vibepollo installation. Disconnect streams and close host-launched games before installing.
 
 Portable mode does not install a service. Virtual displays and emulated controllers need their Windows drivers; use the installed service for the bundled virtual-display driver's service access. Keep the extracted libraries and `assets` folder beside the executables.
 
@@ -25,7 +25,7 @@ Run one streaming host on the default ports. If Sunshine, Apollo or Vibepollo is
 
 On the first portable launch, **Yes** in the import prompt copies an existing Vibepollo or Apollo profile. Select the folder containing `sunshine.conf`, or the installation folder containing `config\sunshine.conf`. **No** starts a fresh profile.
 
-Import brings across settings, paired devices, identity, the app library and covers. The original profile remains in place. The destination must be empty; Butterpollo refuses to overwrite a populated profile. The prompt appears only when the portable profile has not already been created.
+Import brings across settings, paired devices, identity, the app library and covers. The original profile remains in place. The destination must be empty; Rubylight refuses to overwrite a populated profile. The prompt appears only when the portable profile has not already been created.
 
 The default profiles are separate:
 
@@ -38,11 +38,12 @@ Opening the launcher again returns to the running profile's console. When launch
 
 ## Upgrading
 
-- Disconnect streams and remote monitors, then quit host-launched apps. Setup refuses to stop a Butterpollo host that reports an active stream or app. Vibepollo, Apollo and Sunshine cannot report this, so setup stops them without checking.
+- Disconnect streams and remote monitors, then quit host-launched apps. Setup refuses to stop a Rubylight host that reports an active stream or app. Vibepollo, Apollo and Sunshine cannot report this, so setup stops them without checking.
 - Back up the whole profile folder from the table above (or the previous host's `config` folder). Include `sunshine.conf`, `apps.json`, covers, both identity files in `credentials`, `sunshine_state.json`, `sunshine_credentials.json` if present, and `vibeshine_state.json`. Also back up files named by custom paths in the configuration. Keep this backup private: it contains credentials and device certificates.
 - Run the new installer in the existing installation folder, or use **Maintenance → Updates → Install when idle**. Settings, unknown configuration keys, paired devices, credentials, apps, device/display settings and saved session data stay in the profile. Active streams do not survive a restart. The service and web console use the new package; installed drivers remain available. Legacy AMD encoder names such as `amdvce_experimental` still select AMF. A saved Xbox 360 or DualShock 4 (ViGEmBus) controller type from an earlier version loads as the VHF Xbox One or DualShock 4 pad; an installed ViGEmBus is no longer used.
 - For a portable update, close the portable host and extract the complete new ZIP into a separate folder. The launcher reuses `%LOCALAPPDATA%\ButterpolloRust\config`; keep the old ZIP and your profile backup until the new version works. Portable mode does not install a service or drivers. Avoid opening an older ZIP against a newer profile.
-- If setup cannot identify one source profile, or Butterpollo already has settings alongside another host's profile, resolve that choice before removing either host. Imports preserve recognized files and unknown fields; old logs and oversized or linked optional files can be skipped, so keep the original backup.
+- **From Butterpollo.** Rubylight was called Butterpollo until rc.29. Upgrading renames what Windows shows (Start menu, Apps, the service's display name and the firewall rule) and keeps everything else where it was: the install folder, the `ApolloService` service, the profile folders above and the file names, such as `butterpollo.exe` and **Start Butterpollo.exe**. New installs go to `C:\Program Files\Rubylight`.
+- If setup cannot identify one source profile, or Rubylight already has settings alongside another host's profile, resolve that choice before removing either host. Imports preserve recognized files and unknown fields; old logs and oversized or linked optional files can be skipped, so keep the original backup.
 - Check that the console opens, existing clients connect, apps and covers appear, and display/controller settings still work. Restart Playnite if its connector was updated. If an update fails, keep the profile's `updates` folder and `update-result.json` for recovery. Installer downgrades are refused. Normal uninstall keeps the profile and drivers; **factory reset** and **remove drivers** explicitly delete them.
 
 ## Open the console
@@ -56,7 +57,7 @@ For a fresh configuration, leave **Settings → Video → Capture method** on **
 ## Pair Moonlight and start Desktop
 
 1. Open Moonlight on a device on the same local network. Select the host, or add the PC by its local IP address if discovery does not find it.
-2. Moonlight displays a four-digit PIN. In Butterpollo's **Devices** page, enter that PIN for the pending device and select **Pair**.
+2. Moonlight displays a four-digit PIN. In Rubylight's **Devices** page, enter that PIN for the pending device and select **Pair**.
 3. Wait for pairing to finish on the client. The device then appears under **Paired devices**.
 4. Set Moonlight to **1920×1080 at 60 FPS**, with HDR off for this first check. Use H.264, or HEVC if the client supports hardware decoding.
 5. Launch **Desktop**. Check moving windows, sound and input before increasing resolution, frame rate or bitrate.

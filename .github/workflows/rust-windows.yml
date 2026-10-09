@@ -1,4 +1,4 @@
-name: Butterpollo Rust Windows
+name: Rubylight Windows
 permissions: {}
 on:
   push:
@@ -145,10 +145,13 @@ jobs:
           python3 rust/release/notes.py "$VERSION" --out body.md --run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$BUILD"
           gh run download "$BUILD" -n butterpollo-rust-windows-x64 -D build
           mkdir out
-          mv "build/butterpollo-setup-$VERSION.exe" out/
-          mv build/butterpollo-rust-release.zip "out/butterpollo-rust-$VERSION-windows-x64.zip"
+          mv "build/butterpollo-setup-$VERSION.exe" "out/rubylight-setup-$VERSION.exe"
+          # Hosts from before the rename to Rubylight (rc.29 and older) only
+          # update to an installer with the old name.
+          cp "out/rubylight-setup-$VERSION.exe" "out/butterpollo-setup-$VERSION.exe"
+          mv build/butterpollo-rust-release.zip "out/rubylight-$VERSION-windows-x64.zip"
           (cd out && sha256sum * > SHA256SUMS)
           flags=()
           if [[ $VERSION == *-* ]]; then flags+=(--prerelease); fi
-          gh release create "$VERSION" --target "$GITHUB_SHA" --title "Butterpollo $VERSION" --notes-file body.md "${flags[@]}" out/*
+          gh release create "$VERSION" --target "$GITHUB_SHA" --title "Rubylight $VERSION" --notes-file body.md "${flags[@]}" out/*
           echo "::notice::published $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$VERSION"

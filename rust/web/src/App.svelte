@@ -86,8 +86,8 @@
     <aside class:open={menuOpen}>
       <div class="brand-row">
         <a class="brand" href="/" use:link>
-          <span class="mark" aria-hidden="true">B</span>
-          <span>Butterpollo</span>
+          <span class="mark" aria-hidden="true">R</span>
+          <span>Rubylight</span>
         </a>
         <button class="menu" aria-label="Menu" aria-expanded={menuOpen} onclick={() => (menuOpen = !menuOpen)}>
           <Icon name="menu" />

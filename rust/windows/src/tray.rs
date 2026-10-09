@@ -53,8 +53,8 @@ impl State {
             Icon::Paused => 2,
         }];
         let tip = match &app.summary {
-            Some(summary) => format!("Butterpollo — {summary}"),
-            None => format!("Butterpollo — web port {}", self.port),
+            Some(summary) => format!("Rubylight — {summary}"),
+            None => format!("Rubylight — web port {}", self.port),
         };
         let tip: Vec<u16> = tip.encode_utf16().take(127).collect();
         self.icon.szTip = [0; 128];
@@ -236,7 +236,7 @@ unsafe extern "system" fn window(
                     WM_RBUTTONUP | WM_CONTEXTMENU => {
                         let hide_controls = (*state).hide_controls;
                         if let Ok(menu) = CreatePopupMenu() {
-                            let _ = AppendMenuW(menu, MF_STRING, 1, w!("Open Butterpollo"));
+                            let _ = AppendMenuW(menu, MF_STRING, 1, w!("Open Rubylight"));
                             let _ = AppendMenuW(menu, MF_STRING, 6, w!("Check for updates"));
                             if !hide_controls {
                                 let _ = AppendMenuW(menu, MF_STRING, 2, w!("Disconnect clients"));

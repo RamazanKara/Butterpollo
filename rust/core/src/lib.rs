@@ -1,4 +1,4 @@
-//! Portable core of the Butterpollo host.
+//! Portable core of the Rubylight host.
 //!
 //! The Moonlight protocol (pairing, RTSP, packet framing, FEC, input decoding),
 //! the host's durable state and configuration, and the policy that decides

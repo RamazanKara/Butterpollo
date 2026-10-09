@@ -102,7 +102,7 @@ pub(super) fn handle(h: &Shared, method: &str, path: &str, data: &Value) -> anyh
         ("POST", "/api/apps/launch") => {
             let _transition = h.launch_transition.lock().unwrap();
             if crate::updater::installing(h) {
-                anyhow::bail!("Butterpollo is installing an update");
+                anyhow::bail!("Rubylight is installing an update");
             }
             let uuid = text("uuid");
             let app = h

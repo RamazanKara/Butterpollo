@@ -228,7 +228,7 @@ Artifacts: `day-work-20261004\load-1080p60`, `day-work-20261002\p1080-*`.
 
 ### Against Vibepollo 2.0
 
-Vibepollo 2.0 and Butterpollo 2.0.0-rc.2 alternated in one batch on the
+Vibepollo 2.0 and Rubylight 2.0.0-rc.2 alternated in one batch on the
 same fixture. Vibepollo is a Release build of the 2.0.0 tag (`8a8c4b03a`)
 with two startup-only patches for the isolated fixture (skip machine-wide
 recovery, log the test display's name); no per-frame code changed. Both
@@ -238,12 +238,12 @@ VBAQ and an input queue of 4, Desktop Duplication, realtime GPU priority,
 and a 120 Hz virtual display (Vibepollo set to
 `frame_limiter_auto_virtual_framegen = legacy`, its 2x mode; its default is
 4x). Three runs each. The game-like load ran at 176.7-177.4 fps beside
-Vibepollo and 173.8-174.9 fps beside Butterpollo, which streamed about
+Vibepollo and 173.8-174.9 fps beside Rubylight, which streamed about
 twice as many frames. "Host latency" is the per-frame value Moonlight
 reports from the host; both hosts measure it from the moment Desktop
 Duplication hands over the frame to the moment the packet is sent.
 
-| Case | Vibepollo 2.0 | Butterpollo 2.0 |
+| Case | Vibepollo 2.0 | Rubylight 2.0 |
 |---|---|---|
 | Idle, picture age mean / p95 | 16.03 / 16.62, 15.80 / 16.40, 16.05 / 16.93 ms | 13.88 / 14.58, 13.70 / 14.44, 13.73 / 14.52 ms |
 | Idle, host latency | 2.73, 2.71, 2.80 ms | 1.96, 1.96, 1.97 ms |
@@ -253,12 +253,12 @@ Duplication hands over the frame to the moment the packet is sent.
 
 Beside the load, Vibepollo handed AMF about 24 frames a second: its own
 `encoder output has not caught up` lines count 60 submitted frames every
-2.4-2.6 s. Butterpollo's graphics-queue path delivered about 57 new pictures
+2.4-2.6 s. Rubylight's graphics-queue path delivered about 57 new pictures
 a second beside the same load in an earlier batch, so sharing the graphics
 queue alone does not explain the gap; where Vibepollo loses the frames has
 not been traced. The probe window rendered 50-59 fps beside the load with
-Vibepollo and 59 fps with Butterpollo. Absolute load numbers move between
-batches (Butterpollo measured 33.5 ms in an earlier batch without Vibepollo
+Vibepollo and 59 fps with Rubylight. Absolute load numbers move between
+batches (Rubylight measured 33.5 ms in an earlier batch without Vibepollo
 runs), so only compare rows measured together. Artifacts:
 `day-work-20261002\hh1080-*`.
 
@@ -266,17 +266,17 @@ Both hosts' virtual-display policy also turns on an RTSS 60 fps limit
 during a stream (Vibepollo logs it). A second batch, beside the load only,
 ran each host with the limit and with `frame_limiter_provider = none`:
 
-| Beside the load | Vibepollo 2.0 | Butterpollo 2.0 |
+| Beside the load | Vibepollo 2.0 | Rubylight 2.0 |
 |---|---|---|
 | RTSS limit on, picture age mean / p95 | 124.84 / 156.05 ms | 42.68 / 57.60 ms |
 | RTSS limit off, picture age mean / p95 | 125.81 / 158.30, 120.95 / 154.31 ms | 43.32 / 57.33 ms |
 | New pictures per second, on / off | 18.6 / 18.5, 19.2 | 51.2 / 50.2 |
 | Host latency, on / off | 79.7 / 79.8, 77.2 ms | 9.0 / 9.6 ms |
 
-The limit changes neither host. One Butterpollo run with the limit off is
+The limit changes neither host. One Rubylight run with the limit off is
 left out: its probe window did not start. Vibepollo was slower in this
 batch than in the first (about 124 against 96 ms) and the probe rendered
-only 40 fps beside it, while Butterpollo stayed at 42-43 ms. Artifacts:
+only 40 fps beside it, while Rubylight stayed at 42-43 ms. Artifacts:
 `day-work-20261002\hh1080n-*`.
 
 ### HDR colour accuracy
@@ -286,9 +286,9 @@ the client (`tests/moonlight_client.c` with `BUTTERPOLLO_TEST_FRAME_DUMP`),
 recomputes the probe's scRGB picture for that frame, converts it as BT.2100
 PQ with BT.2020 primaries in limited range, and compares. The
 Vibepollo runs beside the load sent too few frames to reach frame 900, so
-its column has the three idle runs; Butterpollo's has all six.
+its column has the three idle runs; Rubylight's has all six.
 
-| | Vibepollo 2.0 | Butterpollo 2.0 |
+| | Vibepollo 2.0 | Rubylight 2.0 |
 |---|---|---|
 | Black / 100-nit white patch (expected 64.0 / 509.08) | 64.0 / 509.0 | 64.0 / 509.0 |
 | Luma error, mean absolute (10-bit codes) | 0.44 | 0.38-0.44 |
@@ -297,7 +297,7 @@ its column has the three idle runs; Butterpollo's has all six.
 | Chroma error, mean absolute | 0.96 | 0.30-0.59 |
 
 Both streams also carry the same HDR10 metadata (BT.2020 primaries, D65,
-the virtual display's peak luminance). Butterpollo's decoded pictures match
+the virtual display's peak luminance). Rubylight's decoded pictures match
 the expected values within half a 10-bit code on average, with no lifted
 black and no lost saturation in these reference frames. This validates the
 tested host conversion and encoding path for this content and setup. A
@@ -412,7 +412,7 @@ The pinned [Nonary control implementation](https://github.com/Nonary/moonlight-c
 uses `0x0301` for reference invalidation and `0x0302` for an explicit IDR
 request. Its older `0x0201` loss report runs every 50 ms; modern Sunshine
 connections instead send `0x0200` pings every 100 ms and queued `0x5502` FEC
-status reports. Butterpollo ignores those statistics messages for recovery.
+status reports. Rubylight ignores those statistics messages for recovery.
 This client's decoder-capability check enables RFI only for H.264, HEVC and
 AV1; PyroWave transport loss requests an IDR instead. Neither this client
 transport nor the host has a 300 ms recovery timer.
@@ -465,7 +465,7 @@ interoperability check passes, but it is not a full release-e2e pass.
 Keep `amd_ltr_frames=0` as the default for now. AMF supports explicit LTR
 selection for [HEVC](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/blob/master/amf/doc/AMF_Video_Encode_HEVC_API.md#228-ltr-properties)
 and [AV1](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/blob/master/amf/doc/AMF_Video_Encode_AV1_API.md#227-ltr-properties).
-Butterpollo can already recover a valid reference-invalidation range from an
+Rubylight can already recover a valid reference-invalidation range from an
 older retained anchor, reducing the need for an IDR. The existing strict
 FFmpeg omission fixtures above decoded all 56 retained pictures and exercised
 two LTR recoveries each for HEVC and AV1. That is correctness evidence, not a
@@ -1246,9 +1246,9 @@ remained, and the wired receiver at 192.168.4.10 could still reach serverinfo.
 Setup now converts conventional drive/UNC paths at Windows command and
 registration boundaries while retaining canonical filesystem identity checks
 inside the updater. Unsupported namespaces and names that would change meaning
-are rejected before firewall operations. Existing Butterpollo rules are updated
+are rejected before firewall operations. Existing Rubylight rules are updated
 in place; a missing rule is added. No existing rule is deleted on a failed
-replacement, and legacy-rule cleanup follows a successful Butterpollo rule.
+replacement, and legacy-rule cleanup follows a successful Rubylight rule.
 Regression tests cover canonical paths with spaces and Unicode, UNC paths,
 real-file identity, existing/fresh rules, and failure without deletion.
 
@@ -2724,7 +2724,7 @@ overlays. The temporary web server did not connect to the installed host.
 
 Whether the native AMF encoder could offer HDR 4:4:4 HEVC or AV1 was
 checked on the RX 7900 XT, driver 32.0.31041.1004, AMF runtime 1.5.2.0, with
-a standalone probe outside Butterpollo. It cannot; the hardware encodes 4:2:0
+a standalone probe outside Rubylight. It cannot; the hardware encodes 4:2:0
 only.
 
 - The encoder caps report `HevcMaxProfile` 2 (Main10) and `Av1MaxProfile` 1

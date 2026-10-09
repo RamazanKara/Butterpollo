@@ -1,8 +1,8 @@
-# How Butterpollo works
+# How Rubylight works
 
 [Docs](README.md) · [Configuration](configuration.md) · [Performance](performance.md) · [Developer guide](../rust/README.md)
 
-Butterpollo prepares frames beside the game's graphics work, passes GPU textures directly to native encoders and keeps ownership explicit until each consumer finishes. On Radeon, D3D12 compute is the key change in the standard video path.
+Rubylight prepares frames beside the game's graphics work, passes GPU textures directly to native encoders and keeps ownership explicit until each consumer finishes. On Radeon, D3D12 compute is the key change in the standard video path.
 
 ## Written in Rust
 
@@ -26,15 +26,15 @@ The earlier C++ host was removed after 2.0.0-rc.23; [that tag](https://github.co
 3. **Encode.** Native AMD AMF consumes D3D12 surfaces and produces H.264, HEVC or AV1 bitstreams. The host claims a new picture only while fewer than two wait in the encoder, so an encoder that cannot keep up costs frames per second, not picture age.
 4. **Deliver.** The host encrypts and packetizes the stream for Moonlight. Bounded queues keep retained work controlled.
 
-![Scheduling schematic comparing the reviewed Sunshine-derived D3D11 path with Butterpollo's D3D12 compute path](media/compute-comparison.png)
+![Scheduling schematic comparing the reviewed Sunshine-derived D3D11 path with Rubylight's D3D12 compute path](media/compute-comparison.png)
 
-The reviewed Sunshine-derived D3D11 path and Butterpollo both use GPU textures and native AMF. Butterpollo changes where frame preparation runs: compute work can overlap graphics work instead of joining the same graphics queue. The diagram illustrates scheduling; [measured timings](performance.md) come from separate fixtures. The reviewed baseline is Vibepollo 2.0.
+The reviewed Sunshine-derived D3D11 path and Rubylight both use GPU textures and native AMF. Rubylight changes where frame preparation runs: compute work can overlap graphics work instead of joining the same graphics queue. The diagram illustrates scheduling; [measured timings](performance.md) come from separate fixtures. The reviewed baseline is Vibepollo 2.0.
 
 Compute and graphics still share GPU resources. Copy/conversion efficiency helps the host's part of the frame journey; game rendering and desktop composition also determine when a fresh picture exists. [The saturation investigation](../rust/PERFORMANCE.md#saturation-diagnosis-and-queue-drain-rejection) records that distinction.
 
 ## Synchronization and ownership
 
-A captured texture can arrive before its producer has finished writing it. Butterpollo waits for producer readiness on the GPU, copies it into an owned texture and holds the captured frame until that copy is safe. Each converted output texture has its own fence, so AMF's completion signal cannot release a different frame early.
+A captured texture can arrive before its producer has finished writing it. Rubylight waits for producer readiness on the GPU, copies it into an owned texture and holds the captured frame until that copy is safe. Each converted output texture has its own fence, so AMF's completion signal cannot release a different frame early.
 
 Texture pools and native encoder queues are bounded. Texture ownership and per-frame HDR metadata survive until native codec references release them. Capture textures that cannot be shared use the D3D11 fallback. The [compute implementation](../rust/windows/src/compute.rs) and [synchronization measurements](../rust/PERFORMANCE.md#october-4-capture-copies-and-conversion-beside-a-game) contain the details.
 

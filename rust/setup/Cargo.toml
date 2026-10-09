@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Installs, upgrades and removes Butterpollo, replacing Vibepollo in place"
+description = "Installs, upgrades and removes Rubylight, replacing Vibepollo in place"
 
 [[bin]]
 name = "butterpollo-setup"

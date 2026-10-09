@@ -26,7 +26,7 @@ pub struct Outcome {
     pub restart_needed: bool,
     pub notes: Vec<String>,
 }
-/// Processes of Butterpollo and of the hosts it replaces.
+/// Processes of Rubylight and of the hosts it replaces.
 pub const HOST_PROCESSES: [&str; 9] = [
     "butterpollo.exe",
     "butterpollo-service.exe",
@@ -38,12 +38,47 @@ pub const HOST_PROCESSES: [&str; 9] = [
     "playnite-launcher.exe",
     "playnite_launcher.exe",
 ];
+const SERVICE_DISPLAY_NAME: &str = "Rubylight";
 const SERVICE_DESCRIPTION: &str = "Streams games and the desktop to Moonlight and Artemis clients.";
 pub fn profile() -> PathBuf {
     system::program_data().join("Butterpollo").join("config")
 }
+/// The product was called Butterpollo before rc.30. Its firewall rule and
+/// Start menu entry carry the name, so setup replaces the old ones; the
+/// service, folders and file names keep theirs so upgrades stay in place.
+pub const FIREWALL_RULE: &str = "Rubylight";
+pub const LEGACY_FIREWALL_RULE: &str = "Butterpollo";
 pub fn start_menu_link() -> PathBuf {
+    system::program_data().join("Microsoft\\Windows\\Start Menu\\Programs\\Rubylight.lnk")
+}
+pub fn legacy_start_menu_link() -> PathBuf {
     system::program_data().join("Microsoft\\Windows\\Start Menu\\Programs\\Butterpollo.lnk")
+}
+/// After an in-place update: the firewall rule and Start menu entry under
+/// the current name, replacing Butterpollo's once the new one exists.
+pub fn refresh_entries(install: &Path, notes: &mut Vec<String>) {
+    match system::firewall_allow(FIREWALL_RULE, &install.join("butterpollo.exe")) {
+        Ok(()) => system::firewall_remove(LEGACY_FIREWALL_RULE),
+        Err(error) => notes.push(format!(
+            "The Windows Firewall rule could not be updated: {error:#}"
+        )),
+    }
+    match system::shortcut(
+        &start_menu_link(),
+        &install.join("Start Butterpollo.exe"),
+        "Open the Rubylight console",
+    ) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(legacy_start_menu_link());
+        }
+        Err(error) => notes.push(format!(
+            "The Start menu shortcut could not be created: {error:#}"
+        )),
+    }
+}
+/// The service's name in Windows Services; its key stays `SERVICE`.
+pub fn refresh_service_name() -> Result<()> {
+    system::set_service_display_name(SERVICE, SERVICE_DISPLAY_NAME)
 }
 /// The text of a profile's sunshine.conf, empty if it cannot be read. The
 /// host also reads one saved with a byte order mark or as UTF-16.
@@ -125,7 +160,7 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
         // a disabled service would otherwise fail the update's start check.
         system::install_service(
             SERVICE,
-            "Butterpollo",
+            SERVICE_DISPLAY_NAME,
             SERVICE_DESCRIPTION,
             &install.join("butterpollo-service.exe"),
         )?;
@@ -138,12 +173,6 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
                 profile.display()
             ));
         }
-        if let Err(error) = system::firewall_allow("Butterpollo", &install.join("butterpollo.exe"))
-        {
-            notes.push(format!(
-                "The Windows Firewall rule could not be updated: {error:#}"
-            ));
-        }
         remember_driver_choice(&profile, options.display_driver);
         restart_needed |= install_drivers(
             &install,
@@ -152,15 +181,7 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
             progress,
             &mut notes,
         );
-        if let Err(error) = system::shortcut(
-            &start_menu_link(),
-            &install.join("Start Butterpollo.exe"),
-            "Open the Butterpollo console",
-        ) {
-            notes.push(format!(
-                "The Start menu shortcut could not be created: {error:#}"
-            ));
-        }
+        refresh_entries(&install, &mut notes);
         return Ok(Outcome {
             web_port: web_port(&profile),
             install,
@@ -171,7 +192,7 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
 
     // Previous hosts are only removed by a full installation.
     let previous = migration_source(&found, &profile, &install)?;
-    progress.set("Unpacking Butterpollo…");
+    progress.set("Unpacking Rubylight…");
     let staging = system::program_data().join("Butterpollo").join("setup");
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging)?;
@@ -269,7 +290,7 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
     payload::write_stub(&install.join("uninstall.exe"))?;
 
     // The previous host is removed from here on, so a failure now starts
-    // the service Butterpollo runs as instead.
+    // the service Rubylight runs as instead.
     restart.services = vec![SERVICE];
     for package in &found.packages {
         let Some(code) = package.product_code() else {
@@ -323,19 +344,24 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
         }
     }
 
-    progress.set("Registering the Butterpollo service…");
+    progress.set("Registering the Rubylight service…");
     // Remaining old services would hold the streaming ports.
     for service in OLD_SERVICES.iter().filter(|s| **s != SERVICE) {
         let _ = system::delete_service(service);
     }
     system::install_service(
         SERVICE,
-        "Butterpollo",
+        SERVICE_DISPLAY_NAME,
         SERVICE_DESCRIPTION,
         &install.join("butterpollo-service.exe"),
     )?;
-    system::firewall_allow("Butterpollo", &install.join("butterpollo.exe"))?;
-    for rule in ["Vibepollo", "Vibepollo Service", "Apollo"] {
+    system::firewall_allow(FIREWALL_RULE, &install.join("butterpollo.exe"))?;
+    for rule in [
+        LEGACY_FIREWALL_RULE,
+        "Vibepollo",
+        "Vibepollo Service",
+        "Apollo",
+    ] {
         system::firewall_remove(rule);
     }
     secure_profile(&profile)?;
@@ -349,15 +375,18 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
         &mut notes,
     );
 
-    progress.set("Adding Butterpollo to Start and Apps…");
-    if let Err(error) = system::shortcut(
+    progress.set("Adding Rubylight to Start and Apps…");
+    match system::shortcut(
         &start_menu_link(),
         &install.join("Start Butterpollo.exe"),
-        "Open the Butterpollo console",
+        "Open the Rubylight console",
     ) {
-        notes.push(format!(
+        Ok(()) => {
+            let _ = std::fs::remove_file(legacy_start_menu_link());
+        }
+        Err(error) => notes.push(format!(
             "The Start menu shortcut could not be created: {error:#}"
-        ));
+        )),
     }
     let _ = std::fs::remove_dir_all(
         system::program_data().join("Microsoft\\Windows\\Start Menu\\Programs\\Vibepollo"),
@@ -371,7 +400,7 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
 
     let web_port = web_port(&profile);
     if options.start {
-        progress.set("Starting Butterpollo…");
+        progress.set("Starting Rubylight…");
         system::start_service(SERVICE)?;
         wait_ready(probe(&profile), Some(env!("CARGO_PKG_VERSION")))?;
     }
@@ -385,7 +414,7 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
     })
 }
 
-/// Whether an installed Butterpollo service is updated in place, with a
+/// Whether an installed Rubylight service is updated in place, with a
 /// backup and rollback. An installation whose folder or manifest is gone has
 /// nothing to restore; the full installation repairs it instead.
 fn updates_in_place(service_install: Option<&Path>, install: &Path) -> Result<bool> {
@@ -401,7 +430,7 @@ fn updates_in_place(service_install: Option<&Path>, install: &Path) -> Result<bo
     };
     if install.canonicalize().ok().as_ref() != Some(&current_folder) {
         bail!(
-            "Butterpollo is installed in {}. Install the update into that folder so the previous version can be restored if needed. Nothing has been changed.",
+            "Rubylight is installed in {}. Install the update into that folder so the previous version can be restored if needed. Nothing has been changed.",
             current.display()
         );
     }
@@ -467,7 +496,7 @@ fn migration_source(
             .to_lowercase();
         if install_path == root_path || install_path.starts_with(&format!("{root_path}\\")) {
             bail!(
-                "Choose an installation folder outside {}; removing the previous host could delete Butterpollo's files",
+                "Choose an installation folder outside {}; removing the previous host could delete Rubylight's files",
                 root.display()
             );
         }
@@ -499,11 +528,11 @@ fn migration_source(
     let empty = match std::fs::read_dir(profile) {
         Ok(mut entries) => entries.next().transpose()?.is_none(),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-        Err(error) => return Err(error).context("checking the existing Butterpollo profile"),
+        Err(error) => return Err(error).context("checking the existing Rubylight profile"),
     };
     if !empty {
         bail!(
-            "Butterpollo already has settings in {}, and {name} has its own in {}. To keep Butterpollo's, uninstall {name} first; to import {name}'s instead, move the Butterpollo folder elsewhere. Then run setup again. Nothing has been changed.",
+            "Rubylight already has settings in {}, and {name} has its own in {}. To keep Rubylight's, uninstall {name} first; to import {name}'s instead, move the Rubylight folder elsewhere. Then run setup again. Nothing has been changed.",
             profile.display(),
             source.display()
         );
@@ -707,7 +736,7 @@ fn driver_result(code: i32, output: &str, notes: &mut Vec<String>, name: &str) -
         let reason = after("driver action failed: ").or_else(|| after("DRIVER_WARNING: "));
         notes.push(match reason {
             Some(reason) => format!(
-                "The {name} driver could not be set up: {reason} Butterpollo tries again when its service starts; the setup log has the details."
+                "The {name} driver could not be set up: {reason} Rubylight tries again when its service starts; the setup log has the details."
             ),
             None => format!("The {name} driver reported a problem; see the setup log."),
         });
@@ -823,7 +852,7 @@ fn remove_legacy(product: &crate::detect::Product) -> Result<()> {
 /// The command that removes a legacy host, and the uninstaller it runs in
 /// place. An NSIS uninstaller (Apollo, Sunshine, Vibepollo 1) copies itself
 /// to %TEMP%, starts the copy and exits at once: setup went on while the
-/// copy still had to stop and delete ApolloService, the service Butterpollo
+/// copy still had to stop and delete ApolloService, the service Rubylight
 /// reuses, and remove drivers. With "_?=<folder>", always last and
 /// unquoted, it runs in place and setup waits for it.
 fn legacy_uninstall(
@@ -872,9 +901,9 @@ pub(crate) fn register(install: &Path, entries: &[payload::Entry]) -> Result<()>
         HKEY_LOCAL_MACHINE,
         &format!("{UNINSTALL}\\Butterpollo"),
         &[
-            ("DisplayName", Value::Text("Butterpollo")),
+            ("DisplayName", Value::Text("Rubylight")),
             ("DisplayVersion", Value::Text(env!("CARGO_PKG_VERSION"))),
-            ("Publisher", Value::Text("Butterpollo")),
+            ("Publisher", Value::Text("Rubylight")),
             ("InstallLocation", Value::Text(&location)),
             ("DisplayIcon", Value::Text(&icon)),
             ("UninstallString", Value::Text(&uninstall)),
@@ -971,7 +1000,7 @@ pub(crate) fn wait_ready(address: SocketAddr, version: Option<&str>) -> Result<(
         }
         std::thread::sleep(Duration::from_millis(500));
     }
-    bail!("Butterpollo did not start within 90 seconds; see logs\\service.log in the profile")
+    bail!("Rubylight did not start within 90 seconds; see logs\\service.log in the profile")
 }
 
 #[cfg(test)]
@@ -1195,7 +1224,7 @@ mod tests {
         }
         std::fs::remove_file(old.join("config/sunshine.conf"))?;
         assert_eq!(migration_source(&found, &profile, &install)?, None);
-        // Even then Butterpollo is not installed where a host is removed.
+        // Even then Rubylight is not installed where a host is removed.
         assert!(migration_source(&found, &profile, &old.join("nested")).is_err());
         std::fs::write(profile.join("sunshine_state.json"), "existing pairings")?;
         assert_eq!(migration_source(&found, &profile, &install)?, None);
@@ -1402,12 +1431,12 @@ mod tests {
     #[test]
     fn the_import_error_and_its_causes_are_shown() {
         let output = "2026-10-07T10:00:00Z  WARN butterpollo_core::migration: profile file not imported file=C:\\old\\dump.bin reason=\"it is larger than 64 MiB\"\n\
-Error: the settings imported from C:\\old would keep Butterpollo from starting\n\
+Error: the settings imported from C:\\old would keep Rubylight from starting\n\
 \n\
 Caused by:\n    0: invalid JSON in C:\\ProgramData\\Butterpollo\\.butterpollo-import-1\\vibeshine_state.json\n    1: expected value at line 1 column 1\n";
         assert_eq!(
             import_error(output).unwrap(),
-            "the settings imported from C:\\old would keep Butterpollo from starting\n\n\
+            "the settings imported from C:\\old would keep Rubylight from starting\n\n\
 Caused by:\n    0: invalid JSON in C:\\ProgramData\\Butterpollo\\.butterpollo-import-1\\vibeshine_state.json\n    1: expected value at line 1 column 1"
         );
         assert_eq!(

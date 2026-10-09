@@ -8,9 +8,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Setting values Butterpollo no longer offers, and what replaces each:
+/// Setting values Rubylight no longer offers, and what replaces each:
 /// the ViGEmBus controllers, which Sunshine, Apollo, Vibepollo and earlier
-/// Butterpollo profiles can carry, became the VHF pad of the same family.
+/// Rubylight profiles can carry, became the VHF pad of the same family.
 pub const RETIRED_VALUES: &[(&str, &str, &str)] = &[
     ("gamepad", "x360", "vhf_xbox_one"),
     ("gamepad", "ds4", "vhf_ds4"),

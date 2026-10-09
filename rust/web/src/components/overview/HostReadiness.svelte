@@ -86,7 +86,7 @@
         ...base,
         tone: 'danger',
         state: 'Unavailable',
-        text: "It's turned on, but the driver can't be opened. Check that the Butterpollo service is running, or use a physical display.",
+        text: "It's turned on, but the driver can't be opened. Check that the Rubylight service is running, or use a physical display.",
         detail,
       };
     }

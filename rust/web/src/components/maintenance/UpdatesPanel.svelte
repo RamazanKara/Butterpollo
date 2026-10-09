@@ -82,7 +82,7 @@
         <p class="notice" role="status">Downloading {updates.queued_version}: {progress}%</p>
         <progress max="100" value={progress} aria-label="Update download">{progress}%</progress>
       {:else if updates.phase === 'installing'}
-        <p class="notice" role="status">{reconnecting ? 'Butterpollo is restarting. Reconnecting…' : 'Installing the update. Butterpollo will restart shortly…'}</p>
+        <p class="notice" role="status">{reconnecting ? 'Rubylight is restarting. Reconnecting…' : 'Installing the update. Rubylight will restart shortly…'}</p>
       {:else if updates.phase === 'failed'}
         <p class="notice warn" role="alert">{updates.error}</p>
       {/if}

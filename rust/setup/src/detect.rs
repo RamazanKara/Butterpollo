@@ -1,5 +1,5 @@
-//! What is installed: Butterpollo itself, Vibepollo-family MSI packages
-//! (Vibepollo, Butterpollo C++, Apollo, Sunshine) and legacy NSIS installs.
+//! What is installed: Rubylight itself, Vibepollo-family MSI packages
+//! (Vibepollo, Rubylight C++, Apollo, Sunshine) and legacy NSIS installs.
 use crate::system::{registry_dword, registry_string_view, service_program, subkeys};
 use std::path::{Path, PathBuf};
 use windows::Win32::System::Registry::{
@@ -36,7 +36,7 @@ impl Product {
 }
 #[derive(Default, Debug)]
 pub struct Found {
-    /// Butterpollo's own entry.
+    /// Rubylight's own entry.
     pub butterpollo: Option<Product>,
     /// Installed with Windows Installer: removed with msiexec.
     pub packages: Vec<Product>,
@@ -85,13 +85,13 @@ fn check_version(installed: &str, incoming: &str) -> anyhow::Result<()> {
     if release.split('.').count() < 3 || release.split('.').any(|part| part.parse::<u64>().is_err())
     {
         crate::log::line(format!(
-            "the installed Butterpollo version {installed:?} is unreadable; not checking for a downgrade"
+            "the installed Rubylight version {installed:?} is unreadable; not checking for a downgrade"
         ));
         return Ok(());
     }
     if crate::version::newer(installed, incoming) {
         anyhow::bail!(
-            "Butterpollo {installed} is newer than this installer ({incoming}). Downgrades are not supported; your settings have not been changed."
+            "Rubylight {installed} is newer than this installer ({incoming}). Downgrades are not supported; your settings have not been changed."
         );
     }
     Ok(())
@@ -241,21 +241,21 @@ pub fn scan() -> Found {
         .and_then(|p| p.parent().map(PathBuf::from));
     found
 }
-/// Where Butterpollo is or will be installed.
+/// Where Rubylight is or will be installed.
 pub fn install_dir(found: &Found, requested: Option<PathBuf>) -> PathBuf {
     // The running service's folder first: setup updates it in place.
     requested
         .or_else(|| found.service_install.clone())
         .or_else(|| found.butterpollo.as_ref().and_then(|p| p.location.clone()))
-        .unwrap_or_else(|| crate::system::program_files().join("Butterpollo"))
+        .unwrap_or_else(|| crate::system::program_files().join("Rubylight"))
 }
 /// A short description for the confirmation dialog.
 pub fn summary(found: &Found, install: &std::path::Path) -> String {
     let mut lines = Vec::new();
     if let Some(ours) = &found.butterpollo {
-        lines.push(format!("Butterpollo {} will be updated.", ours.version));
+        lines.push(format!("Rubylight {} will be updated.", ours.version));
     } else if found.service_install.is_some() {
-        lines.push("The Butterpollo host already running as a service will be updated.".to_owned());
+        lines.push("The Rubylight host already running as a service will be updated.".to_owned());
     }
     for product in found.packages.iter().chain(&found.legacy) {
         // Vibepollo's own entry carries the release version; its package

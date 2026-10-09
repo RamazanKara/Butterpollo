@@ -1,6 +1,6 @@
 # Third-party code
 
-Butterpollo Rust is GPL-3.0-only. Its administration console is a Svelte application served by the Rust host; the bundle includes the Svelte runtime (MIT License, Svelte Contributors), and the console's npm dependencies and their versions are recorded in `rust/web/package-lock.json`. Rust package names, versions, license declarations and repositories are recorded in the packaged `rust-dependencies.json`; exact versions and registry checksums are in `Cargo.lock`. Source is available in the corresponding repository checkout.
+Rubylight is GPL-3.0-only. Its administration console is a Svelte application served by the Rust host; the bundle includes the Svelte runtime (MIT License, Svelte Contributors), and the console's npm dependencies and their versions are recorded in `rust/web/package-lock.json`. Rust package names, versions, license declarations and repositories are recorded in the packaged `rust-dependencies.json`; exact versions and registry checksums are in `Cargo.lock`. Source is available in the corresponding repository checkout.
 
 External SDKs are not a port of the original host:
 
@@ -12,6 +12,6 @@ External SDKs are not a port of the original host:
 - NVIDIA RTX Video SDK 1.1.0 archive SHA-256 `abf4f34e2b5a618e355b0d5a0365d8ecc3db4396e756e4c850a867e1ae2ed69e`. The optional adapter links NVIDIA's NGX import library and ships `nvngx_truehdr.dll` under the included NVIDIA RTX Video SDK license. It is excluded with `-SkipTrueHdr`.
 - Virtual display driver libvirtualdisplay v1.6.3 (MIT, https://github.com/Nonary/libvirtualdisplay) and virtual gamepad driver libvirtualgamepad v0.1.0-beta.6 (MIT, https://github.com/Nonary/libvirtualgamepad), with their catalogs, tools and install scripts as released in Vibepollo 2.0.0 (GPL-3.0, https://github.com/Nonary/Vibepollo) and signed by the SignPath Foundation, plus the Sunshine Playnite Connector plugin from the same release. `rust/build.ps1` extracts them from the pinned Vibepollo 2.0.0 installer (SHA-256 `7b3500ec0c774644ce5a435a48f61c046c48494d0f18b67afa0b3561931794b7`), checks the driver signatures, and records them with `nefconc.exe` (https://github.com/nefarius/nefcon) in the packaged `drivers.txt`. No ViGEmBus driver or client code is included.
 - Windows GPU, audio, input, service and security APIs are imported through Microsoft's Rust `windows` crate. Vulkan headers define the PyroWave ABI; Vulkan is supplied by the installed graphics driver.
-- The host compiles its embedded HLSL GPU conversion shaders through Windows' D3DCompiler API. These shaders are part of Butterpollo's source; the Windows compiler and GPU driver remain system dependencies.
+- The host compiles its embedded HLSL GPU conversion shaders through Windows' D3DCompiler API. These shaders are part of Rubylight's source; the Windows compiler and GPU driver remain system dependencies.
 
 The standalone C programs under `rust/tests` are independent interoperability fixtures. Moonlight-common-c, nanors, FFmpeg decoding, OpenSSL and Opus are used by these fixtures and are not compiled as original host implementation code.

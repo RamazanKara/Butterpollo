@@ -1,12 +1,12 @@
 name: Feature request
-description: Something Butterpollo should do, or a Vibepollo, Apollo or Sunshine feature it lacks.
+description: Something Rubylight should do, or a Vibepollo, Apollo or Sunshine feature it lacks.
 labels: [enhancement]
 body:
   - type: textarea
     id: need
     attributes:
       label: What you want to do
-      description: The situation and what you would like Butterpollo to do in it.
+      description: The situation and what you would like Rubylight to do in it.
     validations:
       required: true
 
@@ -14,6 +14,6 @@ body:
     id: elsewhere
     attributes:
       label: Where it exists today
-      description: If another host or client already does this, link it. rust/PARITY.md lists what Butterpollo already covers.
+      description: If another host or client already does this, link it. rust/PARITY.md lists what Rubylight already covers.
     validations:
       required: false

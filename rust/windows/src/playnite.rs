@@ -1,5 +1,5 @@
 //! Playnite on this PC: where it is installed, where its extensions go, and
-//! the named pipe its Butterpollo (Vibepollo) plugin serves.
+//! the named pipe its Rubylight (Vibepollo) plugin serves.
 
 use anyhow::{Context, Result, bail};
 use std::{

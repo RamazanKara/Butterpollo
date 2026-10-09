@@ -1,7 +1,10 @@
-//! Removing Butterpollo. Settings and drivers stay unless asked otherwise.
+//! Removing Rubylight. Settings and drivers stay unless asked otherwise.
 use crate::{
     detect::{self, SERVICE, UNINSTALL},
-    install::{HOST_PROCESSES, profile, start_menu_link},
+    install::{
+        FIREWALL_RULE, HOST_PROCESSES, LEGACY_FIREWALL_RULE, legacy_start_menu_link, profile,
+        start_menu_link,
+    },
     log::line,
     payload, system,
     ui::Progress,
@@ -19,8 +22,8 @@ pub struct Options {
     pub remove_drivers: bool,
 }
 /// The installation to remove: the registered one, else the folder this
-/// program runs from when it holds a Butterpollo package. Never a guess:
-/// run from Downloads on a PC without Butterpollo, this is None.
+/// program runs from when it holds a Rubylight package. Never a guess:
+/// run from Downloads on a PC without Rubylight, this is None.
 pub fn install_location() -> Option<PathBuf> {
     let found = detect::scan();
     found
@@ -35,7 +38,7 @@ pub fn install_location() -> Option<PathBuf> {
                 .filter(|folder| is_package(folder))
         })
 }
-/// Whether `folder` holds an installed Butterpollo package.
+/// Whether `folder` holds an installed Rubylight package.
 fn is_package(folder: &Path) -> bool {
     payload::manifest(folder).is_ok_and(|entries| {
         entries
@@ -45,16 +48,17 @@ fn is_package(folder: &Path) -> bool {
 }
 pub fn uninstall(options: &Options, progress: &Progress) -> Result<()> {
     let Some(install) = install_location() else {
-        bail!("Butterpollo is not installed on this PC");
+        bail!("Rubylight is not installed on this PC");
     };
     line(format!("uninstalling from {}", install.display()));
-    progress.set("Stopping Butterpollo…");
+    progress.set("Stopping Rubylight…");
     let _ = system::stop_service(SERVICE);
     system::kill(&HOST_PROCESSES[..3]);
     if system::service_program(SERVICE).is_some_and(|p| p.starts_with(&install)) {
         system::delete_service(SERVICE)?;
     }
-    system::firewall_remove("Butterpollo");
+    system::firewall_remove(FIREWALL_RULE);
+    system::firewall_remove(LEGACY_FIREWALL_RULE);
 
     // The host registers its HDR Vulkan layer while it runs.
     let layers = "SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers";
@@ -100,6 +104,7 @@ pub fn uninstall(options: &Options, progress: &Progress) -> Result<()> {
 
     progress.set("Removing files…");
     let _ = std::fs::remove_file(start_menu_link());
+    let _ = std::fs::remove_file(legacy_start_menu_link());
     system::delete_key(HKEY_LOCAL_MACHINE, &format!("{UNINSTALL}\\Butterpollo"));
     remove_package(&install);
     if options.factory_reset {

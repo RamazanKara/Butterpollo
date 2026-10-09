@@ -411,6 +411,35 @@ pub fn install_service(name: &str, display: &str, description: &str, program: &P
         }
     }
 }
+/// Renames an installed service as Windows Services shows it, changing
+/// nothing else about it.
+pub fn set_service_display_name(name: &str, display: &str) -> Result<()> {
+    let manager = manager()?;
+    let wide_name = wide(name);
+    let wide_display = wide(display);
+    // SAFETY: `manager` is a live handle and both strings are NUL-terminated UTF-16 that outlive the calls.
+    unsafe {
+        let service = ServiceHandle(OpenServiceW(
+            manager.0,
+            PCWSTR(wide_name.as_ptr()),
+            SERVICE_CHANGE_CONFIG,
+        )?);
+        ChangeServiceConfigW(
+            service.0,
+            ENUM_SERVICE_TYPE(SERVICE_NO_CHANGE),
+            SERVICE_START_TYPE(SERVICE_NO_CHANGE),
+            SERVICE_ERROR(SERVICE_NO_CHANGE),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            None,
+            PCWSTR::null(),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            PCWSTR(wide_display.as_ptr()),
+        )?;
+    }
+    Ok(())
+}
 fn install_service_once(
     name: &str,
     display: &str,
@@ -1101,7 +1130,7 @@ Write-Output $task.Task.Actions.Exec.Arguments
             let mut results = results.into_iter();
             let mut operations = Vec::new();
             let result = firewall_allow_with(
-                "Butterpollo",
+                "Rubylight",
                 Path::new(r"\\?\C:\Program Files\Butterpollo\butterpollo.exe"),
                 |args| {
                     assert!(

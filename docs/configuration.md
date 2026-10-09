@@ -2,7 +2,7 @@
 
 [Docs](README.md) · [Getting started](getting-started.md) · [Troubleshooting](troubleshooting.md)
 
-Configure the current **Windows Rust host** in the Butterpollo console, normally at **https://localhost:47990**. Open **Settings** and search by a setting's name or configuration key. Resolution, stream frame rate, bitrate and codec are normally chosen in the client.
+Configure the current **Windows Rust host** in the Rubylight console, normally at **https://localhost:47990**. Open **Settings** and search by a setting's name or configuration key. Resolution, stream frame rate, bitrate and codec are normally chosen in the client.
 
 Start with the defaults below. Settings imported from an older installation keep their saved values; upgrading does not reset them to these defaults.
 
@@ -41,7 +41,7 @@ The installed service runs WGC through a helper in the signed-in user's session.
 
 H.264, HEVC and AV1 depend on the encoder and client. For `hevc_mode` and `av1_mode`, the choices are `0` Automatic, `1` Off, `2` SDR only and `3` SDR and HDR. Restart after changing advertised codec support. There is no 4:4:4 switch: the host offers 4:4:4 for a codec only when the startup check encodes it on a hardware encoder. AMD's encoder makes 4:2:0 only, so an AMD host offers 4:4:4 through PyroWave alone.
 
-For **native HDR**, enable HDR in the client and use an HDR-capable display and encoder path. Leave **Display HDR** on Automatic so Butterpollo can set the source display appropriately. **10-bit SDR instead of HDR** (`prefer_sdr_10bit`, default `false`) deliberately keeps the stream in SDR; leave it off when you want HDR. RTX HDR is a separate SDR-to-HDR conversion feature, with its own hardware requirements.
+For **native HDR**, enable HDR in the client and use an HDR-capable display and encoder path. Leave **Display HDR** on Automatic so Rubylight can set the source display appropriately. **10-bit SDR instead of HDR** (`prefer_sdr_10bit`, default `false`) deliberately keeps the stream in SDR; leave it off when you want HDR. RTX HDR is a separate SDR-to-HDR conversion feature, with its own hardware requirements.
 
 **PyroWave needs a compatible client** and much more bandwidth than conventional codecs. Synthetic desktop and game measurements on AMD give two warning levels. The floor warns about severe detail loss; the recommendation targets clean pictures in those tests. Passing the floor alone does not mean a clean picture.
 
@@ -90,7 +90,7 @@ A disconnect can leave the app and its display available for reconnection. Enabl
 Under **Settings → Frame limiting**:
 
 - Keep **Limiter** on Automatic, or select RTSS. Set **RTSS folder** (`rtss_install_path`) only if detection fails; an empty value searches Program Files.
-- Butterpollo starts RTSS when a limit is needed and restores the previous limit after disconnect. If RTSS requires administrator access, the installed service can use the signed-in administrator's token; otherwise start RTSS with the required access yourself.
+- Rubylight starts RTSS when a limit is needed and restores the previous limit after disconnect. If RTSS requires administrator access, the installed service can use the signed-in administrator's token; otherwise start RTSS with the required access yourself.
 - **Frame limit** (`frame_limiter_fps_limit`) defaults to `0`, meaning the stream rate. RTSS preserves fractional rates such as 59.94 FPS.
 - **Virtual display refresh** offers 2× (`legacy`), 4× (`enabled`), 1000 Hz (`vrr`) or Off (`disabled`). Turning **Limit every stream** off does not disable the automatic virtual-display limit. Choose **Limiter → None** (`frame_limiter_provider = none`) to disable all limiting.
 
@@ -102,14 +102,14 @@ Under **Settings → Frame limiting**:
 
 `vhf_xbox`, `vhf_xbox_one`, `vhf_ds4`, `vhf_ds5` and `vhf_switch` give every client that pad: `vhf_ds5` a DualSense, `vhf_ds4` a DualShock 4 without adaptive triggers. Logs name the profile for each connected controller.
 
-Earlier releases also offered Xbox 360 (`x360`) and DualShock 4 (`ds4`) through ViGEmBus. Since rc.25 Butterpollo changes those settings to `vhf_xbox_one` and `vhf_ds4` when it loads them, in the host configuration, app and device overrides, and configurations imported from Sunshine, Apollo or Vibepollo. An installed ViGEmBus is no longer used and can be uninstalled.
+Earlier releases also offered Xbox 360 (`x360`) and DualShock 4 (`ds4`) through ViGEmBus. Since rc.25 Rubylight changes those settings to `vhf_xbox_one` and `vhf_ds4` when it loads them, in the host configuration, app and device overrides, and configurations imported from Sunshine, Apollo or Vibepollo. An installed ViGEmBus is no longer used and can be uninstalled.
 
 ### Steam Deck
 
-A Steam Deck can reach the host as a **real Steam Deck controller**: Butterpollo serves the Deck's own USB controller (Valve 28de:1205) over USB/IP on the host's loopback address, and [usbip-win2](https://github.com/vadimgrn/usbip-win2) attaches it with its signed driver, so Windows sees a Steam Deck plugged into a USB port. Steam on the host then recognises a Steam Deck and applies the Deck's Steam Input layout, with both trackpads, the gyro, the back grips (L4, R4, L5, R5), the Steam and "…" buttons and rumble. Games see whatever Steam Input makes of it, as on a Deck.
+A Steam Deck can reach the host as a **real Steam Deck controller**: Rubylight serves the Deck's own USB controller (Valve 28de:1205) over USB/IP on the host's loopback address, and [usbip-win2](https://github.com/vadimgrn/usbip-win2) attaches it with its signed driver, so Windows sees a Steam Deck plugged into a USB port. Steam on the host then recognises a Steam Deck and applies the Deck's Steam Input layout, with both trackpads, the gyro, the back grips (L4, R4, L5, R5), the Steam and "…" buttons and rumble. Games see whatever Steam Input makes of it, as on a Deck.
 
 - **Settings → Input → Steam Deck and back grips → Steam Deck controller** (`steam_deck_controller`): **Automatic** (`auto`, the default) attaches a Steam Deck when usbip-win2 is installed and Steam is running on the host when the controller connects; **Steam Deck** (`steam_deck`) attaches one whenever usbip-win2 is installed, even without Steam, where only SDL-based games see it; **Virtual pad** (`virtual_pad`) always uses the virtual DualSense or Xbox pad below.
-- **Install usbip-win2 on the host** from its [releases](https://github.com/vadimgrn/usbip-win2/releases) (Windows 10 1903 or later). Its setup installs a driver and restarts the USB hubs once, so devices on them reconnect; it recommends a restore point first. Butterpollo looks for `usbip.exe` in `C:\Program Files\USBip` and on `PATH`. Nothing listens beyond `127.0.0.1`.
+- **Install usbip-win2 on the host** from its [releases](https://github.com/vadimgrn/usbip-win2/releases) (Windows 10 1903 or later). Its setup installs a driver and restarts the USB hubs once, so devices on them reconnect; it recommends a restore point first. Rubylight looks for `usbip.exe` in `C:\Program Files\USBip` and on `PATH`. Nothing listens beyond `127.0.0.1`.
 - If usbip-win2 is missing or the attach fails, the Deck falls back to the virtual pad, and the stream card says why when **Steam Deck** was chosen or an attach failed.
 
 Moonlight passes on the Deck's own controls only when Steam Input is off for Moonlight on the Deck. With it on, Steam on the Deck turns the controls into a virtual pad first: the host still gets a Steam Deck with the buttons, sticks and triggers, but no gyro, trackpads or back grips, because Moonlight never receives them. On the Deck, open Moonlight's controller settings in Steam, choose to disable Steam Input, and reconnect. If the paired device's name says Steam Deck (SteamOS calls it `steamdeck`) and its controller arrives without a gyro, the stream card says this.
@@ -130,7 +130,7 @@ Setting `motion_as_ds4` and `touchpad_as_ds4` both off keeps a Deck's virtual pa
 
 Edit an app in **Library** or a paired device in **Devices** to set its display, HDR and other overrides. Leave an override unset to inherit the host configuration.
 
-For general configuration overrides, Butterpollo applies **host settings → device overrides → app overrides**. Only supported stream, input, display and encoder keys are accepted; host-wide network, identity and path settings cannot be overridden per stream.
+For general configuration overrides, Rubylight applies **host settings → device overrides → app overrides**. Only supported stream, input, display and encoder keys are accepted; host-wide network, identity and path settings cannot be overridden per stream.
 
 Display selection has dedicated rules: a device's explicit virtual-display mode takes priority over the app's mode, and its **display mode** (`WIDTHxHEIGHTxREFRESH`) overrides the host's resolution/refresh policy. This does not change the frame rate requested for the encoded stream.
 

@@ -2,7 +2,7 @@
 
 [Docs](README.md) · [How compute works](architecture.md) · [Troubleshooting](troubleshooting.md) · [Full measurement record](../rust/PERFORMANCE.md)
 
-Butterpollo's performance work targets fresh pictures and lower picture age. This guide collects the main results; each table links to the fixture, exact runs and scope behind it.
+Rubylight's performance work targets fresh pictures and lower picture age. This guide collects the main results; each table links to the fixture, exact runs and scope behind it.
 
 ## What the numbers mean
 
@@ -39,22 +39,22 @@ Game input-to-display latency requires its own measurement. Read each row using 
 
 ## Next to Vibepollo 2.0
 
-The historical whole-host comparison used **Vibepollo 2.0** and **Butterpollo rc.2** with the same settings: native AMF at ultra-low latency, DDX and realtime GPU priority on both. RX 7900 XT, 1080p60 HEVC HDR, 20 Mbps requested, controlled GPU load; arithmetic means of three alternating runs per host on October 4, 2026.
+The historical whole-host comparison used **Vibepollo 2.0** and **Rubylight rc.2** with the same settings: native AMF at ultra-low latency, DDX and realtime GPU priority on both. RX 7900 XT, 1080p60 HEVC HDR, 20 Mbps requested, controlled GPU load; arithmetic means of three alternating runs per host on October 4, 2026.
 
-| Under controlled GPU load | Vibepollo 2.0 | Butterpollo rc.2 |
+| Under controlled GPU load | Vibepollo 2.0 | Rubylight rc.2 |
 | --- | ---: | ---: |
 | Average render-to-decode delay | 96.4 ms | **42.4 ms** |
 | Mean per-run 95th-percentile delay | 137.0 ms | **56.5 ms** |
 | Fresh pictures per second | 23.9 | **51.4** |
 | Game frame rate beside the host | 176.7–177.4 fps | 173.8–174.9 fps |
 
-The idle comparison measured 16.0 ms versus 13.8 ms. Most of the loaded gap is not the compute path: with compute off, Butterpollo still delivered about 57 fresh pictures a second beside the same load in an earlier batch, and the [same-build comparison](#isolating-radeon-compute) puts the compute gain at 7.5 ms. Vibepollo handed its native AMF encoder about 24 frames a second, and the encoder logged that its output had not caught up. That encoder came from Butterpollo's author ([Vibepollo #342](https://github.com/Nonary/Vibepollo/pull/342)); where the frames are lost is still being traced, and the fix goes to Vibepollo.
+The idle comparison measured 16.0 ms versus 13.8 ms. Most of the loaded gap is not the compute path: with compute off, Rubylight still delivered about 57 fresh pictures a second beside the same load in an earlier batch, and the [same-build comparison](#isolating-radeon-compute) puts the compute gain at 7.5 ms. Vibepollo handed its native AMF encoder about 24 frames a second, and the encoder logged that its output had not caught up. That encoder came from Rubylight's author ([Vibepollo #342](https://github.com/Nonary/Vibepollo/pull/342)); where the frames are lost is still being traced, and the fix goes to Vibepollo.
 
 [Baseline revision, workload and recorded runs →](../rust/PERFORMANCE.md#against-vibepollo-20)
 
 ## Isolating Radeon compute
 
-This separate test changes one setting in the **same Butterpollo build**: compute off versus compute on. RX 7900 XT, DDX, 1080p60 HEVC HDR, controlled GPU load; arithmetic means of two runs per path on October 4, 2026.
+This separate test changes one setting in the **same Rubylight build**: compute off versus compute on. RX 7900 XT, DDX, 1080p60 HEVC HDR, controlled GPU load; arithmetic means of two runs per path on October 4, 2026.
 
 | Render-to-decode delay | Compute off | Compute on |
 | --- | ---: | ---: |

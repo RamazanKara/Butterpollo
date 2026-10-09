@@ -44,7 +44,7 @@ pub fn open_at(path: PathBuf, append: bool) -> Option<PathBuf> {
         started: Instant::now(),
     });
     line(format!(
-        "Butterpollo setup {} (unix time {seconds})",
+        "Rubylight setup {} (unix time {seconds})",
         env!("CARGO_PKG_VERSION")
     ));
     Some(path)

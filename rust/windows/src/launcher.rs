@@ -58,7 +58,7 @@ pub fn show_error(error: &str) {
         MessageBoxW(
             None,
             PCWSTR(text.as_ptr()),
-            w!("Butterpollo"),
+            w!("Rubylight"),
             MB_OK | MB_ICONERROR,
         );
     }
@@ -108,7 +108,7 @@ fn service_profile() -> Result<Option<PathBuf>> {
     {
         if service.query_status()?.current_state != ServiceState::Running {
             bail!(
-                "The Butterpollo service is installed but stopped. Start Butterpollo in Windows Services, then open Start Butterpollo.exe again."
+                "The Rubylight service is installed but stopped. Start Rubylight in Windows Services, then open Start Butterpollo.exe again."
             );
         }
         return Ok(Some(butterpollo_core::paths::installed_profile()));
@@ -144,9 +144,9 @@ pub fn run() -> Result<()> {
             MessageBoxW(
                 None,
                 w!(
-                    "Bring your existing Vibepollo or Apollo settings, paired devices and library?\n\nYes: choose your old config folder and copy it into a new Butterpollo profile.\nNo: start with a new profile.\n\nThe original profile is kept."
+                    "Bring your existing Vibepollo or Apollo settings, paired devices and library?\n\nYes: choose your old config folder and copy it into a new Rubylight profile.\nNo: start with a new profile.\n\nThe original profile is kept."
                 ),
-                w!("Welcome to Butterpollo"),
+                w!("Welcome to Rubylight"),
                 MB_YESNOCANCEL | MB_ICONQUESTION,
             )
         };
@@ -180,7 +180,7 @@ pub fn run() -> Result<()> {
             return crate::tray::open_web(ports.web);
         }
         bail!(
-            "Another streaming host is using port {}. Close Vibepollo or Apollo before starting Butterpollo, or choose a different base port in sunshine.conf. Your settings have been preserved.",
+            "Another streaming host is using port {}. Close Vibepollo or Apollo before starting Rubylight, or choose a different base port in sunshine.conf. Your settings have been preserved.",
             ports.http
         );
     }
@@ -190,7 +190,7 @@ pub fn run() -> Result<()> {
         .join("butterpollo.exe");
     let assets = executable.parent().unwrap().join("assets/web");
     if !executable.is_file() || !assets.is_dir() {
-        bail!("Extract the whole Butterpollo package before opening Start Butterpollo.exe.");
+        bail!("Extract the whole Rubylight package before opening Start Butterpollo.exe.");
     }
     let mut child = Command::new(&executable)
         .arg("--config-dir")
@@ -200,7 +200,7 @@ pub fn run() -> Result<()> {
         .current_dir(executable.parent().unwrap())
         .creation_flags(0x08000000)
         .spawn()
-        .context("starting Butterpollo")?;
+        .context("starting Rubylight")?;
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if let Some(response) = status(ports.http)
@@ -210,7 +210,7 @@ pub fn run() -> Result<()> {
         }
         if let Some(code) = child.try_wait()? {
             bail!(
-                "Butterpollo could not start ({code}). Check {} for the startup error.",
+                "Rubylight could not start ({code}). Check {} for the startup error.",
                 config
                     .path("log_path", &directory, "logs/butterpollo.log")
                     .display()
@@ -218,7 +218,7 @@ pub fn run() -> Result<()> {
         }
         if Instant::now() >= deadline {
             bail!(
-                "Butterpollo is still starting. Open https://localhost:{} after startup, or check {}.",
+                "Rubylight is still starting. Open https://localhost:{} after startup, or check {}.",
                 ports.web,
                 directory.display()
             );

@@ -569,7 +569,7 @@ async fn do_pair(h: Shared, args: &Args, peer: std::net::IpAddr) -> Result<Vec<(
         tracing::info!(client=%name,"Pairing PIN required in the web interface");
         butterpollo_windows::tray::notify(
             "Pairing request",
-            &format!("{name} wants to pair. Enter the PIN it shows in the Butterpollo console."),
+            &format!("{name} wants to pair. Enter the PIN it shows in the Rubylight console."),
         );
         let response = tokio::time::timeout(Duration::from_secs(300), receiver).await;
         {
@@ -932,7 +932,7 @@ fn validate_launch_request(
         return ControlFlow::Break(xml(
             503,
             &[],
-            Some("Butterpollo is installing an update. Reconnect shortly.".into()),
+            Some("Rubylight is installing an update. Reconnect shortly.".into()),
         ));
     }
     match control {

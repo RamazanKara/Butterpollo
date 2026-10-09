@@ -35,11 +35,7 @@ pub fn trigger_update(h: &Shared, tell: bool) {
     tokio::spawn(async move {
         let result = async {
             let client = crate::updater::client(Duration::from_secs(35))?;
-            let mut response = client
-                .get(crate::updater::RELEASES)
-                .send()
-                .await?
-                .error_for_status()?;
+            let mut response = crate::updater::releases(&client).await?;
             let mut bytes = Vec::new();
             while let Some(chunk) = response.chunk().await? {
                 if bytes.len() + chunk.len() > 4 * 1024 * 1024 {
@@ -86,7 +82,7 @@ pub fn trigger_update(h: &Shared, tell: bool) {
                 drop(state);
                 if tell && latest.is_none() {
                     butterpollo_windows::tray::notify(
-                        "Butterpollo is up to date",
+                        "Rubylight is up to date",
                         &format!("Version {current} is the latest."),
                     );
                 }
@@ -129,13 +125,13 @@ fn announce(h: &Shared, version: &str) -> bool {
         *aliases = next;
     }
     drop(aliases);
-    tracing::info!(version, "a newer Butterpollo is available");
+    tracing::info!(version, "a newer Rubylight is available");
     notify_update(version);
     true
 }
 fn notify_update(version: &str) {
     butterpollo_windows::tray::notify(
-        "Butterpollo update",
+        "Rubylight update",
         &format!(
             "Version {} is available. See Maintenance in the console.",
             version.trim_start_matches('v')

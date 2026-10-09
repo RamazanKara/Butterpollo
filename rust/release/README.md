@@ -8,7 +8,7 @@ python rust/release/bump.py 2.0.0-rc.N   # versions, READMEs, docs, a "## New in
 git tag 2.0.0-rc.N && git push origin 2.0.0-rc.N
 ```
 
-Without git, the same release is one click: **Actions → Butterpollo Rust Windows → Run workflow** on `main` with **Publish** ticked. It releases the version in `Cargo.toml` at main's head and creates its tag.
+Without git, the same release is one click: **Actions → Rubylight Windows → Run workflow** on `main` with **Publish** ticked. It releases the version in `Cargo.toml` at main's head and creates its tag.
 
 The tag's run (or the published run) of [`rust-windows.yml`](../../.github/workflows/rust-windows.yml) does the rest:
 
@@ -16,7 +16,7 @@ The tag's run (or the published run) of [`rust-windows.yml`](../../.github/workf
 | --- | --- |
 | Check that the tag matches `Cargo.toml` and that its release notes section is filled in | `tag` job, `notes.py` |
 | Reuse the installer main's run already built and tested for the tagged commit. Only when there is none (the run was cancelled by a later push, or still running): formatting, tests, clippy, the release build, the web console and the package with its installer, from scratch | `tag` job, `windows` job (`rust/build.ps1 -Package`) |
-| Publish `Butterpollo <version>` (a prerelease for `-rc.N`) with the installer, the portable ZIP and `SHA256SUMS`. The text is `body.md` with the `## New in rc.N` section; links relative to `rust/` point at the tagged source. A release that already exists is left alone | `publish` job, `notes.py` |
+| Publish `Rubylight <version>` (a prerelease for `-rc.N`) with the installer, the portable ZIP and `SHA256SUMS`. The text is `body.md` with the `## New in rc.N` section; links relative to `rust/` point at the tagged source. A release that already exists is left alone | `publish` job, `notes.py` |
 
 Tag a commit whose main run is green and the release is out in about a minute. A failed run can be re-run from the Actions page. To release again after a fix, bump to the next version.
 

@@ -35,15 +35,15 @@ If the device pairs but cannot launch Desktop, open **Devices → Edit** and che
 
 The default base port is `47989`; the console uses `47990`. A changed **Base port** moves the console to the next port up. Check the active profile's `sunshine.conf` if the launcher reports another address.
 
-**Start Butterpollo.exe** reopens the correct console when that profile is already running. If it reports another streaming host on the port, close the conflicting Sunshine, Apollo, Vibepollo or second Butterpollo instance. Restarting another copy on the same port does not solve the conflict.
+**Start Butterpollo.exe** reopens the correct console when that profile is already running. If it reports another streaming host on the port, close the conflicting Sunshine, Apollo, Vibepollo or second Rubylight instance. Restarting another copy on the same port does not solve the conflict.
 
-For an installed host, check **Butterpollo** in Windows Services. Its internal service name is `ApolloService`. If it is stopped, read `service.log` before starting it again. The [log locations below](#logs-and-a-useful-report) distinguish service and portable profiles.
+For an installed host, check **Rubylight** in Windows Services. Its internal service name is `ApolloService`. If it is stopped, read `service.log` before starting it again. The [log locations below](#logs-and-a-useful-report) distinguish service and portable profiles.
 
 ## Black picture, no display, or WGC fails
 
 1. On **Overview → Host readiness**, inspect **Screen capture**, **Video encoder** and **Virtual display**. A physical monitor must be active, or the configured virtual display must be available.
 2. Check **Settings → Display → Display** and any app/device override. Confirm that the selected display is the one containing the desktop or game.
-3. For service-mode WGC, keep a Windows user signed in. Butterpollo starts its WGC capture worker in that user's session. A locked or UAC desktop uses the Desktop Duplication recovery path; WGC is retried when the normal desktop returns. A stream started while Windows is locked sets up its display on the lock screen; if the virtual display cannot be set up there, the stream shows the physical display and the stream card says so. Start the stream again after signing in.
+3. For service-mode WGC, keep a Windows user signed in. Rubylight starts its WGC capture worker in that user's session. A locked or UAC desktop uses the Desktop Duplication recovery path; WGC is retried when the normal desktop returns. A stream started while Windows is locked sets up its display on the lock screen; if the virtual display cannot be set up there, the stream shows the physical display and the stream card says so. Start the stream again after signing in.
 4. Read the `capture backend opened` log entry for the backend that actually opened. `requested_capture=wgc` describes the request and can appear even when capture falls back.
 5. If the virtual-display status reports access denied, use the installed Windows service and check that the bundled driver is ready. A portable host having administrator rights is not equivalent to the driver's service access.
 
@@ -97,7 +97,7 @@ If the problem starts when the GPU is fully occupied, compare with a lower game 
 
 ## Radeon RX 9000 (RDNA4)
 
-Reviewed on **7 October 2026**. These are public reports and a code review; Butterpollo's local test GPU is an RX 7900 XT, so this does not establish RDNA4 stability or performance.
+Reviewed on **7 October 2026**. These are public reports and a code review; Rubylight's local test GPU is an RX 7900 XT, so this does not establish RDNA4 stability or performance.
 
 **Start with AV1 when the client can decode it in hardware.** AMD describes increased AV1 throughput and improved coding efficiency on RDNA4; Foundation's RX 9070 freeze reporter also found AV1 unaffected by their H.264/HEVC failure. Those are reasons to try AV1 first, not a promise that every AV1 configuration works. HEVC remains useful for clients without AV1 decoding. [AMD's architecture presentation, slides 3–4](https://hc2025.hotchips.org/assets/program/conference/day1/8_amd_pomianowski_final.pdf), [Foundation #666](https://github.com/AlkaidLab/foundation-sunshine/issues/666).
 
@@ -121,26 +121,26 @@ The relevant recording, streaming and media mentions in the reviewed RX 9000 Win
 
 ### AMF and streaming-host reports
 
-Issue closure is distinguished from a verified driver fix here. Settings from another host are not necessarily Butterpollo settings.
+Issue closure is distinguished from a verified driver fix here. Settings from another host are not necessarily Rubylight settings.
 
 | Source and affected case | Fix or workaround evidence |
 | --- | --- |
 | [AMF #587](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/issues/587#issuecomment-3824327719), [#548](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/issues/548#issuecomment-2810798182): RX 9000 engine count | AMD confirms one VCN shared by decode and encode. Do not infer two independent HEVC engines from “dual media engine” marketing. Background hardware video decoding and other encoding sessions can compete with the stream. |
 | [AMF #548](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/issues/548#issuecomment-2861639560): RX 9070 XT hardware decode/encode slowdown on 25.3.x | Reporter says **25.5.1** fixed the VCEEnc-specific performance problem. The shared-engine hardware limit remains. |
 | [AMF #562](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/issues/562): RX 9070 XT AV1 PreAnalysis backpressure on 25.6.1 | Fixed in FFmpeg and [OBS #12161](https://github.com/obsproject/obs-studio/pull/12161), with reporter confirmation. These are application buffering/settings changes, not a named AMD driver fix. Keep PreAnalysis off for the latency baseline. |
-| [AMF #352](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/issues/352): lookahead stalls | A later RX 9070 report on 25.3.2 still describes AV1 lookahead-depth-40 stalls after the older issue was closed. No RDNA4 first-fixed driver is established. Butterpollo's optional PA requests one frame, not 40. |
+| [AMF #352](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/issues/352): lookahead stalls | A later RX 9070 report on 25.3.2 still describes AV1 lookahead-depth-40 stalls after the older issue was closed. No RDNA4 first-fixed driver is established. Rubylight's optional PA requests one frame, not 40. |
 | [AMF #423](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/issues/423#issuecomment-2729665337): AV1 padded dimensions | AMD identifies an RX 9000 hardware fix for the older alignment limitation. Do not force an RDNA3 1080-to-1082 workaround onto RDNA4. On an RX 7900 XT with driver 32.0.31041.1004 (October 2026), 1968×2184 still encodes as 1984×2186 despite the no-restrictions alignment mode, with no render size in the frame header, so only clients that crop to the negotiated size (Moonlight-qt does) hide the padding. The host logs a warning once per stream at such sizes. Writing a render size into the header was prototyped and decodes identically, but FFmpeg ignores it, so it is not shipped ([measurements](../rust/PERFORMANCE_WORK.md)). |
 | [AMF #540](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/issues/540): RX 9070 XT HEVC range differences, initially 25.3.1 | Still open; later observations differ between players/editors. No confirmed first-fixed driver. Check limited/full range and decoded colour, not just the HDR badge. |
-| [AMF #605](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/issues/605), [#610](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/issues/610): RX 9070 XT filter interop/capabilities | Reports use Windows drivers 32.0.31021.5001 and 32.0.31041.1004. Shader-readable textures work around #605; #610 is marked fixed in a future release without a public version. These concern AMF filters, not Butterpollo's shader converter. Successful `Init` alone is insufficient evidence of working output. |
+| [AMF #605](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/issues/605), [#610](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/issues/610): RX 9070 XT filter interop/capabilities | Reports use Windows drivers 32.0.31021.5001 and 32.0.31041.1004. Shader-readable textures work around #605; #610 is marked fixed in a future release without a public version. These concern AMF filters, not Rubylight's shader converter. Successful `Init` alone is insufficient evidence of working output. |
 | [Foundation #666](https://github.com/AlkaidLab/foundation-sunshine/issues/666#issuecomment-4531120037): RX 9070, 26.5.2, frozen H.264/HEVC picture while audio/input continue | Initial discussion mentions queue size one; later diagnosis identifies an unconditional `LowLatencyInternal=true` write that overrode the UI. Candidate removal shipped in **v2026.525.100901.杂鱼**. The issue does not isolate queue size as the sole cause or prove a firmware root cause. AV1 worked for the reporter. |
 | [Foundation #675](https://github.com/AlkaidLab/foundation-sunshine/pull/675), [#702](https://github.com/AlkaidLab/foundation-sunshine/issues/702): long-running HEVC and recurring RX 9070 XT stalls | #675 merged HEVC GOP=60 on 25 May to close #666. #702 subsequently reports stalls on 26.5.2 even with forced low latency disabled; a maintainer suggests `lowlatency_high_quality`, without confirmation. These are host changes/suggestions, not driver fixes. |
 | [Foundation #1098](https://github.com/AlkaidLab/foundation-sunshine/issues/1098): static-scene oversized AV1/HEVC frames, RX 9070 XT, 32.0.31041.3013 | Reporter found the fork's FFmpeg compatibility mode plus CBR/HRD useful. [#1117](https://github.com/AlkaidLab/foundation-sunshine/pull/1117) proposed frame-sized VBV but was **closed without merging** after its author could not reproduce the original problem and saw periodic quality loss. No driver fix established. |
-| [Vibepollo #354](https://github.com/Nonary/Vibepollo/issues/354): RX 9070 XT, 26.6.4, HDR AMF error 10 with QVBR/HQ modes | Fixed in **v1.18.3-beta.6** by disabling PA and changing incompatible rate control for ten-bit sessions. Application fix; `vbr_latency` with PA off was the confirmed workaround. Butterpollo already demotes these modes for HDR. |
+| [Vibepollo #354](https://github.com/Nonary/Vibepollo/issues/354): RX 9070 XT, 26.6.4, HDR AMF error 10 with QVBR/HQ modes | Fixed in **v1.18.3-beta.6** by disabling PA and changing incompatible rate control for ten-bit sessions. Application fix; `vbr_latency` with PA off was the confirmed workaround. Rubylight already demotes these modes for HDR. |
 | [Vibepollo #417](https://github.com/Nonary/Vibepollo/issues/417): RX 9060 XT plus iGPU, 26.7.1, black video on macOS | Phone worked; suggested legacy encoding did **not** help. Closed without a documented driver fix. Include the client and both adapters when reporting a similar failure. |
 | [Sunshine #4065](https://github.com/LizardByte/Sunshine/issues/4065): RX 9070 startup timeout, plus RX 9060 report on 25.11.1 | Delaying host startup or changing Fast Startup helped some reporters but not all; still open. The original report's “23.3.1” comparison predates these GPUs and is not a usable RX 9000 recommendation. |
 | [Sunshine #5321](https://github.com/LizardByte/Sunshine/issues/5321), [#5399](https://github.com/LizardByte/Sunshine/issues/5399): RX 9070 XT resets on 26.6.2; RX 9070 incomplete frames on 26.6.4 | Neither establishes a driver fix. #5321 has a short successful retest after Windows/host changes and later recurrence reports. #5399 was closed without confirming its proposed packetization diagnosis. |
 
-### What the Butterpollo review covers
+### What the Rubylight review covers
 
 | Path | Finding and remaining limit |
 | --- | --- |
@@ -149,7 +149,7 @@ Issue closure is distinguished from a verified driver fix here. Settings from an
 | `amd_split_frame`, `ENCODER_BACKLOG` | The hint queries codec capabilities and writes nothing for one or unknown engine count, even for On/Off. The host's backlog limit of **two frames** pipelines submissions to one encoder; it is not an engine count and does not set AMF's input queue to one. An encoder holding a full backlog that returns nothing for 250 ms is recreated; each further silent recreation doubles the wait, up to 2 s, and the session gives up after 20 s. A driver returning valid-looking repeated/skip pictures can evade a no-output watchdog. |
 | `compute.rs`, capture | Devices are selected by adapter LUID, shared textures/fences stay on that adapter, and CPU fence waits have a two-second bound. Device removal's `UINT64_MAX` fence value now errors instead of permitting allocator/texture reuse; the shared compute cache rejects a removed device. This follows [Microsoft's fence contract](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12fence-getcompletedvalue). Queue creation falls back from High to Normal; global realtime is off by default. |
 | `pyrowave.rs` | Vulkan selection uses the capture LUID and checks texture/fence interop support. Colour conversion can fall back to D3D11. The synchronous PyroWave encode/destroy calls have no host-enforced timeout: a hung driver call can outlast stream recovery. There is no safe thread-cancellation patch for that here; process isolation would be a separate change. |
-| `codec_probe.rs`, `gpu_priority.rs` | Optional PyroWave probing runs in a child with a 15-second deadline and owned-process cleanup. It tests output, but short probes cannot establish long-run stability. GPU process priority applies to Butterpollo only, with a denied realtime request falling back to High; no evidence supports inventing an RDNA4-specific priority rule. Process scheduling class and D3D12 global-realtime queue priority are separate. |
+| `codec_probe.rs`, `gpu_priority.rs` | Optional PyroWave probing runs in a child with a 15-second deadline and owned-process cleanup. It tests output, but short probes cannot establish long-run stability. GPU process priority applies to Rubylight only, with a denied realtime request falling back to High; no evidence supports inventing an RDNA4-specific priority rule. Process scheduling class and D3D12 global-realtime queue priority are separate. |
 
 ### RX 9070 XT test checklist and logs
 
@@ -170,9 +170,9 @@ Send the host log **from `CLIENT CONNECTED` through `CLIENT DISCONNECTED`**, plu
 
 ## Playnite does not launch
 
-Keep a Windows user signed in, enable Playnite in **Settings → Game library**, and check that the game starts in Playnite locally. If Butterpollo cannot find a portable copy, leave Playnite open in that user's session when starting the stream.
+Keep a Windows user signed in, enable Playnite in **Settings → Game library**, and check that the game starts in Playnite locally. If Rubylight cannot find a portable copy, leave Playnite open in that user's session when starting the stream.
 
-In **Library**, check Playnite's plugin status. Use **Install plugin** or **Update plugin** if offered, fully exit and reopen Playnite, then try **Sync now**. Use the connector bundled with Butterpollo; newer Vibepollo connectors may require different host support. A `Playnite CLI fallback requested` warning means automatic game-exit tracking is unavailable; quit that stream manually.
+In **Library**, check Playnite's plugin status. Use **Install plugin** or **Update plugin** if offered, fully exit and reopen Playnite, then try **Sync now**. Use the connector bundled with Rubylight; newer Vibepollo connectors may require different host support. A `Playnite CLI fallback requested` warning means automatic game-exit tracking is unavailable; quit that stream manually.
 
 Send the failure time, installed or portable location, Desktop or Fullscreen mode, and the host log from `Playnite launch prepared` and `Playnite plugin check` through the pipe, startup, fallback or exit messages. Include any `Moonlight session launch failed`, `Playnite library sync failed`, `Playnite startup failed`, `Playnite did not confirm startup` or `Playnite game exit confirmed` lines. If available, include Playnite's `playnite.log` and the matching `%APPDATA%\Sunshine\logs\sunshine_playnite-*.log`.
 
@@ -182,9 +182,9 @@ Open **Maintenance → Frame limiter** during the affected stream. Record **Conf
 
 In **Settings → Frame limiting**, check **Limiter**, **Frame limit**, **Virtual display refresh** and **RTSS folder**. **None** disables limiting. Physical-monitor streams need **Limit every stream** if you want a cap on every stream; virtual-display policy can apply its own cap. A frame limit of `0` follows the stream rate, including fractional values such as 59.94.
 
-The folder must contain the RTSS executable and its hook library, not just a shortcut. If the log says RTSS requires administrator privileges, start RTSS as administrator before streaming or use Butterpollo's installed service. If it is found and running but one game ignores the limit, check that game's RTSS profile and include the game/API in the report. If RTSS's window keeps your own limit during a stream, Butterpollo could not reach the elevated RTSS: use the installed service, or run a portable copy as administrator. RTSS 7.3.7 ignores edits of its settings file and takes a new limit only through its own interface, which Butterpollo uses from rc.27; the log line "RTSS frame limit applied and verified" names the RTSS version.
+The folder must contain the RTSS executable and its hook library, not just a shortcut. If the log says RTSS requires administrator privileges, start RTSS as administrator before streaming or use Rubylight's installed service. If it is found and running but one game ignores the limit, check that game's RTSS profile and include the game/API in the report. If RTSS's window keeps your own limit during a stream, Rubylight could not reach the elevated RTSS: use the installed service, or run a portable copy as administrator. RTSS 7.3.7 ignores edits of its settings file and takes a new limit only through its own interface, which Rubylight uses from rc.27; the log line "RTSS frame limit applied and verified" names the RTSS version.
 
-Butterpollo restores limiter values after the last stream owning the limit disconnects. A game retaining its display must not keep the cap active. If a cap remains, check for another pending or connected stream and keep the before/during/after values with the log.
+Rubylight restores limiter values after the last stream owning the limit disconnects. A game retaining its display must not keep the cap active. If a cap remains, check for another pending or connected stream and keep the before/during/after values with the log.
 
 ## Monitors stay on, or the display layout does not return
 
@@ -194,7 +194,7 @@ Check **Restore displays on disconnect**, **Restore delay** and **Keep a disconn
 
 When all streams have ended, use **Maintenance → Displays** to inspect whether the current layout matches the saved one. **Restore saved layout** applies that saved layout; **Save current layout** replaces it with the arrangement you currently want. Saving, restoring and resetting are unavailable during streaming.
 
-**Disconnect virtual displays** stops every stream and removes Butterpollo-created virtual displays. **Reset display settings memory** forgets pending display changes that Butterpollo would otherwise undo. Use those recovery actions deliberately after recording the problem; resetting memory is not the same as restoring a layout.
+**Disconnect virtual displays** stops every stream and removes Butterpollo-created virtual displays. **Reset display settings memory** forgets pending display changes that Rubylight would otherwise undo. Use those recovery actions deliberately after recording the problem; resetting memory is not the same as restoring a layout.
 
 rc.10 has a brief startup guard for a reproduced case where creating a virtual display reactivated a dormant monitor. That guard is not continuous enforcement and does not establish that every phone/client display report is fixed. Record the client, chosen layout, active monitors and log time when reporting another case.
 
@@ -217,16 +217,16 @@ Check the stream card in the console first.
 
 Some Steam builds can list one VHF Xbox controller twice. Steam's SDL controller discovery races its XInput and GameInput backends for the same device. Start+Select may then open both Xbox Game Bar and Steam's keyboard. SDL has an [upstream fix](https://github.com/libsdl-org/SDL/commit/c4cfb739). Users report that the Steam beta, which includes it, lists the pad once; switch to it under Steam → Settings → Interface → Client Beta Participation. The fix will reach Steam's stable client in a later update.
 
-Steam's `logs/controller.txt` shows each arrival. Butterpollo no longer uses ViGEmBus, which earlier releases offered as a workaround; an installed copy can be uninstalled.
+Steam's `logs/controller.txt` shows each arrival. Rubylight no longer uses ViGEmBus, which earlier releases offered as a workaround; an installed copy can be uninstalled.
 
 ## A Steam Deck has no gyro, trackpads or back grips
 
-The host only follows what Moonlight announces when a controller connects. With Steam Input on for Moonlight, Steam on the Deck gives Moonlight a virtual pad, which has no gyro, trackpads or back grips. On the Deck, disable Steam Input in Moonlight's controller settings in Steam, then reconnect. The stream card says this when the paired device is named Steam Deck and its controller has no gyro. In Butterpollo's logs, a Deck that Moonlight sees directly connects with `client_type=4`.
+The host only follows what Moonlight announces when a controller connects. With Steam Input on for Moonlight, Steam on the Deck gives Moonlight a virtual pad, which has no gyro, trackpads or back grips. On the Deck, disable Steam Input in Moonlight's controller settings in Steam, then reconnect. The stream card says this when the paired device is named Steam Deck and its controller has no gyro. In Rubylight's logs, a Deck that Moonlight sees directly connects with `client_type=4`.
 
 - **Steam on the host doesn't show a Steam Deck:** the host attaches one only with usbip-win2 installed and, with **Automatic**, while Steam is running on the host when the controller connects; otherwise the log says `Steam is not running` and the Deck gets a virtual DualSense. The log line `Steam Deck controller attached through usbip-win2` names the usbip-win2 port, and `usbip.exe port` lists it. If the stream card says the attach failed, its message is usbip.exe's own.
 - **No trackpads with Steam Input off:** Moonlight builds whose SDL predates SDL 3 do not read the Deck's trackpads, so they send none.
 - **Back grips do nothing on the virtual pad:** choose what each grip presses under **Settings → Input → Steam Deck and back grips**; the virtual pads have no back buttons of their own. A Deck attached as a Steam Deck keeps its own grips, and Steam Input on the host decides what they do.
-- **A Steam Deck controller left behind after a crash:** usbip-win2 detaches it when Butterpollo's connection closes, then keeps trying to attach it again. `usbip.exe attach --stop-all` stops that.
+- **A Steam Deck controller left behind after a crash:** usbip-win2 detaches it when Rubylight's connection closes, then keeps trying to attach it again. `usbip.exe attach --stop-all` stops that.
 
 See [Steam Deck](configuration.md#steam-deck).
 

@@ -11,8 +11,13 @@ use std::{
 };
 use tokio::io::AsyncWriteExt;
 
-pub const RELEASES: &str =
-    "https://api.github.com/repos/RamazanKara/Butterpollo/releases?per_page=30";
+/// The repository was RamazanKara/Butterpollo until the product became
+/// Rubylight. Before the rename only the old name answers; after it, the old
+/// name redirects to an API address `client` refuses, so the new one is first.
+const REPOSITORIES: [&str; 2] = ["RamazanKara/Rubylight", "RamazanKara/Butterpollo"];
+/// Installer names, current first. Releases also carry the old name so that
+/// hosts from before the rename find them.
+const INSTALLERS: [&str; 2] = ["rubylight-setup", "butterpollo-setup"];
 const MAX_INSTALLER: u64 = 512 * 1024 * 1024;
 const IDLE_SECONDS: u64 = 60;
 
@@ -31,6 +36,24 @@ pub struct Installer {
     pub size: u64,
 }
 
+/// The release list from the first repository name GitHub knows.
+pub async fn releases(client: &reqwest::Client) -> Result<reqwest::Response> {
+    let mut repositories = REPOSITORIES.iter().peekable();
+    while let Some(repository) = repositories.next() {
+        let response = client
+            .get(format!(
+                "https://api.github.com/repos/{repository}/releases?per_page=30"
+            ))
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND && repositories.peek().is_some() {
+            continue;
+        }
+        return Ok(response.error_for_status()?);
+    }
+    unreachable!("REPOSITORIES is not empty")
+}
+
 pub fn installer(release: &Value) -> Result<Installer> {
     let tag = release["tag_name"]
         .as_str()
@@ -43,17 +66,22 @@ pub fn installer(release: &Value) -> Result<Installer> {
     {
         bail!("invalid release version");
     }
-    let name = format!("butterpollo-setup-{version}.exe");
-    let asset = release["assets"]
+    let assets = release["assets"]
         .as_array()
-        .context("release has no assets")?
+        .context("release has no assets")?;
+    let (name, asset) = INSTALLERS
         .iter()
-        .find(|asset| asset["name"] == name)
+        .find_map(|prefix| {
+            let name = format!("{prefix}-{version}.exe");
+            let asset = assets.iter().find(|asset| asset["name"] == name)?;
+            Some((name, asset))
+        })
         .context("release has no Windows installer")?;
-    let url = format!("https://github.com/RamazanKara/Butterpollo/releases/download/{tag}/{name}");
-    if asset["browser_download_url"] != url {
-        bail!("installer is not from the Butterpollo release repository");
-    }
+    let url = REPOSITORIES
+        .iter()
+        .map(|repository| format!("https://github.com/{repository}/releases/download/{tag}/{name}"))
+        .find(|url| asset["browser_download_url"] == *url)
+        .context("installer is not from the Rubylight release repository")?;
     let digest = asset["digest"]
         .as_str()
         .and_then(|s| s.strip_prefix("sha256:"))
@@ -76,7 +104,7 @@ pub fn client(timeout: Duration) -> Result<reqwest::Client> {
         .https_only(true)
         .connect_timeout(Duration::from_secs(15))
         .timeout(timeout)
-        .user_agent("Butterpollo-Rust")
+        .user_agent("Rubylight")
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             let url = attempt.url();
             if attempt.previous().len() < 5
@@ -130,7 +158,7 @@ pub fn busy(h: &Shared) -> bool {
 
 pub fn queue(h: &Shared, automatic: bool) -> Result<()> {
     if !supported(h) {
-        bail!("Install Butterpollo as a Windows service to use in-app updates");
+        bail!("Install Rubylight as a Windows service to use in-app updates");
     }
     let config = h.config.read().unwrap();
     let prereleases = config.boolean("notify_pre_releases", false);
@@ -396,12 +424,12 @@ async fn download(h: &Shared, id: &str, candidate: &Installer) -> Result<PathBuf
 fn check_recovery(profile: &std::path::Path) -> Result<Value> {
     let record =
         butterpollo_core::state::load_json(&profile.join("update-result.json"), Value::Null)
-            .context("The last update's record is unreadable. Run the Butterpollo installer to repair this installation")?;
+            .context("The last update's record is unreadable. Run the Rubylight installer to repair this installation")?;
     if record["phase"] == "recovery_failed"
         || (record["phase"] == "installing" && record["backup"].is_string())
     {
         bail!(
-            "An earlier update could not be rolled back. Run the Butterpollo installer to repair this installation; keep the updates folder in the profile until it has finished."
+            "An earlier update could not be rolled back. Run the Rubylight installer to repair this installation; keep the updates folder in the profile until it has finished."
         );
     }
     Ok(record)
@@ -590,11 +618,8 @@ mod tests {
     #[ignore = "downloads the official public installer; never executes it"]
     async fn official_release_download_verifies_with_github_digest() -> Result<()> {
         let f = Fixture::new();
-        let releases: Vec<Value> = client(Duration::from_secs(35))?
-            .get(RELEASES)
-            .send()
+        let releases: Vec<Value> = super::releases(&client(Duration::from_secs(35))?)
             .await?
-            .error_for_status()?
             .json()
             .await?;
         let candidate = releases
@@ -634,7 +659,7 @@ mod tests {
         }
         std::fs::write(&path, b"{")?;
         let error = check_recovery(&f.directory).unwrap_err().to_string();
-        assert!(error.contains("Run the Butterpollo installer"), "{error}");
+        assert!(error.contains("Run the Rubylight installer"), "{error}");
         Ok(())
     }
     #[tokio::test]
@@ -669,6 +694,43 @@ mod tests {
             release["assets"][0][key] = value;
             assert!(installer(&release).is_err(), "{key}");
         }
+    }
+    #[test]
+    fn installers_from_before_and_after_the_rename_are_accepted() {
+        for (repository, name) in [
+            ("Rubylight", "rubylight-setup-2.0.0-rc.7.exe"),
+            ("Rubylight", "butterpollo-setup-2.0.0-rc.7.exe"),
+            ("Butterpollo", "rubylight-setup-2.0.0-rc.7.exe"),
+            ("Butterpollo", "butterpollo-setup-2.0.0-rc.7.exe"),
+        ] {
+            let url = format!(
+                "https://github.com/RamazanKara/{repository}/releases/download/2.0.0-rc.7/{name}"
+            );
+            let mut release = release();
+            release["assets"][0]["name"] = json!(name);
+            release["assets"][0]["browser_download_url"] = json!(url);
+            assert_eq!(installer(&release).unwrap().url, url);
+        }
+        // The current name wins when a release carries both.
+        let mut release = release();
+        let mut current = release["assets"][0].clone();
+        current["name"] = json!("rubylight-setup-2.0.0-rc.7.exe");
+        current["browser_download_url"] = json!(
+            "https://github.com/RamazanKara/Rubylight/releases/download/2.0.0-rc.7/rubylight-setup-2.0.0-rc.7.exe"
+        );
+        release["assets"].as_array_mut().unwrap().push(current);
+        assert!(
+            installer(&release)
+                .unwrap()
+                .url
+                .ends_with("/rubylight-setup-2.0.0-rc.7.exe")
+        );
+        // Another repository's copy is refused.
+        let mut release = release();
+        release["assets"][0]["browser_download_url"] = json!(
+            "https://github.com/someone/Rubylight/releases/download/2.0.0-rc.7/butterpollo-setup-2.0.0-rc.7.exe"
+        );
+        assert!(installer(&release).is_err());
     }
     #[test]
     fn only_the_two_newest_update_transactions_are_kept() {

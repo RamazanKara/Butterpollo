@@ -47,5 +47,5 @@ $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" 
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 30) -MultipleInstances IgnoreNew
 Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Settings $settings `
-    -Description 'Butterpollo release: display self-test and install (rust/release/elevation.ps1)' | Out-Null
+    -Description 'Rubylight release: display self-test and install (rust/release/elevation.ps1)' | Out-Null
 "Installed $task for $env:USERDOMAIN\$env:USERNAME. check.ps1 now installs and self-tests without a UAC prompt."

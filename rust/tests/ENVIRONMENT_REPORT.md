@@ -1,6 +1,6 @@
 # Environment report
 
-`collect_environment.ps1` saves a JSON report containing Windows version, GPU and network-driver versions, network link/error counters, Butterpollo version/hash and service state. It reads the local system and runs Butterpollo's `--version` command. It does not start a stream, change settings or upload the report.
+`collect_environment.ps1` saves a JSON report containing Windows version, GPU and network-driver versions, network link/error counters, Rubylight version/hash and service state. It reads the local system and runs Rubylight's `--version` command. It does not start a stream, change settings or upload the report.
 
 For an installed copy, open PowerShell in a writable folder and run:
 

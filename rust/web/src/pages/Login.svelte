@@ -29,7 +29,7 @@
 </script>
 
 <div class="auth">
-  <div class="brand"><span class="mark" aria-hidden="true">B</span>Butterpollo</div>
+  <div class="brand"><span class="mark" aria-hidden="true">R</span>Rubylight</div>
   <form class="card" onsubmit={submit}>
     <h1>Sign in</h1>
     <p class="muted">Use the account you created when you set up this host.</p>

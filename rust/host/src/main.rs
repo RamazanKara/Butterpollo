@@ -30,7 +30,7 @@ use std::{
 };
 
 #[derive(Parser)]
-#[command(version, about = "Butterpollo's Rust Moonlight streaming host")]
+#[command(version, about = "Rubylight's Rust Moonlight streaming host")]
 struct Args {
     #[arg(long)]
     config_dir: Option<PathBuf>,
@@ -199,7 +199,7 @@ async fn main() -> Result<()> {
         h.save_credentials(&credentials)
             .context("saving the credentials (an installed host needs an administrator)")?;
         println!(
-            "Saved the web console credentials in {}. Restart Butterpollo if it is running.",
+            "Saved the web console credentials in {}. Restart Rubylight if it is running.",
             h.directory.display()
         );
         return Ok(());

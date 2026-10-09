@@ -230,12 +230,12 @@ pub(crate) fn shell(
         .filter(|t| matches!(t.as_str(), "light" | "dark" | "system"))
         .unwrap_or_else(|| "system".into());
     let mut html = format!(
-        "<!doctype html><html lang=\"en\" data-theme=\"{}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{} · Butterpollo</title><link rel=\"stylesheet\" href=\"/console.css\"><link rel=\"icon\" href=\"/favicon.svg\"></head><body>",
+        "<!doctype html><html lang=\"en\" data-theme=\"{}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{} · Rubylight</title><link rel=\"stylesheet\" href=\"/console.css\"><link rel=\"icon\" href=\"/favicon.svg\"></head><body>",
         esc(&theme),
         i18n::message(title)
     );
     if signed_in {
-        html += "<aside><a class=\"brand\" href=\"/\"><span class=\"mark\">B</span>Butterpollo</a><nav aria-label=\"Main navigation\">";
+        html += "<aside><a class=\"brand\" href=\"/\"><span class=\"mark\">R</span>Rubylight</a><nav aria-label=\"Main navigation\">";
         for &(url, label) in &NAV {
             html += &format!(
                 "<a href=\"{url}\"{}>{label}</a>",
@@ -259,9 +259,9 @@ pub(crate) fn shell(
             ) + "<button class=\"secondary\">Apply</button>"),
         );
         html += &button("logout", csrf, "/login", "", "", "Sign out");
-        html += "<small>Butterpollo</small></div></aside><main>";
+        html += "<small>Rubylight</small></div></aside><main>";
     } else {
-        html += "<main class=\"auth\"><a class=\"brand\" href=\"/\"><span class=\"mark\">B</span>Butterpollo</a>";
+        html += "<main class=\"auth\"><a class=\"brand\" href=\"/\"><span class=\"mark\">R</span>Rubylight</a>";
     }
     html += &format!(
         "<header><p class=\"eyebrow\">Your streaming host</p><h1>{}</h1></header>{body}</main></body></html>",
@@ -363,7 +363,7 @@ pub(crate) async fn stylesheet() -> impl IntoResponse {
 pub(crate) async fn favicon() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "image/svg+xml")],
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 32 32\"><rect width=\"32\" height=\"32\" rx=\"8\" fill=\"#f2b705\"/><text x=\"16\" y=\"24\" font-family=\"sans-serif\" font-size=\"24\" font-weight=\"700\" text-anchor=\"middle\" fill=\"#16181c\">B</text></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 32 32\"><rect width=\"32\" height=\"32\" rx=\"8\" fill=\"#f2b705\"/><text x=\"16\" y=\"24\" font-family=\"sans-serif\" font-size=\"24\" font-weight=\"700\" text-anchor=\"middle\" fill=\"#16181c\">R</text></svg>",
     )
 }
 

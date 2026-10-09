@@ -1,7 +1,7 @@
 #![windows_subsystem = "windows"]
-//! Butterpollo setup. Installs or updates Butterpollo, replacing an installed
-//! Vibepollo, Butterpollo C++, Apollo or Sunshine in place (settings, paired
-//! devices, apps and drivers are kept), and removes Butterpollo again.
+//! Rubylight setup. Installs or updates Rubylight, replacing an installed
+//! Vibepollo, Rubylight C++, Apollo or Sunshine in place (settings, paired
+//! devices, apps and drivers are kept), and removes Rubylight again.
 //!
 //! butterpollo-setup.exe [--quiet] [--install-dir <folder>] [--no-gamepad-driver]
 //!                       [--no-display-driver] [--no-start]
@@ -26,7 +26,7 @@ mod version;
 
 use std::path::PathBuf;
 
-const TITLE: &str = "Butterpollo setup";
+const TITLE: &str = "Rubylight setup";
 
 #[derive(Default)]
 struct Arguments {
@@ -146,14 +146,21 @@ fn main() {
         match args.install_dir.as_ref() {
             Some(folder) if args.quiet && !args.uninstall => {
                 let folder = folder.clone();
-                match ui::progress(TITLE, "Updating Butterpollo", true, move |progress| {
+                match ui::progress(TITLE, "Updating Rubylight", true, move |progress| {
                     update::run(&folder, true, &progress)?;
                     // As a reinstall does. In-app updates never set the
                     // drivers up, so hosts updated from the console since
                     // rc.22 had none.
                     let mut notes = Vec::new();
+                    let folder = system::win32_path(&folder)?;
+                    // Hosts updated from the console keep the names Windows
+                    // shows from their first install; bring them up to date.
+                    if let Err(error) = install::refresh_service_name() {
+                        notes.push(format!("The service name could not be updated: {error:#}"));
+                    }
+                    install::refresh_entries(&folder, &mut notes);
                     install::install_drivers(
-                        &system::win32_path(&folder)?,
+                        &folder,
                         !install::display_driver_declined(),
                         true,
                         &progress,
@@ -165,7 +172,7 @@ fn main() {
                     anyhow::Ok(())
                 }) {
                     Ok(()) => 0,
-                    Err(error) => failed(true, "Butterpollo could not be updated", &error),
+                    Err(error) => failed(true, "Rubylight could not be updated", &error),
                 }
             }
             _ => failed(
@@ -190,7 +197,7 @@ fn run_install(args: &Arguments) -> i32 {
     if !args.quiet {
         let choice = ui::ask(
             TITLE,
-            &format!("Install Butterpollo {}", env!("CARGO_PKG_VERSION")),
+            &format!("Install Rubylight {}", env!("CARGO_PKG_VERSION")),
             &detect::summary(&found, &folder),
             "Install",
             (!args.no_gamepad_driver)
@@ -207,12 +214,9 @@ fn run_install(args: &Arguments) -> i32 {
         display_driver: !args.no_display_driver,
         start: !args.no_start,
     };
-    let result = ui::progress(
-        TITLE,
-        "Installing Butterpollo",
-        args.quiet,
-        move |progress| install::install(&options, &progress),
-    );
+    let result = ui::progress(TITLE, "Installing Rubylight", args.quiet, move |progress| {
+        install::install(&options, &progress)
+    });
     match result {
         Ok(outcome) => {
             for note in &outcome.notes {
@@ -233,10 +237,10 @@ fn run_install(args: &Arguments) -> i32 {
                 }
                 if ui::finished(
                     TITLE,
-                    "Butterpollo is installed",
+                    "Rubylight is installed",
                     &text,
                     true,
-                    Some("Open Butterpollo"),
+                    Some("Open Rubylight"),
                 ) {
                     open(&format!("https://localhost:{}", outcome.web_port));
                 }
@@ -244,7 +248,7 @@ fn run_install(args: &Arguments) -> i32 {
             if outcome.restart_needed { 3010 } else { 0 }
         }
         // install() has started again what it stopped.
-        Err(error) => failed(args.quiet, "Butterpollo could not be installed", &error),
+        Err(error) => failed(args.quiet, "Rubylight could not be installed", &error),
     }
 }
 fn run_uninstall(args: &Arguments) -> i32 {
@@ -255,8 +259,8 @@ fn run_uninstall(args: &Arguments) -> i32 {
     if !args.quiet {
         let choice = ui::ask(
             TITLE,
-            "Remove Butterpollo?",
-            "Streaming stops and the Butterpollo service is removed. The virtual display and gamepad drivers stay installed.",
+            "Remove Rubylight?",
+            "Streaming stops and the Rubylight service is removed. The virtual display and gamepad drivers stay installed.",
             "Remove",
             Some((
                 "Also delete settings, paired devices and logs",
@@ -268,17 +272,17 @@ fn run_uninstall(args: &Arguments) -> i32 {
         }
         options.factory_reset = choice.checked;
     }
-    let result = ui::progress(TITLE, "Removing Butterpollo", args.quiet, move |progress| {
+    let result = ui::progress(TITLE, "Removing Rubylight", args.quiet, move |progress| {
         uninstall::uninstall(&options, &progress)
     });
     match result {
         Ok(()) => {
             if !args.quiet {
-                ui::finished(TITLE, "Butterpollo was removed", "", true, None);
+                ui::finished(TITLE, "Rubylight was removed", "", true, None);
             }
             0
         }
-        Err(error) => failed(args.quiet, "Butterpollo could not be removed", &error),
+        Err(error) => failed(args.quiet, "Rubylight could not be removed", &error),
     }
 }
 fn failed(quiet: bool, heading: &str, error: &anyhow::Error) -> i32 {

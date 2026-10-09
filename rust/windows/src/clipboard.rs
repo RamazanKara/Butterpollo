@@ -18,7 +18,7 @@ impl Open {
             let owner = CreateWindowExW(
                 WINDOW_EX_STYLE(0),
                 w!("STATIC"),
-                w!("Butterpollo clipboard"),
+                w!("Rubylight clipboard"),
                 WINDOW_STYLE(0),
                 0,
                 0,

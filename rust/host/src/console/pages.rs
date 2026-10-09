@@ -89,7 +89,7 @@ fn readiness(meta: &Value) -> String {
             if display_ready {
                 "Ready to capture."
             } else if virtual_requested {
-                "Virtual display is unavailable. Start the installed Butterpollo service or select your physical display in Settings."
+                "Virtual display is unavailable. Start the installed Rubylight service or select your physical display in Settings."
             } else {
                 "No active display found. Turn on a monitor or set up a virtual display in Settings."
             },
@@ -935,7 +935,7 @@ async fn maintenance(
         match text(&updates, "phase") {
             "waiting" | "ready" => "The update is waiting for streams and apps to stop.",
             "downloading" => "Downloading the update.",
-            "installing" => "Installing the update. Butterpollo will restart shortly.",
+            "installing" => "Installing the update. Rubylight will restart shortly.",
             "failed" => "The update could not be installed.",
             _ if updates["checking"] == true => "Checking for updates.",
             _ if updates["update_available"] == true => "An update is available.",

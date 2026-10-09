@@ -15,7 +15,7 @@ pub fn run(folder: &Path, start: bool, progress: &Progress) -> Result<()> {
     let result = profile.join("update-result.json");
     let install = std::fs::canonicalize(folder)?;
     let service =
-        system::service_program(detect::SERVICE).context("Butterpollo service is not installed")?;
+        system::service_program(detect::SERVICE).context("Rubylight service is not installed")?;
     check_service_folder(&service, &install)?;
     // A reinstall may find the profile folder deleted; the lock lives in it.
     std::fs::create_dir_all(&profile)?;
@@ -49,8 +49,9 @@ pub fn run(folder: &Path, start: bool, progress: &Progress) -> Result<()> {
         .context("The update installer has no package")?
         .extract(&staged)?;
     let entries = payload::verify(&staged)?;
-    let previous = payload::manifest(&install)
-        .context("The installed package has no readable manifest; run the Butterpollo installer to repair it")?;
+    let previous = payload::manifest(&install).context(
+        "The installed package has no readable manifest; run the Rubylight installer to repair it",
+    )?;
     let paths = previous
         .iter()
         .chain(&entries)
@@ -59,7 +60,7 @@ pub fn run(folder: &Path, start: bool, progress: &Progress) -> Result<()> {
         .collect::<BTreeSet<_>>();
     install::ensure_idle(install::probe(&profile))?;
     write_result(&result, "installing", None)?;
-    progress.set("Stopping Butterpollo…");
+    progress.set("Stopping Rubylight…");
     stop_for_update(
         &result,
         || system::stop_service(detect::SERVICE),
@@ -95,7 +96,7 @@ pub fn run(folder: &Path, start: bool, progress: &Progress) -> Result<()> {
         || -> Result<()> {
             progress.set("Installing the update…");
             replace_package(&staged, &install, &entries)?;
-            progress.set("Checking that Butterpollo starts…");
+            progress.set("Checking that Rubylight starts…");
             if start {
                 system::start_service(detect::SERVICE)?;
                 install::wait_ready(install::probe(&profile), Some(env!("CARGO_PKG_VERSION")))?;
@@ -184,7 +185,7 @@ fn check_service_folder(service: &Path, install: &Path) -> Result<()> {
         || std::fs::canonicalize(service.parent().context("service program has no folder")?)?
             != install
     {
-        bail!("The update folder does not belong to the installed Butterpollo service");
+        bail!("The update folder does not belong to the installed Rubylight service");
     }
     Ok(())
 }

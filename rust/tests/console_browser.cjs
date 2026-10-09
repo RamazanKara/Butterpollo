@@ -31,7 +31,7 @@ assert(output && password, 'Set test artifact directory and test password');
     await page.getByLabel('Remember this device',{exact:true}).check();
     await page.getByRole('button',{name:'Sign in',exact:true}).click();
     assert.equal(page.url(),base+'/');
-    assert((await page.title()).includes('Butterpollo'));
+    assert((await page.title()).includes('Rubylight'));
     assert(await page.getByRole('heading',{name:'Connection checklist',exact:true}).isVisible());
     const metadata = await api('GET','/api/metadata');
     results.push({flow:'first_stream',status:metadata.paired_devices===0?'tested':'not_applicable_with_paired_devices'});

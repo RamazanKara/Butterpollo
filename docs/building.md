@@ -1,4 +1,4 @@
-# Build Butterpollo
+# Build Rubylight
 
 [Docs](README.md) · [Getting started](getting-started.md) · [Configuration](configuration.md)
 
@@ -20,7 +20,7 @@ Clone the repository and install the pinned toolchains in PowerShell:
 
 ```powershell
 git clone https://github.com/RamazanKara/Butterpollo.git
-cd Butterpollo
+cd Rubylight
 
 rustup toolchain install 1.98.1-x86_64-pc-windows-gnu --profile minimal --component rustfmt --component clippy
 rustup target add x86_64-pc-windows-msvc --toolchain 1.98.1-x86_64-pc-windows-gnu

@@ -1,4 +1,4 @@
-//! Windows platform layer of the Butterpollo host.
+//! Windows platform layer of the Rubylight host.
 //!
 //! Everything that calls Win32, Direct3D, Windows Graphics Capture or a GPU
 //! vendor SDK lives here: capture, Radeon compute colour conversion, the AMF,

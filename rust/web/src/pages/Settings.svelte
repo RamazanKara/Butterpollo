@@ -208,7 +208,7 @@
 
   async function restart() {
     const ok = await confirm({
-      title: 'Restart Butterpollo?',
+      title: 'Restart Rubylight?',
       message: 'Streams in progress disconnect. This console reconnects by itself when the host is back.',
       confirm: 'Restart',
     });
@@ -217,7 +217,7 @@
     try {
       await api.host.restart();
       saved = false;
-      notify('Butterpollo is restarting. This console reconnects when the host is back.', 'info', 8000);
+      notify('Rubylight is restarting. This console reconnects when the host is back.', 'info', 8000);
     } catch (error) {
       failed('Restart failed', error);
     } finally {

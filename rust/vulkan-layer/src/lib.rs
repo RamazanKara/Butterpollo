@@ -1,6 +1,6 @@
 //! Vulkan implicit layer that offers HDR surface formats on a virtual display.
 //!
-//! While a Butterpollo stream holds its HDR lease (a named event), the layer
+//! While a Rubylight stream holds its HDR lease (a named event), the layer
 //! adds HDR10 (A2B10G10R10, ST2084) and scRGB (R16G16B16A16 float, extended
 //! linear) to the formats a Win32 surface reports, so games can enable HDR on
 //! a virtual display whose driver does not advertise it. Every other call is

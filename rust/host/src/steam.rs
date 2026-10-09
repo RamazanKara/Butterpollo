@@ -151,7 +151,7 @@ fn store_portrait(folder: &Path, appid: u32) -> Option<PathBuf> {
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(3))
             .timeout(Duration::from_secs(10))
-            .user_agent("Butterpollo-Steam-Artwork/1.0")
+            .user_agent("Rubylight-Steam-Artwork/1.0")
             .build()?;
         tokio::runtime::Handle::current().block_on(async {
             let response = client.get(&url).send().await?.error_for_status()?;
@@ -375,7 +375,7 @@ pub fn games(h: &Shared, appid: Option<u32>) -> Result<Value> {
 pub fn launch(h: &Shared, appid: u32) -> Result<Value> {
     let _transition = h.launch_transition.lock().unwrap();
     if crate::updater::installing(h) {
-        bail!("Butterpollo is installing an update");
+        bail!("Rubylight is installing an update");
     }
     let settings = Settings::from_config(&h.config.read().unwrap());
     let (_, games) = catalog(&settings)?;

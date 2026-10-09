@@ -182,7 +182,7 @@ float4 picture(float4 p : SV_Position) : SV_Target {
             let window = Window(CreateWindowExW(
                 WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
                 w!("ButterpolloMotionProbe"),
-                w!("Butterpollo test motion"),
+                w!("Rubylight test motion"),
                 WS_POPUP | WS_VISIBLE,
                 display.x,
                 window_y,

@@ -14,7 +14,7 @@
 
   async function restart() {
     const ok = await confirm({
-      title: 'Restart Butterpollo?',
+      title: 'Restart Rubylight?',
       message: 'Streams in progress disconnect. This console reconnects by itself when the host is back.',
       confirm: 'Restart',
     });
@@ -35,7 +35,7 @@
         await refreshMetadata();
         if (away || Date.now() - started > 10_000) {
           phase = 'running';
-          notify('Butterpollo restarted.', 'ok');
+          notify('Rubylight restarted.', 'ok');
           return;
         }
       } catch {
@@ -47,9 +47,9 @@
 
   async function quit() {
     const ok = await confirm({
-      title: 'Quit Butterpollo?',
+      title: 'Quit Rubylight?',
       message:
-        'Streaming stops and this console goes offline.\n\nWhen Butterpollo runs as a service, Windows restarts it after a crash but not after Quit. It stays stopped until you start the service again or restart the PC.',
+        'Streaming stops and this console goes offline.\n\nWhen Rubylight runs as a service, Windows restarts it after a crash but not after Quit. It stays stopped until you start the service again or restart the PC.',
       confirm: 'Quit',
       danger: true,
     });
@@ -87,7 +87,7 @@
     {:else if phase === 'late'}
       <p class="notice warn" role="alert">The host has not come back after 90 seconds. Check the PC, then reload this page.</p>
     {:else if phase === 'stopped'}
-      <p class="notice danger" role="status">Butterpollo has stopped. This console is offline until the host starts again.</p>
+      <p class="notice danger" role="status">Rubylight has stopped. This console is offline until the host starts again.</p>
     {/if}
     <div class="row">
       <Button icon="refresh" busy={phase === 'restarting'} disabled={phase === 'stopped'} onclick={restart}>Restart</Button>

@@ -1,5 +1,5 @@
 name: Bug report
-description: Something in Butterpollo does not work as described.
+description: Something in Rubylight does not work as described.
 labels: [bug]
 body:
   - type: textarea
@@ -20,7 +20,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: Butterpollo version
+      label: Rubylight version
       description: Shown in the console under Maintenance, for example 2.0.0-rc.23.
     validations:
       required: true
