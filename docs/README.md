@@ -1,6 +1,6 @@
 # Butterpollo documentation
 
-[Butterpollo](../README.md) · [Download rc.28](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.28) · [Release notes](../rust/RELEASE_NOTES.md)
+[Butterpollo](../README.md) · [Download rc.29](https://github.com/RamazanKara/Butterpollo/releases/tag/2.0.0-rc.29) · [Release notes](../rust/RELEASE_NOTES.md)
 
 Butterpollo is a Windows game-streaming host written in Rust, built around Radeon compute and Moonlight. Start with the setup guide, then choose the details that matter to your stream.
 

@@ -1,10 +1,16 @@
-# Butterpollo 2.0.0-rc.28 release candidate for Windows
+# Butterpollo 2.0.0-rc.29 release candidate for Windows
 
 [Documentation](../docs/README.md) · [Install and migrate](../docs/getting-started.md) · [Configuration](../docs/configuration.md) · [Compatibility](PARITY.md)
 
-**Release history:** [rc.28](#new-in-rc28) · [rc.27](#new-in-rc27) · [rc.26](#new-in-rc26) · [rc.25](#new-in-rc25) · [rc.24](#new-in-rc24) · [rc.23](#new-in-rc23) · [rc.22](#new-in-rc22) · [rc.21](#new-in-rc21) · [rc.20](#new-in-rc20) · [rc.19](#new-in-rc19) · [rc.18](#new-in-rc18) · [rc.17](#new-in-rc17) · [rc.16](#new-in-rc16) · [rc.15](#new-in-rc15) · [rc.14](#new-in-rc14) · [rc.13](#new-in-rc13) · [rc.12](#new-in-rc12) · [rc.11](#new-in-rc11) · [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
+**Release history:** [rc.29](#new-in-rc29) · [rc.28](#new-in-rc28) · [rc.27](#new-in-rc27) · [rc.26](#new-in-rc26) · [rc.25](#new-in-rc25) · [rc.24](#new-in-rc24) · [rc.23](#new-in-rc23) · [rc.22](#new-in-rc22) · [rc.21](#new-in-rc21) · [rc.20](#new-in-rc20) · [rc.19](#new-in-rc19) · [rc.18](#new-in-rc18) · [rc.17](#new-in-rc17) · [rc.16](#new-in-rc16) · [rc.15](#new-in-rc15) · [rc.14](#new-in-rc14) · [rc.13](#new-in-rc13) · [rc.12](#new-in-rc12) · [rc.11](#new-in-rc11) · [rc.10](#new-in-rc10) · [rc.9](#new-in-rc9) · [rc.8](#new-in-rc8) · [rc.7](#new-in-rc7) · [rc.6](#new-in-rc6) · [rc.5](#new-in-rc5) · [rc.4](#new-in-rc4) · [rc.3](#new-in-rc3) · [rc.2](#new-in-rc2)
 
-Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.28 installer is named `butterpollo-setup-2.0.0-rc.28.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+Butterpollo's host, native helpers, service and setup are written in Rust, with a Svelte web console. The rc.29 installer is named `butterpollo-setup-2.0.0-rc.29.exe` and upgrades an existing Vibepollo or Butterpollo installation in place, keeping settings, paired devices, the app library and covers. Codec SDKs and Windows drivers remain external components; the setup installs the drivers.
+
+## New in rc.29
+
+- **A keyframe request no longer holds back a moving game.** When a client lost a packet and asked for a keyframe, or for lost reference frames to be invalidated, rc.28 encoded the picture already sent again at once, and since rc.27 that counted toward the stream's frame rate. On a moving picture that sent the old picture twice and pushed the game's next frame back. With a game held at the stream's frame rate, for example by RTSS, frames then went out late and unevenly for about a second after each request. Now the request rides the game's next new frame; a still screen still gets its keyframe at once. Checked on the RX 7900 XT host at 120 fps HDR with 20 requests per 35 s run. Pictures sent twice went from 19 to 0 per run, worst picture age from 22-25 ms to 14-15 ms and p95 from 12-13 ms to 10-11 ms. With the picture changing at 240 Hz, pictures sent twice went from 8-10 to 0. A keyframe on a moving picture now arrives about 3 ms later (9.1 instead of 6.2 ms at 120 fps), because it waits for the new frame. On a still 1080p120 desktop it still arrives in 2.4 ms. Not yet tried over Wi-Fi with real packet loss.
+- **The physical monitor stays off when a fullscreen game loses focus.** With the virtual display layout set to exclusive, pressing the Win key or Alt+Tab in an exclusive-fullscreen game made Windows switch the physical monitor back on, and it stayed on for the rest of the stream. While such a stream runs, Butterpollo now saves the stream's layout as the one Windows remembers for these displays, so Windows has nothing to switch back on. The saved layout is put back when the stream ends, or at the next stream if the host stopped without doing so. If Windows switches the monitor on anyway, for example at Ctrl+Alt+Del, the stream turns it off again once it has been on for half a second. Checked with unit tests and a Windows build check; not yet tried on a host.
+- **Under the hood:** the release check now also streams HEVC with 16 keyframe requests while the picture moves at the stream's frame rate, and fails if the host encodes an unchanged picture again. rc.28 did so for 10 of the 16 requests.
 
 ## New in rc.28
 
@@ -387,8 +393,8 @@ Current automated validation: 263 ordinary tests passed, with 27 environment-dep
 
 ## Install
 
-- `butterpollo-setup-2.0.0-rc.28.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
-- For a portable copy, extract `butterpollo-rust-2.0.0-rc.28-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
+- `butterpollo-setup-2.0.0-rc.29.exe` installs or upgrades the host, the `ApolloService` service, the virtual display and gamepad drivers, firewall rules and shortcuts, and can uninstall them. Settings, paired devices, the library and covers are kept.
+- For a portable copy, extract `butterpollo-rust-2.0.0-rc.29-windows-x64.zip` and open **Start Butterpollo.exe**. The first launch offers to import a Vibepollo or Apollo profile and leaves the original untouched. Install the drivers separately in that case.
 - These are unsigned test builds. Keep a copy of your configuration and the previous installer for rollback.
 
 ## Lower latency
