@@ -1,5 +1,4 @@
 //! Service supervisor; the child is the Rust streaming executable in the active session.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use anyhow::{Context, Result};
 use std::{

@@ -1,5 +1,4 @@
 //! Rust-owned D3D11/Vulkan PyroWave encoder using the stable 2.0 bitstream.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use crate::{
     capture::{Device, GpuImage, Image, Pixel},

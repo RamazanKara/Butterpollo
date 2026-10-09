@@ -1,5 +1,4 @@
 //! Saved display layouts and stream settings leases with restoration.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use super::hdr::{HdrAction, hdr_action, restore_hdr};
 use super::modes::{Timing, supported_modes};

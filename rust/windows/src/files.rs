@@ -1,5 +1,4 @@
 //! Drives on this PC, for the console's file picker.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 /// The drive roots Windows reports, e.g. `C:\`.
 pub fn drives() -> Vec<String> {

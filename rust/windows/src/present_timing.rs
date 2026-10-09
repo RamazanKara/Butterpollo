@@ -1,5 +1,4 @@
 //! Owned DXGI ETW tracking. Failure keeps the original WGC composition time.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use crate::capture::qpc_frequency;
 use butterpollo_core::present_timing::Refiner;

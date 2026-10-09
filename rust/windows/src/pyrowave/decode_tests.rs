@@ -1,5 +1,3 @@
-#![warn(clippy::undocumented_unsafe_blocks)]
-
 use super::{Api, check};
 use crate::{
     capture::{ComGuard, Device, GpuImage, Image, Pixel},

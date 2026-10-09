@@ -1,5 +1,4 @@
 //! Per-user Vulkan layer registration and reference-counted HDR activation.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use crate::text::to_wide;
 use anyhow::{Context, Result, bail};

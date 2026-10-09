@@ -35,6 +35,8 @@ impl Backend {
         data: &[u8],
         output: usize,
     ) -> windows::core::Result<Vec<u8>> {
+        // SAFETY: self owns a synchronous device handle; both initialized buffers and
+        // the byte-count output live through DeviceIoControl, with lengths within their allocations.
         unsafe {
             let mut result = vec![0; output];
             let mut n = 0;
@@ -125,6 +127,8 @@ fn decode_feedback(result: windows::core::Result<Vec<u8>>) -> Result<Option<(u16
 
 impl Drop for Backend {
     fn drop(&mut self) {
+        // SAFETY: open_interface transferred this handle to Backend, which closes it
+        // exactly once after its synchronous I/O has completed.
         unsafe {
             let _ = CloseHandle(self.0);
         }

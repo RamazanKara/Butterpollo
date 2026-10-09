@@ -26,6 +26,8 @@ fn timings(skip: impl Fn(&Monitor) -> bool) -> Result<Vec<Timing>> {
         .filter(|m| !skip(m))
         .map(|m| {
             let mode = mode(&m.display_name)?;
+            // SAFETY: mode() returns an initialized display DEVMODEW, whose display
+            // union member contains dmPosition.
             let position = unsafe { mode.Anonymous1.Anonymous2.dmPosition };
             Ok((
                 m.device_id.clone(),
@@ -61,6 +63,8 @@ fn switch_off(target: &Monitor) -> Result<()> {
         .filter(|p| !(p.targetInfo.adapterId == target.adapter && p.targetInfo.id == target.target))
         .copied()
         .collect();
+    // SAFETY: The initialized paths and modes from QueryDisplayConfig remain live
+    // throughout the synchronous call; filtering preserves their mode indices.
     check(unsafe {
         SetDisplayConfig(
             Some(&on),

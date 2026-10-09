@@ -1,6 +1,5 @@
 //! Endpoint routing is shared by stream owners and restored after the last
 //! owner, including host crashes. Capture-only sinks never alter defaults.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use crate::text::to_wide;
 use anyhow::{Context, Result, bail};

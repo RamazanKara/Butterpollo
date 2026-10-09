@@ -1,5 +1,4 @@
 //! Synthetic touch contacts and pen frames with pointer refresh.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use super::*;
 

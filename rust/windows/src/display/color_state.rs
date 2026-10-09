@@ -61,6 +61,8 @@ pub(super) fn query(adapter: LUID, target: u32) -> Result<State> {
         header: header(GET_COLOR_INFO_2, size_of::<ColorInfo2>(), adapter, target),
         ..Default::default()
     };
+    // SAFETY: ColorInfo2 has the C layout and header type/size required by GET_COLOR_INFO_2;
+    // its initialized storage remains writable throughout the synchronous query.
     let code = unsafe { DisplayConfigGetDeviceInfo(&mut color.header) };
     if code == 0 {
         return Ok(modern_state(color.flags, color.active_mode));
@@ -77,7 +79,10 @@ pub(super) fn query(adapter: LUID, target: u32) -> Result<State> {
         ),
         ..Default::default()
     };
+    // SAFETY: The initialized legacy structure has the matching header type and size
+    // and remains writable throughout the query.
     check(unsafe { DisplayConfigGetDeviceInfo(&mut legacy.header) })?;
+    // SAFETY: The successful query initialized the advanced-color flags union.
     Ok(legacy_state(unsafe { legacy.Anonymous.value }))
 }
 
@@ -92,6 +97,8 @@ fn apply(adapter: LUID, target: u32, enabled: bool, modern: bool) -> Result<()> 
             enabled: u32::from(enabled),
         };
         // A failed HDR request must not fall back to toggling unrelated WCG.
+        // SAFETY: SetHdr has the C layout and header type/size required by SET_HDR_STATE;
+        // its initialized storage lives through the synchronous call.
         check(unsafe { DisplayConfigSetDeviceInfo(&state.header) })?;
     } else {
         let state = DISPLAYCONFIG_SET_ADVANCED_COLOR_STATE {
@@ -105,6 +112,8 @@ fn apply(adapter: LUID, target: u32, enabled: bool, modern: bool) -> Result<()> 
                 value: u32::from(enabled),
             },
         };
+        // SAFETY: The legacy state and flags are initialized with the matching header
+        // type and size, and the structure lives through the synchronous call.
         check(unsafe { DisplayConfigSetDeviceInfo(&state.header) })?;
     }
     Ok(())

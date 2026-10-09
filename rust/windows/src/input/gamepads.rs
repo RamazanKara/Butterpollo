@@ -1,5 +1,4 @@
 //! Virtual gamepad lifecycle, controller reports, and feedback.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use super::*;
 

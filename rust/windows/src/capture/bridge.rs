@@ -4,7 +4,6 @@
 //! 0x80070424). Only capture runs in the user process; the host keeps its service
 //! identity for input, display recovery and credentials. A private local pipe
 //! carries metadata. Three unnamed keyed textures carry pixels, never the CPU.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use super::*;
 use crate::ipc::Pipe;

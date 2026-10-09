@@ -1,5 +1,4 @@
 //! WDDM scheduling applies to this process only; no system HAGS setting changes.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use anyhow::{Context, Result, bail};
 use libloading::Library;

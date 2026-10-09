@@ -1,5 +1,4 @@
 //! Optional Rust NGX adapter; creation, conversion and teardown stay on one thread.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use crate::capture::{Device, GpuImage, GpuPool, Image, Pixel, read_texture};
 use anyhow::{Context, Result, bail};

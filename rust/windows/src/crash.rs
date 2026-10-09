@@ -1,5 +1,4 @@
 //! Local minidumps for unhandled native exceptions and Rust panics.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};

@@ -2,7 +2,6 @@
 //! installer allows the host on every network, but a block rule (left when
 //! Windows' "allow access" prompt was dismissed, for instance on a network
 //! marked public) overrides any allow rule.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use anyhow::Result;
 use windows::{

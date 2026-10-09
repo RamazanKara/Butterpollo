@@ -1,6 +1,5 @@
 //! Playnite on this PC: where it is installed, where its extensions go, and
 //! the named pipe its Butterpollo (Vibepollo) plugin serves.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use anyhow::{Context, Result, bail};
 use std::{

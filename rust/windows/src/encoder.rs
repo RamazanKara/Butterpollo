@@ -30,11 +30,14 @@ pub(crate) fn check(code: i32) -> Result<()> {
         return Ok(());
     }
     let mut text = [0i8; 256];
+    // SAFETY: text is writable for the exact capacity supplied to av_strerror.
     unsafe {
         ff::av_strerror(code, text.as_mut_ptr(), text.len());
     }
     bail!(
         "FFmpeg: {}",
+        // SAFETY: av_strerror writes a terminated string within text, which was
+        // zero-initialized and remains live while CStr borrows it.
         unsafe { CStr::from_ptr(text.as_ptr()) }.to_string_lossy()
     )
 }
@@ -58,6 +61,9 @@ pub struct Convert {
 }
 impl Convert {
     pub fn new(width: u32, height: u32, pixel: i32) -> Result<Self> {
+        // SAFETY: The allocated frame is checked for null before access and transferred
+        // to Self for one av_frame_free; av_frame_get_buffer validates the format and
+        // dimensions and allocates the planes before a usable converter is returned.
         unsafe {
             let frame = ff::av_frame_alloc();
             if frame.is_null() {
@@ -135,6 +141,11 @@ impl Convert {
         } else if image.pixel != crate::capture::Pixel::Bgra8 {
             bail!("HDR surface supplied to an SDR converter");
         }
+        // SAFETY: self owns the frame and swscale context; make_writable provides
+        // exclusive destination planes, and letterbox keeps offsets within them.
+        // The layout check covers stored source rows. Nonempty HDR input dimensions
+        // and padding for swscale paths that read past a plane are also required;
+        // neither is guaranteed here, and zero-sized HDR input leaves scratch empty.
         unsafe {
             check(ff::av_frame_make_writable(self.frame))?;
             let source = if self.hdr {
@@ -278,6 +289,8 @@ unsafe fn plane_offsets(
     x: u32,
     y: u32,
 ) -> Result<[usize; 4]> {
+    // SAFETY: Callers retain a live AVFrame with linesizes for pixel; FFmpeg returns
+    // a static descriptor or null, checked before access, with at most four components.
     unsafe {
         let Some(format) = ff::av_pix_fmt_desc_get(pixel).as_ref() else {
             bail!("unknown pixel format {pixel}");
@@ -307,6 +320,8 @@ unsafe fn plane_offsets(
 }
 impl Drop for Convert {
     fn drop(&mut self) {
+        // SAFETY: The frame and non-null context are exclusively owned allocations
+        // from FFmpeg, and no conversion is running when they are freed once here.
         unsafe {
             ff::av_frame_free(&mut self.frame);
             if !self.context.is_null() {
@@ -354,6 +369,10 @@ impl Ffmpeg {
         image: Option<&GpuImage>,
     ) -> Result<Self> {
         let settings = butterpollo_core::encoder_policy::ffmpeg(tuning, config, name)?;
+        // SAFETY: FFmpeg's codec descriptor is static, allocations are null-checked
+        // before access, and context/packet ownership is transferred to Self or freed
+        // on error. CString arguments live through calls; dictionary entries are copied
+        // before freeing the dictionary, and native.frames() transfers an owned reference.
         unsafe {
             let codec = ff::avcodec_find_encoder_by_name(c(name).as_ptr());
             if codec.is_null() {
@@ -553,6 +572,10 @@ impl Ffmpeg {
         bitrate_kbps: u32,
         presentation: std::time::Instant,
     ) -> Result<Vec<Encoded>> {
+        // SAFETY: Internal callers retain the live frame, while self owns the codec
+        // context and packet exclusively. Successful receive initializes the packet,
+        // whose bounded data is copied before unref. Slice creation also requires
+        // non-null data for an empty packet; the size check below does not establish that.
         unsafe {
             let bitrate = i64::from(bitrate_kbps) * 1000;
             if bitrate != (*self.context).bit_rate {
@@ -606,6 +629,8 @@ impl Ffmpeg {
 }
 impl Drop for Ffmpeg {
     fn drop(&mut self) {
+        // SAFETY: Self owns both FFmpeg allocations and frees each once after all
+        // encode calls; the converter and native frame owners remain alive during cleanup.
         unsafe {
             ff::av_packet_free(&mut self.packet);
             ff::avcodec_free_context(&mut self.context);
@@ -626,6 +651,8 @@ fn native_backend(vendor: u32, adapter: &str) -> Option<&'static str> {
 }
 fn native_for(device: &crate::capture::Device) -> Option<&'static str> {
     use windows::{Win32::Graphics::Dxgi::IDXGIDevice, core::Interface};
+    // SAFETY: The borrowed D3D device and each queried COM interface retain their
+    // references through the synchronous adapter query; no raw pointers escape.
     let vendor = unsafe {
         device
             .device
@@ -1123,6 +1150,8 @@ mod tests {
         };
         let mut convert = Convert::new(64, 32, ff::AVPixelFormat_AV_PIX_FMT_YUV420P).unwrap();
         convert.convert(&image).unwrap();
+        // SAFETY: Conversion initialized the owned 64x32 luma plane; every call below
+        // uses x < 64 and y < 32, with the allocation's linesize and a live converter.
         let luma = |x: usize, y: usize| unsafe {
             *(*convert.frame).data[0].add(y * (*convert.frame).linesize[0] as usize + x)
         };
@@ -1130,6 +1159,8 @@ mod tests {
             assert_eq!([luma(0, y), luma(15, y), luma(48, y), luma(63, y)], [16; 4]);
             assert_eq!([luma(16, y), luma(32, y), luma(47, y)], [235; 3]);
         }
+        // SAFETY: The live YUV420P frame has an initialized 32x16 chroma plane, so
+        // byte 2 is inside that allocation.
         let chroma = unsafe { *(*convert.frame).data[1].add(2) };
         assert_eq!(chroma, 128);
     }

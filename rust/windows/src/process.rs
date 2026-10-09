@@ -1,5 +1,4 @@
 //! User-session process creation with ownership of the complete Windows job.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use anyhow::{Context, Result, bail};
 use std::{

@@ -1,5 +1,4 @@
 //! Input desktop attachment and scoped display work.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use super::*;
 

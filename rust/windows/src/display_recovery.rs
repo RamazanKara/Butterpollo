@@ -65,6 +65,8 @@ static WATCH: Mutex<Option<Child>> = Mutex::new(None);
 struct JournalLock(HANDLE);
 impl Drop for JournalLock {
     fn drop(&mut self) {
+        // SAFETY: lock() acquired this mutex on the current thread, and its local
+        // guard owns the handle until this single release and close.
         unsafe {
             let _ = ReleaseMutex(self.0);
             let _ = CloseHandle(self.0);
@@ -79,6 +81,8 @@ fn lock(path: &Path) -> Result<JournalLock> {
     )
     .encode_utf16()
     .collect();
+    // SAFETY: name is terminated and lives through CreateMutexW. The returned handle
+    // is either closed on failure or transferred to a guard after this thread acquires it.
     unsafe {
         let handle = CreateMutexW(None, false, windows::core::PCWSTR(name.as_ptr()))?;
         let result = WaitForSingleObject(handle, 30000);
@@ -91,6 +95,8 @@ fn lock(path: &Path) -> Result<JournalLock> {
 }
 
 fn identity(pid: u32) -> Result<Option<u64>> {
+    // SAFETY: OpenProcess supplies an owned query handle; the four initialized outputs
+    // remain writable for GetProcessTimes, and the handle is closed exactly once afterward.
     unsafe {
         if pid == 0 {
             return Ok(None);
@@ -509,6 +515,8 @@ pub fn wait_and_recover(pid: u32, directory: &Path) -> Result<()> {
     if owner.pid != pid {
         return Ok(());
     }
+    // SAFETY: The successfully opened process handle has synchronization rights and
+    // remains owned until the wait finishes; every exit path closes it exactly once.
     unsafe {
         match OpenProcess(
             PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,

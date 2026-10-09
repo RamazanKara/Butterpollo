@@ -1,5 +1,4 @@
 //! Wrap the Rust D3D11 converter's GPU texture in AMF's native surface ABI.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use crate::{
     amf::check,

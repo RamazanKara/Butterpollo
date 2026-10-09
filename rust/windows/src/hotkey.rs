@@ -1,6 +1,5 @@
 //! The display restore hotkey: a thread that owns the registration and
 //! reports each press.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use anyhow::{Context, Result};
 use std::sync::mpsc;

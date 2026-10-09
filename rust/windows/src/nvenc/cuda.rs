@@ -1,6 +1,5 @@
 //! CUDA driver interop for NVENC's 10-bit planar 4:4:4 input.
 //! Only the installed driver is loaded; no CUDA toolkit or CPU readback is used.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use crate::{capture::Device, cuda_abi::*};
 use anyhow::{Context as _, Result, bail};

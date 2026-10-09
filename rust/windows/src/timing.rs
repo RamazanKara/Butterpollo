@@ -1,5 +1,3 @@
-#![warn(clippy::undocumented_unsafe_blocks)]
-
 use anyhow::Result;
 use std::time::{Duration, Instant};
 use windows::{

@@ -1,5 +1,4 @@
 //! Where Steam is installed on this PC.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use std::path::PathBuf;
 use windows::{

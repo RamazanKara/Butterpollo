@@ -1,5 +1,4 @@
 //! D3D11 conversion owned by the Rust host. No readback or vendor tone mapping.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use crate::capture::{Device, GpuImage, Pixel};
 use anyhow::{Context, Result, bail};

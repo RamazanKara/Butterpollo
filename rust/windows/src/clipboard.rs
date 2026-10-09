@@ -1,5 +1,3 @@
-#![warn(clippy::undocumented_unsafe_blocks)]
-
 use anyhow::{Result, bail};
 use windows::{
     Win32::{

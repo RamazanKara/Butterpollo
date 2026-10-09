@@ -9,7 +9,6 @@
 //! on one compute queue ([`Handoff`]) and converted to the encoder's YUV
 //! format on another ([`Converter`]); the encoder waits for the conversion's
 //! fence on the GPU.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use anyhow::{Context, Result, bail};
 use std::{

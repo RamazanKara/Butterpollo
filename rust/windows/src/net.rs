@@ -1,5 +1,4 @@
 //! Avoid stale UDP ICMP errors aborting a subsequent streaming client.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use anyhow::Result;
 use std::{

@@ -1,5 +1,4 @@
 //! First-run and repeated-launch experience for the portable Windows package.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use crate::text::to_wide;
 use anyhow::{Context, Result, bail};

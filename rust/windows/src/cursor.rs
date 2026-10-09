@@ -1,5 +1,4 @@
 //! Desktop Duplication's separately supplied hardware pointer.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use crate::capture::Device;
 use anyhow::{Result, bail};

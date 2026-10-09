@@ -1,5 +1,4 @@
 //! Private, bounded local IPC for owned user-session helpers.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use crate::text::to_wide;
 use anyhow::{Context, Result, ensure};

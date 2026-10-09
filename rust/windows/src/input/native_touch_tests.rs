@@ -10,6 +10,8 @@ const HID_INTERFACE: GUID = GUID::from_u128(0x4d1e55b2_f16f_11cf_88cb_0011110000
 struct DeviceSet(HDEVINFO);
 impl Drop for DeviceSet {
     fn drop(&mut self) {
+        // SAFETY: DeviceSet owns the successful SetupDiGetClassDevsW result and
+        // destroys it exactly once after all enumeration calls have returned.
         let _ = unsafe { SetupDiDestroyDeviceInfoList(self.0) };
     }
 }
@@ -17,11 +19,16 @@ impl Drop for DeviceSet {
 pub(super) struct HidHandle(pub(super) HANDLE);
 impl Drop for HidHandle {
     fn drop(&mut self) {
+        // SAFETY: HidHandle owns the successful CreateFileW result; synchronous I/O
+        // has completed and this is its only close.
         let _ = unsafe { CloseHandle(self.0) };
     }
 }
 
 pub(super) fn hid_paths() -> Result<BTreeSet<String>> {
+    // SAFETY: Sized SetupAPI structures and the owned device set live through every
+    // call. The checked size fits the u64-aligned detail buffer; a successful query
+    // initializes its terminated DevicePath, which is read before the buffer is dropped.
     unsafe {
         let set = DeviceSet(SetupDiGetClassDevsW(
             Some(&HID_INTERFACE),
@@ -79,6 +86,8 @@ pub(super) fn new_hid(
         version: u16,
     }
     type GetAttributes = unsafe extern "system" fn(HANDLE, *mut Attributes) -> u8;
+    // SAFETY: Attributes has the C HIDD_ATTRIBUTES layout and GetAttributes matches
+    // HidD_GetAttributes's ABI; the caller's HID library outlives the symbol.
     let get: libloading::Symbol<GetAttributes> = unsafe { library.get(b"HidD_GetAttributes\0")? };
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -88,6 +97,8 @@ pub(super) fn new_hid(
         // not contain the USB VID/PID spelling. Identify via HID attributes.
         for path in paths.difference(before) {
             let wide: Vec<_> = path.encode_utf16().chain([0]).collect();
+            // SAFETY: wide is a terminated device path that lives through CreateFileW;
+            // the successful, non-overlapped handle is immediately owned by HidHandle.
             let Ok(handle) = (unsafe {
                 CreateFileW(
                     PCWSTR(wide.as_ptr()),
@@ -108,6 +119,8 @@ pub(super) fn new_hid(
                 product: 0,
                 version: 0,
             };
+            // SAFETY: The handle is live and attributes is initialized, correctly sized,
+            // aligned C storage that remains writable throughout the synchronous call.
             if unsafe { get(handle.0, &mut attributes) } != 0
                 && attributes.vendor == vendor
                 && attributes.product == product
@@ -141,9 +154,13 @@ struct Contact {
 
 fn contacts(hid: &HidHandle, library: &libloading::Library, profile: u16) -> Result<[Contact; 2]> {
     type GetInputReport = unsafe extern "system" fn(HANDLE, *mut std::ffi::c_void, u32) -> u8;
+    // SAFETY: GetInputReport matches HidD_GetInputReport's ABI and the caller's HID
+    // library remains loaded while the symbol is used.
     let get: libloading::Symbol<GetInputReport> = unsafe { library.get(b"HidD_GetInputReport\0")? };
     let mut report = [0u8; 64];
     report[0] = 1;
+    // SAFETY: hid retains the open device and report is a writable, initialized buffer
+    // with the requested report ID and its exact byte capacity passed to the call.
     if unsafe { get(hid.0, report.as_mut_ptr().cast(), report.len() as u32) } == 0 {
         return Err(windows::core::Error::from_thread().into());
     }
@@ -184,6 +201,8 @@ fn send(pads: &mut Gamepads, touchpad: u8, event: u8, pointer: u32, x: f32, y: f
 fn primary_multitouch_and_secondary_isolation_match_native_hid_reports() -> Result<()> {
     // Absolute system path avoids loading a lookalike DLL from the working dir.
     let system = std::env::var("SystemRoot").context("SystemRoot is missing")?;
+    // SAFETY: This loads the Windows HID DLL, whose initialization/cleanup needs no
+    // caller setup; library retains the module for all borrowed symbol calls below.
     let library = unsafe { libloading::Library::new(format!("{system}\\System32\\hid.dll"))? };
     for (profile, product, height) in [(5, 0x09cc, 942u16), (6, 0x0ce6, 1080)] {
         let before = hid_paths()?;
@@ -270,6 +289,8 @@ pub(super) fn wait_removed(path: &str) -> Result<()> {
 #[ignore = "creates temporary neutral VHF controllers; requires the installed signed driver and a coordinated idle input session"]
 fn two_announced_touchpads_share_one_native_surface_side_by_side() -> Result<()> {
     let system = std::env::var("SystemRoot").context("SystemRoot is missing")?;
+    // SAFETY: This loads the Windows HID DLL, whose initialization/cleanup needs no
+    // caller setup; library retains the module for all borrowed symbol calls below.
     let library = unsafe { libloading::Library::new(format!("{system}\\System32\\hid.dll"))? };
     for (profile, product, height) in [(5, 0x09cc, 942u16), (6, 0x0ce6, 1080)] {
         let before = hid_paths()?;

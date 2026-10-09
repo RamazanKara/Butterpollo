@@ -1,6 +1,5 @@
 //! A driver function table exercises the real session owner and submission
 //! path without requiring NVIDIA hardware. Hardware decode is a separate test.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use super::*;
 use std::{

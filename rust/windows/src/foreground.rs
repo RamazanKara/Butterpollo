@@ -1,6 +1,5 @@
 //! Read-only visible window stack, including passive shell/compositor
 //! overlays, and the foreground window's process.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use crate::capture::Display;
 use std::sync::{Arc, Mutex, mpsc};

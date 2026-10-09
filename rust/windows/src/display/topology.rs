@@ -1,5 +1,4 @@
 //! Display identities, topology queries, and desktop route changes.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use super::modes::{apply_mode_with, timing_matches};
 use super::*;

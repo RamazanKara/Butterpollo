@@ -75,6 +75,8 @@ fn idle_host() -> Result<()> {
 
 fn system_library(name: &str) -> Result<libloading::Library> {
     let system = std::env::var("SystemRoot").context("SystemRoot is missing")?;
+    // SAFETY: Callers select Windows HID or XInput DLLs from System32; their loader
+    // initialization/cleanup has no additional caller requirements, and Library owns the module.
     Ok(unsafe { libloading::Library::new(format!("{system}\\System32\\{name}"))? })
 }
 
@@ -138,10 +140,16 @@ fn xbox_rumble_reaches_feedback_from_xinput() -> Result<()> {
     let library = system_library("xinput1_4.dll")?;
     type GetState = unsafe extern "system" fn(u32, *mut [u32; 4]) -> u32;
     type SetState = unsafe extern "system" fn(u32, *const [u16; 2]) -> u32;
+    // SAFETY: The signature matches XInputGetState: [u32; 4] has XINPUT_STATE's
+    // 16-byte size and 4-byte alignment, and library outlives the symbol.
     let get: libloading::Symbol<GetState> = unsafe { library.get(b"XInputGetState\0")? };
+    // SAFETY: The signature matches XInputSetState and its two-u16 XINPUT_VIBRATION
+    // input; library remains loaded for every use of the symbol.
     let set: libloading::Symbol<SetState> = unsafe { library.get(b"XInputSetState\0")? };
     let connected = || {
         (0..4)
+            // SAFETY: The index is in XInput's 0..4 range and the aligned, initialized
+            // output has room for the entire XINPUT_STATE for this synchronous call.
             .filter(|&id| unsafe { get(id, &mut [0; 4]) } == ERROR_SUCCESS.0)
             .collect::<Vec<_>>()
     };
@@ -170,6 +178,8 @@ fn xbox_rumble_reaches_feedback_from_xinput() -> Result<()> {
         // Full and zero strengths survive the HID percentage quantization.
         for strengths in [[u16::MAX, 0], [0, u16::MAX], [0, 0]] {
             idle_host()?;
+            // SAFETY: index came from the 0..4 enumeration, and strengths has the
+            // initialized XINPUT_VIBRATION layout and lives through the call.
             assert_eq!(unsafe { set(index, &strengths) }, ERROR_SUCCESS.0);
             println!("XInputSetState: {strengths:?}");
             rumble(&mut pad.0, 4, strengths[0], strengths[1])?;
@@ -239,6 +249,8 @@ fn hid_rumble_reaches_feedback_for_each_profile() -> Result<()> {
             };
             idle_host()?;
             let mut written = 0;
+            // SAFETY: hid owns a synchronous write handle, and output and written
+            // remain valid until WriteFile returns; the slice supplies its exact length.
             unsafe { WriteFile(hid.0, Some(&output), Some(&mut written), None)? };
             assert_eq!(written as usize, output.len());
             println!("profile={profile} HID WriteFile: {output:02x?}");

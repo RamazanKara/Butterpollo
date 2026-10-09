@@ -1,5 +1,4 @@
 //! Display modes, refresh rates, and DPI scaling.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use super::*;
 

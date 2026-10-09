@@ -32,6 +32,8 @@ fn target_identity(path: &DISPLAYCONFIG_PATH_INFO) -> Result<String> {
         ),
         ..Default::default()
     };
+    // SAFETY: The initialized target-name structure has the matching header type
+    // and size and remains writable throughout the query.
     check(unsafe { DisplayConfigGetDeviceInfo(&mut name.header) })?;
     Ok(wide(&name.monitorDevicePath).to_ascii_lowercase())
 }
@@ -132,8 +134,12 @@ fn referenced_modes(
         .iter()
         .map(|path| {
             let mut path = *path;
+            // SAFETY: These paths were queried without virtual-mode awareness, so
+            // the source modeInfoIdx union field is initialized; remap checks bounds.
             path.sourceInfo.Anonymous.modeInfoIdx =
                 remap(unsafe { path.sourceInfo.Anonymous.modeInfoIdx })?;
+            // SAFETY: The same non-virtual query initialized the target modeInfoIdx
+            // union field, and remap checks it against the mode table.
             path.targetInfo.Anonymous.modeInfoIdx =
                 remap(unsafe { path.targetInfo.Anonymous.modeInfoIdx })?;
             Ok(path)
@@ -147,6 +153,8 @@ fn referenced_modes(
 fn same_topology(a: &Topology, b: &Topology) -> bool {
     a.paths.len() == b.paths.len()
         && a.modes.len() == b.modes.len()
+        // SAFETY: Both topologies use the initialized non-virtual modeInfoIdx union
+        // fields returned by QueryDisplayConfig (or initialized by the test fixtures).
         && a.paths.iter().zip(&b.paths).all(|(a, b)| unsafe {
             a.sourceInfo.adapterId == b.sourceInfo.adapterId
                 && a.sourceInfo.id == b.sourceInfo.id
@@ -165,6 +173,8 @@ fn same_topology(a: &Topology, b: &Topology) -> bool {
             if a.infoType != b.infoType || a.id != b.id || a.adapterId != b.adapterId {
                 return false;
             }
+            // SAFETY: Both mode tags agree, and the match selects only their initialized
+            // union member; a target signal's videoStandard is its initialized flag word.
             unsafe {
                 match a.infoType {
                     DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE => {
@@ -264,6 +274,8 @@ impl Protection {
         // This temporary, strict apply cannot import a saved topology, update
         // the database, or silently retime the displays that remain active.
         let flags = SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG;
+        // SAFETY: Both initialized slices remain live for the synchronous call, and
+        // referenced_modes checked and remapped every retained mode index.
         let strict =
             unsafe { SetDisplayConfig(Some(&topology.paths), Some(&topology.modes), flags) };
         if strict != 0 {
@@ -271,6 +283,8 @@ impl Protection {
             // new display (ERROR_INVALID_PARAMETER). Letting it adjust modes can
             // retime the remaining displays; the stream's layout restore puts
             // them back.
+            // SAFETY: The same initialized path and mode slices, with checked mode
+            // indices, remain live throughout this synchronous retry.
             unsafe {
                 check(SetDisplayConfig(
                     Some(&topology.paths),
@@ -382,9 +396,13 @@ mod tests {
         );
         assert_eq!(kept[0].sourceInfo.id, kept[1].sourceInfo.id);
         for (actual, original) in kept.iter().zip([paths[0], paths[2], paths[3]]) {
+            // SAFETY: path() initialized both source modeInfoIdx fields, and filtering
+            // copied the paths without changing their union members.
             assert_eq!(unsafe { actual.sourceInfo.Anonymous.modeInfoIdx }, unsafe {
                 original.sourceInfo.Anonymous.modeInfoIdx
             });
+            // SAFETY: path() initialized both target modeInfoIdx fields, and filtering
+            // copied the paths without changing their union members.
             assert_eq!(unsafe { actual.targetInfo.Anonymous.modeInfoIdx }, unsafe {
                 original.targetInfo.Anonymous.modeInfoIdx
             });
@@ -411,6 +429,8 @@ mod tests {
             vec![4, 21, 23, 6, 24]
         );
         for path in &paths {
+            // SAFETY: path() initialized both modeInfoIdx fields, and referenced_modes
+            // rewrote those same union members with checked indices into used.
             let (source, target) = unsafe {
                 (
                     path.sourceInfo.Anonymous.modeInfoIdx,

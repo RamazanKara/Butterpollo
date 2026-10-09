@@ -1,6 +1,5 @@
 //! Windows Advanced Color ICC associations, owned by the last streaming lease.
 //! ABI: https://learn.microsoft.com/windows/win32/api/icm/nf-icm-colorprofilegetdisplaydefault
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use crate::display::Monitor;
 use anyhow::{Context, Result, bail};

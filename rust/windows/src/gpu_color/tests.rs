@@ -1,5 +1,3 @@
-#![warn(clippy::undocumented_unsafe_blocks)]
-
 use super::*;
 use crate::capture::{ComGuard, Image};
 use std::time::Instant;

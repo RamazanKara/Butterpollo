@@ -1,5 +1,4 @@
 //! Direct NVIDIA DRS C ABI. No previous C++ host or helper is linked.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use anyhow::{Context, Result, bail};
 use libloading::Library;

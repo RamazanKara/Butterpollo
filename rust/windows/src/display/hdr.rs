@@ -1,5 +1,4 @@
 //! HDR requests and restoration on the currently connected display.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use super::*;
 

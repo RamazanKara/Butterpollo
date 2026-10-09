@@ -86,6 +86,8 @@ pub fn show_app(icon: Icon, app: Option<&str>, summary: Option<&str>) {
     };
     drop(shown);
     if let Some(window) = *SHOWN.lock().unwrap() {
+        // SAFETY: The tray publishes its HWND under SHOWN; this asynchronous message
+        // contains only integer values and borrows no Rust data after the call returns.
         unsafe {
             let _ = PostMessageW(
                 Some(HWND(window as *mut _)),
@@ -99,6 +101,9 @@ pub fn show_app(icon: Icon, app: Option<&str>, summary: Option<&str>) {
 /// `base` with the state's dot in its corner; None for Idle or an icon
 /// without alpha, which then shows as is.
 unsafe fn badged(base: HICON, state: Icon) -> Option<HICON> {
+    // SAFETY: The caller retains base on the tray thread. GetIconInfo returns owned
+    // bitmaps; checked dimensions bound the 32-bit pixel and word-aligned mask buffers.
+    // GDI copies their data synchronously, and each bitmap/DC is deleted/released once.
     unsafe {
         let mut info = ICONINFO::default();
         GetIconInfo(base, &mut info).ok()?;
@@ -185,6 +190,10 @@ unsafe extern "system" fn window(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    // SAFETY: Windows supplies CREATESTRUCTW for WM_NCCREATE; lpCreateParams points
+    // to the boxed State retained by the tray thread until GWLP_USERDATA is cleared.
+    // Menu strings and sized outputs live through their calls. The mutable State
+    // borrow additionally requires no reentrancy, which TrackPopupMenu does not ensure.
     unsafe {
         if message == WM_NCCREATE {
             let create = &*(lparam.0 as *const CREATESTRUCTW);
@@ -301,6 +310,10 @@ impl Tray {
         let (ready, started) = mpsc::sync_channel(1);
         let worker = thread::Builder::new().name("tray".into()).spawn(move || {
             let result = (|| -> Result<()> {
+                // SAFETY: This thread creates, dispatches and destroys the window;
+                // sized structures and terminated strings remain live through calls.
+                // The boxed State outlives GWLP_USERDATA, owned icons are destroyed
+                // once after the window, and the shared fallback icon is never freed.
                 unsafe {
                     let module = GetModuleHandleW(None)?;
                     let class = WNDCLASSW {
@@ -437,6 +450,8 @@ impl Tray {
 }
 impl Drop for Tray {
     fn drop(&mut self) {
+        // SAFETY: id identifies the worker's message queue; WM_QUIT carries no borrowed
+        // pointers, and the worker is joined before its owner finishes dropping.
         unsafe {
             let _ = PostThreadMessageW(self.id, WM_QUIT, WPARAM(0), LPARAM(0));
         }
@@ -485,6 +500,8 @@ fn notify_with_action(title: &str, text: &str, action: Option<Action>) {
     copy(&mut icon.szInfoTitle, title);
     copy(&mut icon.szInfo, text);
     *NOTICE_ACTION.lock().unwrap() = action;
+    // SAFETY: icon is initialized with its exact size and terminated text buffers,
+    // and Shell_NotifyIconW consumes it synchronously; hWnd is only an opaque identifier.
     unsafe {
         let _ = Shell_NotifyIconW(NIM_MODIFY, &icon);
     }
@@ -501,6 +518,8 @@ pub fn open_web(port: u16) -> Result<()> {
     let url: Vec<u16> = format!("https://localhost:{port}/\0")
         .encode_utf16()
         .collect();
+    // SAFETY: The verb and URL are terminated UTF-16 strings that remain live for
+    // ShellExecuteW; the unused optional pointer arguments are null.
     let result = unsafe {
         ShellExecuteW(
             None,

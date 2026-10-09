@@ -1,5 +1,4 @@
 //! Virtual display driver protocol, creation, and lease heartbeats.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use super::modes::{
     ModeOutcome, current_timing, format_timing, mode_outcome, offered_rates, supported_modes,

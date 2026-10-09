@@ -1,5 +1,3 @@
-#![warn(clippy::undocumented_unsafe_blocks)]
-
 use anyhow::{Context, Result, bail};
 use std::{ffi::c_void, path::Path};
 use windows::Win32::{Media::Audio::*, System::Com::*};

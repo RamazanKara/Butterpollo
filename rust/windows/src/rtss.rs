@@ -1,6 +1,5 @@
 //! RTSS SDK calls run in a short-lived Rust worker, keeping a stalled third-party
 //! message loop outside the streaming process. The profile's unknown fields survive.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use crate::{
     ipc::Pipe,

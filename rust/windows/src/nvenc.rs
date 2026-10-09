@@ -3,7 +3,6 @@
 //! Supports NVENC API 11 to 13 and reference frame invalidation. GPU
 //! resources stay owned until their output completes; 10-bit 4:4:4 input goes
 //! through CUDA interop (`cuda`).
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 mod cuda;
 

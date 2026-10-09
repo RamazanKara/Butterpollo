@@ -10,6 +10,7 @@
 //! into Windows calls; the `butterpollo` host crate runs the servers and wires
 //! the two together. The crate is empty on other targets.
 #![cfg(windows)]
+#![warn(clippy::undocumented_unsafe_blocks)]
 #![warn(clippy::print_stdout, clippy::print_stderr)]
 
 pub mod amf;
@@ -57,12 +58,14 @@ pub mod tray;
 pub mod truehdr;
 pub mod vulkan;
 
+// Bindgen emits these unsafe blocks; the restriction lint is not covered by clippy::all.
 #[allow(
     non_camel_case_types,
     non_snake_case,
     non_upper_case_globals,
     dead_code,
-    clippy::all
+    clippy::all,
+    clippy::undocumented_unsafe_blocks
 )]
 pub(crate) mod ff {
     include!(concat!(env!("OUT_DIR"), "/ffmpeg.rs"));
@@ -73,7 +76,8 @@ pub(crate) mod ff {
     non_upper_case_globals,
     dead_code,
     unused_imports,
-    clippy::all
+    clippy::all,
+    clippy::undocumented_unsafe_blocks
 )]
 pub(crate) mod nvenc_abi {
     include!(concat!(env!("OUT_DIR"), "/nvenc.rs"));
@@ -85,7 +89,8 @@ pub(crate) mod nvenc_abi {
     non_upper_case_globals,
     dead_code,
     unused_imports,
-    clippy::all
+    clippy::all,
+    clippy::undocumented_unsafe_blocks
 )]
 pub(crate) mod cuda_abi {
     include!(concat!(env!("OUT_DIR"), "/cuda.rs"));

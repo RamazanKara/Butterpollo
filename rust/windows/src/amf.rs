@@ -158,6 +158,11 @@ impl Encoder {
         if config.ten_bit() && config.codec == 0 {
             bail!("H.264 does not support HDR10");
         }
+        // SAFETY: The AMD runtime exports AMFInit with the SDK's C ABI and performs
+        // its own initialization. Successful factory calls return owned interfaces
+        // with SDK vtables; the retained library/device outlive their use and release.
+        // Property names are terminated temporaries and variant tags match initialized
+        // members; AMF copies them synchronously and retains interface-valued properties.
         unsafe {
             let library =
                 libloading::Library::new("amfrt64.dll").context("AMD AMF runtime unavailable")?;
@@ -454,6 +459,8 @@ impl Encoder {
     }
     /// An integer or boolean property as the driver now has it.
     fn read(&self, name: &str) -> Option<i64> {
+        // SAFETY: Self retains the component and runtime, the terminated name and
+        // initialized output live through GetProperty, and the tag selects the union member.
         unsafe {
             let mut value = int(0);
             if ((*(*self.component).pVtbl).GetProperty.unwrap())(
@@ -475,6 +482,8 @@ impl Encoder {
     }
     /// A rate property, such as the frame rate the rate control budgets for.
     fn read_rate(&self, name: &str) -> Option<(u32, u32)> {
+        // SAFETY: The component/runtime and terminated name remain live during the
+        // query; success and the RATE tag are checked before reading the initialized union.
         unsafe {
             let mut value = int(0);
             if ((*(*self.component).pVtbl).GetProperty.unwrap())(
@@ -492,6 +501,10 @@ impl Encoder {
     }
     /// An integer capability of this encoder, such as its engine count.
     fn cap(&self, name: &str) -> Option<i64> {
+        // SAFETY: Self retains the component/runtime; caps is checked and its owned
+        // reference released after the query. int(0) initializes the read storage and
+        // AMF variant assignment zeroes it even for other tags, so the eager int64 read
+        // has initialized bytes; only a successful INT64 result is returned.
         unsafe {
             let mut caps = ptr::null_mut();
             if ((*(*self.component).pVtbl).GetCaps.unwrap())(self.component, &mut caps)
@@ -518,6 +531,8 @@ impl Encoder {
         };
         self.property_raw(&property.name, value)?;
         let mut applied = int(0);
+        // SAFETY: The component/runtime, terminated name and initialized output live
+        // through GetProperty; each union read is guarded by its matching variant tag.
         unsafe {
             check(((*(*self.component).pVtbl).GetProperty.unwrap())(
                 self.component,
@@ -788,6 +803,9 @@ impl Encoder {
         }
     }
     fn write_hdr_metadata(&mut self, metadata: &butterpollo_core::hdr::Metadata) -> Result<()> {
+        // SAFETY: The live context allocates owned host memory with room/alignment for
+        // AMFHDRMetadata. GetNative remains writable until Release; SetProperty retains
+        // its own interface reference before our buffer reference is released once.
         unsafe {
             let mut buffer = ptr::null_mut();
             check(((*(*self.context).pVtbl).AllocBuffer.unwrap())(
@@ -852,6 +870,9 @@ impl Encoder {
         }
     }
     fn property_raw(&mut self, name: &str, value: AMFVariantStruct) -> Result<()> {
+        // SAFETY: Internal callers initialize the member named by value's tag and
+        // retain any referenced interface during the call. Self keeps the component and
+        // runtime live; AMF copies the terminated name/value and retains interface values.
         unsafe {
             check(((*(*self.component).pVtbl).SetProperty.unwrap())(
                 self.component,
@@ -912,6 +933,9 @@ impl Encoder {
         }
         let [maximum, mode, _, _] = self.ltr_properties();
         let result = (|| -> Result<usize> {
+            // SAFETY: Self retains the component/runtime and its borrowed property info;
+            // returned pointers and variant tags are checked before reads. Query outputs
+            // and terminated names live through calls, and the owned caps reference is released.
             unsafe {
                 let mut info = ptr::null();
                 if ((*(*self.component).pVtbl).GetPropertyInfo.unwrap())(
@@ -984,6 +1008,9 @@ impl Encoder {
         let mut plan = self.references.plan(self.index as u64 + 1, idr);
         let [_, _, mark, reference] = self.ltr_properties();
         let apply = |name: &str, value: AMFVariantStruct| -> Result<()> {
+            // SAFETY: Both callers own surface throughout preparation. These local
+            // variants have matching scalar tags, and AMF copies them and the terminated
+            // property name synchronously while the runtime remains loaded.
             unsafe {
                 check(((*(*surface).pVtbl).SetProperty.unwrap())(
                     surface,
@@ -1042,6 +1069,9 @@ impl Encoder {
             self.warnings.event("encoder_dropped", format!("AMF returned no output for frame {:?} within two seconds; dropping it and requesting a keyframe. You may see a pause; lower game GPU load or update the AMD driver if this repeats.", stale.map(|s| s.pts)), butterpollo_core::session::EVENT_PERIOD);
             self.recover = true;
         }
+        // SAFETY: Self retains the component/runtime; encoder QueryOutput returns an
+        // owned AMFBuffer through its AMFData base. Null and size checks bound its host
+        // bytes, copied before Release; the picture union is read only with an INT64 tag.
         unsafe {
             let mut output = vec![];
             // With a query timeout, asking when nothing is in flight would only
@@ -1130,6 +1160,10 @@ impl Encoder {
         convert.luminance = self.luminance;
         convert.convert(image)?;
         let frame = convert.frame;
+        // SAFETY: The converter retains initialized NV12/P010 planes for these dimensions.
+        // The live context allocates a separate owned host surface of the same format/size;
+        // checked destination pointers/pitches and FFmpeg strides bound each disjoint row copy.
+        // AMF retains submitted input before our surface reference is released once.
         unsafe {
             let mut surface = ptr::null_mut();
             check(((*(*self.context).pVtbl).AllocSurface.unwrap())(
@@ -1268,6 +1302,9 @@ impl Encoder {
                     _ => "Av1",
                 };
                 let name = format!("{prefix}{suffix}");
+                // SAFETY: Self retains the component/runtime and its borrowed property
+                // info; outputs and terminated names live through each call, and null
+                // checks and INT64 tags precede all pointer/union reads.
                 unsafe {
                     let mut current = int(0);
                     let mut info = ptr::null();
@@ -1388,6 +1425,10 @@ impl Encoder {
             (surface, Some(texture))
         };
         self.set_bitrate(bitrate)?;
+        // SAFETY: surface owns a live AMF interface backed by this encoder's device;
+        // conversion has synchronized the GPU writes and the boxed ownership observer
+        // retains textures until AMF releases them. SubmitInput retains its own surface
+        // reference, while self keeps the component, context and runtime alive.
         unsafe {
             let v = &*(*surface.0).pVtbl;
             check((v.SetCrop.unwrap())(
@@ -1443,6 +1484,9 @@ impl Drop for Encoder {
     fn drop(&mut self) {
         // Destroy the converter before its context and dynamically loaded runtime.
         self.gpu_convert.take();
+        // SAFETY: Self owns each non-null interface reference. Terminating the component
+        // releases its inputs before compute/context cleanup; the device, runtime and
+        // boxed surface observer remain alive through termination and each final Release.
         unsafe {
             if !self.component.is_null() {
                 ((*(*self.component).pVtbl).Terminate.unwrap())(self.component);

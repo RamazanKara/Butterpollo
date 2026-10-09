@@ -1,5 +1,4 @@
 //! Native D3D11 frames with codec-owned references, also mapped to Quick Sync.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use crate::{
     capture::{Device, GpuImage, Pixel},

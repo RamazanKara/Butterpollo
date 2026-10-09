@@ -1,5 +1,4 @@
 //! Keyboard and mouse injection, batching, and held-key ownership.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use super::*;
 

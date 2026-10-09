@@ -1,6 +1,5 @@
 //! Lossless Scaling on this PC: where it is, its settings file, and the
 //! window and keyboard steps that start scaling a game.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use std::path::{Path, PathBuf};
 use windows::Win32::{

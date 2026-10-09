@@ -1,5 +1,4 @@
 //! Cover images: any format Windows can decode, written as PNG for Moonlight.
-#![warn(clippy::undocumented_unsafe_blocks)]
 
 use anyhow::{Context, Result};
 use std::path::Path;
