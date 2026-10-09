@@ -13,6 +13,13 @@ struct Frame {
     interval: Option<u64>,
     bytes: u64,
 }
+struct FecFrame {
+    index: u32,
+    blocks: u8,
+    block_count: u8,
+    recovered: bool,
+    unrecoverable: bool,
+}
 /// Microseconds spent on one frame.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Timing {
@@ -43,8 +50,76 @@ pub struct Performance {
     processing_maximum: u64,
     age: u64,
     send_stutters: u64,
+    fec_reports: u64,
+    fec_invalid_reports: u64,
+    fec_duplicate_reports: u64,
+    fec_recovered_frames: u64,
+    fec_unrecoverable_frames: u64,
+    /// Gaps before each reported highest sequence, not unsent trailing parity.
+    fec_missing_packets: u64,
+    fec_frames: VecDeque<FecFrame>,
 }
 impl Performance {
+    pub fn record_fec_status(&mut self, payload: &[u8], last_sent: Option<u32>) {
+        self.fec_reports = self.fec_reports.saturating_add(1);
+        let status = crate::fec_status::Status::parse(payload)
+            .ok()
+            .zip(last_sent)
+            .filter(|(s, last)| last.wrapping_sub(s.frame) < 1024);
+        let Some((status, last)) = status else {
+            self.fec_invalid_reports = self.fec_invalid_reports.saturating_add(1);
+            return;
+        };
+        // One entry per recent wire frame bounds storage to 1024, even when
+        // reports arrive out of order or the u32 frame counter wraps.
+        self.fec_frames
+            .retain(|f| last.wrapping_sub(f.index) < 1024);
+        let index = match self.fec_frames.iter().position(|f| f.index == status.frame) {
+            Some(index) => index,
+            None => {
+                self.fec_frames.push_back(FecFrame {
+                    index: status.frame,
+                    blocks: 0,
+                    block_count: status.blocks,
+                    recovered: false,
+                    unrecoverable: false,
+                });
+                self.fec_frames.len() - 1
+            }
+        };
+        let frame = &mut self.fec_frames[index];
+        if frame.block_count != status.blocks {
+            self.fec_invalid_reports = self.fec_invalid_reports.saturating_add(1);
+            return;
+        }
+        let block = 1 << status.block;
+        if frame.blocks & block != 0 {
+            self.fec_duplicate_reports = self.fec_duplicate_reports.saturating_add(1);
+            return;
+        }
+        frame.blocks |= block;
+        self.fec_missing_packets = self
+            .fec_missing_packets
+            .saturating_add(u64::from(status.missing_before_highest));
+        // These best-effort block reports infer recovery, not successful decode.
+        // A later failed block makes the whole reported frame unrecoverable.
+        let unrecoverable = u32::from(status.received_data) + u32::from(status.received_parity)
+            < u32::from(status.data);
+        if unrecoverable && !frame.unrecoverable {
+            frame.unrecoverable = true;
+            self.fec_unrecoverable_frames = self.fec_unrecoverable_frames.saturating_add(1);
+            if frame.recovered {
+                self.fec_recovered_frames = self.fec_recovered_frames.saturating_sub(1);
+            }
+        } else if !unrecoverable
+            && status.received_data < status.data
+            && !frame.recovered
+            && !frame.unrecoverable
+        {
+            frame.recovered = true;
+            self.fec_recovered_frames = self.fec_recovered_frames.saturating_add(1);
+        }
+    }
     pub fn record(&mut self, now: Instant, latency: u64, bytes: u64) {
         self.record_timing(
             now,
@@ -175,6 +250,12 @@ impl Performance {
             "send_interval_p99_ms":percentile(&intervals,99),
             "send_interval_max_ms":percentile(&intervals,100),
             "send_stutters":self.send_stutters,
+            "fec_reports":self.fec_reports,
+            "fec_invalid_reports":self.fec_invalid_reports,
+            "fec_duplicate_reports":self.fec_duplicate_reports,
+            "fec_recovered_frames":self.fec_recovered_frames,
+            "fec_unrecoverable_frames":self.fec_unrecoverable_frames,
+            "fec_missing_packets":self.fec_missing_packets,
             "sample_frames":frames.len(),"history":self.history
         })
     }
@@ -182,6 +263,92 @@ impl Performance {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn fec(frame: u32, block: u8, data: u16, parity: u16, missing: u16) -> Vec<u8> {
+        let mut payload = frame.to_be_bytes().to_vec();
+        for word in [11, 0, missing, 10, 2, data, parity] {
+            payload.extend(word.to_be_bytes());
+        }
+        payload.extend([20, block, 2]);
+        payload
+    }
+    #[test]
+    fn fec_reports_count_frames_once_and_failed_blocks_override_recovery() {
+        let mut p = Performance::default();
+        let now = Instant::now();
+        let recovered = fec(7, 0, 9, 1, 1);
+        p.record_fec_status(&recovered, Some(9));
+        p.record_fec_status(&recovered, Some(9));
+        assert_eq!(p.snapshot(now)["fec_recovered_frames"], 1);
+        p.record_fec_status(&fec(7, 1, 7, 1, 2), Some(9));
+        p.record_fec_status(&fec(8, 0, 10, 0, 0), Some(9));
+        p.record_fec_status(&fec(9, 1, 8, 2, 2), Some(9));
+        p.record_fec_status(&fec(9, 0, 9, 1, 1), Some(9));
+        let snapshot = p.snapshot(now);
+        assert_eq!(snapshot["fec_reports"], 6);
+        assert_eq!(snapshot["fec_invalid_reports"], 0);
+        assert_eq!(snapshot["fec_duplicate_reports"], 1);
+        assert_eq!(snapshot["fec_recovered_frames"], 1);
+        assert_eq!(snapshot["fec_unrecoverable_frames"], 1);
+        assert_eq!(snapshot["fec_missing_packets"], 6);
+        // Out-of-order reports must not reclassify a lost frame as recovered.
+        p.record_fec_status(&fec(10, 1, 7, 1, 2), Some(10));
+        p.record_fec_status(&fec(10, 0, 9, 1, 1), Some(10));
+        assert_eq!(p.snapshot(now)["fec_recovered_frames"], 1);
+        assert_eq!(p.snapshot(now)["fec_unrecoverable_frames"], 2);
+        assert_eq!(p.snapshot(now)["sample_frames"], 0);
+    }
+    #[test]
+    fn fec_telemetry_rejects_invalid_unsent_stale_and_inconsistent_reports() {
+        let mut p = Performance::default();
+        p.record_fec_status(&fec(u32::MAX, 0, 9, 1, 1), Some(0));
+        p.record_fec_status(&fec(0, 0, 9, 1, 1), Some(0));
+        for (payload, last) in [
+            (vec![0; 20], Some(0)),
+            (fec(1, 0, 9, 1, 1), Some(0)),
+            (fec(1, 0, 9, 1, 1), None),
+            (fec(1, 0, 9, 1, 1), Some(1025)),
+        ] {
+            p.record_fec_status(&payload, last);
+        }
+        let mut inconsistent = fec(0, 0, 9, 1, 1);
+        inconsistent[20] = 1;
+        p.record_fec_status(&inconsistent, Some(0));
+        assert_eq!(p.fec_invalid_reports, 5);
+        assert_eq!(p.fec_recovered_frames, 2);
+        assert_eq!(p.fec_missing_packets, 2);
+    }
+    #[test]
+    fn reordered_fec_reports_evict_stale_frames_without_recounting_recent_ones() {
+        let mut p = Performance::default();
+        p.record_fec_status(&fec(1024, 0, 9, 1, 1), Some(1024));
+        for frame in 1..1024 {
+            p.record_fec_status(&fec(frame, 0, 10, 0, 0), Some(1024));
+        }
+        p.record_fec_status(&fec(1025, 0, 10, 0, 0), Some(1025));
+        p.record_fec_status(&fec(1024, 0, 9, 1, 1), Some(1025));
+        assert_eq!(p.fec_frames.len(), 1024);
+        assert_eq!(p.fec_recovered_frames, 1);
+        assert_eq!(p.fec_missing_packets, 1);
+        assert_eq!(p.fec_duplicate_reports, 1);
+    }
+    #[test]
+    fn fec_history_and_counters_are_bounded() {
+        let mut p = Performance::default();
+        for frame in 0..1500 {
+            p.record_fec_status(&fec(frame, 0, 10, 0, 0), Some(frame));
+        }
+        assert_eq!(p.fec_frames.len(), 1024);
+        assert_eq!(p.fec_recovered_frames, 0);
+        assert_eq!(p.fec_missing_packets, 0);
+        p.fec_reports = u64::MAX;
+        p.fec_invalid_reports = u64::MAX;
+        p.record_fec_status(&[], Some(1500));
+        assert_eq!(p.fec_reports, u64::MAX);
+        assert_eq!(p.fec_invalid_reports, u64::MAX);
+        p.fec_missing_packets = u64::MAX;
+        p.record_fec_status(&fec(1500, 0, 9, 1, 1), Some(1500));
+        assert_eq!(p.fec_missing_packets, u64::MAX);
+    }
     fn timing(encode: u64, host: u64, age: u64) -> Timing {
         Timing {
             period: Duration::from_millis(10),

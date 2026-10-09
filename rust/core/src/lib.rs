@@ -26,6 +26,7 @@ pub mod crypto;
 pub mod display_policy;
 pub mod edid;
 pub mod encoder_policy;
+pub mod fec_status;
 pub mod framegen;
 pub mod hdr;
 pub mod hotkey;

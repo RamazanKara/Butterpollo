@@ -1479,6 +1479,7 @@ impl Media {
                             let mut first_send = None;
                             let mut last_send = None;
                             let mut remaining = packets.as_slice();
+                            s.stats.video_frame.store(u64::from(packetizer.frame.wrapping_sub(1)) + 1, Ordering::Release);
                             while !remaining.is_empty() {
                                 if s.stopping() || h.stop.load(Ordering::Acquire) {
                                     return Ok(());
@@ -1612,6 +1613,12 @@ impl Media {
                                         // Keep reference feedback distinct from IDR recovery.
                                         idr_requests=s.stats.idr_requests.load(Ordering::Relaxed),
                                         reference_invalidations=s.stats.reference_invalidations.load(Ordering::Relaxed),
+                                        fec_reports=timing["fec_reports"].as_u64().unwrap_or(0),
+                                        fec_invalid_reports=timing["fec_invalid_reports"].as_u64().unwrap_or(0),
+                                        fec_duplicate_reports=timing["fec_duplicate_reports"].as_u64().unwrap_or(0),
+                                        fec_recovered_frames=timing["fec_recovered_frames"].as_u64().unwrap_or(0),
+                                        fec_unrecoverable_frames=timing["fec_unrecoverable_frames"].as_u64().unwrap_or(0),
+                                        fec_missing_packets=timing["fec_missing_packets"].as_u64().unwrap_or(0),
                                         bitrate_kbps=s.bitrate.load(Ordering::Relaxed),
                                         "stream timings"
                                     );
@@ -2448,6 +2455,9 @@ impl Media {
                             }
                             0x0301 => s.request_invalidation(0, 0),
                             0x0302 => s.request_idr(),
+                            // This dispatch receives only client-to-host packets;
+                            // 0x5502 in the other direction is controller feedback.
+                            0x5502 => s.record_fec_status(&payload),
                             0x0109 => {
                                 if encrypted {
                                     s.stop();

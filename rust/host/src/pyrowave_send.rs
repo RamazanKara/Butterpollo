@@ -197,6 +197,7 @@ impl Sender {
                         else {
                             continue;
                         };
+                        let wire_frame = packetizer.frame;
                         let prepared = packetizer.pyrowave_blocks(
                             &frame.bytes,
                             timestamp,
@@ -253,6 +254,7 @@ impl Sender {
                                 continue 'frames;
                             };
                             let mut remaining = packets.as_slice();
+                            current.stats.video_frame.store(u64::from(wire_frame) + 1, Ordering::Release);
                             while !remaining.is_empty() {
                                 if shared.stop.load(Ordering::Acquire) || current.stopping() {
                                     return Ok(());

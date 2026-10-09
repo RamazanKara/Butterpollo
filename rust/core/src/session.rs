@@ -168,6 +168,28 @@ mod tests {
         assert_eq!(other.info()["warnings"], serde_json::json!([]));
     }
     #[test]
+    fn client_fec_is_exposed_as_telemetry_without_changing_stream_decisions() {
+        let session = Session::new(launch("fec", Role::Stream), Negotiated::default());
+        session.idr.store(false, Ordering::Relaxed);
+        session.stats.video_frame.store(8, Ordering::Release);
+        let bitrate = session.bitrate.load(Ordering::Relaxed);
+        let report = [
+            0, 0, 0, 7, 0, 11, 0, 0, 0, 1, 0, 10, 0, 2, 0, 9, 0, 1, 20, 0, 1,
+        ];
+        session.record_fec_status(&report);
+        session.record_fec_status(&report[..20]);
+        let info = session.info();
+        assert_eq!(info["performance"]["fec_reports"], 2);
+        assert_eq!(info["performance"]["fec_recovered_frames"], 1);
+        assert_eq!(info["performance"]["fec_invalid_reports"], 1);
+        assert_eq!(session.bitrate.load(Ordering::Relaxed), bitrate);
+        assert!(!session.idr.load(Ordering::Relaxed));
+        assert!(session.invalidation.lock().unwrap().is_none());
+        assert_eq!(info["idr_requests"], 0);
+        assert_eq!(info["reference_invalidations"], 0);
+        assert!(!session.stopping());
+    }
+    #[test]
     fn a_launch_still_being_prepared_does_not_expire() {
         let mut sessions = Sessions::default();
         let mut slow = launch("slow", Role::Stream);
@@ -586,6 +608,8 @@ pub struct Stats {
     pub reference_invalidations: AtomicU64,
     pub latency_us: AtomicU64,
     pub frames_replaced: AtomicU64,
+    /// Last frame offered to the video socket, plus one; zero means none yet.
+    pub video_frame: AtomicU64,
     pub performance: std::sync::Mutex<crate::performance::Performance>,
 }
 pub struct Session<P = (), A = ()> {
@@ -677,6 +701,19 @@ impl<P, A> Session<P, A> {
         if let Some(wake) = self.recovery_wake.lock().unwrap().as_ref() {
             wake();
         }
+    }
+    pub fn record_fec_status(&self, payload: &[u8]) {
+        let last_sent = self
+            .stats
+            .video_frame
+            .load(Ordering::Acquire)
+            .checked_sub(1)
+            .map(|v| v as u32);
+        self.stats
+            .performance
+            .lock()
+            .unwrap()
+            .record_fec_status(payload, last_sent);
     }
     pub fn info(&self) -> serde_json::Value {
         let mut warnings = self.launch.warnings.snapshot();
