@@ -114,6 +114,8 @@ pub struct PendingPin {
 /// A client's display lease and when it last stopped being streamed.
 pub type RetainedDisplay = (Arc<crate::display_session::Ready>, Option<Instant>);
 pub struct Host {
+    #[cfg(test)]
+    pub reconnect_fixture: Option<Arc<crate::stream::reconnect_tests::Fixture>>,
     pub directory: PathBuf,
     pub config_path: PathBuf,
     pub paired_path: PathBuf,
@@ -271,6 +273,8 @@ impl Host {
                 .unwrap_or(""),
         );
         Ok(Arc::new(Self {
+            #[cfg(test)]
+            reconnect_fixture: None,
             directory,
             config_path,
             paired_path,
@@ -349,6 +353,10 @@ impl Host {
         Ok(changed)
     }
     pub async fn wait_for_video_codecs(&self) {
+        #[cfg(test)]
+        if self.reconnect_fixture.is_some() {
+            return;
+        }
         let mut ready = self.video_codecs_ready.subscribe();
         let _ = ready.wait_for(|ready| *ready).await;
     }

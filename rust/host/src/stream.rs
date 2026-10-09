@@ -2,6 +2,8 @@ use crate::state::{Launch, Session, Shared};
 mod capture;
 #[cfg(test)]
 mod encoder_tests;
+#[cfg(test)]
+pub(crate) mod reconnect_tests;
 use anyhow::{Context, Result};
 use butterpollo_core::{
     config::Config,
@@ -1075,7 +1077,14 @@ impl Media {
                 let mut client_commands = None;
                 let mut audio = None;
                 let mut pyrowave_sender = None;
+                #[cfg(test)]
+                let mut fixture_preparation = None;
                 let result = (|| -> Result<()> {
+                    #[cfg(test)]
+                    if let Some(fixture) = &h.reconnect_fixture {
+                        fixture_preparation = s.launch.preparation.lock().unwrap().take();
+                        return fixture.stream(&m, &h, &s);
+                    }
                     com = Some(ComGuard::new()?);
                     let _priority = Priority::new();
                     let _streaming = butterpollo_windows::timing::StreamingScope::enter();
@@ -1806,6 +1815,8 @@ impl Media {
                 drop(encoder);
                 drop(latest);
                 drop(stream_preparation);
+                #[cfg(test)]
+                drop(fixture_preparation);
                 drop(com);
                 if s.launch.role == Role::RemoteMonitor
                     && h.config
@@ -2056,6 +2067,10 @@ impl Media {
         let mut feedback_at = Instant::now();
         while !h.stop.load(Ordering::Acquire) {
             let ping_timeout = crate::network::ping_timeout(&h.config.read().unwrap());
+            #[cfg(test)]
+            if let Some(fixture) = &h.reconnect_fixture {
+                fixture.reset_peer(&mut host, &peers);
+            }
             let mut disconnected = Vec::new();
             // Acknowledgements and anything else ENet sends wait until this
             // pass's input is applied.
@@ -2103,6 +2118,8 @@ impl Media {
                             peers.insert(
                                 peer.id(),
                                 ControlPeer {
+                                    #[cfg(test)]
+                                    _fixture_input: h.reconnect_fixture.as_ref().map(|f| f.input()),
                                     id: l.id.clone(),
                                     injector: None,
                                     injector_tried: false,
@@ -2275,6 +2292,10 @@ impl Media {
             }
             let mut remove = vec![];
             for (peer_id, p) in &mut peers {
+                #[cfg(test)]
+                if h.reconnect_fixture.is_some() {
+                    p.injector_tried = true;
+                }
                 let sessions = h.sessions.lock().unwrap();
                 let s = sessions
                     .active
@@ -2444,6 +2465,8 @@ impl Media {
     }
 }
 struct ControlPeer {
+    #[cfg(test)]
+    _fixture_input: Option<reconnect_tests::Slot>,
     id: String,
     injector: Option<Injector>,
     /// Whether making the injector was tried.

@@ -3,6 +3,12 @@ use crate::{
     tls::Connection,
 };
 use anyhow::{Context, Result, bail};
+#[cfg(not(test))]
+use butterpollo_windows::display::virtual_display_available;
+#[cfg(test)]
+fn virtual_display_available() -> bool {
+    false
+}
 use axum::{
     Extension, Router,
     body::Bytes,
@@ -228,10 +234,9 @@ async fn serverinfo(
     }
     .unwrap_or_else(|| "00:00:00:00:00:00".into());
     let windows_11 = butterpollo_windows::display::windows_11();
-    let driver_ready =
-        tokio::task::spawn_blocking(butterpollo_windows::display::virtual_display_available)
-            .await
-            .unwrap_or(false);
+    let driver_ready = tokio::task::spawn_blocking(virtual_display_available)
+        .await
+        .unwrap_or(false);
     serverinfo_response(
         &h,
         &connection,
@@ -855,12 +860,18 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
         let preparing = Preparing(launch.preparing.clone());
         h.sessions.lock().unwrap().queue(launch.clone())?;
         if role != Role::InputOnly {
-            let prepared = prepare_launch_display(&h, &args, &launch);
-            match prepared {
-                Ok(prepared) => *launch.preparation.lock().unwrap() = Some(Box::new(prepared)),
-                Err(error) => {
-                    h.sessions.lock().unwrap().pending.remove(&id);
-                    return Err(error);
+            #[cfg(test)]
+            if let Some(fixture) = &h.reconnect_fixture {
+                fixture.prepare(&launch);
+            }
+            if launch.preparation.lock().unwrap().is_none() {
+                let prepared = prepare_launch_display(&h, &args, &launch);
+                match prepared {
+                    Ok(prepared) => *launch.preparation.lock().unwrap() = Some(Box::new(prepared)),
+                    Err(error) => {
+                        h.sessions.lock().unwrap().pending.remove(&id);
+                        return Err(error);
+                    }
                 }
             }
         }
@@ -1227,6 +1238,10 @@ fn prepare_launch_app(
     launch: &Launch,
     id: &str,
 ) -> Result<()> {
+    #[cfg(test)]
+    if h.reconnect_fixture.is_some() {
+        return Ok(());
+    }
     if launch.role != Role::InputOnly {
         let config = crate::stream::effective_config(h, launch)?;
         if config.boolean("stream_audio", true)
