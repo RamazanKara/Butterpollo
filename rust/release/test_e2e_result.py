@@ -16,6 +16,13 @@ INTEROPERABILITY PASS
 RECOVERY = GOOD.replace('skipped_render_frames=1620', 'skipped_render_frames=0') + '''IDR_PROBE samples=16 mean_ms=12.000 p50_ms=11.000 p95_ms=20.000 max_ms=24.000 requested=16 sent=16 decoded=16
 PICTURE_AGE samples=1621 mean_ms=12.000 p50_ms=11.000 p95_ms=18.000 p99_ms=22.000 max_ms=30.000
 '''
+# The host's per-claim trace (RUST_LOG=info,pacing=trace): new pictures only.
+CLAIMS = ''.join(f'2026-10-09T10:00:00Z TRACE pacing: claim capture_id={i} presented={i * 16667} acquired={i * 16667 + 300} '
+                 f'seen={i * 16667 + 400} claim={i * 16667 + 500} interval=16667 deadline=0 source_id=1 stream_id=e2e fresh=true\n'
+                 for i in range(1, 700))
+AGAIN = CLAIMS + (
+    '2026-10-09T10:00:09Z TRACE pacing: claim capture_id=500 presented=8333500 acquired=8333800 seen=0 '
+    'claim=8340000 interval=16667 deadline=0 source_id=1 stream_id=e2e fresh=false\n')
 PYROWAVE = GOOD + '''PYROWAVE framing=records bitstream=186f0393 encrypted=1 record_frames=1800 partial_frames=0 hdr_frames=0
 PICTURE_AGE samples=1621 mean_ms=12.000 p50_ms=11.000 p95_ms=18.000 p99_ms=22.000 max_ms=30.000
 '''
@@ -59,7 +66,7 @@ class ReleaseMeasurements(unittest.TestCase):
                 text = PYROWAVE.replace('hdr_frames=0', 'hdr_frames=1800') if '-hdr' in codec else PYROWAVE
                 text = RECOVERY if recovery else text
                 (case / 'result.json').write_text(json.dumps(
-                    evaluate(text, 0, codec, '1920x1080x60', vrr, recovery=recovery)))
+                    evaluate(text, 0, codec, '1920x1080x60', vrr, recovery=recovery, host_log=CLAIMS)))
             command = [sys.executable, str(pathlib.Path(__file__).with_name('validation.py')), '--version', 'test',
                        '--package', str(package), '--work', str(work), '--out', str(root / 'VALIDATION.json')]
             result = subprocess.run(command, capture_output=True, text=True)
@@ -148,23 +155,40 @@ class ReleaseMeasurements(unittest.TestCase):
 
     def test_keyframe_requests_must_ride_the_next_new_frame(self):
         moving = RECOVERY
-        result = evaluate(moving, 0, 'hevc', '1280x720x60', recovery=16)
+        check = lambda client, log=CLAIMS: evaluate(client, 0, 'hevc', '1280x720x60', recovery=16, host_log=log)
+        result = check(moving)
         self.assertTrue(result['passed'], result['failures'])
-        self.assertEqual((result['pictures_sent_again'], result['pictures_skipped']), (0, 0))
+        self.assertEqual((result['host_claims'], result['host_pictures_encoded_again']), (699, 0))
+        # The strip at the stream rate repeats and skips pictures by itself:
+        # the receiver's counts are reported, the host's trace is judged.
+        noisy = check(moving.replace('repeats=0', 'repeats=28').replace('skipped_render_frames=0', 'skipped_render_frames=25'))
+        self.assertTrue(noisy['passed'], noisy['failures'])
+        self.assertEqual((noisy['pictures_sent_again'], noisy['pictures_skipped']), (28, 25))
+        again = check(moving, AGAIN)
+        self.assertEqual(again['host_pictures_encoded_again'], 1)
+        self.assertTrue(any('unchanged picture again' in f for f in again['failures']), again['failures'])
+        untraced = check(moving, 'INFO stream timings fps=60\n')
+        self.assertTrue(any('host_claims' in f for f in untraced['failures']), untraced['failures'])
         for before, after, failure in (
-                ('repeats=0', 'repeats=4', None), ('repeats=0', 'repeats=6', 'sent pictures twice'),
-                ('skipped_render_frames=0', 'skipped_render_frames=6', 'sent pictures twice'),
                 ('samples=16 mean', 'samples=15 mean', 'no decoded keyframe'),
                 ('decoded=16', 'decoded=15', 'no decoded keyframe'),
                 ('p95_ms=20.000 max_ms=24.000', 'p95_ms=51.000 max_ms=60.000', 'three frame periods'),
+                # One late frame per keyframe is allowed, beyond 1% of frames.
+                ('intervals_over_1_5_period=0', 'intervals_over_1_5_period=32', None),
+                ('p99_ms=18.000 max_ms=20.000', 'p99_ms=26.000 max_ms=34.000', None),
+                ('intervals_over_1_5_period=0', 'intervals_over_1_5_period=33', 'excessive gaps'),
+                ('p99_ms=18.000 max_ms=20.000', 'p99_ms=26.000 max_ms=51.000', 'excessive gaps'),
                 ('IDR_PROBE', 'NO_PROBE', 'missing measurements')):
             with self.subTest(after=after):
-                result = evaluate(moving.replace(before, after), 0, 'hevc', '1280x720x60', recovery=16)
+                result = check(moving.replace(before, after))
                 self.assertEqual(result['passed'], failure is None, result['failures'])
                 if failure:
                     self.assertTrue(any(failure in f for f in result['failures']), result['failures'])
+        # Without requests the gap rules are unchanged.
+        self.assertFalse(evaluate(GOOD.replace('p99_ms=18.000 max_ms=20.000', 'p99_ms=26.000 max_ms=34.000'),
+                                  0, 'hevc', '1280x720x60')['passed'])
         # Picture age is reported, not judged, and other streams ignore the probe.
-        self.assertEqual(evaluate(moving, 0, 'hevc', '1280x720x60', recovery=16)['picture_age_p99_ms'], 22)
+        self.assertEqual(check(moving)['picture_age_p99_ms'], 22)
         self.assertNotIn('pictures_sent_again', evaluate(GOOD, 0, 'hevc', '1280x720x60'))
 
     def test_pyrowave_sdr_and_hdr_records_pass_with_picture_age(self):

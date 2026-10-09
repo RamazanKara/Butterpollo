@@ -14,11 +14,16 @@ Writes WORK/e2e-CODEC[-vrr][-recovery|-at-rate]/result.json.
 RECOVERY_INTERVAL_MS, as a client losing packets does, while the moving
 strip runs at the stream rate (a game held there by a frame limit) and the
 minimum frame rate keeps its default of 20. Each request must ride the
-next new frame: no picture sent twice, no game frame skipped.
+next new frame instead of the unchanged picture being encoded again.
 
---motion-at-rate: the same strip and minimum frame rate without requests,
-the control for --recovery. BUTTERPOLLO_E2E_RUST_LOG replaces the host's
-RUST_LOG (info), e.g. info,pacing=trace for a claim-by-claim trace.
+The host traces every claim (RUST_LOG=info,pacing=trace) and the stream
+fails if it encoded an unchanged picture again; the receiver's count of
+pictures seen twice or skipped is reported only, since the strip at the
+stream rate repeats and skips some pictures by itself.
+
+--motion-at-rate: the same strip, minimum frame rate and trace without
+requests, the control for --recovery. BUTTERPOLLO_E2E_RUST_LOG replaces the
+host's RUST_LOG.
 """
 import argparse, json, pathlib, subprocess, sys, time
 import xml.etree.ElementTree as ET
@@ -55,7 +60,8 @@ case = args.work / (f'e2e-{args.codec}' + ('-vrr' if args.vrr else '')
 assert case.resolve().parent == args.work.resolve(), 'test output must stay inside the work directory'
 if case.exists():
     import shutil; shutil.rmtree(case)
-env, display, sink = prepare(args, case)
+# The keyframe-request stream is judged on the host's per-claim trace.
+env, display, sink = prepare(args, case, rust_log='info,pacing=trace' if at_rate else 'info')
 profile = case / 'config'
 host_exe = args.package / 'butterpollo.exe'
 audio_probe = args.client.parent / 'audio_probe.exe'
@@ -101,6 +107,7 @@ finally:
 
 client = (case / 'client.log').read_text(errors='replace')
 result = evaluate(client, rc, args.codec, args.mode, args.vrr, recovery=args.recovery,
+                  host_log=log.read_text(errors='replace') if log.exists() else '',
                   tone_log=(case / 'tone.log').read_text(errors='replace'),
                   host_frames=host_frames(case / 'receiver'))
 (case / 'result.json').write_text(json.dumps(result, indent=2))

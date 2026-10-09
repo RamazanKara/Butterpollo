@@ -27,9 +27,9 @@ def installed_idle():
     assert info.findtext('RustHostApplicationActive') in (None, '0'), 'the installed host runs an app'
 
 
-def prepare(args, case, port=48523):
+def prepare(args, case, port=48523, rust_log='info'):
     profile = case / 'config'; (profile / 'logs').mkdir(parents=True)
-    env = os.environ.copy(); env.update(PATH=str(args.package) + ';' + env['PATH'], RUST_LOG=os.environ.get('BUTTERPOLLO_E2E_RUST_LOG', 'info'), NO_PROXY='*')
+    env = os.environ.copy(); env.update(PATH=str(args.package) + ';' + env['PATH'], RUST_LOG=os.environ.get('BUTTERPOLLO_E2E_RUST_LOG', rust_log), NO_PROXY='*')
     host_exe = args.package / 'butterpollo.exe'
     diag = json.loads(subprocess.check_output([str(host_exe), '--diagnostics'], env=env, text=True))
     monitor = next(m for m in diag['monitors'] if m['primary'])

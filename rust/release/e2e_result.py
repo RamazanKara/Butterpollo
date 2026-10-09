@@ -31,7 +31,20 @@ def host_frames(receiver):
     return None, None
 
 
-def evaluate(client, rc, codec, mode, vrr=False, tone_log='', host_frames=None, recovery=0):
+def claims(log):
+    """(claim, presented in microseconds since the stream began, new picture) per encode, from a host log with
+    RUST_LOG=info,pacing=trace."""
+    found = []
+    for line in log.splitlines():
+        if 'pacing' not in line or ' claim' not in line:
+            continue
+        fields = dict(re.findall(r'(\w+)=(\S+)', line))
+        if 'claim' in fields and 'presented' in fields and 'fresh' in fields:
+            found.append((int(fields['claim']), int(fields['presented']), fields['fresh'] == 'true'))
+    return found
+
+
+def evaluate(client, rc, codec, mode, vrr=False, tone_log='', host_frames=None, recovery=0, host_log=''):
     def find(pattern, cast=float):
         match = re.search(pattern, client, re.MULTILINE)
         return cast(match.group(1)) if match else None
@@ -80,15 +93,21 @@ def evaluate(client, rc, codec, mode, vrr=False, tone_log='', host_frames=None, 
             recovery_mean_ms=find(r'^IDR_PROBE .*?mean_ms=([0-9.]+)'),
             recovery_p95_ms=find(r'^IDR_PROBE .*?p95_ms=([0-9.]+)'),
             recovery_max_ms=find(r'^IDR_PROBE .*?max_ms=([0-9.]+)'),
-            pictures_sent_again=find(r'^VISUAL .*?repeats=(\d+)', int),
-            pictures_skipped=find(r'^VISUAL .*?skipped_render_frames=(\d+)', int),
         )
+        encodes = claims(host_log)
+        result.update(host_claims=len(encodes) or None,
+                      host_pictures_encoded_again=sum(not new for *_, new in encodes) if encodes else None)
     failures = []
     missing = [key for key, value in result.items() if value is None]
     if recovery:
-        # Reported for comparison between releases, not judged here.
+        # Reported for comparison between releases, not judged here. With the
+        # strip at the stream rate the fixture alone repeats and skips 5-28
+        # pictures in 12 s without any request (rc.28 and the fix, host
+        # 2026-10-09), so the receiver cannot tell the host's doing apart.
         result.update(picture_age_p95_ms=find(r'^PICTURE_AGE .*?p95_ms=([0-9.]+)'),
-                      picture_age_p99_ms=find(r'^PICTURE_AGE .*?p99_ms=([0-9.]+)'))
+                      picture_age_p99_ms=find(r'^PICTURE_AGE .*?p99_ms=([0-9.]+)'),
+                      pictures_sent_again=find(r'^VISUAL .*?repeats=(\d+)', int),
+                      pictures_skipped=find(r'^VISUAL .*?skipped_render_frames=(\d+)', int))
     if missing:
         failures.append('missing measurements: ' + ', '.join(missing))
     if rc != 0 or 'INTEROPERABILITY PASS' not in client:
@@ -98,8 +117,10 @@ def evaluate(client, rc, codec, mode, vrr=False, tone_log='', host_frames=None, 
             failures.append('video was not fully decoded')
         if result['steady_seconds'] < 5 or not fps * .97 <= result['steady_fps'] <= fps * 1.03:
             failures.append('steady frame rate is outside 97-103% of the requested rate')
-        if (result['long_intervals'] > result['steady_frames'] * .01
-                or result['interval_p99_ms'] > 1500 / fps
+        # A requested keyframe is several frames' worth of data and encode
+        # time; one late frame per request is the keyframe's own cost.
+        if (result['long_intervals'] > result['steady_frames'] * .01 + recovery
+                or (not recovery and result['interval_p99_ms'] > 1500 / fps)
                 or result['interval_max_ms'] > 3000 / fps):
             failures.append('frame delivery has excessive gaps')
         if result['motion_coverage'] < .95 or result['unique_fps'] < fps * .9:
@@ -123,10 +144,10 @@ def evaluate(client, rc, codec, mode, vrr=False, tone_log='', host_frames=None, 
             failures.append('a keyframe request got no decoded keyframe')
         # The motion strip moves every frame at the stream rate, so a request
         # rides the next new frame. rc.28 encoded the unchanged picture again
-        # at once and let it take that frame's slot: about one picture sent
-        # twice or one frame skipped per request.
-        if result['pictures_sent_again'] + result['pictures_skipped'] > max(3, recovery / 3):
-            failures.append('keyframe requests sent pictures twice or skipped new frames')
+        # at once and let it take that frame's slot (10 of 16 requests); the
+        # host's own claim trace shows it, the receiver's picture count does not.
+        if result['host_pictures_encoded_again']:
+            failures.append('the host encoded an unchanged picture again for a keyframe request')
         if result['recovery_p95_ms'] > 3000 / fps:
             failures.append('requested keyframes took longer than three frame periods')
     # Older fixtures cannot distinguish a starving tone source from host loss.

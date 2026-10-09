@@ -71,19 +71,42 @@ streamed without requests and with its strip at twice the stream rate; the
 laptop smoke checks only average fps and host latency. The release check
 (`check.ps1`) now also streams `hevc-recovery`: HEVC with the strip at the
 stream rate, the minimum frame rate at its default, and 16 keyframe requests
-0.5 s apart (`BUTTERPOLLO_TEST_IDR_PROBE_INTERVAL_MS`). It fails when more
-than max(3, requests / 3) pictures are sent twice or frames skipped, when a
-request gets no decoded keyframe, or when the keyframe p95 exceeds three
-frame periods. Picture age is recorded for comparison.
+0.5 s apart (`BUTTERPOLLO_TEST_IDR_PROBE_INTERVAL_MS`), with the host tracing
+every claim (`RUST_LOG=info,pacing=trace`). It fails when the host encodes an
+unchanged picture again, when a request gets no decoded keyframe, or when the
+keyframe p95 exceeds three frame periods; one late frame per request is
+allowed beyond the usual 1%. The receiver's pictures seen twice or skipped
+and picture age are recorded only: with the strip at the stream rate the
+fixture repeats and skips 5-28 pictures in 12 s with no request at all
+(`e2e.py --motion-at-rate`, the control). `claims_summary.py` summarizes a
+traced host log.
 
-Host A/B to run (idle host, extended layout, never exclusive): rc.28 main
-against the fix, A/B/A/B, isolated extended virtual display at 240 Hz,
-1968x2184 HDR 120 fps HEVC at 80 Mb/s, hardware-decoding receiver with
-`BUTTERPOLLO_TEST_IDR_PROBE=20` (one request every 1.5 s), 35 s per run:
-motion probe at 120 Hz (source at the stream rate) and at 240 Hz. Compare
-picture age mean / p95 / p99 / max, receiver fps, frames carrying an
-already-sent picture, host claim wait, and IDR request-to-arrival. Then the
-still 1080p120 desktop IDR probe, which should stay near 2.4 ms.
+Host A/B, 2026-10-09 (RX 7900 XT, idle, extended layout): rc.28 main
+`a5884577` against the fix `58953c4f`, isolated extended virtual display at
+240 Hz, 1968x2184 HDR 120 fps HEVC at 80 Mb/s, hardware-decoding receiver,
+20 keyframe requests per run, no dropped frames in any run.
+
+| Motion probe | Build | Picture age mean / p95 / p99 / max ms | fps | Pictures sent twice | Claim wait p95 ms | Keyframe mean / p95 / max ms |
+| --- | --- | --- | --- | --- | --- | --- |
+| 120 Hz (stream rate) | rc.28 | 9.67 / 11.87 / 12.69 / 22.19 | 120.58 | 19 | 2.36 | 6.19 / 8.24 / 8.52 |
+| | rc.28 | 10.74 / 12.79 / 13.85 / 24.73 | 120.51 | 19 | 2.11 | 6.29 / 7.75 / 8.05 |
+| | fix | 10.40 / 11.03 / 11.55 / 15.45 | 120.00 | 0 | 0.013 | 9.08 / 12.31 / 13.10 |
+| | fix | 9.35 / 9.95 / 10.37 / 13.99 | 120.00 | 0 | 0.014 | 9.08 / 12.25 / 13.27 |
+| 240 Hz | rc.28 | equal within noise | | 8, 10 | | 6.1, 5.8 mean |
+| | fix | | | 0, 0 | | 6.1, 6.7 mean |
+
+A keyframe on a moving picture now waits for the next new frame, about
+3 ms later at 120 fps. The still 1080p120 desktop keeps the fast keyframe:
+2.42 / 2.49 / 2.71 ms (fix) against 2.30 / 2.37 / 2.57 ms (rc.28).
+
+Release-check stream, HEVC 2560x720 at 60 fps, strip at 60 fps, traced:
+
+| Build | Requests | Host claims / unchanged picture encoded again | Receiver seen twice / skipped | Keyframe mean / p95 / max ms | Picture age mean / p95 / p99 ms |
+| --- | --- | --- | --- | --- | --- |
+| rc.28 | 16 | 711 / 10 | 42 / 40 | 3.37 / 4.77 / 5.45 | 13.27 / 24.18 / 31.44 |
+| fix | 16 | 705 / 0 | 15 / 15 | 4.15 / 7.33 / 8.45 | 12.55 / 16.50 / 32.15 |
+| rc.28 | none (control) | all new | 28 / 25 | - | 17.50 / 28.35 / 29.80 |
+| fix | none (control) | 706 / 0 | 5 / 5 | - | 21.28 / 23.45 / 25.18 |
 
 ## October 9 held fixes: host A/B after the reboot
 
