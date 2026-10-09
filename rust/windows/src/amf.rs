@@ -74,6 +74,7 @@ pub struct Encoder {
     /// is a keyframe, or the client decodes damaged pictures until one comes.
     recover: bool,
     bitrate: u32,
+    requested_bitrate: u32,
     references: butterpollo_core::ltr::References,
     ownership: Box<gpu::Ownership>,
     pub(crate) luminance: [f32; 2],
@@ -259,6 +260,7 @@ impl Encoder {
                 in_flight: std::collections::VecDeque::new(),
                 recover: false,
                 bitrate: config.bitrate_kbps,
+                requested_bitrate: config.bitrate_kbps,
                 references: Default::default(),
                 ownership: gpu::Ownership::new(),
                 luminance: [100., 1.],
@@ -1288,14 +1290,17 @@ impl Encoder {
         }
     }
 }
+fn scale_rate_control(value: i64, applied_kbps: u32, requested_kbps: u32) -> i64 {
+    value.saturating_mul(i64::from(requested_kbps)) / i64::from(applied_kbps.max(1))
+}
 impl Encoder {
     fn set_bitrate(&mut self, bitrate: u32) -> Result<()> {
-        if bitrate != self.bitrate {
+        if bitrate != self.requested_bitrate {
+            self.requested_bitrate = bitrate;
             if let Err(error) = self.property("TargetBitrate", int(i64::from(bitrate) * 1000)) {
                 // A rate the driver refuses keeps the current one: every frame
                 // failed on it until the stream ended.
                 self.warnings.set("encoder_bitrate", format!("AMF rejected the requested bitrate {bitrate} Kbps ({error:#}); the driver kept its previous rate, so the displayed target is not the applied bitrate. Reconnect at the desired bitrate or update the AMD driver."));
-                self.bitrate = bitrate;
                 return Ok(());
             }
             self.warnings.clear("encoder_bitrate");
@@ -1336,11 +1341,11 @@ impl Encoder {
                         ) == AMF_RESULT_AMF_OK
                         && !info.is_null()
                     {
-                        let mut scaled = current
-                            .__bindgen_anon_1
-                            .int64Value
-                            .saturating_mul(i64::from(bitrate))
-                            / i64::from(self.bitrate.max(1));
+                        let mut scaled = scale_rate_control(
+                            current.__bindgen_anon_1.int64Value,
+                            self.bitrate,
+                            bitrate,
+                        );
                         if (*info).minValue.type_ == AMF_VARIANT_TYPE_AMF_VARIANT_INT64 {
                             scaled = scaled.max((*info).minValue.__bindgen_anon_1.int64Value);
                         }

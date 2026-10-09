@@ -215,10 +215,10 @@ pub fn amf(config: &Config, stream: &Negotiated) -> Result<Vec<Property>> {
             Some(if codec == 0 { 3 } else { 1 })
         }
     };
-    // AMF's PA accepts NV12: retain the previous host's HDR demotion.
-    let rc = if stream.hdr && requested_rc.is_some_and(|r| r >= 4) {
+    // AMF's PA accepts NV12, not the P010 used by HDR and ten-bit SDR.
+    let rc = if stream.ten_bit() && requested_rc.is_some_and(|r| r >= 4) {
         tracing::warn!(
-            "AMF quality rate control requires SDR pre-analysis; HDR uses peak VBR instead. Select peak VBR for HDR or disable HDR to use quality rate control"
+            "AMF quality rate control requires 8-bit SDR pre-analysis; ten-bit input uses peak VBR instead. Select peak VBR or use 8-bit SDR for quality rate control"
         );
         Some(2)
     } else {
@@ -231,14 +231,14 @@ pub fn amf(config: &Config, stream: &Negotiated) -> Result<Vec<Property>> {
             config.values.contains_key("amd_rc") || value >= 4,
         );
     }
-    if stream.hdr && config.boolean("amd_preanalysis", false) {
+    if stream.ten_bit() && config.boolean("amd_preanalysis", false) {
         tracing::warn!(
-            "AMF pre-analysis requires NV12 SDR input; disabled for HDR. Disable HDR to use pre-analysis, or leave pre-analysis disabled for HDR streams"
+            "AMF pre-analysis requires NV12 8-bit SDR input; disabled for ten-bit input. Use 8-bit SDR for pre-analysis, or leave pre-analysis disabled"
         );
     }
     // Quality VBR modes require PA. Keep the original one-frame lookahead.
-    let preanalysis =
-        !stream.hdr && (config.boolean("amd_preanalysis", false) || rc.is_some_and(|r| r >= 4));
+    let preanalysis = !stream.ten_bit()
+        && (config.boolean("amd_preanalysis", false) || rc.is_some_and(|r| r >= 4));
     add(
         format!("{prefix}EnablePreAnalysis"),
         Value::Boolean(preanalysis),
@@ -551,6 +551,89 @@ pub fn ffmpeg(config: &Config, stream: &Negotiated, name: &str) -> Result<Vec<(S
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn amf_preanalysis_and_quality_rc_require_eight_bit_sdr() {
+        for codec in 0..=2 {
+            for (hdr, sdr_10bit) in [(false, false), (true, false), (false, true)] {
+                for (rc, value) in [("vbr_peak", 2), ("qvbr", 4), ("hqvbr", 5), ("hqcbr", 6)] {
+                    for pa in [false, true] {
+                        let config =
+                            Config::parse(&format!("amd_rc={rc}\namd_preanalysis={pa}")).unwrap();
+                        let stream = Negotiated {
+                            codec,
+                            hdr,
+                            sdr_10bit,
+                            ..Default::default()
+                        };
+                        let properties = amf(&config, &stream).unwrap();
+                        let expected_pa = !stream.ten_bit() && (pa || value >= 4);
+                        let expected_rc = if stream.ten_bit() && value >= 4 {
+                            2
+                        } else {
+                            value
+                        };
+                        assert!(
+                            properties
+                                .iter()
+                                .any(|p| p.name.ends_with("RateControlMethod")
+                                    && p.value == Value::Integer(expected_rc))
+                        );
+                        assert!(
+                            properties
+                                .iter()
+                                .any(|p| p.name.ends_with("EnablePreAnalysis")
+                                    && p.value == Value::Boolean(expected_pa)
+                                    && p.required == expected_pa)
+                        );
+                        assert_eq!(
+                            properties
+                                .iter()
+                                .any(|p| p.name == "PALookAheadBufferDepth"),
+                            expected_pa
+                        );
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn amf_default_policy_bytes_are_unchanged_for_sdr_hdr_and_ten_bit_sdr() {
+        // Full ordered policy before the eligibility fix, including requiredness.
+        for (codec, expected) in [
+            (
+                0,
+                "Usage=Integer(1):true\nQualityPreset=Integer(1):true\nRateControlMethod=Integer(3):false\nEnablePreAnalysis=Boolean(false):false\nEnableVBAQ=Boolean(false):true\nEnforceHRD=Boolean(false):false\nRateControlSkipFrameEnable=Boolean(false):false\nProfile=Integer(100):true\nBPicturesPattern=Integer(0):false\n",
+            ),
+            (
+                1,
+                "HevcUsage=Integer(1):true\nHevcQualityPreset=Integer(10):true\nHevcRateControlMethod=Integer(1):false\nHevcEnablePreAnalysis=Boolean(false):false\nHevcEnableVBAQ=Boolean(true):true\nHevcEnforceHRD=Boolean(false):false\nHevcRateControlSkipFrameEnable=Boolean(false):false\n",
+            ),
+            (
+                2,
+                "Av1Usage=Integer(2):true\nAv1QualityPreset=Integer(100):true\nAv1RateControlMethod=Integer(1):false\nAv1EnablePreAnalysis=Boolean(false):false\nAv1AQMode=Integer(1):true\nAv1EnforceHRD=Boolean(false):false\nAv1BPicturesPattern=Integer(0):false\n",
+            ),
+        ] {
+            for (hdr, sdr_10bit) in [(false, false), (true, false), (false, true)] {
+                let stream = Negotiated {
+                    codec,
+                    hdr,
+                    sdr_10bit,
+                    ..Default::default()
+                };
+                let actual: String = amf(&Config::default(), &stream)
+                    .unwrap()
+                    .iter()
+                    .map(|p| format!("{}={:?}:{}\n", p.name, p.value, p.required))
+                    .collect();
+                assert_eq!(actual.as_bytes(), expected.as_bytes());
+                assert!(
+                    amf_rate_control(&Config::default(), &stream)
+                        .unwrap()
+                        .is_empty()
+                );
+            }
+        }
+    }
     #[test]
     fn amf_disables_b_frames_only_for_codecs_with_a_b_picture_pattern() {
         for (codec, expected) in [

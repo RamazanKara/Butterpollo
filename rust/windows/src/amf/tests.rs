@@ -1,6 +1,21 @@
 use super::*;
 
 #[test]
+fn rate_limits_scale_from_the_applied_bitrate_after_a_rejected_request() {
+    // 80 -> rejected 40 -> accepted 20 Mbps must quarter the old limits.
+    for (current, expected) in [
+        (96_000_000, 24_000_000),
+        (666_667, 166_666),
+        (2_666_668, 666_667),
+    ] {
+        assert_eq!(scale_rate_control(current, 80_000, 20_000), expected);
+        assert_eq!(scale_rate_control(current, 80_000, 80_000), current);
+    }
+    assert_eq!(scale_rate_control(0, 80_000, 20_000), 0);
+    assert_eq!(scale_rate_control(i64::MAX, 1, u32::MAX), i64::MAX);
+}
+
+#[test]
 fn settings_log_queries_each_codecs_frame_skip_property() {
     for (codec, expected) in [
         (0, "RateControlSkipFrameEnable"),
@@ -89,19 +104,24 @@ fn hdr10_metadata_and_range_reach_the_bitstream() -> Result<()> {
     let options = butterpollo_core::config::Config::parse(
         "amd_usage=ultralowlatency\namd_quality=speed\namd_smart_access_video=disabled\namd_lowlatency_mode=enabled\namd_input_queue_size=4\namd_ltr_frames=4\n",
     )?;
+    let defaults = butterpollo_core::config::Config::default();
     for codec in [1u8, 2] {
         for full_range in [false, true] {
             for compute in [false, true] {
-                for (references, metadata) in [
+                for (references, metadata, options) in [
+                    (1, metadata, &defaults),
+                    (4, metadata, &defaults),
                     (
                         1,
                         butterpollo_core::hdr::Metadata::display(1015., 0., 1015.),
+                        &options,
                     ),
                     (
                         4,
                         butterpollo_core::hdr::Metadata::display(1015., 0., 1015.),
+                        &options,
                     ),
-                    (4, metadata),
+                    (4, metadata, &options),
                 ] {
                     let config = butterpollo_core::rtsp::Negotiated {
                         width,
@@ -117,35 +137,57 @@ fn hdr10_metadata_and_range_reach_the_bitstream() -> Result<()> {
                     let queue = compute
                         .then(|| crate::compute::Compute::for_device(&gpu.device))
                         .transpose()?;
-                    let mut encoder = Encoder::new_gpu(&config, gpu.clone(), &options, queue)?;
-                    assert_eq!(encoder.supports_invalidation(), references > 1);
-                    // As the stream does before its first frame.
-                    encoder.set_hdr_metadata(metadata);
+                    let mut encoder = Encoder::new_gpu(&config, gpu.clone(), options, queue)?;
+                    assert_eq!(
+                        encoder.supports_invalidation(),
+                        butterpollo_core::encoder_policy::amf_ltr_frames(options, &config) > 0
+                    );
+                    let changes = [
+                        metadata,
+                        butterpollo_core::hdr::Metadata {
+                            maximum_nits: 600,
+                            max_cll: 0,
+                            max_fall: 0,
+                            ..metadata
+                        },
+                        butterpollo_core::hdr::Metadata {
+                            maximum_nits: 1400,
+                            max_cll: 1200,
+                            max_fall: 500,
+                            ..metadata
+                        },
+                    ];
                     let mut output = vec![];
-                    for frame in 0..8 {
-                        if frame == 4 {
-                            encoder.set_hdr_metadata(metadata);
+                    for frame in 0..12 {
+                        if frame % 4 == 0 {
+                            encoder.set_hdr_metadata(changes[frame / 4]);
                         }
                         output.extend(encoder.encode_gpu(
                             &source,
-                            frame == 0 || frame == 4,
+                            frame % 4 == 0,
                             config.bitrate_kbps,
                         )?);
-                    }
-                    let deadline = Instant::now() + Duration::from_secs(3);
-                    while encoder.pending() {
-                        output.extend(encoder.poll()?);
-                        if Instant::now() >= deadline {
-                            bail!("HDR metadata probe output timed out");
+                        // Drain before changing a component-wide metadata property.
+                        if frame % 4 != 3 {
+                            continue;
                         }
-                        std::thread::sleep(Duration::from_millis(1));
+                        let deadline = Instant::now() + Duration::from_secs(3);
+                        while encoder.pending() {
+                            output.extend(encoder.poll()?);
+                            if Instant::now() >= deadline {
+                                bail!("HDR metadata probe output timed out");
+                            }
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
                     }
-                    assert_eq!(output.len(), 8);
-                    for frame in [0, 4] {
+                    assert_eq!(output.len(), 12);
+                    for frame in [0, 4, 8] {
+                        let metadata = changes[frame / 4];
                         assert!(output[frame].idr);
                         let name = format!(
-                            "codec{codec}-full{full_range}-compute{compute}-refs{references}-cll{}-frame{frame}",
-                            metadata.max_cll
+                            "codec{codec}-full{full_range}-compute{compute}-refs{references}-cll{}-defaults{}-frame{frame}",
+                            metadata.max_cll,
+                            options.values.is_empty()
                         );
                         let bitstream = directory.path().join(format!("{name}.bin"));
                         // Decode each IDR separately: a decoder retains earlier SEI.
@@ -190,16 +232,16 @@ fn hdr10_metadata_and_range_reach_the_bitstream() -> Result<()> {
                             .iter()
                             .find(|s| s["side_data_type"] == "Mastering display metadata")
                             .with_context(|| format!("{name}: no mastering display metadata"))?;
-                        // 1015 nits and BT.2020 red (0.708) in each codec's units.
+                        // Mastering peak and BT.2020 red (0.708) in each codec's units.
                         let (luminance, minimum, red) = if codec == 1 {
                             (
-                                "10150000/10000",
+                                format!("{}/10000", u32::from(metadata.maximum_nits) * 10000),
                                 format!("{}/10000", metadata.minimum),
                                 "35400/50000",
                             )
                         } else {
                             (
-                                "259840/256",
+                                format!("{}/256", u32::from(metadata.maximum_nits) * 256),
                                 format!("{}/16384", u32::from(metadata.minimum) * 16384 / 10000),
                                 "46399/65536",
                             )
@@ -215,8 +257,8 @@ fn hdr10_metadata_and_range_reach_the_bitstream() -> Result<()> {
                         } else {
                             let light =
                                 light.with_context(|| format!("{name}: no content light level"))?;
-                            assert_eq!(light["max_content"], 1000, "{name}");
-                            assert_eq!(light["max_average"], 400, "{name}");
+                            assert_eq!(light["max_content"], metadata.max_cll, "{name}");
+                            assert_eq!(light["max_average"], metadata.max_fall, "{name}");
                         }
                     }
                 }
