@@ -5,6 +5,115 @@ without reducing features or picture quality. Opus took over from Codex in the
 evening of October 2. Performance acceptance on the customer's own sessions is
 still open; the measured fixture results below are local loopback evidence.
 
+## October 9 Vibepollo fixture failure
+
+Read-only investigation and fixture repair; no host, receiver, GPU workload,
+service operation or build was run. Streaming validation must wait for the
+reboot described below. Artifacts are under
+`C:\Users\ramaz\.codex\artifacts\butterpollo-rust-20260930\bench-rc21`.
+
+**The zero-video failure is a missing WGC helper in the pinned benchmark
+bundle.** The `frz-wgc-*` label makes the fixture write `capture = wgc` for
+both hosts. Vibepollo needs `vibepollo-baseline-build\tools\sunshine_wgc_capture.exe`,
+which is absent; that directory contains only the display helper executable
+and CMake files. The October 8 comparison used `capture = ddx`. The current
+`sunshine.exe` SHA-256 is
+`a539dd0f4d5fdee4537b317efee07e96b201a0c229e050a6af8a18225edb46cf`,
+identical to `vp-vibepollo-nat-hevc-a/matched-settings.json`.
+
+The four attempts failed at different stages. Paths in this list are relative
+to `frz-wgc-vibepollo-rN`; host logs are under `config/logs/logs`:
+
+- **r1:** `result.log:3-5` and all three `second-*/result.log` files fail with
+  `KeyError: 'csrf_token'` in the Rust `interop_second_ab.py`. There is no
+  stream launch. `baseline-20261009-014244-363.log:65` is the startup probe
+  warning, before this independent login-contract failure.
+- **r2/r3:** `result.log:64-75` shows `/launch` still using `timeout=10`.
+  In `baseline-20261009-014341-371.log:180-199`, display setup runs from
+  01:43:44.714 to `Executing [Desktop]` at 01:43:55.252 (10.538 s).
+  `baseline-20261009-014533-494.log:180-200` takes 10.994 s. The timed-out
+  primary never starts RTSP; later secondary clients reach capture and log
+  the missing WGC executable (r2:259-261, r3:253-255).
+- **r4:** the 60-second launch timeout gets past setup. In
+  `baseline-20261009-014716-795.log`, lines 180-198 span 01:47:20.589 to
+  01:47:34.391; line 195 creates `\\.\DISPLAY13`, line 218 connects the
+  client, and line 221 selects that same output. At **01:47:38.557,
+  lines 251-253**, `Failed to launch process: ...\tools\sunshine_wgc_capture.exe,
+  error: 2` is followed by `WGC IPC helper failed to initialize; requesting
+  capture reinit.` This repeats at lines 291-293 and 318-320.
+  `result.log:39,44,54` records `TERMINATED error=-100`, no video traffic,
+  and `frames=0 decoded_frames=0 audio_packets=1089`. `renderer.log:1-6`
+  reaches first present on DISPLAY13, so selecting the wrong display or
+  failing to start the renderer does not explain the absence of video.
+
+The r4 first secondary starts at 01:47:44.489 (`second-clients.json`), after
+the first missing-helper error. Its `second-0/result.log:6` returns 503 while
+the primary disconnects and tears down (host log:321,346-372). Vibepollo's
+`src/nvhttp.cpp:6351-6364` admits only one blocking stream mutation at a time;
+this response does not diagnose a driver lock. Later secondaries also receive
+zero video and hit the same missing helper. The final `motion_probe.exe`
+timeouts in the run-level r2/r3/r4 logs are fixture teardown failures after
+these earlier errors, not the original streaming failure.
+
+**The logs do not support stopping the installed Butterpollo service.** r4
+creates its own display and selects it for capture after the temporary-lease
+warning.
+More decisively, the successful October 8
+`vp-vibepollo-nat-hevc-a/config/logs/logs/baseline-20261008-164312-585.log:66`
+has the identical warning; its `result.log:56,67` reports 3,817 decoded frames
+and `INTEROPERABILITY PASS`. In the pinned source at
+`day-work-20261002/vibepollo-baseline-source`,
+`src/platform/windows/virtual_display_sunshine.cpp:8257-8267` can return an
+existing physical display without acquiring a temporary probe lease;
+`src/main.cpp:839-841` still emits this warning when there is no owned lease.
+It then validates encoders with synthetic surfaces. This is not evidence of
+exclusive driver ownership by rc.26. Likewise, the unrecognized
+`wgc_slot_aligned_publish`, `gpu_compute_conversion` and `prep_cmd` settings
+appear in both successful and failed stdout logs (October 8:49-51, r4:48-50).
+Omitting `minimum_fps_target = 20` retains Vibepollo's default 20
+(`src/config.cpp:969`).
+
+Edited only the external `run-motion-ab.py`, preserving its original bytes
+as `run-motion-ab.py.bak` (SHA-256
+`3e39523eb6adec8db538e2755292119bda67ccf2c712c589600ae939676eafe7`):
+
+- Pin Vibepollo to its previously working DDX capture, announce it in the
+  run log and record `capture: ddx` in matched settings. Butterpollo's WGC
+  label selection and configuration remain unchanged.
+- For Vibepollo, run the audio tone for `AB_MOTION_SECONDS` and allow helpers
+  that duration plus eight seconds to finish. The former fixed 40-second
+  tone and eight-second wait could invalidate the 60-second receiver /
+  70- or 90-second renderer cases even after capture was repaired.
+- For Vibepollo secondaries only, remove the primary's barcode/tone
+  requirements and first-frame dump path. They retain decoding/audio checks
+  and `AB_NO_CANCEL=1`; three client cycles and the existing delay remain.
+  Butterpollo's secondary environment and timing are unchanged.
+
+`interop_vp_ab.py` already contains the separate CSRF-token fetch, 60-second
+launch timeout and no-cancel handling; these were retained. Neither it nor
+`run-one-ab.ps1`, `batch-ab.ps1`, `run-motion.py` or the installed service was
+modified. CPU-only checks passed: Python syntax, PowerShell wrapper parsing,
+the backup hash, eight old/new Butterpollo config comparisons, unchanged
+Butterpollo secondary commands/environment/timing, Vibepollo capture and
+secondary isolation, helper durations, and the 15-column batch row below.
+No streaming success or new performance result is claimed before the reboot.
+
+After reboot, with the installed host idle, use this fresh row in the
+`RunsFile` supplied to `batch-ab.ps1` through the existing SYSTEM/session
+launcher (HEVC SDR 1080p60, 20 Mbps, 120 Hz source, D3D11VA, three secondary
+cycles, 60-second receiver and 70-second renderer):
+
+```text
+frz-ddx-vibepollo-r5|vibepollo-baseline-build|hevc|1920x1080|60|20000|120|0||d3d11va|3|60|70||vibepollo
+```
+
+This is explicitly a DDX baseline. A WGC comparison needs the matching
+baseline WGC helper packaged and capture selection restored. Check actual
+source refresh and secondary display identities in the new artifacts before
+using the result as a matched hotplug comparison: Vibepollo can join another
+game client's existing output (`src/remote_session.cpp:263-268`), so
+`per_client` and three connections alone do not prove three new displays.
+
 ## October 9 job 7 split and stall diagnostics: host A/B, then a GPU reset
 
 Same setup as the job 4 A/B below (base `92afcce5`, 1968x2184 HDR 120,
