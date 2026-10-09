@@ -1,6 +1,7 @@
-# Renders butterpollo.ico, the mark the console uses as its favicon (a white
-# "B" on a rounded burnt-orange square), at the sizes Windows asks for in
-# Explorer, Start, the taskbar and the notification area.
+# Renders butterpollo.ico, Rubylight's mark and the console favicon (a white
+# "R" on a rounded ruby square, #c41242), at the sizes Windows asks for in
+# Explorer, Start, the taskbar and the notification area. The file keeps its
+# old name so build scripts and upgrades find it.
 #   pwsh -File rust/assets/make-icon.ps1
 Add-Type -AssemblyName System.Drawing
 $sizes = 16, 20, 24, 32, 40, 48, 64, 96, 128, 256
@@ -19,13 +20,13 @@ $frames = foreach ($size in $sizes) {
     $shape.AddArc($size - 2 * $radius, $size - 2 * $radius, 2 * $radius, 2 * $radius, 0, 90)
     $shape.AddArc(0, $size - 2 * $radius, 2 * $radius, 2 * $radius, 90, 90)
     $shape.CloseFigure()
-    $g.FillPath([Drawing.SolidBrush]::new([Drawing.Color]::FromArgb(0xad, 0x4b, 0x10)), $shape)
+    $g.FillPath([Drawing.SolidBrush]::new([Drawing.Color]::FromArgb(0xc4, 0x12, 0x42)), $shape)
     $font = [Drawing.Font]::new('Segoe UI', [float](22 * $scale), [Drawing.FontStyle]::Bold, [Drawing.GraphicsUnit]::Pixel)
     $format = [Drawing.StringFormat]::new()
     $format.Alignment = 'Center'
     $format.LineAlignment = 'Center'
     $box = [Drawing.RectangleF]::new(0, [float](0.5 * $scale), $size, $size)
-    $g.DrawString('B', $font, [Drawing.Brushes]::White, $box, $format)
+    $g.DrawString('R', $font, [Drawing.Brushes]::White, $box, $format)
     $g.Dispose()
     $stream = [IO.MemoryStream]::new()
     $bitmap.Save($stream, [Drawing.Imaging.ImageFormat]::Png)
