@@ -35,6 +35,247 @@ reset; the previous watchdog dumps on this PC are from October 8 00:31-00:43.
 Cause unknown: the base build predates every change measured here. It needs a
 reboot before any GPU work; the dumps are kept for analysis.
 
+## October 9 a new virtual display hitches other streams
+
+Owner's observation: RX 7900 XT, Windows 11, extended layout, one client
+rendering and streaming on its own virtual display. Creating another client's
+display raises the first stream's render-to-decode picture age to 500-600 ms
+for about 1.3 s. Removing the second display does not hitch. Windows also
+reactivates a deliberately inactive physical TV during creation. This is the
+reported measurement, not a measurement from this worktree.
+
+Source audit: `59caf6a0`. **Plan only; no display code changed.** The logs do
+not establish how many mode/layout applies actually happened, and the existing
+code already skips satisfied settings. Combining the remaining operations
+crosses identity checks, HDR settling and arrangement recovery bookkeeping;
+it is not a clearly safe, contained change without Windows transition tests.
+Single-stream and multi-stream behavior therefore remain unchanged.
+
+### Call trace and scope
+
+Entry: `host/src/display_session.rs::Prepared::create` captures the original
+layout, calls `Guard::new_virtual_options`, sets virtual DPI, acquires an
+arrangement lease, then calls `Guard::apply_virtual_mode("after layout")`.
+`GoldenLease` records a restoration snapshot; it does not apply one at launch.
+The physical `Activation::acquire` branch is skipped for an owned VDD.
+
+All `SetDisplayConfig` calls below submit the desired **whole active path
+set**, even when the code changes just one source/target. They can disturb
+DWM/capture on the first display. This is a plausible source of the hitch,
+not proof that every call pauses every display or that the driver hotplug
+itself is innocent. A device-scoped request likewise is not a guarantee of
+uninterrupted composition on other outputs.
+
+In the table, `A` = `SDC_APPLY`, `U` =
+`SDC_USE_SUPPLIED_DISPLAY_CONFIG`, `C` = `SDC_ALLOW_CHANGES`. Counts are
+display-changing native call attempts, including fallbacks, per invocation
+of the indicated step. Read-only queries are not included in apply totals.
+
+| Order / source | Native operation and flags | Scope and count |
+| --- | --- | --- |
+| Before arrival: `Snapshot::capture`, `hotplug::Protection::capture` | `GetDisplayConfigBufferSizes` / `QueryDisplayConfig` (`QDC_ONLY_ACTIVE_PATHS` or `QDC_ALL_PATHS`); device-name, color, DPI and current-mode queries | Read only; **0 applies**. `ALL_PATHS` includes inactive alternative routes to active targets; these are not dormant monitors. |
+| `display_lease` -> `VirtualDisplay::create_options` | Driver version query `DeviceIoControl(0x900)`; one create request (`0x901` for protocol 3.5, `0x90c` for 3.6+) carrying requested dimensions/rate | **1 driver creation**, separate from Win32 configuration counts. Windows/driver arrival and saved-topology recall can reconfigure the desktop before our first apply. Internal commit count is unknown. Shared identity reuse creates no new display. |
+| `VirtualDisplay::resolve` -> `activate_target`, only if Windows leaves the new target inactive | `SetDisplayConfig(A|U|C)`, current active paths/modes plus a free-source route for the new target; retry with *all* mode indices invalid and no modes if refused | Normally **0**; **1-2 per activation attempt**. Whole topology; fallback permits choosing every display's timing. Starts after a one-second connected-but-off grace, retried about once a second within the ten-second resolve deadline. Lease renewals are not topology applies. |
+| `check_hotplug("created")` -> `Protection::check` | Remove reactivated dormant targets, compact referenced modes, `SetDisplayConfig(A|U)`; on failure retry `A|U|C` | **0 if none reactivated; 1-2 if the TV reactivated**, regardless of number of pruned targets. Full retained active topology, including the first stream; strict attempt preserves its supplied modes, positions, path order and clone relationships. Fallback can retime survivors. Target identity and a second topology snapshot are checked before applying. |
+| `Guard::new_virtual_options` -> `lease_hdr` -> `set_hdr` -> `color_state::set` | `DisplayConfigSetDeviceInfo(SET_HDR_STATE=16)` on supported Windows 11 API, otherwise legacy `SET_ADVANCED_COLOR_STATE` | **0-1 HDR write**, addressed to the new adapter/target. Already satisfied or unsupported enable requests are skipped. Successful writes are polled up to three seconds; a timed-out transition can issue **1 additional rollback write** and fail setup. Modern SET failure does not also invoke legacy SET. |
+| `finish_hotplug("after settings")` -> `Protection::settle` | Repeated `Protection::check`, same strict/prune/fallback sequence as above | Normally **0 applies**, despite polling: 500 ms quiet period, 50 ms sleeps, 1500 ms enforcement deadline. Each additional reactivation episode adds **1-2 applies**. Sleeps delay this launch; they are not themselves DWM modesets or a demonstrated cause of the other stream's freeze. |
+| End of that same `finish_hotplug` -> `VirtualDisplay::apply_mode("after settings")` -> `Topology::set_mode_rate` | If current dimensions/rate differ, edit new source width/height and path refresh, invalidate its target timing index, then `Topology::restore` -> `SetDisplayConfig(A|U|C)` | **0-1 whole-topology apply**. Exact size and refresh within 500 millihertz already count as satisfied. Unrelated paths/modes are supplied unchanged, but `C` allows Windows to adjust them. |
+| Mode-list fallback inside that `set_mode_rate` | If CCD succeeded but readback still mismatches, `ChangeDisplaySettingsExW(new_display, ..., flags=0)` with `DM_PELSWIDTH|DM_PELSHEIGHT|DM_DISPLAYFREQUENCY` | **0-1 additional GDI call** to the new display, rounding requested rate to whole Hz. It is not a NULL-device desktop-wide reset, but can still trigger display-change/capture consequences. An error from CCD returns before this fallback. |
+| `virtual_scale` -> `set_dpi_scale` | `DisplayConfigSetDeviceInfo(type=-4)`, adapter/source | **0-1 DPI write** for the new source; default configuration 0 and matching scale skip it. Separate from CCD topology applies. |
+| `display_arrangement::Lease::acquire`, existing owner -> `apply` -> `Arrangement::compose_all` | Capture current layout, inherit the first stream's arrangement, journal desired layout; `Topology::set_active` only if active ID sets differ | For the stated extended case after successful TV pruning: **0 active-set applies**. In other layouts/state changes: usually **1-2** `SetDisplayConfig(A|U|C)` attempts, as many as **4** when a source reassignment needs an intermediate switch-off and recursive retry. The loose fallback invalidates every source/target mode. |
+| Same arrangement `apply` -> `Topology::set_positions` -> `restore` | Place subsequent streams to the right, aligned with the first; `SetDisplayConfig(A|U|C)` if a source position changes | **0-1 whole-topology apply**. Already-correct positions skip it. For two extended streams the intended edit is the second display's source position; the first display is still included, and `C` still allows retiming. Primary/isolated variants may intentionally move other sources too. |
+| `Guard::apply_virtual_mode("after layout")` | Same conditional CCD mode set and GDI fallback as the earlier mode pass | **0-1 CCD + 0-1 GDI**. Needed only if Windows changed/refused the requested mode; commonly just a readback after the earlier mode pass. |
+| Verification / optional `hdr_profile::Lease::acquire` | Mode/color queries; optional `ColorProfileAddDisplayAssociation` for a selected differing ICC profile | Queries: **0 applies**. Profile: normally **0-1 association write** to new adapter/source, separate from HDR SET and CCD; failure can restore the prior association. |
+
+The two INFO messages `virtual display mode applied` are emitted by readback
+in `VirtualDisplay::apply_mode`, including when `set_mode_rate` took its
+no-op return. They are **not evidence of two native mode changes**. The
+inactive-target warning is before the strict apply (and its last deadline
+check); it does not report whether the strict call succeeded or needed the
+permissive fallback. The excerpt alone cannot establish a measured count.
+
+Both mode passes target the new VDD, not the first stream's display. The
+arrangement records a restoration snapshot but does not restore every
+monitor's pre-arrival timing during this second launch. If arrival or an
+`ALLOW_CHANGES` fallback retimes the first display, the new display's final
+mode check does not repair it; verify the first display separately.
+
+There is no `SDC_SAVE_TO_DATABASE`, `SDC_NO_OPTIMIZATION`,
+`SDC_FORCE_MODE_ENUMERATION`, `SDC_TOPOLOGY_*`, `CDS_UPDATEREGISTRY`,
+`CDS_NORESET` or `CDS_RESET` on this launch path. `apply_mode` with
+`CDS_FULLSCREEN` exists for the separate public integer-Hz `set_mode` helper;
+the virtual launch uses `set_mode_rate`, whose GDI fallback has flags 0.
+Snapshot rotation/clone restoration and restoration of every saved monitor
+are teardown/recovery operations, not an unconditional second-client launch
+step. If arrival actually disables the first VDD, its independent heartbeat
+can run activation, HDR/mode and arrangement recovery too; those extra calls
+must be counted separately when recovery messages occur.
+
+### Counts per second-display creation
+
+Assume one automatic successful VDD activation, one TV reactivation at
+`created`, no later reactivation, an extended arrangement with unchanged
+active set, and no error unwind or concurrent recovery. Let `M1` and `M2`
+be 0/1 for the two actual CCD mode changes, `P` be 0/1 for a position change,
+and `F` be 0/1 for the TV restore's permissive retry:
+
+`SetDisplayConfig attempts = 1 + F + M1 + P + M2`.
+
+- Strict TV restore succeeds: **1-4 CCD applies attempted**. A mode that
+  needs one correction plus a position change, with matching final readback,
+  gives **3**. If Windows already selected the requested mode and placement,
+  only **1** remains. These are conditional source counts, not host measurements.
+- TV restore needs its fallback: **2-5 CCD attempts**, including the failed
+  strict attempt. Each mode pass can additionally need one new-display GDI
+  fallback: **0-2 `ChangeDisplaySettingsExW` calls** in total.
+- Add **0-1 HDR**, **0-1 DPI**, **0-1 ICC** write if requested and different,
+  and always **1 driver-create IOCTL**. These are different API scopes; do
+  not add them up as an equivalent number of global DWM stalls.
+- Each extra guard correction adds **1-2 CCD attempts**; an explicit
+  activation adds **1-2 per attempt**; a changed arrangement active set adds
+  the **1-4** described above. Arrival, errors, concurrent user changes and
+  the first stream's own recovery prevent an unconditional fixed count.
+
+Removal is asymmetric: it has no create-time Windows topology recall,
+startup guard or new-display HDR/mode setup. It can still change the topology:
+`Lease::drop` may deactivate the departing target with `set_active`, then
+`VirtualDisplay::drop` sends removal IOCTL `0x902` and lease release `0x904`.
+No measured hitch on removal does not imply no global call there.
+
+### Minimum-change proposal and why it is deferred
+
+Two corrections to the suggested one-call approach are essential:
+
+- `SDC_NO_OPTIMIZATION` forces the mode change down to the driver for **each
+  active display**. Leave it out. `SetDisplayConfig` enables only the supplied
+  active paths; passing just the TV/new-VDD paths would switch off omitted
+  displays, including the first stream. Supply all surviving paths and edit
+  only the intended ones. Use `A|U` first; neither database persistence nor
+  permission to alter other supplied modes is needed for an exact temporary
+  layout. [Microsoft: SetDisplayConfig](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setdisplayconfig).
+- HDR is a separate device-info request, not a field that can be folded into
+  a CCD path/mode array. A GDI call naming the new output is device-scoped,
+  but does not promise other outputs will remain uninterrupted.
+  [Microsoft: DisplayConfigSetDeviceInfo](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-displayconfigsetdeviceinfo),
+  [Microsoft: ChangeDisplaySettingsExW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-changedisplaysettingsexw).
+
+The first candidate should be restricted to a **new, independently sourced
+owned VDD joining an existing extended stream arrangement**:
+
+1. Retain creation/resolve and the immediate strict dormant-TV correction.
+   Do not leave the TV on through a possibly three-second HDR transition.
+   Keep identity checks, mode compaction and the bounded startup guard.
+2. Keep required HDR/DPI setup and settling. For this joining-display case
+   only, defer the `after settings` mode write to arrangement. Keep the
+   first/single-stream, reused-display, exclusive/primary/isolated and
+   recovery paths as they are.
+3. From one fresh active topology, model the new display at its **requested**
+   size/rate before composing its final position. Plan the mode and position
+   together, retain every unrelated source/target mode, path order and clone
+   relationship, discard unreferenced modes and remap indices. Reject a
+   shared/clone source rather than editing another display through it.
+   If the modeled result already matches, issue no call. Otherwise apply
+   that full surviving configuration once with `A|U`.
+4. Journal the same intended arrangement before mutation; recheck ownership
+   and topology immediately before apply and verify afterwards. A refused
+   strict plan needs a fresh query before using the existing fallback
+   sequence, never a replay of a snapshot taken before HDR/hotplug. Keep
+   readback and a conditional rate correction if the driver does not honor
+   the requested timing; do not drop the final verification just to save a
+   log line. `ALLOW_CHANGES` remains an explicit compatibility fallback,
+   whose potential to retime the first display must be measured.
+
+For the three-CCD example this aims at **two**: immediate TV prune, then
+combined new-display mode/position. It cannot remove Windows' own arrival
+reconfiguration or a necessary HDR transition. Folding the prune into the
+same final call could reach **one** when HDR is already satisfied and the
+final arrangement is known at `created`, but currently that information and
+its recovery journal belong to a later lease. Delaying protection or moving
+that lease into creation is a larger behavior/lifetime change, not a safe
+flag substitution. The one-CCD already-satisfied case has no redundant host
+apply to remove while still preserving the TV's inactive state.
+
+Risks requiring host validation: known driver rejection of exact layouts
+during arrival (the current guard has a fallback for it); missing/invalid
+target timings when changing refresh; cloned/shared source IDs; renumbered
+GDI names after pruning; HDR recalling another topology; stale snapshots
+overwriting a concurrent user layout change; preserving recovery journals
+and lock ordering across `DISPLAYS`, `SETTINGS` and the arrangement lease.
+CCD has no atomic compare-and-set, so even a final requery cannot eliminate
+the last race. Blindly removing `ALLOW_CHANGES` from `Topology::restore`
+would also alter physical-display restoration and single-stream behavior.
+
+Before implementing that candidate, add pure planner tests over synthetic
+paths/modes and arrangement nodes: all settings already satisfied -> no
+apply; TV reactivation alone -> one prune with other modes preserved;
+new mode plus position -> one apply; untouched first-stream rational timing,
+primary, negative coordinates and clone relationships; compaction of orphan
+modes with shared mode indices; owned/replaced/missing target identity;
+reject the new target sharing an existing source; changed snapshot ->
+replan; requested dimensions used for placement; unchanged single-stream
+and non-extended fallback selection. The existing `display/hotplug.rs`
+tests cover pruning, compaction, identities and stale-layout detection,
+but cannot prove DWM/driver latency or acceptance of a new combined apply.
+No unused planner or speculative runtime change was added here.
+
+Apollo/Vibepollo comparison: this checkout has no `src/` C++ host and no
+Apollo/Vibepollo display implementation under `third-party/` (only
+`moonlight-common-c` and `nanors`). `docs/butterpollo-cpp.md` records the C++
+source removal after rc.23. The Rust `resolve` comment credits Vibepollo's
+delayed inactive-target activation, but that is not a source audit of its
+current flags or call counts. No comparison numbers are invented.
+
+### Verification and owner's next measurement
+
+Validation used the requested `performance-probe\rust-env.ps1`,
+`CARGO_TARGET_DIR=D:\bp-build\hitch-target` and `C:\src\cargo-one.ps1` for
+every cargo invocation:
+
+- `fmt --all -- --check`: passed.
+- `clippy --workspace --all-targets --locked -j 2 -- -D warnings`: passed.
+- `test --workspace --locked -j 2`: **failed**, with 539 passed, 2 failed
+  and 44 ignored. The unchanged default suite includes two unignored
+  desktop/GPU-dependent tests: `display::tests::heartbeat_check_finds_the_monitors_that_monitors_lists`
+  failed with `0x80070057`, and `encoder::tests::encoders_open_on_the_configured_gpu`
+  failed with "no desktop display or hardware GPU" in this tool session.
+- Rerunning that workspace command with
+  `-- --skip display::tests::heartbeat_check_finds_the_monitors_that_monitors_lists --skip encoder::tests::encoders_open_on_the_configured_gpu`:
+  **passed**, 539 passed, 44 ignored, 2 filtered out; doc-tests also passed.
+- `git diff --check`: passed.
+
+The required unfiltered test gate is **not green**; neither the unrelated
+tests nor the machine-wide wrapper were changed. The wrapper returned exit
+code 0 even for the failed test run, so results above come from Cargo's test
+summary, not that wrapper status. Logs are in
+`D:\bp-build\hitch-target\clippy.log`, `test.log` and
+`test-without-hardware.log`.
+
+No displays or installed service were changed and no streams were started.
+Ignored hardware fixtures stayed skipped. The requested default suite
+attempted the two unignored probes above; the follow-up explicitly excluded
+them. This commit has no runtime difference to A/B.
+
+For the next host run, keep the first client's renderer, codec, HDR, rate,
+resolution and capture backend fixed; repeatedly join/leave the second
+client with the TV connected but inactive. Record first-stream picture-age
+maximum and p95/p99 in a short window around creation, longest interval with
+no new rendered/captured picture, and time to recover to baseline. Whole-run
+averages can hide the reported 1.3-second event. Compare creation with removal
+and, when convenient, a TV-disconnected control to separate arrival cost
+from the corrective prune. Test SDR/HDR separately and verify both displays'
+actual refresh/size/position/HDR plus the TV's inactive state.
+
+Correlate arrival, the guard warning, both mode stages and layout with
+timestamped native call entry/exit, flags, return codes and before/after
+topologies (API tracing or temporary measurement instrumentation). The
+current INFO logs cannot supply this. A DWM/DxgKrnl trace can distinguish a
+composition/driver pause from capture reinitialization or downstream delay.
+After a candidate exists, A/B/A/B the same launch sequence and verify that
+actual CCD commits decrease **and** first-stream frame gaps/picture age
+improve without retiming the first display or re-enabling the TV. If only
+one strict prune already occurs, focus the experiment on driver arrival,
+HDR and capture recovery before implementing batching.
+
 ## October 9 job 4 split and two latency wakes: host A/B
 
 A/B/A/B on the RX 7900 XT host, October 9 02:05-02:16, against their common
