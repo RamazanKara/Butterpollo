@@ -65,6 +65,26 @@ pub(super) struct Consumer {
     signal: Signal,
     released: AtomicU64,
     session: Weak<crate::state::Session>,
+    recovery_pending: AtomicBool,
+}
+impl Consumer {
+    pub(super) fn wake_on_recovery<P, A>(
+        self: &Arc<Self>,
+        session: &butterpollo_core::session::Session<P, A>,
+    ) {
+        let wake = Arc::downgrade(self);
+        *session.recovery_wake.lock().unwrap() = Some(Box::new(move || {
+            if let Some(wake) = wake.upgrade() {
+                wake.recovery_pending.store(true, Ordering::Release);
+                let _ = wake.set();
+            }
+        }));
+    }
+    fn prepare_wait(&self) -> Result<bool> {
+        self.signal.reset()?;
+        // A recovery request before the reset must still bypass the wait.
+        Ok(!self.recovery_pending.swap(false, Ordering::AcqRel))
+    }
 }
 impl std::ops::Deref for Consumer {
     type Target = Signal;
@@ -105,6 +125,7 @@ impl<T> Latest<T> {
             // A new subscriber owns nothing from an earlier generation.
             released: AtomicU64::new(state.generation),
             session,
+            recovery_pending: AtomicBool::new(false),
         });
         let mut waiters = self.changed.lock().unwrap();
         waiters.retain(|waiter| waiter.strong_count() > 0);
@@ -305,15 +326,14 @@ impl<T> Latest<T> {
     fn wait_if(
         &self,
         timer: &Timer,
-        wake: &Signal,
+        wake: &Consumer,
         deadline: Instant,
         precise: bool,
         predicate: impl FnOnce(&State<T>) -> bool,
     ) -> Result<()> {
         let state = self.state.lock().unwrap();
         state.check()?;
-        if predicate(&state) {
-            wake.reset()?;
+        if predicate(&state) && wake.prepare_wait()? {
             drop(state);
             if precise {
                 timer.until_or_signal_precise(deadline, wake)?;
@@ -339,7 +359,7 @@ impl<T> Latest<T> {
     pub(super) fn wait_if_current(
         &self,
         timer: &Timer,
-        wake: &Signal,
+        wake: &Consumer,
         image: &Arc<T>,
         deadline: Instant,
     ) -> Result<()> {
@@ -355,7 +375,7 @@ impl<T> Latest<T> {
     pub(super) fn wait_if_current_precise(
         &self,
         timer: &Timer,
-        wake: &Signal,
+        wake: &Consumer,
         image: &Arc<T>,
         deadline: Instant,
     ) -> Result<()> {
@@ -372,6 +392,80 @@ impl<T> Latest<T> {
 mod tests {
     use super::*;
     use std::time::Duration;
+    #[test]
+    fn pending_idr_is_served_within_the_short_poll_instead_of_a_stream_period() -> Result<()> {
+        use butterpollo_core::{
+            rtsp::Negotiated,
+            session::{Launch, Role, Session},
+            state::Client,
+        };
+        let session = Session::<(), ()>::new(
+            Launch {
+                id: "recovery".into(),
+                client: Client {
+                    name: "fixture".into(),
+                    cert: String::new(),
+                    uuid: "client".into(),
+                    perm: u32::MAX,
+                    enabled: true,
+                    extra: Default::default(),
+                },
+                peer: "127.0.0.1".parse().unwrap(),
+                app_id: 1,
+                key: [0; 16],
+                key_id: 1,
+                ping: "ping".into(),
+                connect_data: 1,
+                role: Role::Stream,
+                created: Instant::now(),
+                rtsp_encrypted: true,
+                rtsp_counter: Default::default(),
+                rtsp_received: Default::default(),
+                preparation: Default::default(),
+                vrr_requested: false,
+                host_audio: false,
+                requested_rate: 0,
+                options: Default::default(),
+                audio_preparation: Default::default(),
+                preparing: Default::default(),
+                warnings: Default::default(),
+            },
+            Negotiated::default(),
+        );
+        session.idr.store(false, Ordering::Release);
+        let latest = Latest::new();
+        let image = Arc::new(1u8);
+        latest.publish_captured(image.clone(), Instant::now())?;
+        let wake = latest.subscribe(Weak::new())?;
+        wake.wake_on_recovery(&session);
+        assert!(wake.prepare_wait()?);
+
+        session.request_idr();
+        // Model the wait without scheduler jitter: resetting the capture event
+        // must not postpone a pending IDR until the static screen's next repeat.
+        let now = Instant::now();
+        let period = Duration::from_secs_f64(1. / 120.);
+        let served = if wake.prepare_wait()? {
+            now + period
+        } else {
+            now
+        };
+        assert!(served <= now + super::super::OUTPUT_POLL);
+        assert!(session.idr.swap(false, Ordering::AcqRel));
+        assert!(Arc::ptr_eq(&latest.current()?.unwrap(), &image));
+        assert!(wake.prepare_wait()?);
+
+        session.request_invalidation(4, 6);
+        assert!(!wake.prepare_wait()?);
+        assert_eq!(session.invalidation.lock().unwrap().take(), Some((4, 6)));
+        assert!(wake.prepare_wait()?);
+
+        // A request after the event reset must also interrupt the next wait.
+        let timer = Timer::new()?;
+        session.request_idr();
+        assert!(timer.until_or_signal(Instant::now() + Duration::from_secs(1), &wake)?);
+        Ok(())
+    }
     #[test]
     fn publication_trace_matches_frames_still_owned_after_replacement() {
         let mut trace = PublicationTrace::new();

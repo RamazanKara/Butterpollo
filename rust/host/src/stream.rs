@@ -1011,6 +1011,7 @@ impl Media {
         )?);
         *s.capture_warnings.write().unwrap() = latest.warnings.clone();
         let capture_wake = latest.subscribe(Arc::downgrade(s))?;
+        capture_wake.wake_on_recovery(s);
         Ok((latest, capture_wake))
     }
     fn configure_encoder(
@@ -1444,6 +1445,7 @@ impl Media {
                                     )?;
                                     *s.capture_warnings.write().unwrap() = latest.warnings.clone();
                                     capture_wake = latest.subscribe(Arc::downgrade(&s))?;
+                                    capture_wake.wake_on_recovery(&s);
                                     use_truehdr = enabled;
                                     rebuild_encoder = true;
                                 }

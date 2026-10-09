@@ -405,6 +405,9 @@ mod tests {
             },
         );
         session.idr.store(false, Ordering::Release);
+        *session.recovery_wake.lock().unwrap() = Some(Box::new(|| {
+            panic!("intra-only feedback must not wake the session");
+        }));
         for (first, last) in [(1, 2), (0, 0), (4, 3)] {
             session.request_invalidation(first, last);
         }
@@ -596,6 +599,7 @@ pub struct Session<P = (), A = ()> {
     pub failed: AtomicBool,
     pub idr: AtomicBool,
     pub invalidation: std::sync::Mutex<Option<(u64, u64)>>,
+    pub recovery_wake: std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     pub bitrate: AtomicU32,
     pub stats: Stats,
     pub started: Instant,
@@ -614,6 +618,7 @@ impl<P, A> Session<P, A> {
             failed: AtomicBool::new(false),
             idr: AtomicBool::new(true),
             invalidation: Default::default(),
+            recovery_wake: Default::default(),
             bitrate: AtomicU32::new(bitrate),
             stats: Stats::default(),
             started: Instant::now(),
@@ -649,6 +654,7 @@ impl<P, A> Session<P, A> {
         // Intra-only frames already recover; feedback must not bypass cadence.
         if self.config.codec != 3 {
             self.idr.store(true, Ordering::Release);
+            self.wake_recovery();
         }
     }
     pub fn request_invalidation(&self, first: u64, last: u64) {
@@ -664,6 +670,13 @@ impl<P, A> Session<P, A> {
         }
         let mut pending = self.invalidation.lock().unwrap();
         *pending = Some(pending.map_or((first, last), |(a, b)| (a.min(first), b.max(last))));
+        drop(pending);
+        self.wake_recovery();
+    }
+    fn wake_recovery(&self) {
+        if let Some(wake) = self.recovery_wake.lock().unwrap().as_ref() {
+            wake();
+        }
     }
     pub fn info(&self) -> serde_json::Value {
         let mut warnings = self.launch.warnings.snapshot();
