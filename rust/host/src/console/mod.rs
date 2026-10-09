@@ -363,7 +363,7 @@ pub(crate) async fn stylesheet() -> impl IntoResponse {
 pub(crate) async fn favicon() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "image/svg+xml")],
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 32 32\"><rect width=\"32\" height=\"32\" rx=\"8\" fill=\"#f2b705\"/><text x=\"16\" y=\"24\" font-family=\"sans-serif\" font-size=\"24\" font-weight=\"700\" text-anchor=\"middle\" fill=\"#16181c\">R</text></svg>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 32 32\"><rect width=\"32\" height=\"32\" rx=\"8\" fill=\"#c41242\"/><text x=\"16\" y=\"24\" font-family=\"sans-serif\" font-size=\"24\" font-weight=\"700\" text-anchor=\"middle\" fill=\"#ffffff\">R</text></svg>",
     )
 }
 

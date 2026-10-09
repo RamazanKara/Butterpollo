@@ -77,8 +77,8 @@
     color: var(--accent-ink);
   }
   .primary:hover:not(:disabled) {
-    background: var(--butter-strong);
-    border-color: var(--butter-strong);
+    background: var(--accent-strong);
+    border-color: var(--accent-strong);
   }
   .danger {
     color: var(--danger);
