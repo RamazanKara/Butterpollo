@@ -5,6 +5,154 @@ without reducing features or picture quality. Opus took over from Codex in the
 evening of October 2. Performance acceptance on the customer's own sessions is
 still open; the measured fixture results below are local loopback evidence.
 
+## October 9 research triage: host verification of the five BUILD NOW items
+
+Codex implemented the five BUILD NOW items from the research triage as stacked
+commits on `codex/triage-b` (base `74c0d3cf`). A verifier reviewed the code
+and measured on the host (RX 7900 XT, evening of October 9, installed host
+idle before every run). Only item 1 is on `codex/verified`. The review is in
+`butterpollo-release/research/verify-review.md`; it found no blocking code
+defect. Runs, scripts and logs are in `research/verify/`.
+
+| # | Item | Commit | Verdict |
+| --- | --- | --- | --- |
+| 1 | Benchmark integrity gate and per-frame send trace | `3605c124` | ship |
+| 2 | AMF ten-bit eligibility, applied-bitrate bookkeeping, HDR metadata test | `91add468` | needs more: the extended HDR test fails on the host |
+| 3 | Link-speed lookup off the video threads | `88505c51` | drop: its own step-0 gate failed |
+| 4 | Client FEC status telemetry (0x5502) | `71344486` | needs more: no real client report observed |
+| 5 | Bounded, ordered sender for H.264/HEVC/AV1 | `735629df`, `66897618` | needs more: no picture-age gain beyond noise |
+
+**What could not be measured.** The isolated e2e fixture streams the primary
+monitor, an Odyssey G9 at 5120x1440 and 240 Hz with HDR off. Native
+1968x2184 HDR120 needs the virtual display and the SYSTEM batch, which were
+out of scope. The proxy for it is HEVC 5120x1440 at 120 fps SDR (1:1 with the
+desktop, 7.4 Mpx). No Wi-Fi client, laptop or real Moonlight client was used,
+and loopback has no loss. So FEC reports, RFI after loss and link changes
+were not exercised.
+
+The fixture: hardware-decoding receiver (`BUTTERPOLLO_TEST_HW_DECODER=d3d11va`),
+WGC, `pacing=trace`. Default pacing on loopback is the 800 Mbps wired ceiling
+(`link_bps=0`). The client always enables video encryption (`ENCFLG_ALL`), so
+every run checked the IV path.
+
+For the sender cells the high-entropy source was a click-through noise window.
+It covered the right 34% of the screen above the motion strip and gave HEVC
+frames of about 71 packets at 80 Mb/s. The first full-screen version quit on
+any user input, and all 20 of its attempts were discarded while the owner
+worked. None of the partial-window runs was tainted.
+
+**1: trace cost.** HEVC 5120x1440 at 120 fps, 80 Mb/s, 60 s runs, three
+pairs, host mean in ms:
+
+| Build | Log | Host mean per run | Mean |
+| --- | --- | --- | --- |
+| base | info | 4.983 / 5.047 / 5.056 | 5.029 |
+| item 1 | info | 5.114 / 5.044 / 5.047 | 5.068 |
+| item 1 | pacing=trace | 5.163 / 5.152 / 5.057 | 5.124 |
+| base | pacing=trace | 5.103 / 5.063 / 5.089 | 5.085 |
+| item 1 | pacing=trace | 4.973 / 5.035 / 5.067 | 5.025 |
+
+The send fields add nothing measurable on top of the existing claim trace:
+traced item 1 is -0.06 ms against traced base, with 11 late intervals
+against 21. Untraced item 1 is within the base spread. The 0.056 ms between
+info and trace is the cost of `pacing=trace` as a whole, which is
+diagnostic only. The gate labelled every run correctly as `matched` (wgc,
+5120x1440, 240 Hz, Bgra8). Ship.
+
+**2: AMF.** The default policy snapshots and unit tests pass. The extended
+ignored test `hdr10_metadata_and_range_reach_the_bitstream` fails on the
+host. A printing copy of it showed the mastering peaks follow every change
+(1015, then 600, then 1400 nits) and CLL known, then 0, then known on one
+encoder gives 1000/400, then 0/0, then 1200/500, for HEVC and AV1. AMF keeps
+the CLL SEI with zeros after a change to 0; a fresh encoder with CLL 0 omits
+it. 0/0 means unknown, so the stream is right and the assertion
+(absent after known to 0) is too strict. As committed, the test fails the
+hardware sweep. It needs the one-line test fix before shipping.
+
+**3: link lookup.** The step-0 timing, 1000 `routed_link` calls to the
+laptop's address over wired 2.5 Gb/s: 0.051 ms mean, 0.081 ms p99,
+0.561 ms max (Codex: 0.056 / 0.087 / 0.517). That is under the 0.1 ms p99
+gate, so the item is dropped. Loopback cannot show a spike either:
+`routed_link` returns at once for loopback.
+
+**4: FEC telemetry.** The parser is bounds-checked and has no panic path,
+and it changes no decision. The counters stayed at zero in all 73 e2e runs of
+builds that carry them, which is expected because loopback has no loss. Host
+timing equals base: host mean A against base in the noise cells is 5.13
+against 5.13, 5.40 against 5.79, 2.29 against 2.42 and 2.87 against 2.85 ms.
+The triage's step 0 is still open: an installed Qt or Android client must be
+seen sending 0x5502 to this host, then 10 minutes on Wi-Fi.
+
+**5: sender.** A is `71344486` (inline), B is `66897618`, base is `74c0d3cf`.
+Each run is 35 s with alternating order. Cells: (a) HEVC 5120x1440 at
+120 fps, 80 Mb/s, default pacing, `--recovery 20`, RFI advertised;
+(b) the same with `pacing_max_bitrate_kbps=160000`; (c) H.264 1920x1080 at
+60 fps, 20 Mb/s, `--motion-at-rate`; (d) AV1 2560x1440 at 120 fps,
+50 Mb/s, `--motion-at-rate`. All with the noise source. The table gives
+means over runs; picture age is render to decode, in ms.
+
+| Cell | Build | Runs | Picture age mean / p95 / p99 | Claim wait mean / p95 | Claims held by a send | Fresh claims/s | Claim gap max |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| a | base | 3 | 20.4 / 25.4 / 27.6 | 0.45 / 2.48 | - | 120.1 | 13.7 |
+| a | A | 7 | 20.6 / 22.6 / 25.1 | 0.59 / 1.57 | 0.1% | 120.0 | 13.2 |
+| a | B | 7 | 21.6 / 24.6 / 25.6 | 0.44 / 2.06 | 0.2% | 120.0 | 15.3 |
+| b | base | 3 | 25.7 / 30.7 / 33.0 | 1.41 / 4.09 | - | 118.6 | 44.5 |
+| b | A | 8 | 24.0 / 28.9 / 30.8 | 1.60 / 5.14 | 58% | 118.9 | 41.0 |
+| b | B | 5 | 22.1 / 25.5 / 29.9 | 0.39 / 2.55 | 0.4% | 119.9 | 25.8 |
+| c | base | 3 | 14.7 / 18.9 / 25.5 | 0.16 / 0.10 | - | 60.0 | 21.8 |
+| c | A | 3 | 15.0 / 16.6 / 17.2 | 0.21 / 0.33 | 0% | 60.0 | 20.1 |
+| c | B | 3 | 15.9 / 16.9 / 17.4 | 0.14 / 0.10 | 0% | 60.0 | 20.3 |
+| d | base | 3 | 18.0 / 22.1 / 23.6 | 0.89 / 4.27 | - | 120.2 | 12.5 |
+| d | A | 7 | 17.9 / 20.9 / 22.7 | 0.57 / 2.73 | 0% | 120.2 | 12.1 |
+| d | B | 7 | 16.8 / 20.5 / 21.5 | 0.45 / 2.80 | 0% | 120.1 | 11.5 |
+
+"Claims held by a send" counts fresh claims made within 0.3 ms of the
+previous frame's last datagram after the picture had waited more than
+0.3 ms. The baseline gate passes. In cell b, 48-64% of A's claims wait
+behind the inline send (send occupancy p95 3.9 ms at 160 Mb/s). B removes
+that wait: claim-wait p95 drops from 5.1 to 2.5 ms, fresh claims rise from
+118.9 to 119.9 per second, and the longest claim gap falls from 41 to 26 ms.
+
+The end-to-end requirement is not met. B's picture-age p95 and p99 in
+cell b (21.4-30.3 and 25.0-36.6 per run) overlap A's ranges (26.7-32.6 and
+27.8-34.4). A verifier variant of B without items 3 and 4 (local commit
+`73181d10`, link lookup kept on the sender thread) scored
+24.0 / 28.0 / 30.5 over 3 runs. Picture age with the strip at the stream rate
+depends on the capture phase: claim-wait p95 is bimodal, 0.1-1 ms or
+5-6 ms, in every build. Cells a, c and d are equal within the spread. In
+cell a, B's p95 is 2 ms above A but inside both ranges and the base's.
+
+Keyframes at 160 Mb/s take as long either way: recovery p95 is 59.7 ms (A)
+against 59.7 ms (B). Cell b fails the e2e keyframe and gap limits for every
+build, including base, because a 5120x1440 keyframe takes about 10 ms on
+the wire at that rate.
+
+Correctness checks:
+
+- 0 decode errors in 115 runs.
+- Wire frame order is contiguous in every traced run.
+- 0 packets dropped.
+- The `send queue` trace was present in every B run, about 4,200 rows a
+  run at 120 fps. Its maximum was pending 1, sending 1, inventory 2 (1 in
+  cells c and d).
+- `queue_wait` p95 was 0.04 ms, max 28 ms, the last behind a 160 Mb/s
+  keyframe.
+- 20/20 keyframe requests were decoded in cells a and b.
+- Stop and reconnect: four sessions on one host process (two normal, one
+  receiver killed mid-stream, one normal again) passed for A, B and the
+  variant. The killed session was freed in 10 s; no panic, no
+  `video sender stopped`, no `ERROR`.
+
+The sender is correct and does what it was built to do. It needs a
+native 1968x2184 HDR or Wi-Fi measurement that shows a picture-age gain
+before it ships. To ship it without items 3 and 4, the cherry-pick needs the
+conflict resolution in `73181d10`.
+
+Branch `codex/verified` = `74c0d3cf` + `3605c124` (item 1) + this
+section. Its checks: `fmt --check`, `test --workspace` (616 passed,
+0 failed, 46 ignored), `clippy --workspace --all-targets -D warnings` and
+the 50 Python harness tests passed.
+
 ## October 9 user report: constant jitter, and recovery requests
 
 Report (a user, relayed by the owner, 2026-10-09 08:54Z): "constant jitter".
