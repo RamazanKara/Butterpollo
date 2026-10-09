@@ -59,7 +59,7 @@ fn wait_for_teardown(sessions: &Mutex<Sessions>, ids: &[String], timeout: Durati
                         tracing::warn!(session = %id, waited_seconds = started.elapsed().as_secs_f64(), "session worker has not stopped within the launch wait");
                     }
                 }
-                return !active;
+                return false;
             }
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -830,20 +830,25 @@ fn start(h: Shared, connection: Connection, args: Args, resume: bool) -> Respons
             "rtsp"
         };
         let id = launch.id.clone();
-        // This client abandoned any earlier launch or stream in this role. Let
-        // a stream finish its teardown first, so its display, audio and client
-        // commands are released before the new launch prepares them again.
-        let superseded: Vec<_> = h
-            .sessions
-            .lock()
-            .unwrap()
-            .supersede(&launch.client.uuid, role)
-            .iter()
-            .map(|s| s.launch.id.clone())
-            .collect();
-        if !superseded.is_empty() {
-            tracing::info!(client = %launch.client.name, "replacing this client's previous stream");
-            wait_for_teardown(&h.sessions, &superseded, Duration::from_secs(5));
+        // Stopping streams can still own displays shared with this launch.
+        // Read both maps under one lock so a worker moving into teardown
+        // cannot disappear from the wait before releasing its resources.
+        let stopping: Vec<_> = {
+            let mut sessions = h.sessions.lock().unwrap();
+            sessions.supersede(&launch.client.uuid, role);
+            sessions
+                .active
+                .values()
+                .filter(|s| s.stopping())
+                .map(|s| s.launch.id.clone())
+                .chain(sessions.teardown.keys().cloned())
+                .collect()
+        };
+        if !stopping.is_empty() {
+            tracing::info!(client = %launch.client.name, "waiting for previous streams to release their resources");
+            if !wait_for_teardown(&h.sessions, &stopping, Duration::from_secs(5)) {
+                return Err(LaunchFailure(503, "Another stream operation is still running").into());
+            }
         }
         replace_launch_app(&h, &launch, resume, owner)?;
         // Preparing can outlast the pending launch's 30 s (prep commands may
@@ -1154,6 +1159,7 @@ fn replace_launch_app(
                 .values()
                 .filter(|s| s.launch.role == Role::Stream)
                 .map(|s| s.launch.id.clone())
+                .chain(sessions.teardown.keys().cloned())
                 .collect()
         };
         let previous = current.take();
@@ -1164,7 +1170,7 @@ fn replace_launch_app(
         h.app_audio.lock().unwrap().take();
         h.app_display.lock().unwrap().clear();
         if !wait_for_teardown(&h.sessions, &stopped, Duration::from_secs(10)) {
-            bail!("previous game session is still releasing its resources; retry the launch");
+            return Err(LaunchFailure(503, "Another stream operation is still running").into());
         }
         current = h.current_app.lock().unwrap();
     }
@@ -1610,7 +1616,7 @@ async fn abr(State(h): State<Shared>, Extension(c): Extension<Connection>) -> Re
 mod tests {
     use super::stream_key_id;
     #[test]
-    fn a_slow_teardown_does_not_block_the_next_launch_after_the_wait() {
+    fn a_slow_teardown_blocks_the_next_launch_after_the_wait() {
         use super::{Duration, Instant, Mutex, Sessions, wait_for_teardown};
         let sessions = Mutex::new(Sessions::default());
         sessions
@@ -1618,7 +1624,7 @@ mod tests {
             .unwrap()
             .teardown
             .insert("slow".into(), Instant::now() - Duration::from_secs(6));
-        assert!(wait_for_teardown(
+        assert!(!wait_for_teardown(
             &sessions,
             &["slow".into()],
             Duration::ZERO

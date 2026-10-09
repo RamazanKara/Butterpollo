@@ -284,11 +284,11 @@ impl Harness {
         harness.counts(0, 0).await?;
         Ok(harness)
     }
-    async fn launch(&self, client: usize, resume: bool) -> Result<Launch> {
+    async fn launch_response(&self, client: usize, resume: bool) -> Result<String> {
         let endpoint = if resume { "resume" } else { "launch" };
         let key = hex::encode(crypto::random::<16>());
         let app = self.h.apps.read().unwrap()[0].id();
-        let response = self.clients[client]
+        Ok(self.clients[client]
             .get(format!("https://127.0.0.1:{}/{endpoint}", self.ports.https))
             .query(&[
                 ("appid", app.to_string()),
@@ -301,10 +301,13 @@ impl Harness {
             .await?
             .error_for_status()?
             .text()
-            .await?;
+            .await?)
+    }
+    async fn launch(&self, client: usize, resume: bool) -> Result<Launch> {
+        let response = self.launch_response(client, resume).await?;
         assert!(
             response.contains("status_code=\"200\""),
-            "{endpoint}: {response}"
+            "resume={resume}: {response}"
         );
         assert_eq!(
             xml(&response, if resume { "resume" } else { "gamesession" }),
@@ -766,9 +769,15 @@ async fn two_clients_race_to_resume_the_same_app() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "bug: /resume waits only for active sessions, so RTSP PLAY can start a replacement while the previous session is in teardown and still owns its display lease"]
 async fn rtsp_reconnect_waits_for_previous_teardown() -> Result<()> {
-    let h = Harness::new(10_000, 1).await?;
+    for (client, resume) in [(0, false), (0, true), (1, false), (1, true)] {
+        reconnect_waits_for_previous_teardown(client, resume).await?;
+    }
+    Ok(())
+}
+
+async fn reconnect_waits_for_previous_teardown(client_index: usize, resume: bool) -> Result<()> {
+    let h = Harness::new(10_000, 2).await?;
     let launch = h.launch(0, false).await?;
     let (old, client) = h.play(&launch).await?;
     h.fixture.hold_teardown.store(true, Ordering::Release);
@@ -788,11 +797,13 @@ async fn rtsp_reconnect_waits_for_previous_teardown() -> Result<()> {
             .contains_key(&launch.id)
     );
     let (session, resumed_client, overlapped) = {
-        let resume = h.launch(0, true);
+        let resume = h.launch(client_index, resume);
         tokio::pin!(resume);
         let launch = match tokio::time::timeout(Duration::from_millis(500), &mut resume).await {
             Ok(result) => result?,
             Err(_) => {
+                h.counts(0, 0).await?;
+                assert_eq!(h.fixture.displays.load(Ordering::Acquire), 1);
                 h.fixture.hold_teardown.store(false, Ordering::Release);
                 resume.await?
             }
@@ -807,8 +818,56 @@ async fn rtsp_reconnect_waits_for_previous_teardown() -> Result<()> {
     h.finish().await?;
     assert!(
         !overlapped,
-        "RTSP PLAY started a replacement while the previous session still owned display resources in teardown; /resume only waits for active sessions"
+        "RTSP PLAY started a replacement while the previous session still owned display resources in teardown"
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rtsp_reconnect_reports_busy_when_previous_teardown_times_out() -> Result<()> {
+    for (client_index, resume) in [(0, false), (0, true), (1, false), (1, true)] {
+        let h = Harness::new(10_000, 2).await?;
+        let launch = h.launch(0, false).await?;
+        let (old, client) = h.play(&launch).await?;
+        h.fixture.hold_teardown.store(true, Ordering::Release);
+        h.rtsp(&launch, 3, "TEARDOWN", "").await?;
+        until("previous session enters resource teardown", WAIT, || {
+            h.fixture.in_teardown.load(Ordering::Acquire)
+        })
+        .await;
+
+        let started = Instant::now();
+        let response = h.launch_response(client_index, resume).await?;
+        assert!(started.elapsed() >= Duration::from_secs(5));
+        assert!(response.contains("status_code=\"503\""), "{response}");
+        assert!(
+            response.contains("status_message=\"Another stream operation is still running\""),
+            "{response}"
+        );
+        assert_eq!(
+            xml(&response, if resume { "resume" } else { "gamesession" }),
+            "0"
+        );
+        assert!(!response.contains("sessionUrl0"), "{response}");
+        h.counts(0, 0).await?;
+        assert_eq!(h.fixture.displays.load(Ordering::Acquire), 1);
+        assert!(
+            h.h.sessions
+                .lock()
+                .unwrap()
+                .teardown
+                .contains_key(&launch.id)
+        );
+        assert_eq!(old.termination_reason(), CLOSED);
+
+        h.fixture.hold_teardown.store(false, Ordering::Release);
+        drop(client);
+        h.empty().await?;
+        let launch = h.launch(client_index, resume).await?;
+        let (session, client) = h.play(&launch).await?;
+        h.end(&session, client).await?;
+        h.finish().await?;
+    }
     Ok(())
 }
 
