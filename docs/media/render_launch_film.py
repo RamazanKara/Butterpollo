@@ -30,9 +30,9 @@ MUTED = (150, 157, 172)
 DIM = (68, 74, 90)
 RULE = (36, 40, 52)
 CARD = (19, 22, 30)
-STARTS = (0, 7, 16, 27, 36, 44, 52)
+STARTS = (0, 7, 17, 27, 36, 45, 53)
 ENDS = STARTS[1:] + (60,)
-CHAPTERS = ('MEET RUBYLIGHT', 'FOLLOW ONE FRAME', 'BESIDE A GAME', 'RADEON COMPUTE',
+CHAPTERS = ('MEET RUBYLIGHT', 'THE COMPUTE PATH', 'BESIDE A GAME', 'RADEON COMPUTE',
             'PYROWAVE', 'GET STARTED', 'RUBYLIGHT')
 WIPE = .7
 
@@ -270,90 +270,79 @@ def hook(t):
     return im
 
 
-# 2 · Follow one frame ---------------------------------------------------------
+# 2 · The compute path --------------------------------------------------------
 
-STATIONS = (('Game', 'renders on the graphics queue', 'monitor'),
-            ('Capture', 'WGC captures the picture', 'capture'),
-            ('Prepare', 'copies + colour on D3D12 compute', 'convert'),
-            ('Encode', 'native AMD AMF', 'encode'),
-            ('Send', 'paced video packets', 'send'),
-            ('Moonlight', 'decodes the picture', 'decode'))
-CARD_W, GAP, CARD_Y = 262, 28, 430
+ENCODE = (67, 133, 159)
 
 
-def station_x(i):
-    return 104+i*(CARD_W+GAP)
-
-
-def arrive(i):
-    return 1.1+i*1.2
-
-
-def icon(im, kind, cx, cy, color):
-    d = draw(im)
-    if kind == 'monitor':
-        d.rounded_rectangle((cx-38, cy-26, cx+38, cy+20), radius=5, outline=color, width=4)
-        line(im, (cx, cy+20, cx, cy+32), color, 4)
-        line(im, (cx-18, cy+33, cx+18, cy+33), color, 4)
-    elif kind == 'capture':
-        for sx, sy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
-            x, y = cx+sx*34, cy+sy*24
-            line(im, (x, y, x-sx*16, y), color, 4)
-            line(im, (x, y, x, y-sy*14), color, 4)
-        d.ellipse((cx-9, cy-9, cx+9, cy+9), fill=color)
-    elif kind == 'convert':
-        for i, c in enumerate(((235, 90, 80), (90, 210, 120), (90, 140, 245))):
-            d.ellipse((cx-44+i*15, cy-22, cx-24+i*15, cy-2), fill=mix(DIM, c, color == RUBY))
-        arrow(im, cx-2, cy-12, cx+16, cy-12, color, 3)
-        d.rounded_rectangle((cx+24, cy-28, cx+44, cy+4), radius=3, outline=color, width=3)
-        line(im, (cx-40, cy+18, cx+44, cy+18), color, 4)
-    elif kind == 'encode':
-        for i, w in enumerate((76, 56, 36, 20)):
-            d.rounded_rectangle((cx-w/2, cy-28+i*15, cx+w/2, cy-20+i*15), radius=3, fill=color)
-    elif kind == 'send':
-        for r in (14, 30, 46):
-            d.arc((cx-r, cy+18-r, cx+r, cy+18+r), 225, 315, fill=color, width=5)
-        d.ellipse((cx-6, cy+12, cx+6, cy+24), fill=color)
-    else:
-        d.rounded_rectangle((cx-38, cy-26, cx+38, cy+26), radius=7, outline=color, width=4)
-        d.polygon([(cx-10, cy-14), (cx-10, cy+14), (cx+16, cy)], fill=color)
-
-
-def pipeline(t):
-    im = base(t+STARTS[1])
-    title(im, 'Follow one frame.', t,
-          'On AMD, frame preparation can wait behind the game on the graphics queue.')
-    rail_y = 386
-    first, last = station_x(0)+CARD_W/2, station_x(5)+CARD_W/2
-    line(im, (first, rail_y, last, rail_y), RULE, 4)
-    travel = clamp((t-arrive(0))/(arrive(5)-arrive(0)))
-    tx = first+(last-first)*smooth(travel) if t >= arrive(0) else first
-    if t >= arrive(0):
-        line(im, (first, rail_y, tx, rail_y), RUBY, 4)
-    for i, (name, caption, kind) in enumerate(STATIONS):
-        x = station_x(i)
-        shown = ease((t-.35-i*.12)/.5)
-        if shown <= 0:
-            continue
-        y = CARD_Y+24*(1-shown)
-        lit = smooth((t-arrive(i)+.15)/.35)
-        rect(im, (x, y, x+CARD_W, y+262), mix(BG, CARD, shown), mix(RULE, RUBY, lit*.9), 2, radius=18)
-        draw(im).ellipse((x+CARD_W/2-7, rail_y-7, x+CARD_W/2+7, rail_y+7), fill=mix(DIM, RUBY, lit))
-        icon(im, kind, x+CARD_W/2, y+68, mix(DIM, RUBY, lit))
-        txt(im, x+26, y+122, name, 34, mix(MUTED, INK, max(lit, .35)), 'bold', opacity=shown)
-        for j, value in enumerate(wrap(caption, 23, CARD_W-50)):
-            txt(im, x+26, y+172+j*30, value, 23, MUTED, opacity=shown)
-    if t < arrive(5)+.6:
-        token(im, tx, rail_y, 46, 1)
-    p = ease((t-1.5)/.7)
+def job(im, x0, x1, y, name, color, cursor):
+    h = 54
+    rect(im, (x0, y, x1, y+h), CARD, RULE, radius=6)
+    p = clamp((cursor-x0)/(x1-x0))
     if p:
-        y = 756+26*(1-p)
-        txt(im, 104, y, 'GRAPHICS QUEUE', 22, MUTED, 'mono', opacity=p)
-        txt(im, 104, y+44, 'The game renders.', 42, INK, 'bold', opacity=p)
-        txt(im, 910, y, 'D3D12 COMPUTE QUEUES', 22, RUBY, 'mono', opacity=p)
-        txt(im, 910, y+44, 'Rubylight prepares the frame.', 42, RUBY, 'bold', opacity=p)
-    foot(im, 'Schematic order of work · copies and colour conversion run alongside the game',
-         'The game and desktop composition can still delay the source picture · rust/PERFORMANCE.md')
+        rect(im, (x0, y, x0+max(6, (x1-x0)*p), y+h), mix(CARD, color, .65), radius=6)
+    txt(im, (x0+x1)/2, y+13, name, 26, INK, 'bold', 'center')
+
+
+def gate(im, x, y, active):
+    color = MINT if active else DIM
+    line(im, (x, y-13, x, y+13), color, 3)
+    draw(im).polygon([(x, y-5), (x+5, y), (x, y+5), (x-5, y)], fill=color)
+
+
+def queue_cursor(local):
+    return 420+1280*clamp((local-.7)/6.8)
+
+
+def schedule(t):
+    """Scheduling schematic from the reviewed Vibepollo 2.0 path; not data."""
+    im = base(t+STARTS[1])
+    title(im, 'Prepare the frame alongside the game.', t,
+          'GPU copies and colour conversion move to D3D12 compute.')
+    cursor = queue_cursor(t)
+    txt(im, 104, 356, 'OTHER SUNSHINE HOSTS · D3D11', 27, INK, 'bold')
+    txt(im, 1816, 359, 'Reviewed path: Vibepollo 2.0', 26, MUTED, align='right')
+    txt(im, 104, 434, 'Graphics', 26, MUTED)
+    txt(im, 104, 522, 'Native AMF', 26, MUTED)
+    for x0, x1 in ((420, 640), (660, 880)):
+        job(im, x0, x1, 424, 'Game draw', DIM, cursor)
+    job(im, 902, 1062, 424, 'Copy', RUBY, cursor)
+    job(im, 1082, 1292, 424, 'RGB → YUV', RUBY, cursor)
+    line(im, (1298, 451, 1320, 451, 1320, 540, 1336, 540), DIM, 2)
+    gate(im, 1320, 491, cursor >= 1292)
+    job(im, 1340, 1570, 512, 'Encode', ENCODE, cursor)
+    arrow(im, 1578, 539, 1637, 539, MINT if cursor >= 1570 else DIM, 2)
+    rect(im, (1647, 512, 1815, 566), CARD, RUBY if cursor >= 1570 else RULE, radius=6)
+    txt(im, 1731, 526, 'Bitstream', 25, RUBY if cursor >= 1570 else MUTED, 'bold', 'center')
+    line(im, (104, 605, 1816, 605), RULE, 1)
+    txt(im, 104, 630, 'RUBYLIGHT · D3D12 COMPUTE', 27, RUBY, 'bold')
+    txt(im, 104, 705, 'Graphics', 26, MUTED)
+    txt(im, 104, 786, 'Compute', 26, RUBY)
+    txt(im, 104, 859, 'Native AMF', 26, MUTED)
+    for x0, x1 in ((420, 640), (660, 880)):
+        job(im, x0, x1, 695, 'Game draw', DIM, cursor)
+    job(im, 420, 580, 776, 'Copy', RUBY, cursor)
+    job(im, 600, 810, 776, 'RGB → YUV', RUBY, cursor)
+    gate(im, 402, 803, t >= .7)
+    gate(im, 590, 803, cursor >= 580)
+    line(im, (818, 803, 839, 803, 839, 876, 854, 876), DIM, 2)
+    gate(im, 839, 845, cursor >= 810)
+    job(im, 860, 1090, 849, 'Encode', ENCODE, cursor)
+    arrow(im, 1098, 876, 1140, 876, MINT if cursor >= 1090 else DIM, 2)
+    if t > 4.5:
+        txt(im, 1255, 846, 'Ready for the stream.', 31, RUBY, 'bold', opacity=ease((t-4.5)/.5))
+    if t > 7.2:
+        txt(im, 1255, 889, 'AMF releases the surface for reuse.', 23, MUTED, opacity=ease((t-7.2)/.5))
+    txt(im, 1540, 705, 'Output texture pool', 24, MUTED, align='center')
+    for i in range(3):
+        rect(im, (1476+i*47, 750, 1509+i*47, 777), CARD, MINT if t >= 7.2 else RULE, 2, radius=3)
+    if t >= 7.2:
+        p = smooth((t-7.2)/1.2)
+        x = 1190+(1492-1190)*p
+        y = 916+(763-916)*p-70*math.sin(p*math.pi)
+        rect(im, (x-13, y-10, x+13, y+10), CARD, MINT, 2, radius=3)
+    foot(im, 'Scheduling schematic · equal game and encode work · graphics and compute share GPU resources',
+         'GPU textures in both paths · readiness fences protect copies and the encoder handoff')
     return im
 
 
@@ -421,30 +410,51 @@ def comparison(t):
     return im
 
 
+def sample_rgb(y, cb, cr):
+    return tuple(round(clamp(c)*255) for c in (y+1.5748*cr, y-.1873*cb-.4681*cr, y+1.8556*cb))
+
+
+def chroma_block(im, x, y, full, t):
+    # Both blocks share the same luma; only the number of colour samples differs.
+    lumas = (.38, .62, .62, .38)
+    # Nonzero mean chroma keeps the 4:2:0 block coloured too: subsampling
+    # merges local colour differences, it does not remove colour.
+    chromas = ((.10, .21), (-.16, -.13), (.10, -.13), (-.16, .21))
+    for i, yy in enumerate(lumas):
+        xx, dy = i % 2, i//2
+        cb, cr = chromas[i] if full else (-.03, .04)
+        p = ease((t-.7-i*.22)/.6)
+        rect(im, (x+xx*152, y+dy*152, x+xx*152+144, y+dy*152+144), sample_rgb(yy, cb*p, cr*p), radius=6)
+        # A marker per colour sample, so the count reads without colour vision.
+        if full:
+            draw(im).ellipse((x+xx*152+65, y+dy*152+65, x+xx*152+79, y+dy*152+79), fill=BG)
+    if not full:
+        draw(im).ellipse((x+137, y+137, x+159, y+159), fill=RUBY, outline=BG, width=3)
+
+
 def pyrowave(t):
     im = base(t+STARTS[4])
-    title(im, 'Full colour on your local network.', t, 'PyroWave · 10-bit HDR 4:4:4 · a colour sample for every pixel.')
-    p = ease((t-.5)/.7)
+    title(im, 'Colour detail at every pixel.', t, 'PyroWave · 10-bit HDR 4:4:4 on your local network.')
+    txt(im, 252, 334, '4:2:0', 34, MUTED, 'bold', 'center')
+    txt(im, 708, 334, '4:4:4', 34, RUBY, 'bold', 'center')
+    chroma_block(im, 104, 390, False, t)
+    chroma_block(im, 560, 390, True, t)
+    arrow(im, 414, 538, 546, 538, mix(RULE, RUBY, ease((t-1.7)/1.0)), 3)
+    txt(im, 252, 704, '1 Cb + 1 Cr', 28, MUTED, 'regular', 'center')
+    txt(im, 708, 704, '4 Cb + 4 Cr', 28, RUBY, 'bold', 'center')
+    p = ease((t-1.2)/.7)
     if p:
-        rect(im, (104, 366, 974, 850), CARD, RULE, 2, radius=24)
-        txt(im, 144, 412, '1080p FRAME · ENCODE CAPACITY', 24, MUTED, 'mono', opacity=p)
-        txt(im, 132, 472, '≈0.5 ms', 140, RUBY, 'bold', opacity=p)
-        txt(im, 144, 650, 'Even beside a GPU-heavy game.', 38, INK, 'semibold', opacity=p)
-        txt(im, 144, 712, 'Repeat-frame throughput;', 30, MUTED, opacity=p)
-        txt(im, 144, 756, 'one part of the picture journey.', 30, MUTED, opacity=p)
-    q = ease((t-1)/.7)
-    for row in range(3):
-        for col in range(5):
-            x, y = 1130+col*124, 384+row*110
-            color = (RUBY, ROSE, MINT)[(col+row) % 3]
-            rect(im, (x, y, x+100, y+86), mix(CARD, color, q*.75), radius=12)
-    reveal(im, 1130, 740, 'Fine coloured text. Clear edges.', 34, t,
-           at=1.3, weight='semibold')
-    reveal(im, 104, 890, 'Play it on Rubylight Android, our own client, over a fast local network.', 32, t,
-           at=1.7, color=INK, weight='semibold', rise=12)
-    foot(im, 'RX 7900 XT · PyroWave 1080p · 10-bit HDR 4:4:4 · 400 Mbps · game-like GPU load',
-         f'October 7, 2026 · two repeat-frame runs: {PYROWAVE[0]:.2f}–{PYROWAVE[1]:.2f} ms/frame · rust/PERFORMANCE.md',
-         'Encode capacity includes conversion; excludes capture, transport, decode and display')
+        rect(im, (980, 390, 1816, 690), CARD, RULE, 2, radius=24)
+        txt(im, 1020, 420, '1080p FRAME · ENCODE CAPACITY', 24, MUTED, 'mono', opacity=p)
+        txt(im, 1010, 452, '≈0.5 ms', 120, RUBY, 'bold', opacity=p)
+        txt(im, 1020, 598, 'Even beside a GPU-heavy game.', 34, INK, 'semibold', opacity=p)
+        txt(im, 1020, 644, 'Repeat-frame throughput; one part of the picture journey.', 24, MUTED, opacity=p)
+    reveal(im, 104, 786, 'Same pixels, four colour samples: crisp coloured text and edges.', 34, t,
+           at=2.3, color=RUBY, weight='semibold', rise=12)
+    reveal(im, 104, 870, 'Play it on Rubylight Android, our own client, over a fast local network.', 32, t,
+           at=2.7, color=INK, weight='semibold', rise=12)
+    foot(im, f'RX 7900 XT · PyroWave 1080p · 10-bit HDR 4:4:4 · 400 Mbps · game-like load · October 7, 2026 · {PYROWAVE[0]:.2f}–{PYROWAVE[1]:.2f} ms/frame',
+         'Encode capacity includes conversion, not capture, transport or decode · chroma diagram is schematic · rust/PERFORMANCE.md')
     return im
 
 
@@ -492,7 +502,7 @@ def ending(t):
     return im
 
 
-SCENES = (hook, pipeline, comparison, compute, pyrowave, get_started, ending)
+SCENES = (hook, schedule, comparison, compute, pyrowave, get_started, ending)
 
 def scene_at(t):
     index = next((i for i, end in enumerate(ENDS) if t < end), len(ENDS)-1)

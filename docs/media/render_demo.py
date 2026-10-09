@@ -50,7 +50,7 @@ def main():
         if not args.output:
             parser.error('--diagram and --frame require --output.')
         args.output.parent.mkdir(parents=True, exist_ok=True)
-        still = film.pipeline(9) if args.diagram else film.frame(args.frame)
+        still = film.schedule(9.5) if args.diagram else film.frame(args.frame)
         still.save(args.output)
     elif args.gif_from:
         if not args.output:
