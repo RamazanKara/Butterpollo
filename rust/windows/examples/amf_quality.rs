@@ -33,7 +33,8 @@ fn main() -> anyhow::Result<()> {
             println!(
                 "Butterpollo encoder quality probe\n\
 --codec hevc (h264/hevc/av1) --width 1920 --height 1080 --fps 120 --bitrate 20000\n\
---frames N: BGRA frames to read from stdin; --config FILE: host settings; --out FILE: bitstream"
+--frames N: frames to read from stdin (BGRA, or linear gbrpf32le with --hdr 1)\n\
+--config FILE: host settings; --out FILE: bitstream"
             );
             return Ok(());
         }
@@ -157,6 +158,10 @@ fn main() -> anyhow::Result<()> {
         }
     }
     bitstream.flush()?;
+    let total_bytes = sizes.iter().chain(&idr_bytes).sum::<usize>();
+    let encoded_frames = sizes.len() + idr_bytes.len();
+    let mut all_sizes = sizes.iter().chain(&idr_bytes).copied().collect::<Vec<_>>();
+    all_sizes.sort_unstable();
     latencies.sort_by(f64::total_cmp);
     sizes.sort_unstable();
     let percentile = |values: &[f64], p: usize| {
@@ -174,6 +179,11 @@ fn main() -> anyhow::Result<()> {
             "fps": config.fps,
             "bitrate_kbps": config.bitrate_kbps,
             "frames": frames,
+            "encoded_frames": encoded_frames,
+            "references": config.references,
+            "actual_bitrate_kbps": total_bytes as f64 * 8. * config.fps as f64 / frames as f64 / 1000.,
+            "frame_bytes_max": all_sizes.last(),
+            "all_frame_bytes_p99": all_sizes.get(all_sizes.len().saturating_sub(1) * 99 / 100),
             "encode_mean_ms": latencies.iter().sum::<f64>() / latencies.len().max(1) as f64,
             "encode_p95_ms": percentile(&latencies, 95),
             "encode_p99_ms": percentile(&latencies, 99),
