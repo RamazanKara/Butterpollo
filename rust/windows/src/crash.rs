@@ -215,11 +215,6 @@ pub fn reporter() -> Result<()> {
         }
         let thread = u32::from_le_bytes(request[..4].try_into().unwrap());
         let exceptions = u64::from_le_bytes(request[4..].try_into().unwrap());
-        let info = (exceptions != 0).then_some(MINIDUMP_EXCEPTION_INFORMATION {
-            ThreadId: thread,
-            ExceptionPointers: exceptions as *mut EXCEPTION_POINTERS,
-            ClientPointers: true.into(),
-        });
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_millis();
@@ -228,7 +223,7 @@ pub fn reporter() -> Result<()> {
             .join(format!("butterpollo.{}.{stamp}.dmp", startup.parent));
         let mut result = Ok(());
         for attempt in 1..=3 {
-            result = write(&process, startup.parent, thread, info.as_ref(), &path)
+            result = write(&process, startup.parent, thread, exceptions, &path)
                 .with_context(|| format!("writing {} (attempt {attempt})", path.display()));
             if result.is_ok() {
                 break;
@@ -245,18 +240,27 @@ pub fn reporter() -> Result<()> {
     }
 }
 
-fn write(
-    process: &OwnedHandle,
-    id: u32,
-    thread: u32,
-    info: Option<&MINIDUMP_EXCEPTION_INFORMATION>,
-    path: &Path,
-) -> Result<()> {
+fn write(process: &OwnedHandle, id: u32, thread: u32, exceptions: u64, path: &Path) -> Result<()> {
     let file = std::fs::File::create(path)?;
+    let exception = (exceptions != 0)
+        .then(|| Exception::read(process, exceptions))
+        .transpose()
+        .context("reading the exception from the host")?;
+    let pointers = exception.as_ref().map(|exception| EXCEPTION_POINTERS {
+        ExceptionRecord: (&raw const exception.record).cast_mut(),
+        ContextRecord: (&raw const exception.context).cast_mut(),
+    });
+    let info = pointers
+        .as_ref()
+        .map(|pointers| MINIDUMP_EXCEPTION_INFORMATION {
+            ThreadId: thread,
+            ExceptionPointers: (&raw const *pointers).cast_mut(),
+            ClientPointers: false.into(),
+        });
     {
         let _still = Suspended::threads(id, thread);
-        // SAFETY: `process` and `file` are owned open handles, and `info` outlives the call and
-        // points into the host, read with ClientPointers set.
+        // SAFETY: `process` and `file` are owned open handles, and `info` and the copies it
+        // points to outlive the call.
         unsafe {
             // DbgHelp must never suspend threads in its own process: one of
             // them may own a loader/heap lock that the dump writer needs.
@@ -265,7 +269,7 @@ fn write(
                 id,
                 HANDLE(file.as_raw_handle()),
                 MiniDumpNormal | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules,
-                info.map(|i| i as *const _),
+                info.as_ref().map(|i| i as *const _),
                 None,
                 None,
             )?;
@@ -273,6 +277,41 @@ fn write(
     }
     file.sync_all()?;
     Ok(())
+}
+
+/// The exception, copied out of the host. Left to read it from the host (ClientPointers),
+/// DbgHelp failed every dump with ERROR_PARTIAL_COPY on a CI runner whose CPU has AMX
+/// (XState features 0x608e7), likely sizing the context's XSAVE area beyond what the host
+/// wrote. A plain CONTEXT holds every register a stack trace needs.
+struct Exception {
+    record: EXCEPTION_RECORD,
+    context: CONTEXT,
+}
+impl Exception {
+    fn read(process: &OwnedHandle, address: u64) -> Result<Self> {
+        let pointers: EXCEPTION_POINTERS = read_host(process, address)?;
+        let mut record: EXCEPTION_RECORD = read_host(process, pointers.ExceptionRecord as u64)?;
+        // A chained record would point into the host.
+        record.ExceptionRecord = std::ptr::null_mut();
+        let mut context: CONTEXT = read_host(process, pointers.ContextRecord as u64)?;
+        context.ContextFlags.0 &= !(CONTEXT_XSTATE_AMD64.0 & !CONTEXT_AMD64.0);
+        Ok(Self { record, context })
+    }
+}
+fn read_host<T: Copy + Default>(process: &OwnedHandle, address: u64) -> Result<T> {
+    let mut value = T::default();
+    // SAFETY: `process` is an owned open handle, and the read fills at most `value`'s own bytes,
+    // which plain-data Windows structs accept in any pattern.
+    unsafe {
+        ReadProcessMemory(
+            HANDLE(process.as_raw_handle()),
+            address as *const _,
+            (&raw mut value).cast(),
+            size_of::<T>(),
+            None,
+        )?;
+    }
+    Ok(value)
 }
 
 /// The host's threads, held still while DbgHelp reads them: a thread that exits or frees memory
