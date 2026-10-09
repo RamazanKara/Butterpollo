@@ -373,6 +373,13 @@ pub fn amf(config: &Config, stream: &Negotiated) -> Result<Vec<Property>> {
             true,
         );
     }
+    if codec != 1 {
+        add(
+            format!("{prefix}BPicturesPattern"),
+            Value::Integer(0),
+            false,
+        );
+    }
     if intra_refresh {
         if codec == 2 {
             add("Av1IntraRefreshMode".into(), Value::Integer(2), true);
@@ -544,6 +551,30 @@ pub fn ffmpeg(config: &Config, stream: &Negotiated, name: &str) -> Result<Vec<(S
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn amf_disables_b_frames_only_for_codecs_with_a_b_picture_pattern() {
+        for (codec, expected) in [
+            (0, Some("BPicturesPattern")),
+            (1, None),
+            (2, Some("Av1BPicturesPattern")),
+        ] {
+            let stream = Negotiated {
+                codec,
+                ..Default::default()
+            };
+            let properties = amf(&Config::default(), &stream).unwrap();
+            let patterns: Vec<_> = properties
+                .iter()
+                .filter(|property| property.name.ends_with("BPicturesPattern"))
+                .map(|property| {
+                    assert_eq!(property.value, Value::Integer(0));
+                    assert!(!property.required);
+                    property.name.as_str()
+                })
+                .collect();
+            assert_eq!(patterns, expected.into_iter().collect::<Vec<_>>());
+        }
+    }
     #[test]
     fn amf_rate_limits_preserve_driver_defaults_and_use_codec_names_and_bits() {
         for (codec, prefix, cap) in [

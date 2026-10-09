@@ -308,7 +308,6 @@ impl Encoder {
                 e.apply(&property)
                     .with_context(|| format!("AMF setting {}", property.name))?;
             }
-            let _ = e.property("BPicturesPattern", int(0));
             if config.codec == 0 {
                 // Keyframes only when asked, as the original backend sets it:
                 // the usage preset's periodic IDRs are large, can overflow
