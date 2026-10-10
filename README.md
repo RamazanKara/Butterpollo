@@ -2,7 +2,7 @@
 
 **Written in Rust. Built for Radeon. Made for Moonlight.**
 
-*Formerly Butterpollo. Existing installs update in place and keep their settings, paired devices and apps; links to the old GitHub address keep working.*
+*Formerly Butterpollo. Existing installs update in place and keep their settings, paired devices and apps; links to the old GitHub address keep working. There is one product and one download: a `butterpollo-setup-<version>.exe` on an older release page is the same installer under its former name.*
 
 Stream your gaming PC to a laptop, TV or phone. Rubylight is a Windows game-streaming host with Radeon compute, native AMD encoding and **full 10-bit HDR 4:4:4 through PyroWave**. The host, native helpers, Windows service and installer are written in Rust.
 

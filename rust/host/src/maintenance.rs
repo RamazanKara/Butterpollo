@@ -16,6 +16,8 @@ fn compatible_release(release: &Value, config: &butterpollo_core::config::Config
                 asset["name"].as_str().is_some_and(|name| {
                     (name.starts_with("butterpollo-rust-") && name.ends_with(".zip"))
                         || (name.starts_with("butterpollo-setup-") && name.ends_with(".exe"))
+                        || (name.starts_with("rubylight-") && name.ends_with("-windows-x64.zip"))
+                        || (name.starts_with("rubylight-setup-") && name.ends_with(".exe"))
                 })
             })
         })
@@ -406,7 +408,12 @@ mod tests {
 
     #[test]
     fn release_notifications_require_a_rust_package_and_prereleases_require_opt_in() {
-        for asset in ["butterpollo-rust-2.0.0.zip", "butterpollo-setup-2.0.0.exe"] {
+        for asset in [
+            "butterpollo-rust-2.0.0.zip",
+            "butterpollo-setup-2.0.0.exe",
+            "rubylight-2.0.0-windows-x64.zip",
+            "rubylight-setup-2.0.0.exe",
+        ] {
             let mut release = json!({"draft":false,"prerelease":false,"assets":[{"name":asset}]});
             assert!(compatible_release(&release, &Config::default()));
             release["prerelease"] = true.into();

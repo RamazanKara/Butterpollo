@@ -150,8 +150,9 @@ jobs:
           gh run download "$BUILD" -n butterpollo-rust-windows-x64 -D build
           mkdir out
           mv "build/butterpollo-setup-$VERSION.exe" "out/rubylight-setup-$VERSION.exe"
-          # Hosts from before the rename to Rubylight (rc.29 and older) only
-          # update to an installer with the old name.
+          # Hosts up to 2.0.1 only notice a release that has an asset with the
+          # old name (maintenance.rs::compatible_release). Keep this copy until
+          # a release whose host accepts the new names has been out for a while.
           cp "out/rubylight-setup-$VERSION.exe" "out/butterpollo-setup-$VERSION.exe"
           mv build/butterpollo-rust-release.zip "out/rubylight-$VERSION-windows-x64.zip"
           (cd out && sha256sum * > SHA256SUMS)
