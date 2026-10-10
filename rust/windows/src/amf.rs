@@ -702,6 +702,8 @@ impl Encoder {
                 "Av1QualityPreset",
                 "Av1RateControlMethod",
                 "Av1EncodingLatencyMode",
+                "Av1CdfUpdate",
+                "Av1CdfFrameEndUpdateMode",
                 "Av1EnableEncoderSmartAccessVideo",
                 "Av1BPicturesPattern",
                 "Av1MultiHwInstanceEncode",

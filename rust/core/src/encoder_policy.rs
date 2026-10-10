@@ -368,6 +368,20 @@ pub fn amf(config: &Config, stream: &Negotiated) -> Result<Vec<Property>> {
         if let Some(mode) = mode {
             add("Av1EncodingLatencyMode".into(), Value::Integer(mode), true);
         }
+        // Experiment, not in the console: whether frames carry their adapted
+        // entropy contexts forward. The driver decides unless these are set;
+        // the effective values are in the "AMF encoder settings" line.
+        if let Some(on) = tristate(config, "amd_av1_cdf_update", None) {
+            add("Av1CdfUpdate".into(), Value::Boolean(on), true);
+        }
+        let cdf_mode = config.integer("amd_av1_cdf_frame_end", -1);
+        if cdf_mode >= 0 {
+            add(
+                "Av1CdfFrameEndUpdateMode".into(),
+                Value::Integer(cdf_mode),
+                true,
+            );
+        }
         let tiles = config.integer("amd_av1_tiles", 0);
         if !matches!(tiles, 0 | 1 | 2 | 4) {
             bail!("amd_av1_tiles must be 0, 1, 2 or 4");
@@ -1049,6 +1063,26 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|p| p.name == "Av1AQMode" && p.value == Value::Integer(1))
+        );
+        // AV1 entropy-context update stays the driver's unless set.
+        assert!(
+            !amf(&Config::default(), &stream)
+                .unwrap()
+                .iter()
+                .any(|p| p.name.starts_with("Av1Cdf"))
+        );
+        let cdf = amf(
+            &Config::parse("amd_av1_cdf_update=disabled\namd_av1_cdf_frame_end=1\n").unwrap(),
+            &stream,
+        )
+        .unwrap();
+        assert!(
+            cdf.iter()
+                .any(|p| p.name == "Av1CdfUpdate" && p.value == Value::Boolean(false))
+        );
+        assert!(
+            cdf.iter()
+                .any(|p| p.name == "Av1CdfFrameEndUpdateMode" && p.value == Value::Integer(1))
         );
         let auto = amf(
             &Config::parse("amd_quality=auto\namd_vbaq=auto\n").unwrap(),
