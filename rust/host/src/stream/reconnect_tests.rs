@@ -552,8 +552,6 @@ impl Client {
         )?;
         let peer = host.connect(address(ports.control), 48, launch.connect_data)?;
         peer.set_timeout(32, 60_000, 60_000);
-        // Loss must not make this client drop its own unreliable heartbeats.
-        peer.set_throttle(5000, 2, 0);
         let peer_id = peer.id();
         let video = udp();
         let (worker_stop, worker_video, worker_frames, worker_reason) = (
@@ -585,11 +583,13 @@ impl Client {
                     if host.peer(peer_id).connected() {
                         // An IDR request is also a valid control heartbeat, and
                         // its counter proves the host parsed it after recovery.
-                        // Unreliable: a reliable one queued in an outage is
-                        // resent on rusty_enet's doubling timeout, up to about
-                        // the outage's length after the network returns (a 10 s
-                        // drop failed once on CI). Moonlight's ENet backs off
-                        // linearly and is heard again within about half a second.
+                        host.peer_mut(peer_id)
+                            .send(0, &Packet::new(&[2, 3][..], PacketKind::Reliable))?;
+                        // And an unreliable copy: a reliable one queued in an
+                        // outage is resent on rusty_enet's doubling timeout, up
+                        // to about the outage's length after the network returns
+                        // (a 10 s drop failed once on CI). Moonlight's ENet backs
+                        // off linearly and is heard again within half a second.
                         host.peer_mut(peer_id).send(
                             0,
                             &Packet::new(
