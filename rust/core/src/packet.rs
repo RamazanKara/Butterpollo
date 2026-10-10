@@ -136,34 +136,7 @@ fn conventional_fec(total_shards: usize, percentage: usize, minimum: usize) -> (
     // ceil(per_block * fitted / 100) <= room for every block.
     (4, (100 * room / per_block).min(percentage))
 }
-/// Parity shards for a block of `count` data shards, and the percentage the
-/// client is told. A block below the minimum parity is raised to it.
-fn block_parity(count: usize, percentage: usize, minimum: usize) -> (usize, usize) {
-    let fec = (count * percentage).div_ceil(100);
-    let minimum = crate::pyrowave::minimum_parity(count, minimum);
-    if percentage > 0 && fec < minimum {
-        (minimum, 100 * minimum / count)
-    } else {
-        (fec, percentage)
-    }
-}
 impl VideoPacketizer {
-    /// Data and parity shards of each FEC block of an H.264, HEVC or AV1
-    /// frame of `payload_bytes`, in send order, as `encode` frames it. A block
-    /// loses the frame once more of its packets are lost than it has parity.
-    pub fn block_layout(&self, payload_bytes: usize) -> Vec<(usize, usize)> {
-        let slice = self.packet_size + 16 - 32;
-        let total_shards = (payload_bytes + 8).div_ceil(slice);
-        let (blocks, percentage) = conventional_fec(total_shards, self.fec_percent, self.min_fec);
-        let aligned = total_shards.div_ceil(blocks.max(1));
-        (0..blocks)
-            .map(|block| {
-                let data = total_shards.saturating_sub(block * aligned).min(aligned);
-                (data, block_parity(data, percentage, self.min_fec).0)
-            })
-            .filter(|(data, _)| *data > 0)
-            .collect()
-    }
     pub fn fec_limited(&self, payload_bytes: usize) -> bool {
         let shards = (payload_bytes + 8).div_ceil(self.packet_size - 16);
         conventional_fec(shards, self.fec_percent, self.min_fec).1 < self.fec_percent
@@ -354,7 +327,13 @@ impl VideoPacketizer {
                 bail!("FEC shard index overflow");
             }
             let percentage = planned.percentage;
-            let (fec, effective) = block_parity(count, percentage, minimum);
+            let mut fec = (count * percentage).div_ceil(100);
+            let mut effective = percentage;
+            let minimum = crate::pyrowave::minimum_parity(count, minimum);
+            if percentage > 0 && fec < minimum {
+                fec = minimum;
+                effective = 100 * fec / count;
+            }
             if count + fec > 255 && percentage > 0 {
                 bail!("FEC parity count exceeds protocol limit");
             }

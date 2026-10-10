@@ -1399,7 +1399,6 @@ impl Media {
                     let mut reported_pacing = None;
                     let mut fec_reported = None;
                     let send_outage = butterpollo_core::stream_policy::SendOutage::from_env();
-                    let mut send_loss = butterpollo_core::stream_policy::SendLossRecovery::default();
                     let batch_kb = match c.integer("video_max_batch_size_kb", 64) {
                         16 => 16,
                         32 => 32,
@@ -1481,8 +1480,6 @@ impl Media {
                             let mut first_send = None;
                             let mut last_send = None;
                             let mut remaining = packets.as_slice();
-                            let mut lost = butterpollo_core::stream_policy::SendLoss::new(packetizer.block_layout(frame.bytes.len()));
-                            let mut abandoned = 0;
                             s.stats.video_frame.store(u64::from(packetizer.frame.wrapping_sub(1)) + 1, Ordering::Release);
                             while !remaining.is_empty() {
                                 if s.stopping() || h.stop.load(Ordering::Acquire) {
@@ -1499,7 +1496,6 @@ impl Media {
                                 let count =
                                     butterpollo_windows::net::Batch::count(remaining, budget);
                                 let send_started = trace_send.then(Instant::now);
-                                let refused = batch.dropped;
                                 let bytes = if send_outage.is_some_and(|outage| outage.active(start, Instant::now())) {
                                     batch.refuse(count);
                                     0
@@ -1517,22 +1513,6 @@ impl Media {
                                 network_pacer.sent(Instant::now(), bytes, if bytes > 0 { count } else { 0 }, peer.ip().to_canonical().is_ipv6(), bps);
                                 s.stats.packets.fetch_add(count as u64, Ordering::Relaxed);
                                 s.stats.bytes.fetch_add(bytes as u64, Ordering::Relaxed);
-                                // The socket refused more of this frame than FEC
-                                // repairs: the client cannot decode it. Stop
-                                // spending the link on it, and make the next
-                                // frame the keyframe the client will wait for.
-                                if lost.sent(count, (batch.dropped - refused) as usize) {
-                                    abandoned = remaining.len();
-                                    if send_loss.lost(Instant::now(), period, lost.reached_socket()) {
-                                        s.request_send_loss_recovery();
-                                    }
-                                    break;
-                                }
-                            }
-                            if lost.unrecoverable() {
-                                tracing::debug!(frame = packetizer.frame.wrapping_sub(1), idr = frame.idr, abandoned, "video frame lost on send; the rest of it was not sent");
-                            } else {
-                                send_loss.delivered(frame.idr);
                             }
                             if batch.dropped != dropped {
                                 s.launch.warnings.event("network_send", "Video packets were dropped by the host after transient socket send failures. You may see stutter or recovery frames; lower bitrate and check the network adapter. The log includes the socket error code.", butterpollo_core::session::EVENT_PERIOD);
@@ -1639,7 +1619,6 @@ impl Media {
                                         // Keep reference feedback distinct from IDR recovery.
                                         idr_requests=s.stats.idr_requests.load(Ordering::Relaxed),
                                         reference_invalidations=s.stats.reference_invalidations.load(Ordering::Relaxed),
-                                        send_loss_recoveries=s.stats.send_loss_recoveries.load(Ordering::Relaxed),
                                         fec_reports=timing["fec_reports"].as_u64().unwrap_or(0),
                                         fec_invalid_reports=timing["fec_invalid_reports"].as_u64().unwrap_or(0),
                                         fec_duplicate_reports=timing["fec_duplicate_reports"].as_u64().unwrap_or(0),

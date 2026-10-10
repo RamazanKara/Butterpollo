@@ -5,35 +5,6 @@ without reducing features or picture quality. Opus took over from Codex in the
 evening of October 2. Performance acceptance on the customer's own sessions is
 still open; the measured fixture results below are local loopback evidence.
 
-## October 10 Wi-Fi wave 2: a keyframe right after a frame the host could not send
-
-On a host whose own Wi-Fi drops out (the October 9 user report: a Legion Go
-host whose socket refused 11-371 video packets at a time, each followed by a
-recovery request), the client loses the frame and, as Moonlight does, asks
-for a keyframe only after its next complete frame and a round trip. The host
-knows at once: Winsock refused the packets.
-
-Change (not yet measured on the host):
-
-- Each frame's send counts refused packets per FEC block
-  (`stream_policy::SendLoss`, upper bound when a batch spans blocks). Once a
-  block loses more than its parity, the rest of the frame is not sent and the
-  next frame is a keyframe (`Session::request_send_loss_recovery`, counted as
-  `send_loss_recoveries`, not as a client request). Moonlight, already waiting
-  for a keyframe, recovers on that frame and sends no request of its own.
-- A frame refused from its first packet (radio out) always forces the next
-  keyframe, so the first frame through after the outage is one. A frame that
-  got partly in and was then refused (congestion) forces one only if no
-  forced keyframe is outstanding within max(4 periods, 40 ms)
-  (`SendLossRecovery`); otherwise the client asks, as before.
-- Not covered: loss in the air on the client's side (the laptop run's ~80-100
-  ms dropout), which the host cannot see.
-
-Test hook for the A/B: `BUTTERPOLLO_TEST_SEND_OUTAGE=every_ms:length_ms`
-refuses all video datagrams for `length` of every `every` (from the second
-interval on), in both builds. `rust/tests/recovery_gaps.py` reports the
-picture stalls in the test client's timing CSV.
-
 ## October 9 research triage: host verification of the five BUILD NOW items
 
 Codex implemented the five BUILD NOW items from the research triage as stacked
