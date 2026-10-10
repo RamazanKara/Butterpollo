@@ -6,7 +6,7 @@
 
 Stream your gaming PC to a laptop, TV or phone. Rubylight is a Windows game-streaming host with Radeon compute, native AMD encoding and **full 10-bit HDR 4:4:4 through PyroWave**. The host, native helpers, Windows service and installer are written in Rust.
 
-**[Download rc.30](https://github.com/RamazanKara/Rubylight/releases/tag/2.0.0-rc.30)** · **[Get started](docs/getting-started.md)** · [Website](https://ramazankara.github.io/Rubylight/) · [Documentation](docs/README.md) · [Release notes](rust/RELEASE_NOTES.md)
+**[Download 2.0.0](https://github.com/RamazanKara/Rubylight/releases/tag/2.0.0)** · **[Get started](docs/getting-started.md)** · [Website](https://ramazankara.github.io/Rubylight/) · [Documentation](docs/README.md) · [Release notes](rust/RELEASE_NOTES.md)
 
 [![Meet Rubylight: a Windows Moonlight host built around Radeon, its frame pipeline, measured performance, a matched host comparison, PyroWave HDR and getting started](docs/media/demo.gif)](docs/media/demo.mp4)
 
@@ -24,7 +24,7 @@ Rubylight is not here to win a big userbase. There is no growth plan and no camp
 
 ## Install. Pair Moonlight. Play.
 
-1. Run **`rubylight-setup-2.0.0-rc.30.exe`** from the [release](https://github.com/RamazanKara/Rubylight/releases/tag/2.0.0-rc.30).
+1. Run **`rubylight-setup-2.0.0.exe`** from the [release](https://github.com/RamazanKara/Rubylight/releases/tag/2.0.0).
 2. Open the Rubylight console at **`https://localhost:47990`** and create your local account.
 3. Add your PC in Moonlight, enter its pairing PIN in **Devices**, then launch **Desktop**.
 
