@@ -35,7 +35,10 @@ Shipped (`b78f853`, `7c84750`, `204ecdd`): `amd_ltr_frames` defaults to 4 and
 applies to AV1 only. H.264 and HEVC answer an invalidation with a keyframe.
 After any AMF invalidation recovery a keyframe follows one second later, so
 a decoder that cannot follow it is frozen for about a second, not until the
-next loss.
+next loss. Moonlight-qt's D3D11VA renderer (Windows, the laptop client)
+offers invalidation for HEVC and AV1, not H.264 (`getDecoderCapabilities`
+in moonlight-qt master), so a real Windows client streaming AV1 uses this
+path, and an HEVC client now gets keyframes.
 
 The first H.264 run of the last set, on the base build (no invalidation
 offered, so plain keyframe recovery), ended in a third RX 7900 XT
