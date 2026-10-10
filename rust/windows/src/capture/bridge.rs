@@ -195,9 +195,9 @@ struct Texture {
     mutex: IDXGIKeyedMutex,
 }
 
-/// A helper texture that an image is read from in place
-/// (`wgc_helper_zero_copy`) instead of being copied into a host texture
-/// first. The host keeps its keyed mutex until the last clone of the image
+/// A helper texture that an image is read from in place (on AMD with
+/// compute copies, unless `wgc_helper_zero_copy` is false) instead of being
+/// copied into a host texture first. The host keeps its keyed mutex until the last clone of the image
 /// is dropped, then hands it back once the compute work that read it is
 /// done; the capture worker tells the helper on its next poll.
 pub(crate) struct Lease {
@@ -376,7 +376,7 @@ impl Session {
         // Reading the helper's textures in place skips the host's copy. Only
         // compute work and this device's context may read them: the lease
         // waits for those before the helper may write again.
-        let mut returns = (config.boolean("wgc_helper_zero_copy", false)
+        let mut returns = (config.boolean("wgc_helper_zero_copy", true)
             && owned.compute.is_some())
         .then(|| {
             crate::compute::Compute::for_device(&gpu.device)

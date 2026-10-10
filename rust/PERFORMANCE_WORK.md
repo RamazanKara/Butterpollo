@@ -5,6 +5,24 @@ without reducing features or picture quality. Opus took over from Codex in the
 evening of October 2. Performance acceptance on the customer's own sessions is
 still open; the measured fixture results below are local loopback evidence.
 
+## October 10 WGC helper textures read in place: on by default
+
+On the service host WGC runs in a helper in the user's session, which
+copies each frame into one of its shared textures; the host then copied
+that into a texture of its own before the compute conversion. The host now
+lends the helper's texture to the conversion directly and hands it back,
+after the compute work submitted so far, when the last clone of the image
+is dropped (`wgc_helper_zero_copy`, AMD with compute copies only). The
+helper got a fourth texture so a held image does not starve it.
+
+Host A/B on one build, 1440p120 AV1 to the loopback test client with
+motion_probe, three alternating idle pairs of 30 s: mean picture age 10.07
+ms copied against 9.84 ms in place, host mean 2.843 against 2.774 ms,
+barcode coverage 1.0 and no decode errors in both. In place, a reconnect, a
+client kill and a 2-minute stream (119.6 fps) were clean. A pair beside
+`gpu_load 45 1000 0 200` saturated the GPU and both arms fell to about
+31 fps, so it could not tell them apart.
+
 ## October 10 AV1 entropy-context (CDF) update: no default change
 
 Hidden settings `amd_av1_cdf_update` and `amd_av1_cdf_frame_end` (f546589)
