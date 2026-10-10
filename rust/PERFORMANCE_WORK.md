@@ -30,6 +30,17 @@ reads it as fixture variance. Reconnect and client kill
 pass, 0 decode errors. Build check: 160 host tests, `clippy -D warnings`
 clean. Ships.
 
+Follow-up `0d2ffd2`: on a keyframe request the sender thread skips the delta
+frame waiting in its queue (the client discards it; its wire number is left
+as a gap, so reference invalidation numbering holds), and a keyframe
+replaces a waiting delta frame. Host A/B at the 160 Mb/s cap, A = `c1c8470`:
+recovery keyframe p95 65.1 / 64.6 / 65.2 ms (A) against 60.7 / 60.2 / 61.2
+ms (B), paired -4.3 ms (CI -4.4 to -4.0, 3 of 3), back to the inline path's
+level. Pictures missing at most 1 per request (7 of 60), as designed.
+Picture age within noise. Outage-pair stalls 91.6 / 92.9 / 93.0 (A) against
+92.1 / 97.2 / 100.5 ms (B), 0 decode errors. 161 host tests, clippy clean.
+Ships.
+
 ## October 10 Wi-Fi wave 2: a keyframe right after a frame the host could not send
 
 On a host whose own Wi-Fi drops out (the October 9 user report: a Legion Go
