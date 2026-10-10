@@ -414,6 +414,7 @@ fn output_resets_the_stall_even_if_the_encoder_backlog_stays_full() -> Result<()
         backlog_since: Some(start),
         recreations: 3,
         device_loss: None,
+        progress: None,
         stall: crate::soak_fault::EncoderStall::new(None),
     };
     let mut encoder = Some(MockEncoder {

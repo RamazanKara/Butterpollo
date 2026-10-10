@@ -160,7 +160,8 @@ impl GpuProbe {
             let query = match butterpollo_windows::gpu_probe::Probe::new(&display) {
                 Ok(query) => query,
                 Err(error) => {
-                    tracing::info!(error = %format!("{error:#}"), %display, "GPU stall probe unavailable");
+                    let output = &display;
+                    tracing::info!(error = %format!("{error:#}"), display = %output, "GPU stall probe unavailable");
                     return;
                 }
             };
