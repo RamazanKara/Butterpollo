@@ -478,7 +478,7 @@ impl Prepared {
             .options
             .get("virtualDisplay")
             .map(|value| value != "0");
-        let display_request = butterpollo_core::display_policy::VirtualDisplayRequest {
+        let mut display_request = butterpollo_core::display_policy::VirtualDisplayRequest {
             client_requested: client_virtual == Some(true),
             client_forced: launch
                 .client
@@ -492,7 +492,17 @@ impl Prepared {
             configured: mode != "disabled" || config.boolean("dd_activate_virtual_display", false),
             output_override,
             configured_output: config.get("output_name", ""),
+            headless: false,
         };
+        if !physical_only && !display_request.requested() {
+            display_request.headless =
+                butterpollo_windows::capture::displays().is_ok_and(|displays| displays.is_empty());
+            if display_request.headless {
+                tracing::info!(
+                    "no display is active; this stream uses a virtual display although the settings turn it off"
+                );
+            }
+        }
         let virtual_mode = display_request.uses_virtual(
             physical_only,
             butterpollo_windows::display::virtual_display_available,

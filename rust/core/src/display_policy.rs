@@ -14,6 +14,10 @@ pub struct VirtualDisplayRequest<'a> {
     pub configured: bool,
     pub output_override: Option<&'a str>,
     pub configured_output: &'a str,
+    /// No display is active (a headless host, or every monitor off): there
+    /// is no physical display to stream, so a virtual one is used whatever
+    /// the settings say, as in Vibepollo.
+    pub headless: bool,
 }
 impl VirtualDisplayRequest<'_> {
     /// Whether the stream gets a virtual display. Without a usable driver a
@@ -42,6 +46,7 @@ impl VirtualDisplayRequest<'_> {
     pub fn requested(&self) -> bool {
         self.client_requested
             || self.client_forced
+            || self.headless
             || self.output_virtual()
             || (self.output_override.is_none() && (self.app_requested || self.configured))
     }
@@ -544,6 +549,16 @@ mod tests {
         assert!(named.uses_virtual(false, || false));
         let none = VirtualDisplayRequest::default();
         assert!(!none.uses_virtual(false, || panic!("no request needs no driver check")));
+        // With no active display there is nothing physical to stream, even
+        // when the settings and the app name a physical display.
+        let headless = VirtualDisplayRequest {
+            headless: true,
+            output_override: Some("physical-monitor"),
+            ..Default::default()
+        };
+        assert!(headless.uses_virtual(false, || true));
+        assert!(!headless.uses_virtual(false, || false));
+        assert!(!headless.uses_virtual(true, || true));
     }
     #[test]
     fn unapplied_display_modes_are_visible_and_recovery_clears_them() {
