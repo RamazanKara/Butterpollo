@@ -43,7 +43,7 @@ H.264, HEVC and AV1 depend on the encoder and client. For `hevc_mode` and `av1_m
 
 For **native HDR**, enable HDR in the client and use an HDR-capable display and encoder path. Leave **Display HDR** on Automatic so Rubylight can set the source display appropriately. **10-bit SDR instead of HDR** (`prefer_sdr_10bit`, default `false`) deliberately keeps the stream in SDR; leave it off when you want HDR. RTX HDR is a separate SDR-to-HDR conversion feature, with its own hardware requirements.
 
-**PyroWave needs a compatible client** and much more bandwidth than conventional codecs. Synthetic desktop and game measurements on AMD give two warning levels. The floor warns about severe detail loss; the recommendation targets clean pictures in those tests. Passing the floor alone does not mean a clean picture.
+**PyroWave needs a compatible client** and much more bandwidth than conventional codecs. Desktop and game test scenes on AMD give two warning levels. The floor warns about severe detail loss; the recommendation targets clean pictures in those tests. Passing the floor alone does not mean a clean picture.
 
 | Stream | Severe-loss floor | Recommended |
 | --- | ---: | ---: |
@@ -77,7 +77,7 @@ Set `pacing_max_bitrate_kbps` to a positive value in **kbps** to override the au
 
 These are encoder bit budgets, not extra queued frames or packet-pacing settings. A driver can exceed a requested frame cap, especially at startup; a smaller budget can also reduce picture quality. Intra refresh remains client-negotiated and does not replace an explicit recovery-keyframe request. See the [rate-control measurements](../rust/PERFORMANCE.md#october-7-2026-amf-rate-control-and-recovery-keyframes) before changing these controls. NVIDIA users should use [Vibepollo](https://github.com/Nonary/Vibepollo).
 
-`amd_rc` remains `vbr_latency` by default. For an affected AMD stream, `amd_max_frame_size=1` or `2` lets you compare smaller recovery frames against picture quality; `0` restores the driver default. These caps helped on an RX 7900 XT, but were not strict size bounds and were not tested on RDNA4. With frequent recovery requests the tighter cap also reduced actual bit usage and slightly increased HEVC encode time, so it is not enabled automatically. Switching to CBR or shrinking VBV alone did not consistently reduce bursts.
+`amd_rc` remains `vbr_latency` by default. For an affected AMD stream, `amd_max_frame_size=1` or `2` lets you compare smaller recovery frames against picture quality; `0` restores the driver default. These caps helped on an RX 7900 XT, the card they were measured on, but were not strict size bounds; reports from RDNA4 cards are welcome. With frequent recovery requests the tighter cap also reduced actual bit usage and slightly increased HEVC encode time, so it is not enabled automatically. Switching to CBR or shrinking VBV alone did not consistently reduce bursts.
 
 ## Displays and RTSS
 

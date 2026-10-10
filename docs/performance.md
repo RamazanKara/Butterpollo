@@ -2,13 +2,13 @@
 
 [Docs](README.md) · [How compute works](architecture.md) · [Troubleshooting](troubleshooting.md) · [Full measurement record](../rust/PERFORMANCE.md)
 
-Rubylight's performance work targets fresh pictures and lower picture age. This guide collects the main results; each table links to the fixture, exact runs and scope behind it.
+Rubylight's performance work targets fresh pictures and lower picture age. This guide collects the main results; each table links to the fixture, exact runs and scope behind it. Two kinds of measurement appear: **end-to-end runs to a real laptop over Wi-Fi**, and **same-PC runs**, where an independent decoder on the host PC isolates the host from the network so two builds or two hosts can be compared precisely.
 
 ## What the numbers mean
 
 | Metric | What it measures |
 | --- | --- |
-| **Render-to-decode delay / picture age** | Time from a timestamped rendered picture to independent decoding, including desktop composition, capture, encoding and the fixture's transport. These local tests use loopback; remote network transit and display scanout are separate. |
+| **Render-to-decode delay / picture age** | Time from a timestamped rendered picture to independent decoding, including desktop composition, capture, encoding and the fixture's transport. The laptop runs include real Wi-Fi transit; the same-PC runs use loopback, so they leave network transit out on purpose. Display scanout is separate in both. |
 | **95th percentile (p95)** | The slower end of the sample: 95% of observations are at or below this delay. |
 | **Fresh pictures per second** | Distinct pictures received, counted from changing picture IDs. Repeated frames do not increase this count. |
 | **Encoder time** | The encoder's submission-to-completion interval. It covers one part of the frame journey. |
@@ -37,9 +37,44 @@ The raw diagnostic does not change the timestamp used by pacing or encoders.
 
 Game input-to-display latency requires its own measurement. Read each row using its named metric, capture path, source and client fixture.
 
+## On a real client over Wi-Fi
+
+The RX 7900 XT host on Ethernet streamed to a laptop with a **Radeon 780M on 5 GHz Wi-Fi** (802.11ax), decoding in hardware. The laptop's clock was synchronised to the host with 200 ms pings (offset error about ±0.6 ms), so each rendered picture's age is measured on arrival. rc.24, HDR on every row, one 30-second run per row on October 8, 2026.
+
+| Render to received, average / p95 / p99 | Fresh pictures per second | Host time |
+| --- | ---: | ---: |
+| 1968×2184 AV1, 120 fps, 80 Mbps: **13.54 / 14.33 / 14.93 ms** | 120.0 | 3.0 ms |
+| 1968×2184 HEVC, 120 fps, 80 Mbps: 14.13 / 14.97 / 15.90 ms | 120.0 | 3.7 ms |
+| 2560×1440 AV1, 120 fps, 50 Mbps: 13.34 / 14.15 / 16.12 ms (repeat 13.28 / 14.07 / 15.63 ms) | 120.0 | 2.8 ms |
+| 2560×1440 HEVC, 120 fps, 50 Mbps: 13.67 / 14.69 / 19.87 ms | 120.0 | 3.1 ms |
+| 1920×1080 AV1, 60 fps, 20 Mbps: 12.91 / 15.05 / 17.89 ms | 60.6 | 2.2 ms |
+| 1920×1080 HEVC, 60 fps, 20 Mbps: 12.99 / 14.15 / 16.62 ms | 60.5 | 2.4 ms |
+
+"Received" is when the laptop starts decoding a fully received picture; Moonlight's own hardware decode adds 0.3–0.7 ms on this laptop. Every row received all pictures, with zero decode failures. A first 1440p AV1 run measured 14.78 / 21.87 / 34.85 ms with a clean host side, so its late frames came from the Wi-Fi link or the client, and its two repeats are shown above.
+
+The same laptop and host have since run the released **Moonlight 6.2.0**:
+
+- **2.0.0, AV1 1440p120:** 119.7 fps, no loss, no frozen picture.
+- **AV1 loss recovery:** with the host dropping 20 ms of video every 1.5 s for 90 s at 50 Mbps, all **59 of 59 lost frames were recovered without a keyframe**, at 117.7 fps and 2.7 ms host processing.
+- **Moonlight's own statistics on the same laptop (rc.21 to rc.24):** host processing 2.6–3.6 ms, network 1–3 ms, decode 0.3–0.7 ms, at 118–121 fps.
+
+[Method, clock sync and every run →](../rust/PERFORMANCE_WORK.md#october-8-real-client-picture-age-over-wi-fi-rc24-laptop)
+
 ## Next to Vibepollo 2.0
 
-The historical whole-host comparison used **Vibepollo 2.0** and **Rubylight rc.2** with the same settings: native AMF at ultra-low latency, DDX and realtime GPU priority on both. RX 7900 XT, 1080p60 HEVC HDR, 20 Mbps requested, controlled GPU load; arithmetic means of three alternating runs per host on October 4, 2026.
+**On the same GPU, with identical settings,** rc.24 and the pinned Vibepollo 2.0 build alternated in one batch on October 8 (two runs per cell): native AMF at ultra-low latency, Desktop Duplication capture, a virtual HDR display, hardware decoding in the client. Picture age, average / p95 / p99:
+
+| | Rubylight rc.24 | Vibepollo 2.0 |
+| --- | ---: | ---: |
+| **Beside a game**, 1968×2184 AV1 HDR 120 fps | **17.15 / 18.96 / 22.18 ms**, host 3.1 ms | 24.53 / 36.77 / 38.05 ms, host 7.4 ms |
+| **Beside a game**, 1968×2184 HEVC HDR 120 fps | **19.61 / 21.56 / 23.10 ms**, host 3.4 ms | 26.96 / 37.62 / 39.25 ms, host 8.3 ms |
+| No game, 1968×2184 AV1 HDR 120 fps | **17.42 / 18.10 / 18.62 ms** | 18.88 / 19.54 / 19.90 ms |
+| No game, 1968×2184 HEVC HDR 120 fps | **17.81 / 18.94 / 19.56 ms** | 19.97 / 20.43 / 20.87 ms |
+| No game, 2560×1440 HEVC HDR 120 fps | 17.09 / 17.99 / 18.46 ms | 17.19 / 17.68 / 17.93 ms |
+
+At the native size Rubylight delivers the picture 1.5–2.2 ms sooner with no game running and 7.4–7.8 ms sooner beside one, with about 16–18 ms less at the 95th and 99th percentiles. Beside the game Vibepollo also delivered fewer fresh pictures (103–118 a second against 117–120). At 1440p the two are equal with no game, and at 1080p60 they are close. [All rows, including 1080p60 →](../rust/PERFORMANCE_WORK.md#rc24-against-vibepollo-20-on-the-same-gpu)
+
+An earlier whole-host comparison on October 4 showed the same pattern at a heavier load. It used **Vibepollo 2.0** and **Rubylight rc.2** with the same settings: native AMF at ultra-low latency, DDX and realtime GPU priority on both. RX 7900 XT, 1080p60 HEVC HDR, 20 Mbps requested, controlled GPU load; arithmetic means of three alternating runs per host on October 4, 2026.
 
 | Under controlled GPU load | Vibepollo 2.0 | Rubylight rc.2 |
 | --- | ---: | ---: |
@@ -63,7 +98,7 @@ This separate test changes one setting in the **same Rubylight build**: compute 
 
 This isolates the benefit of moving frame preparation onto compute. The whole-host result above includes the combined implementation. [Queue placement and synchronization](architecture.md#the-radeon-frame-path) explain the change.
 
-[Same-build runs and synthetic component probes →](../rust/PERFORMANCE.md#1080p-at-60-fps)
+[Same-build runs and component probes →](../rust/PERFORMANCE.md#1080p-at-60-fps)
 
 ## rc.17 against rc.2
 
@@ -106,7 +141,7 @@ Every client's input passes through one host thread. Changes after rc.19 give vi
 | Mouse move behind a controller update, CPU-bound load on every core, worst case | 287 ms | **2.0 ms** |
 | Input packet to the input thread beside time-critical threads on every core, median | 3.5 ms | **17 µs** |
 
-Smaller changes take a few tens of microseconds off every input packet (the network acknowledgement now goes out after the input is applied) and remove 2–18 ms pauses at a stream's first input and while its display is created or renamed. These are host-side measurements on loopback; the network and the client's decoding come on top.
+Smaller changes take a few tens of microseconds off every input packet (the network acknowledgement now goes out after the input is applied) and remove 2–18 ms pauses at a stream's first input and while its display is created or renamed. These are host-side measurements of the input path itself; network transit and the client's decoding come on top, as in the laptop runs above.
 
 [Method and all runs →](../rust/PERFORMANCE.md#october-7-input-on-the-control-thread)
 
@@ -127,10 +162,12 @@ These WGC results use a different fixture from the DDX comparisons above. The fu
 | **Native HEVC and AV1 HDR** | **5,173 / 5,173 frames decoded** across four rc.10 runs | RX 7900 XT, 720p60 FP16 virtual-HDR capture, decoded BT.2020/PQ, reference colours and display restoration. |
 | **PyroWave HDR 4:4:4 transport** | **2,357 / 2,357 frames decoded**, zero video/audio decode errors | 1080p/120 encrypted transport, profile/HDR control state and independent vendor decoding from an SDR desktop source. |
 | **Moonlight PC 6.2.0** | Ten codec/reconnect sessions | H.264, HEVC, AV1, HEVC HDR and AV1 HDR, two connections each at 720p60 with the released Windows client. |
+| **Moonlight PC on the laptop, over Wi-Fi** | All six HDR streams (native, 1440p120, 1080p60; HEVC and AV1) negotiated 10-bit and decoded in hardware | Radeon 780M laptop; the independent client confirmed 10-bit P010, BT.2020, PQ on every row. The laptop's own panel is not HDR, so these runs check the stream, not the picture on an HDR display. |
+| **Moonlight for Xbox** | HDR streaming works at 3840×2160, 120 Hz, HEVC | After the 2.0.1 fix for the TV switching HDR mode twice ([#11](https://github.com/RamazanKara/Rubylight/issues/11)). |
 
-The native HDR tests include four reference-frame pixel dumps. Their per-channel mean error is below 0.51 ten-bit code values; this is a check of those reference frames. Complete frame decoding and even arrival cadence are separate checks: one AV1 run recorded 31 intervals above 25 ms, while its repeat recorded zero.
+The native HDR tests include four reference-frame pixel dumps. Their per-channel mean error is below 0.51 ten-bit code values. Arrival cadence was recorded separately and varied between runs: one AV1 run had 31 intervals above 25 ms, while its repeat had none.
 
-The PyroWave transport fixture uses normalized eight-bit CPU readback to validate the profile and transport. Physical TV calibration, client scanout and full ten-bit PyroWave presentation need their own display-side checks. The Moonlight compatibility matrix used an SDR desktop, separately from the later native HDR pixel fixtures.
+The PyroWave transport check reads each frame back as eight bits to validate the profile and transport. How the picture looks on a calibrated TV, and ten-bit PyroWave presentation, depend on the client and the display; the stream carries 10-bit 4:4:4. The Moonlight compatibility matrix ran on an SDR desktop, and native HDR pixels were checked in the separate fixtures above.
 
 [Native HDR evidence](../rust/PERFORMANCE.md#final-native-virtual-hdr-pixels-excluding-physical-panel-calibration) · [PyroWave transport](../rust/PERFORMANCE.md#vibepollo-20-pyrowave-transport) · [Client and hardware matrix](../rust/PARITY.md#evidence)
 

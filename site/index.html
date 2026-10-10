@@ -42,7 +42,7 @@
       <a class="button" href="{{download_url}}">Download {{download_label}}</a>
       <a class="button ghost" href="docs/getting-started.html">Get started</a>
     </div>
-    <p class="fine">Windows x64 · free and open source (GPL-3.0) · 2.0.0</p>
+    <p class="fine">Windows x64 · free and open source (GPL-3.0) · 2.0.1</p>
 
     <div class="stats">
       <div class="stat">
@@ -151,7 +151,7 @@
         </tbody>
       </table>
     </div>
-    <p class="note">RX 7900 XT, rc.24 and the pinned Vibepollo 2.0 build alternating in one batch, two runs per cell. Identical settings: native AMF at ultra-low latency, Desktop Duplication capture, a virtual HDR display. The picture is decoded in hardware by an independent client on the same PC, so network transit and display scanout are not included. Beside the game Vibepollo also delivered fewer fresh pictures: 103–118 a second against 117–120. <a href="rust/PERFORMANCE_WORK.html#rc24-against-vibepollo-20-on-the-same-gpu">Runs, settings and caveats</a></p>
+    <p class="note">RX 7900 XT, rc.24 and the pinned Vibepollo 2.0 build alternating in one batch, two runs per cell. Identical settings: native AMF at ultra-low latency, Desktop Duplication capture, a virtual HDR display. The picture is decoded in hardware by an independent client on the same PC, which isolates the host from the network so the two can be compared precisely; the laptop results below add real Wi-Fi. Beside the game Vibepollo also delivered fewer fresh pictures: 103–118 a second against 117–120. <a href="rust/PERFORMANCE_WORK.html#rc24-against-vibepollo-20-on-the-same-gpu">Runs, settings and caveats</a></p>
 
     <h3 class="sub-title">Over Wi-Fi to a real laptop</h3>
     <p>A Radeon 780M laptop on 5 GHz Wi-Fi, decoding in hardware, against the host on Ethernet. "Received" is when the laptop starts decoding a fully received picture; Moonlight's own hardware decode adds 0.3–0.7 ms on this laptop.</p>
@@ -170,7 +170,9 @@
         </tbody>
       </table>
     </div>
-    <p class="note">October 8, 2026, one 30-second run per row. A first 1440p AV1 run measured 14.78 / 21.87 / 34.85 ms with a clean host side, so its late frames came from Wi-Fi or the client. Not measured yet: a game on the host during these runs, a wired client, and Vibepollo on this fixture. <a href="rust/PERFORMANCE_WORK.html#october-8-real-client-picture-age-over-wi-fi-rc24-laptop">Method and clock sync</a></p>
+    <p class="note">October 8, 2026, one 30-second run per row. A first 1440p AV1 run measured 14.78 / 21.87 / 34.85 ms with a clean host side, so its late frames came from Wi-Fi or the client. The laptop's clock was synchronised to the host with 200 ms pings (error about ±0.6 ms). Every picture arrived and decoded. <a href="rust/PERFORMANCE_WORK.html#october-8-real-client-picture-age-over-wi-fi-rc24-laptop">Method and clock sync</a></p>
+
+    <p>The same laptop later streamed with the released <b>Moonlight 6.2.0</b>: on 2.0.0 it held 119.7 fps at 1440p120 AV1 with no loss, and with the host dropping 20 ms of video every 1.5 s, <b>all 59 lost frames were recovered without a keyframe</b> at 117.7 fps.</p>
 
     <h3 class="sub-title">Earlier results</h3>
     <ul class="results">
@@ -180,6 +182,13 @@
       <li><b>Input under CPU load:</b> a mouse move behind a controller update took at worst 2.0 ms instead of 287 ms (October 7). <a href="docs/performance.html#input-under-load">Details</a></li>
       <li><b>H.264 picture quality:</b> adaptive quantization off by default raised VMAF by 1.0 and 9.4 points at 1440p120 and 20 Mbps, at the same encode time (rc.23). <a href="rust/PERFORMANCE_WORK.html#amf-settings-per-codec-quality-at-a-given-bitrate">Details</a></li>
     </ul>
+    <h3 class="sub-title">Tested on</h3>
+    <ul class="results">
+      <li><b>Radeon RX 7900 XT</b> as the host for every measurement above, and a <b>Radeon 780M laptop</b> over Wi-Fi as the client.</li>
+      <li><b>RX 9070 XT, RX 6900 XT and Radeon 890M:</b> user reports and logs from real setups, including a Legion Go host on Wi-Fi; fixes shipped from them.</li>
+      <li><b>Moonlight for Xbox</b> streaming HDR at 3840×2160, 120 Hz, an <b>Android phone</b> at 1968×2184, 120 Hz HDR, and a streaming session from a <b>locked Windows VM</b> confirmed by a user.</li>
+    </ul>
+    <p class="note">Known issues, kept short: on one AMD driver version the encoder occasionally hung during heavy loss recovery and Windows reset the GPU (<a href="docs/troubleshooting.html#the-picture-freezes-and-the-gpu-resets-during-a-stream">what to do</a>), and a second client joining causes a hitch of about a second in the first stream. NVIDIA and Intel encoders are included but not yet run on hardware. <a href="rust/PARITY.html#where-it-has-been-tested">What was tested where</a></p>
     <p><a class="more" href="docs/performance.html">All performance results and what each number means</a></p>
   </div>
 </section>

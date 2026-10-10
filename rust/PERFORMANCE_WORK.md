@@ -2,8 +2,13 @@
 
 User objective: make the Rust host smoother and lower latency than Vibepollo,
 without reducing features or picture quality. Opus took over from Codex in the
-evening of October 2. Performance acceptance on the customer's own sessions is
-still open; the measured fixture results below are local loopback evidence.
+evening of October 2.
+
+This is a dated engineering log, newest entry first. Each entry records what
+was and was not measured on its own date, so a "not measured" note in an older
+entry may have been measured in a later one. Results to a real laptop over
+Wi-Fi are in "October 8 real-client picture age over Wi-Fi"; the
+[performance overview](../docs/performance.md) carries the current numbers.
 
 ## October 10 PyroWave SDK 1.0 and a high-priority encode queue: host A/B pending
 
@@ -1832,9 +1837,11 @@ frame), shed about 11-15% of frames and queued for seconds, and its FFmpeg chose
 libdav1d without D3D11VA for AV1. Its valid 1080p60 HEVC row (12.91 / 14.82 /
 17.22 ms to received) agrees with the table.
 
-Not measured here: a game load on the host, Ethernet on the client, display
-scanout, PyroWave (stock and fixture clients lack it on this laptop), and
-Vibepollo on the same fixture. Moonlight-qt averages on the same laptop and host
+Outside this table: a game load on the host and Vibepollo on the same
+fixture were measured on the same-PC loopback fixture (see "rc.24 against
+Vibepollo 2.0 on the same GPU"). Also out of scope here: Ethernet on the
+client, display scanout, and PyroWave (stock and fixture clients lack it on
+this laptop). Moonlight-qt averages on the same laptop and host
 (rc.21-rc.24): host processing 2.6-3.6 ms, network 1-3 ms, decode 0.3-0.7 ms.
 Raw files: laptop `C:\Users\ramaz\bp-measure\phase2b`, host clock pings and
 rendered-frame maps in the project files.
@@ -2111,9 +2118,10 @@ both codecs and frames 2-5 sometimes 7-17 ms; after that no frame exceeded
 start. A first 1080p60 pair overlapped the owner changing his monitor mode
 (one 48.7 ms frame) and was repeated.
 
-Render-to-decode delay over the network is not measured yet: the
-independent client must launch from the laptop's own paired identity, since
-the host ties a session to the address that launched it.
+Render-to-decode delay over the network was measured later the same day
+(see "October 8 real-client picture age over Wi-Fi" above): the independent
+client launches from a paired identity on the laptop, since the host ties a
+session to the address that launched it.
 
 The laptop's smoke test on the installed rc.24 (13:17-13:18 UTC, motion on
 the streamed display, Extended layout) received 118.7 fps for 1968×2184 AV1
