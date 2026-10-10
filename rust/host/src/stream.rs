@@ -1804,7 +1804,14 @@ impl Media {
                             // waits in its queue: take its output first, then
                             // claim the newest picture.
                             // A frame still being sent on a paced link counts too.
-                            let sending = video_sender.get().map_or(Ok(0), |sender| sender.backlog())?;
+                            // A frame waiting behind it is skipped on a keyframe
+                            // request: the client would discard it, and the
+                            // keyframe would wait for it.
+                            let sending = match video_sender.get() {
+                                Some(sender) if s.idr.load(Ordering::Acquire) => sender.skip_pending()?,
+                                Some(sender) => sender.backlog()?,
+                                None => 0,
+                            };
                             let encoding = encoder.as_ref().map_or(0, |e| recovery.backlog(e));
                             if !rebuild_encoder && encoding + sending >= ENCODER_BACKLOG {
                                 if encoding < ENCODER_BACKLOG {

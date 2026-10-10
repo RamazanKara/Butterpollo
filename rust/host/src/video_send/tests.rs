@@ -108,6 +108,71 @@ fn recreation_waits_for_sending_and_pending_wire_indices() {
 }
 
 #[test]
+fn a_keyframe_request_skips_the_waiting_frame_and_keeps_its_wire_number() {
+    let (entered, frames) = mpsc::channel();
+    let (release, resume) = mpsc::channel::<()>();
+    let sender = Sender::spawn("skip".into(), move |slot| {
+        let mut wire = 1;
+        slot.run(|frame| {
+            wire += frame.skipped;
+            entered
+                .send((frame.encoded.bytes[0], wire, frame.skipped))
+                .unwrap();
+            wire += 1;
+            resume.recv_timeout(WAIT)?;
+            Ok(wire)
+        })
+    })
+    .unwrap();
+    sender
+        .submit(vec![frame(1)], peer(), Duration::ZERO)
+        .unwrap();
+    assert_eq!(frames.recv_timeout(WAIT).unwrap(), (1, 1, 0));
+    // A request while a frame waits: it is skipped, the one sending is not.
+    sender
+        .submit(vec![frame(2)], peer(), Duration::ZERO)
+        .unwrap();
+    assert_eq!(sender.backlog().unwrap(), 2);
+    assert_eq!(sender.skip_pending().unwrap(), 1);
+    assert_eq!(sender.skip_pending().unwrap(), 1);
+    // A keyframe takes the place of a frame waiting before it.
+    sender
+        .submit(vec![frame(3)], peer(), Duration::ZERO)
+        .unwrap();
+    let mut keyframe = frame(4);
+    keyframe.idr = true;
+    thread::scope(|scope| {
+        let (submitted, done) = mpsc::channel();
+        let sender = &sender;
+        scope.spawn(move || {
+            sender
+                .submit(vec![keyframe], peer(), Duration::ZERO)
+                .unwrap();
+            submitted.send(()).unwrap();
+        });
+        done.recv_timeout(WAIT).unwrap();
+    });
+    assert_eq!(sender.backlog().unwrap(), 2);
+    // A waiting keyframe is never skipped.
+    assert_eq!(sender.skip_pending().unwrap(), 2);
+    release.send(()).unwrap();
+    assert_eq!(frames.recv_timeout(WAIT).unwrap(), (4, 4, 2));
+    release.send(()).unwrap();
+    assert_eq!(sender.next_wire_frame().unwrap(), 5);
+    // A skipped frame with nothing after it still counts for a new encoder.
+    sender
+        .submit(vec![frame(5)], peer(), Duration::ZERO)
+        .unwrap();
+    assert_eq!(frames.recv_timeout(WAIT).unwrap(), (5, 5, 0));
+    sender
+        .submit(vec![frame(6)], peer(), Duration::ZERO)
+        .unwrap();
+    assert_eq!(sender.skip_pending().unwrap(), 1);
+    release.send(()).unwrap();
+    assert_eq!(sender.next_wire_frame().unwrap(), 7);
+}
+
+#[test]
 fn sender_failure_wakes_submit_and_recreation_and_stays_in_the_error_slot() {
     let (entered, sending) = mpsc::channel();
     let (fail, failure) = mpsc::channel();

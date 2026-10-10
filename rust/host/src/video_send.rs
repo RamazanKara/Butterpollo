@@ -19,14 +19,32 @@ struct Frame {
     claimed: Instant,
     polled: Instant,
     latency: Duration,
+    /// Frames skipped just before this one; their wire numbers stay used.
+    skipped: u32,
 }
 struct State {
     pending: Option<Frame>,
     sending: bool,
     next_wire_frame: u32,
+    skipped: u32,
     error: Option<String>,
 }
 impl State {
+    /// A client waiting for a keyframe throws away the frames before it.
+    /// The skipped frame keeps its wire number, so the encoder's frame
+    /// numbers (reference frame invalidation) still match the wire.
+    fn skip_pending(&mut self) -> bool {
+        if !self
+            .pending
+            .as_ref()
+            .is_some_and(|frame| !frame.encoded.idr)
+        {
+            return false;
+        }
+        self.pending = None;
+        self.skipped = self.skipped.wrapping_add(1);
+        true
+    }
     fn backlog(&self) -> Result<usize> {
         if let Some(error) = &self.error {
             bail!("video sender stopped: {error}");
@@ -52,7 +70,8 @@ impl Slot {
                     return Ok(());
                 }
                 state.sending = true;
-                let frame = state.pending.take().unwrap();
+                let mut frame = state.pending.take().unwrap();
+                frame.skipped = std::mem::take(&mut state.skipped);
                 self.changed.notify_all();
                 frame
             };
@@ -118,7 +137,8 @@ impl Sender {
                 _ => 64,
             };
             shared.run(|queued| {
-                let Frame { encoded: frame, peer, claimed, polled, latency: encode } = queued;
+                let Frame { encoded: frame, peer, claimed, polled, latency: encode, skipped } = queued;
+                packetizer.frame = packetizer.frame.wrapping_add(skipped);
                 let micros = |d: Duration| d.as_micros().min(u128::from(u64::MAX)) as u64;
                 let latency = micros(encode);
                 s.stats.latency_us.store(latency, Ordering::Relaxed);
@@ -266,6 +286,7 @@ impl Sender {
                 pending: None,
                 sending: false,
                 next_wire_frame: 1,
+                skipped: 0,
                 error: None,
             }),
             changed: Condvar::new(),
@@ -300,6 +321,10 @@ impl Sender {
             let latency = encoded.latency.unwrap_or(latency);
             // Stamp every output from this poll before any capacity wait.
             let claimed = polled.checked_sub(latency).unwrap_or(polled);
+            // A keyframe goes out next, not after the frame waiting before it.
+            if encoded.idr && state.skip_pending() {
+                tracing::debug!(stream_id=%self.slot.stream_id, "video frame queued before a keyframe skipped");
+            }
             while state.pending.is_some() && !self.slot.stop.load(Ordering::Acquire) {
                 state = self.slot.changed.wait(state).unwrap();
                 state.backlog()?;
@@ -313,6 +338,7 @@ impl Sender {
                 claimed,
                 polled,
                 latency,
+                skipped: 0,
             });
             tracing::trace!(target: "pacing", pending=usize::from(state.pending.is_some()),
                 sending=usize::from(state.sending), inventory=state.backlog()?,
@@ -324,6 +350,18 @@ impl Sender {
     pub fn backlog(&self) -> Result<usize> {
         self.slot.state.lock().unwrap().backlog()
     }
+    /// For a keyframe request: drops the frame waiting to be sent, which the
+    /// client would discard, so the keyframe is claimed without waiting for
+    /// it. Returns the backlog left.
+    pub fn skip_pending(&self) -> Result<usize> {
+        let mut state = self.slot.state.lock().unwrap();
+        state.backlog()?;
+        if state.skip_pending() {
+            tracing::debug!(stream_id=%self.slot.stream_id, "video frame queued before a keyframe request skipped");
+            self.slot.changed.notify_all();
+        }
+        state.backlog()
+    }
     /// Recreated encoders must start after every accepted output, including
     /// frames whose packetization has not yet advanced the wire index.
     pub fn next_wire_frame(&self) -> Result<u64> {
@@ -331,7 +369,7 @@ impl Sender {
         while state.backlog()? != 0 && !self.slot.stop.load(Ordering::Acquire) {
             state = self.slot.changed.wait(state).unwrap();
         }
-        Ok(u64::from(state.next_wire_frame))
+        Ok(u64::from(state.next_wire_frame.wrapping_add(state.skipped)))
     }
 }
 impl Drop for Sender {
