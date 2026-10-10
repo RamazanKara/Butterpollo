@@ -17,9 +17,13 @@ on:
         description: Release the version in Cargo.toml (main only); tags it like a pushed tag would
         type: boolean
         default: false
+      notes:
+        description: Only rewrite the published release's text from rust/RELEASE_NOTES.md on main; no build
+        type: boolean
+        default: false
 concurrency:
   # A release run is never cancelled by a later push to main.
-  group: butterpollo-rust-${{ github.ref }}-${{ inputs.publish && 'publish' || 'ci' }}
+  group: butterpollo-rust-${{ github.ref }}-${{ inputs.publish && 'publish' || inputs.notes && 'notes' || 'ci' }}
   cancel-in-progress: true
 jobs:
   # A tag must match Cargo.toml and have its release notes. When main's run
@@ -59,7 +63,7 @@ jobs:
           if [ -n "$run" ]; then echo "::notice::reusing the build of $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run"; fi
   windows:
     needs: tag
-    if: ${{ !cancelled() && needs.tag.result != 'failure' && !needs.tag.outputs.run }}
+    if: ${{ !cancelled() && needs.tag.result != 'failure' && !needs.tag.outputs.run && !inputs.notes }}
     runs-on: windows-2022
     timeout-minutes: 30
     permissions:
@@ -155,3 +159,22 @@ jobs:
           if [[ $VERSION == *-* ]]; then flags+=(--prerelease); fi
           gh release create "$VERSION" --target "$GITHUB_SHA" --title "Rubylight $VERSION" --notes-file body.md "${flags[@]}" out/*
           echo "::notice::published $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$VERSION"
+  # Corrects a published release's text after the fact, keeping its assets
+  # and its link to the run that built it.
+  notes:
+    if: inputs.notes && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Rewrite the release text
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          run=$(gh release view "$version" --json body --jq .body | grep -o 'https://github.com/[^)]*/actions/runs/[0-9]*' | head -n 1 || true)
+          python3 rust/release/notes.py "$version" --out body.md --run "$run"
+          gh release edit "$version" --notes-file body.md
+          echo "::notice::rewrote the text of $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$version"
