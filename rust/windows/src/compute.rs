@@ -66,16 +66,19 @@ pub struct Compute {
     next: Mutex<u64>,
     /// D3D11 textures already opened here, by their COM pointer.
     opened: Mutex<HashMap<usize, (ID3D11Texture2D, ID3D12Resource)>>,
+    /// Textures another process created and shared, opened from its handle
+    /// (CreateSharedHandle cannot share them again); kept until forgotten.
+    foreign: Mutex<HashMap<usize, (ID3D11Texture2D, ID3D12Resource)>>,
     pub priority: i32,
     /// Set when the queue did not finish work in time; never shared again.
     stuck: std::sync::atomic::AtomicBool,
 }
 // D3D12 devices, queues and fences are free-threaded; the rest is locked.
 // SAFETY: The D3D12 device, queue and fence are free-threaded, the cached D3D11 textures and D3D12
-// resources are only touched under `opened`'s lock, and `next` is a mutex.
+// resources are only touched under `opened`'s and `foreign`'s locks, and `next` is a mutex.
 unsafe impl Send for Compute {}
 // SAFETY: `&self` methods call only free-threaded D3D12 methods and change state only through the
-// two mutexes and the atomic.
+// mutexes and the atomic.
 unsafe impl Sync for Compute {}
 fn completed_value(value: u64) -> Result<u64> {
     // D3D12 signals UINT64_MAX on device removal, including shared fences.
@@ -181,6 +184,7 @@ impl Compute {
                 fence,
                 next: Mutex::new(0),
                 opened: Mutex::new(HashMap::new()),
+                foreign: Mutex::new(HashMap::new()),
                 priority,
                 stuck: std::sync::atomic::AtomicBool::new(false),
             }))
@@ -263,6 +267,9 @@ impl Compute {
     /// A shared D3D11 texture as a D3D12 resource on this device.
     pub fn open(&self, texture: &ID3D11Texture2D) -> Result<ID3D12Resource> {
         let key = texture.as_raw() as usize;
+        if let Some((_, resource)) = self.foreign.lock().unwrap().get(&key) {
+            return Ok(resource.clone());
+        }
         let mut opened = self.opened.lock().unwrap();
         if let Some((_, resource)) = opened.get(&key) {
             return Ok(resource.clone());
@@ -296,6 +303,48 @@ impl Compute {
     }
 }
 
+impl Compute {
+    /// Open a texture another process shared through `handle`, so that
+    /// `open` finds it until `forget`.
+    pub(crate) fn import(&self, texture: &ID3D11Texture2D, handle: HANDLE) -> Result<()> {
+        let mut resource: Option<ID3D12Resource> = None;
+        // SAFETY: `handle` is a live NT handle to `texture` that the caller owns, and `resource` is
+        // a live local.
+        unsafe {
+            self.device.OpenSharedHandle(handle, &mut resource)?;
+        }
+        self.foreign.lock().unwrap().insert(
+            texture.as_raw() as usize,
+            (
+                texture.clone(),
+                resource.context("no imported shared resource")?,
+            ),
+        );
+        Ok(())
+    }
+    pub(crate) fn forget(&self, texture: &ID3D11Texture2D) {
+        self.foreign
+            .lock()
+            .unwrap()
+            .remove(&(texture.as_raw() as usize));
+    }
+}
+/// A D3D12 fence the capture's D3D11 device can signal and wait for.
+fn shared_fence(compute: &Compute, device: &ID3D11Device5) -> Result<(ID3D12Fence, ID3D11Fence)> {
+    // SAFETY: The fence is created on the live `compute.device`, the NT handle is closed once after
+    // `device` opened it, and `opened` is a live local.
+    unsafe {
+        let fence: ID3D12Fence = compute.device.CreateFence(0, D3D12_FENCE_FLAG_SHARED)?;
+        let handle = compute
+            .device
+            .CreateSharedHandle(&fence, None, GENERIC_ALL.0, None)?;
+        let mut opened: Option<ID3D11Fence> = None;
+        let result = device.OpenSharedFence(handle, &mut opened);
+        let _ = CloseHandle(handle);
+        result.context("sharing a fence with the capture device")?;
+        Ok((fence, opened.context("no shared fence")?))
+    }
+}
 /// When a copied frame is complete: the copy queue's fence reaching `value`.
 #[derive(Clone)]
 pub struct Ready {
@@ -314,6 +363,86 @@ impl Ready {
     /// Block until the copy is done.
     pub fn wait(&self) -> Result<()> {
         wait_fence(&self.fence, self.value)
+    }
+}
+
+/// Lends compute work textures another process writes, in place, and hands
+/// them back. The D3D11 device takes such a texture's keyed mutex, which
+/// D3D12 cannot take, then signals `acquired`; compute work reading the
+/// texture waits for that. Before the D3D11 device releases the mutex it
+/// waits for all compute work submitted so far, so the writer never
+/// overwrites a texture a conversion still reads.
+pub(crate) struct Returns {
+    compute: Arc<Compute>,
+    acquired: (ID3D12Fence, ID3D11Fence),
+    drained: (ID3D12Fence, ID3D11Fence),
+    context: ID3D11DeviceContext4,
+    value: u64,
+    imported: Vec<ID3D11Texture2D>,
+}
+// SAFETY: The D3D11 context's device is multithread-protected (`capture::Device::create`), D3D12
+// fences are free-threaded, and all else is used only through `&mut self`.
+unsafe impl Send for Returns {}
+impl Returns {
+    pub(crate) fn new(compute: Arc<Compute>, gpu: &crate::capture::Device) -> Result<Self> {
+        let device: ID3D11Device5 = gpu.device.cast()?;
+        Ok(Self {
+            acquired: shared_fence(&compute, &device)?,
+            drained: shared_fence(&compute, &device)?,
+            compute,
+            context: gpu.context.cast()?,
+            value: 0,
+            imported: Vec::new(),
+        })
+    }
+    /// Make the shared texture behind `handle` readable by compute work.
+    pub(crate) fn import(&mut self, texture: &ID3D11Texture2D, handle: HANDLE) -> Result<()> {
+        self.compute.import(texture, handle)?;
+        self.imported.push(texture.clone());
+        Ok(())
+    }
+    /// The D3D11 device has just taken a texture's keyed mutex: when compute
+    /// work may read it.
+    pub(crate) fn acquired(&mut self) -> Result<Ready> {
+        self.value += 1;
+        // SAFETY: The fence was opened on this context's device, which is multithread-protected.
+        unsafe {
+            self.context.Signal(&self.acquired.1, self.value)?;
+            self.context.Flush();
+        }
+        Ok(Ready {
+            fence: self.acquired.0.clone(),
+            value: self.value,
+            device: self.compute.device.as_raw() as usize,
+        })
+    }
+    /// Release `mutex` with `key` once all compute work submitted so far,
+    /// including every conversion that read its texture, has finished.
+    pub(crate) fn hand_back(&mut self, mutex: &IDXGIKeyedMutex, key: u64) -> Result<()> {
+        self.value += 1;
+        // SAFETY: Both fences are on the compute device and this context's device; the caller holds
+        // `mutex` and releases it only here.
+        unsafe {
+            let drained = self
+                .compute
+                .queue
+                .Signal(&self.drained.0, self.value)
+                .and_then(|()| self.context.Wait(&self.drained.1, self.value));
+            // Released even after a failure: a lost device reads nothing more,
+            // and the writer must not wait for a texture forever.
+            let released = mutex.ReleaseSync(key);
+            self.context.Flush();
+            drained?;
+            released?;
+        }
+        Ok(())
+    }
+}
+impl Drop for Returns {
+    fn drop(&mut self) {
+        for texture in &self.imported {
+            self.compute.forget(texture);
+        }
     }
 }
 
@@ -396,26 +525,10 @@ impl Handoff {
     }
     pub fn new(compute: Arc<Compute>, gpu: &crate::capture::Device) -> Result<Self> {
         let device: ID3D11Device5 = gpu.device.cast()?;
-        let shared = |compute: &Compute| -> Result<(ID3D12Fence, ID3D11Fence)> {
-            // SAFETY: The fence is created on the live `compute.device`, the NT handle is closed
-            // once after `device` opened it, and `opened` is a live local.
-            unsafe {
-                let fence: ID3D12Fence = compute.device.CreateFence(0, D3D12_FENCE_FLAG_SHARED)?;
-                let handle =
-                    compute
-                        .device
-                        .CreateSharedHandle(&fence, None, GENERIC_ALL.0, None)?;
-                let mut opened: Option<ID3D11Fence> = None;
-                let result = device.OpenSharedFence(handle, &mut opened);
-                let _ = CloseHandle(handle);
-                result.context("sharing a fence with the capture device")?;
-                Ok((fence, opened.context("no shared fence")?))
-            }
-        };
         let (queue, _) = compute_queue(&compute.device)?;
         Ok(Self {
-            acquired: shared(&compute)?,
-            copied: shared(&compute)?,
+            acquired: shared_fence(&compute, &device)?,
+            copied: shared_fence(&compute, &device)?,
             queue,
             compute,
             context: gpu.context.cast()?,

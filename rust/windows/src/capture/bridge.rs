@@ -3,7 +3,7 @@
 //! SYSTEM cannot activate the per-user capture broker (CreateForMonitor returns
 //! 0x80070424). Only capture runs in the user process; the host keeps its service
 //! identity for input, display recovery and credentials. A private local pipe
-//! carries metadata. Three unnamed keyed textures carry pixels, never the CPU.
+//! carries metadata. Four unnamed keyed textures carry pixels, never the CPU.
 
 use super::*;
 use crate::ipc::Pipe;
@@ -21,8 +21,8 @@ use windows::Win32::{
 };
 use windows::core::HRESULT;
 
-const VERSION: u32 = 2;
-const SLOTS: usize = 3;
+const VERSION: u32 = 3;
+const SLOTS: usize = 4;
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 const PIPE_PREFIX: &str = r"\\.\pipe\Butterpollo.Wgc.";
 
@@ -194,6 +194,35 @@ struct Texture {
     texture: ID3D11Texture2D,
     mutex: IDXGIKeyedMutex,
 }
+
+/// A helper texture that an image is read from in place
+/// (`wgc_helper_zero_copy`) instead of being copied into a host texture
+/// first. The host keeps its keyed mutex until the last clone of the image
+/// is dropped, then hands it back once the compute work that read it is
+/// done; the capture worker tells the helper on its next poll.
+pub(crate) struct Lease {
+    slot: usize,
+    mutex: IDXGIKeyedMutex,
+    returns: Arc<Mutex<crate::compute::Returns>>,
+    freed: Arc<Mutex<Vec<usize>>>,
+    wake: Arc<crate::timing::Signal>,
+}
+// SAFETY: The keyed mutex is used only in Drop, under `returns`' lock on the multithread-protected
+// device; the rest is locks and an event handle.
+unsafe impl Send for Lease {}
+// SAFETY: Shared references never use the fields; only Drop, with exclusive access, does.
+unsafe impl Sync for Lease {}
+impl Drop for Lease {
+    fn drop(&mut self) {
+        let returned = self.returns.lock().unwrap().hand_back(&self.mutex, 0);
+        if let Err(error) = returned {
+            tracing::debug!(error = %format!("{error:#}"), slot = self.slot, "WGC helper texture handed back after a GPU error");
+        }
+        self.freed.lock().unwrap().push(self.slot);
+        // Wake the capture worker so the helper hears of the free texture now.
+        let _ = self.wake.set();
+    }
+}
 fn validate_texture(
     desc: &D3D11_TEXTURE2D_DESC,
     width: u32,
@@ -250,7 +279,11 @@ pub struct Session {
     process: crate::process::Process,
     /// Set by the helper after each frame: the capture worker wakes for it
     /// instead of finding it on its next poll.
-    frame: crate::timing::Signal,
+    frame: Arc<crate::timing::Signal>,
+    /// Images read in place from the helper's textures, with the slots
+    /// their leases gave back since the last poll.
+    returns: Option<Arc<Mutex<crate::compute::Returns>>>,
+    freed: Arc<Mutex<Vec<usize>>>,
 }
 impl Session {
     pub(super) fn new(
@@ -296,7 +329,7 @@ impl Session {
             ensure!(Instant::now() < deadline, "WGC helper connection timed out");
             std::thread::sleep(Duration::from_millis(2));
         }
-        let frame = crate::timing::Signal::new()?;
+        let frame = Arc::new(crate::timing::Signal::new()?);
         pipe.send(&Request::Start {
             version: VERSION,
             name: gpu.display.display_name.clone(),
@@ -340,6 +373,20 @@ impl Session {
             warnings: warnings.clone(),
             ..Default::default()
         };
+        // Reading the helper's textures in place skips the host's copy. Only
+        // compute work and this device's context may read them: the lease
+        // waits for those before the helper may write again.
+        let mut returns = (config.boolean("wgc_helper_zero_copy", false)
+            && owned.compute.is_some())
+        .then(|| {
+            crate::compute::Compute::for_device(&gpu.device)
+                .and_then(|compute| crate::compute::Returns::new(compute, &gpu))
+        })
+        .transpose()
+        .unwrap_or_else(|error| {
+            tracing::warn!(error = %format!("{error:#}"), "WGC helper textures cannot be read in place; copying them");
+            None
+        });
         let mut textures = Vec::with_capacity(SLOTS);
         for handle in handles {
             let handle = process.duplicate_resource(usize::try_from(handle)?)?;
@@ -357,6 +404,13 @@ impl Session {
             {
                 warnings.set("capture_compute", format!("WGC shared texture cannot use compute ({error:#}); using the graphics queue. Lower game GPU load or update the AMD driver if capture stutters."));
                 owned.compute = None;
+                returns = None;
+            }
+            if let Some(lender) = &mut returns
+                && let Err(error) = lender.import(&texture, raw(&handle))
+            {
+                tracing::warn!(error = %format!("{error:#}"), "WGC helper textures cannot be read in place; copying them");
+                returns = None;
             }
             textures.push(Texture {
                 mutex: texture.cast()?,
@@ -369,6 +423,7 @@ impl Session {
             height,
             compute = owned.compute.is_some(),
             worker_compute,
+            zero_copy = returns.is_some(),
             "Windows Graphics Capture running in the signed-in user's process"
         );
         let now = Instant::now();
@@ -391,6 +446,8 @@ impl Session {
             staging: None,
             process,
             frame,
+            returns: returns.map(|returns| Arc::new(Mutex::new(returns))),
+            freed: Arc::default(),
         })
     }
     pub(super) fn frame_signal(&self) -> &crate::timing::Signal {
@@ -420,6 +477,11 @@ impl Session {
         if now >= self.heartbeat {
             self.pipe.send(&Request::Ping)?;
             self.heartbeat = now + Duration::from_secs(1);
+        }
+        let freed = std::mem::take(&mut *self.freed.lock().unwrap());
+        for slot in freed {
+            self.slots.release(slot)?;
+            self.pipe.send(&Request::Release { slot })?;
         }
         // At most three frames can be outstanding. Never accumulate a queue
         // behind an encoder; copy only the newest frame whose GPU work is done.
@@ -462,22 +524,28 @@ impl Session {
             }
             let copied = if !attempted_copy && sequence > self.published {
                 attempted_copy = true;
-                self.owned.copy(&self.gpu, &texture.texture)
+                match &self.returns {
+                    Some(returns) => self.lend(slot, returns.clone()).map(Some),
+                    None => self.owned.copy(&self.gpu, &texture.texture),
+                }
             } else {
                 Ok(None)
             };
-            // Handoff orders the context after its compute copy. Releasing the
-            // keyed mutex therefore cannot let the helper overwrite a texture
-            // while our GPU is still reading it, even without a CPU wait.
-            // SAFETY: This process acquired the keyed mutex with key 1 above, and the context is
-            // this device's.
-            unsafe {
-                texture.mutex.ReleaseSync(0)?;
-                self.gpu.context.Flush();
-            }
-            self.slots.release(slot)?;
             self.pending.remove(index);
-            self.pipe.send(&Request::Release { slot })?;
+            // A lent texture goes back when its image is dropped.
+            if !matches!(&copied, Ok(Some(image)) if image.lease.is_some()) {
+                // Handoff orders the context after its compute copy. Releasing the
+                // keyed mutex therefore cannot let the helper overwrite a texture
+                // while our GPU is still reading it, even without a CPU wait.
+                // SAFETY: This process acquired the keyed mutex with key 1 above, and the context is
+                // this device's.
+                unsafe {
+                    texture.mutex.ReleaseSync(0)?;
+                    self.gpu.context.Flush();
+                }
+                self.slots.release(slot)?;
+                self.pipe.send(&Request::Release { slot })?;
+            }
             if let Some(mut image) = copied? {
                 image.captured = captured;
                 image.wgc_stamp = stamp;
@@ -520,6 +588,43 @@ impl Session {
             return Ok(self.held.take().map(|(image, _)| image));
         }
         Ok(None)
+    }
+}
+impl Session {
+    /// An image of helper texture `slot`, read in place; this process holds
+    /// its keyed mutex (key 1) until the image's lease hands it back.
+    fn lend(&self, slot: usize, returns: Arc<Mutex<crate::compute::Returns>>) -> Result<GpuImage> {
+        let texture = &self.textures[slot];
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        // SAFETY: `texture` is a live texture and `desc` a live local.
+        unsafe {
+            texture.texture.GetDesc(&mut desc);
+        }
+        let pixel = match desc.Format {
+            DXGI_FORMAT_B8G8R8A8_UNORM => Pixel::Bgra8,
+            DXGI_FORMAT_R16G16B16A16_FLOAT => Pixel::RgbaF16,
+            _ => bail!("unsupported WGC shared format {:?}", desc.Format),
+        };
+        let ready = returns.lock().unwrap().acquired()?;
+        Ok(GpuImage {
+            cursor: None,
+            width: desc.Width,
+            height: desc.Height,
+            pixel,
+            captured: Instant::now(),
+            wgc_stamp: None,
+            acquired: Instant::now(),
+            gpu: self.gpu.clone(),
+            texture: Arc::new(texture.texture.clone()),
+            ready: Some(ready),
+            lease: Some(Arc::new(Lease {
+                slot,
+                mutex: texture.mutex.clone(),
+                returns,
+                freed: self.freed.clone(),
+                wake: self.frame.clone(),
+            })),
+        })
     }
 }
 impl Drop for Session {
@@ -894,13 +999,14 @@ mod tests {
         for slot in 0..SLOTS {
             slots.publish(slot, slot as u64 + 1).unwrap();
         }
-        assert!(slots.publish(0, 4).is_err());
-        assert!(slots.publish(SLOTS, 4).is_err());
+        let next = SLOTS as u64 + 1;
+        assert!(slots.publish(0, next).is_err());
+        assert!(slots.publish(SLOTS, next).is_err());
         assert!(slots.release(SLOTS).is_err());
         slots.release(0).unwrap();
         assert!(slots.release(0).is_err());
-        assert!(slots.publish(0, 3).is_err());
-        slots.publish(0, 4).unwrap();
+        assert!(slots.publish(0, next - 1).is_err());
+        slots.publish(0, next).unwrap();
         assert!(slots.busy.iter().all(|busy| *busy));
     }
     #[test]

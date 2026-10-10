@@ -670,6 +670,9 @@ pub struct GpuImage {
     /// When a compute-queue copy into `texture` completes. D3D11 work on
     /// `gpu` is already ordered after it; D3D12 queues wait for this.
     pub(crate) ready: Option<crate::compute::Ready>,
+    /// A WGC helper texture read in place rather than copied; it goes back
+    /// to the helper with the last clone of this image.
+    lease: Option<std::sync::Arc<bridge::Lease>>,
 }
 impl GpuImage {
     pub fn readback(&self, staging: &mut Option<ID3D11Texture2D>) -> Result<Image> {
@@ -733,6 +736,7 @@ impl GpuImage {
                 gpu: gpu.clone(),
                 texture: std::sync::Arc::new(texture.unwrap()),
                 ready: None,
+                lease: None,
             })
         }
     }
@@ -857,6 +861,7 @@ impl GpuPool {
                 gpu: gpu.clone(),
                 texture,
                 ready,
+                lease: None,
             }))
         }
     }
