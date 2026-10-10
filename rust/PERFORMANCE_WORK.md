@@ -44,6 +44,11 @@ stuck in its encode call with the GPU query probe answering; the call never
 returned. All three timeouts (02:47 and 23:33 on October 9, 07:21 on October
 10) came under keyframe-heavy recovery at high bitrate, two of them on base
 builds. A call blocked in the kernel driver cannot be ended by the host.
+The host's 07:21 session had `LTRFrames=0` and no client invalidation in
+the 1.5 s before. Driver 32.0.31041.1004 (2026-08-17) left 24 WATCHDOG dumps
+over October 6, 8, 9 and 10 (October 6-8 predate this week's work); the
+02:47 and 23:33 dumps share `amdkmdag.sys+0x1d0fb0`. The hang is chronic on
+this driver; troubleshooting.md now describes it for users.
 
 ## October 10 item 5: the video sender thread, on paced links only
 

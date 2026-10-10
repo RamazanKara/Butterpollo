@@ -168,6 +168,29 @@ Send the host log **from `CLIENT CONNECTED` through `CLIENT DISCONNECTED`**, plu
 - Any `D3D12 device removed; GPU fence completion is invalid`, `GPU work did not finish within two seconds`, `capture copies stopped completing`, `Encoding failed (…); recreating the same encoder`, `Encoder output failed (…); recreating the same encoder`, `The encoder returned no frame for … ms; recreating the same encoder` or `Encoder recreation failed` lines. Include `AMF compute conversion unavailable (…); converting on the graphics queue` and `PyroWave compute conversion unavailable (…); converting on the graphics queue` if present.
 - For PyroWave, include `optional codec probe` errors; for an OS/driver reset, include the matching Reliability Monitor/Windows event time and LiveKernelEvent code. A frozen picture with continuing `stream timings` and no recovery warning is useful evidence too.
 
+## The picture freezes and the GPU resets during a stream
+
+Windows logs a `LiveKernelEvent` 141 (VIDEO_ENGINE_TIMEOUT_DETECTED) and the
+Radeon may stay in Device Manager error Code 31 until a reboot. This is the
+AMD driver's video encoder hanging inside an encode call. Rubylight's stall
+watch then logs `stream thread stopped making progress` with
+`phase=encoding`, while its GPU query probe still answers. No host process
+can end a call blocked in the kernel driver; only Windows' timeout reset does.
+
+On the test RX 7900 XT with driver 32.0.31041.1004 (August 2026) it happened
+three times in October 2026 testing, always under heavy loss recovery: many
+keyframes per second at 80-160 Mb/s. The same driver left 24 watchdog dumps
+over October 6-10, some before any of this testing, and the two analysed
+share one location in `amdkmdag.sys`. Base builds were affected too, so it is
+not a Rubylight setting. If it happens on your PC:
+
+- Reboot if the Radeon shows Code 31.
+- Keep the bitrate at what the link can carry, so the client needs fewer
+  recovery keyframes. On Wi-Fi, use AV1 when the client decodes it: it
+  recovers from loss with a small frame instead of a keyframe.
+- Try AMD's current Recommended driver and report the driver version, the
+  time of the `LiveKernelEvent`, and the host log around it.
+
 ## Playnite does not launch
 
 Keep a Windows user signed in, enable Playnite in **Settings → Game library**, and check that the game starts in Playnite locally. If Rubylight cannot find a portable copy, leave Playnite open in that user's session when starting the stream.
