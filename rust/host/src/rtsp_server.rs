@@ -5,7 +5,7 @@ use butterpollo_core::{
     rtsp::{self, Negotiated},
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::SocketAddr,
     sync::{Arc, Mutex},
     time::Duration,
@@ -18,14 +18,16 @@ use tokio::{
 pub async fn serve(address: SocketAddr, h: Shared, media: Arc<crate::stream::Media>) -> Result<()> {
     let listener = crate::network::tcp(address)?;
     let configurations = Arc::new(Mutex::new(HashMap::new()));
+    let microphones = Arc::new(Mutex::new(HashSet::new()));
     tracing::info!(%address,"RTSP listener ready");
     loop {
         let (socket, peer) = crate::network::accept(&listener).await;
         let h = h.clone();
         let media = media.clone();
         let configs = configurations.clone();
+        let mics = microphones.clone();
         tokio::spawn(async move {
-            if let Err(e) = connection(socket, peer, h, media, configs).await {
+            if let Err(e) = connection(socket, peer, h, media, configs, mics).await {
                 // A client closing a connection early is routine; anything else
                 // prevents a stream from starting and must be visible.
                 let closed = e.downcast_ref::<std::io::Error>().is_some_and(|e| {
@@ -97,6 +99,8 @@ async fn connection(
     h: Shared,
     media: Arc<crate::stream::Media>,
     configs: Arc<Mutex<HashMap<String, Negotiated>>>,
+    // Launches that set up the microphone stream, until their ANNOUNCE.
+    mics: Arc<Mutex<HashSet<String>>>,
 ) -> Result<()> {
     socket.set_nodelay(true)?;
     let (launches, ids, expired) = {
@@ -116,6 +120,7 @@ async fn connection(
         bail!("no authorized RTSP launch");
     }
     configs.lock().unwrap().retain(|id, _| ids.contains(id));
+    mics.lock().unwrap().retain(|id| ids.contains(id));
 
     {
         let (launch, raw) = tokio::time::timeout(
@@ -146,12 +151,17 @@ async fn connection(
                 {
                     launch.warnings.set("input_touch_pen", "Native touch and pen unavailable: Windows does not expose synthetic pointer input. The client may emulate a mouse instead; update Windows or disable native touch/pen in Input settings.");
                 }
+                // Video encryption is offered unless turned off for this
+                // network, and audio and video are required where mandatory.
+                let mic = takes_mic(&config, &media);
                 body = rtsp::describe(
                     input_capabilities,
+                    if encryption_mode == 0 { 5 } else { 7 },
                     if encryption_mode == 2 { 7 } else { 1 },
                     flags & 0x100 != 0,
                     flags & 0x10000 != 0,
                     flags & 0x800000 != 0,
+                    mic,
                 )
                 .into_bytes();
                 // NVENC recovers lost references whenever the driver can, as
@@ -164,11 +174,6 @@ async fn connection(
                 {
                     body.extend_from_slice(b"a=x-nv-video[0].refPicInvalidation:1\r\n");
                 }
-                if encryption_mode == 0 {
-                    body = String::from_utf8(body)?
-                        .replace("encryptionSupported:7", "encryptionSupported:5")
-                        .into_bytes();
-                }
                 if let Some(custom) = launch.options.get("surroundParams")
                     && butterpollo_core::audio::OpusLayout::valid_custom(custom)
                 {
@@ -177,6 +182,10 @@ async fn connection(
                         .position(|b| b == b"a=fmtp:97")
                         .unwrap_or(body.len());
                     body.splice(at..at, format!("a=fmtp:97 surround-params={custom}\r\na=fmtp:97 surround-params={custom}\r\n").bytes());
+                }
+                // Last: the lines after an m= line describe its stream.
+                if mic {
+                    body.extend_from_slice(butterpollo_core::mic::sdp(ports.mic).as_bytes());
                 }
                 headers.push(("Content-Type", "application/sdp".into()));
             }
@@ -187,6 +196,11 @@ async fn connection(
                     ports.video
                 } else if req.target.contains("=control") {
                     ports.control
+                } else if req.target.contains("=mic")
+                    && takes_mic(&crate::stream::effective_config(&h, &launch)?, &media)
+                {
+                    mics.lock().unwrap().insert(launch.id.clone());
+                    ports.mic
                 } else {
                     bail!("unknown stream setup target")
                 };
@@ -230,6 +244,13 @@ async fn connection(
                 );
                 butterpollo_core::stream_policy::apply_color(&mut negotiated, &config);
                 negotiated.validate()?;
+                negotiated.mic = mics.lock().unwrap().remove(&launch.id);
+                if negotiated.mic && negotiated.encryption & butterpollo_core::mic::ENCRYPTION == 0
+                {
+                    // As in Apollo: a microphone is never taken in the clear.
+                    negotiated.mic = false;
+                    launch.warnings.set("microphone", "Microphone off: the client sent it unencrypted. Update the client to one that encrypts its microphone.");
+                }
                 negotiated.vrr_low_latency |= launch.vrr_requested;
                 let flags = h.codecs.load(std::sync::atomic::Ordering::Acquire);
                 if let Some(message) = rtsp::codec_warning(
@@ -269,6 +290,9 @@ async fn connection(
                         .insert(launch.id.clone(), negotiated);
                 }
             }
+            // A client that plays each stream on its own plays the
+            // microphone after the session has started.
+            "PLAY" if req.target.contains("streamid=mic") => {}
             "PLAY" => {
                 let config = configs
                     .lock()
@@ -321,4 +345,8 @@ async fn connection(
         // for the next request. Close after the complete authenticated response.
         Ok(())
     }
+}
+/// Whether the host takes client microphones on this stream.
+fn takes_mic(config: &butterpollo_core::config::Config, media: &crate::stream::Media) -> bool {
+    config.boolean("stream_mic", true) && media.mic.is_some()
 }

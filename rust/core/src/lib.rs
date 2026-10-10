@@ -35,6 +35,7 @@ pub mod input_policy;
 pub mod logfile;
 pub mod lossless;
 pub mod ltr;
+pub mod mic;
 pub mod migration;
 pub mod network_pacing;
 pub mod nvenc;

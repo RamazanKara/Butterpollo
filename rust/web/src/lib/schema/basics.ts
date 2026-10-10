@@ -399,14 +399,24 @@ const audio: Setting[] = [
   },
   {
     key: 'install_steam_audio_drivers',
-    label: 'Install Steam Streaming Speakers',
+    label: 'Install Steam audio drivers',
     description:
-      'When no virtual speakers exist and Steam is installed, install its Streaming Speakers at the start of a stream. They keep the PC silent and support 5.1 and 7.1 surround.',
+      'When Steam is installed, install its Streaming Speakers at the start of a stream if no virtual speakers exist, and its Streaming Microphone the first time a device sends its microphone. The speakers keep the PC silent and support 5.1 and 7.1 surround.',
     category: 'audio',
     group: 'Virtual speakers',
     control: { kind: 'toggle' },
     default: true,
-    visibleWhen: streamsAudio,
+    visibleWhen: (values) => streamsAudio(values) || on(values, 'stream_mic', true),
+  },
+  {
+    key: 'stream_mic',
+    label: 'Use the device microphone',
+    description:
+      "Let a streaming device that sends its microphone talk through the PC. Games and chat apps hear it on Microphone (Steam Streaming Microphone). Only clients with microphone support send one.",
+    category: 'audio',
+    group: 'Microphone',
+    control: { kind: 'toggle' },
+    default: true,
   },
 ];
 

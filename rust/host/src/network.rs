@@ -243,6 +243,12 @@ fn mappings(config: &Config, ports: Ports) -> Vec<Mapping> {
             port: ports.audio,
         },
     ];
+    if config.boolean("stream_mic", true) {
+        mappings.push(Mapping {
+            protocol: Protocol::UDP,
+            port: ports.mic,
+        });
+    }
     if config.get("origin_web_ui_allowed", "lan") == "wan" {
         mappings.push(Mapping {
             protocol: Protocol::TCP,
@@ -502,10 +508,13 @@ mod tests {
             bind_address(&named, None).unwrap(),
             "127.0.0.1".parse::<IpAddr>().unwrap()
         );
+        // TCP 48118, 48123, 48144; UDP 48132, 48133, 48134 and the microphone's 48135.
         assert_eq!(
             mappings(&Config::default(), Ports::from_base(48123)).len(),
-            6
+            7
         );
+        let no_mic = Config::parse("stream_mic=false\n").unwrap();
+        assert_eq!(mappings(&no_mic, Ports::from_base(48123)).len(), 6);
     }
     #[tokio::test]
     #[ignore = "listens on every interface; Windows Firewall asks again for every new test binary"]

@@ -43,6 +43,7 @@ mod keylayout;
 pub mod launcher;
 pub mod limiter;
 pub mod lossless;
+pub mod mic;
 pub mod net;
 mod nvapi;
 pub mod nvenc;

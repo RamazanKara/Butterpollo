@@ -5,6 +5,7 @@ use super::*;
 use butterpollo_core::{
     config::Ports,
     crypto::Identity,
+    mic,
     session::Preparation,
     state::{App, Client as PairedClient},
 };
@@ -167,7 +168,7 @@ fn reserve(ports: Ports) -> Result<(Vec<std::net::TcpListener>, Vec<UdpSocket>)>
         .into_iter()
         .map(|p| std::net::TcpListener::bind(address(p)))
         .collect::<std::io::Result<_>>()?;
-    let udp = [ports.video, ports.control, ports.audio]
+    let udp = [ports.video, ports.control, ports.audio, ports.mic]
         .into_iter()
         .map(|p| UdpSocket::bind(address(p)))
         .collect::<std::io::Result<_>>()?;
@@ -332,8 +333,19 @@ impl Harness {
         method: &str,
         body: &str,
     ) -> Result<String> {
+        self.rtsp_at(launch, sequence, method, "rtsp://127.0.0.1/stream", body)
+            .await
+    }
+    async fn rtsp_at(
+        &self,
+        launch: &Launch,
+        sequence: u32,
+        method: &str,
+        target: &str,
+        body: &str,
+    ) -> Result<String> {
         let request = format!(
-            "{method} rtsp://127.0.0.1/stream RTSP/1.0\r\nCSeq: {sequence}\r\nContent-Length: {}\r\n\r\n{body}",
+            "{method} {target} RTSP/1.0\r\nCSeq: {sequence}\r\nContent-Length: {}\r\n\r\n{body}",
             body.len()
         );
         let mut iv = [0; 12];
@@ -372,7 +384,14 @@ impl Harness {
         Ok(response)
     }
     async fn play(&self, launch: &Launch) -> Result<(Arc<Session>, Client)> {
-        self.rtsp(launch, 1, "ANNOUNCE", "a=x-nv-video[0].clientViewportWd:640\r\na=x-nv-video[0].clientViewportHt:480\r\na=x-ss-general.encryptionEnabled:0\r\n").await?;
+        self.play_encrypted(launch, 0).await
+    }
+    async fn play_encrypted(
+        &self,
+        launch: &Launch,
+        encryption: u32,
+    ) -> Result<(Arc<Session>, Client)> {
+        self.rtsp(launch, 1, "ANNOUNCE", &format!("a=x-nv-video[0].clientViewportWd:640\r\na=x-nv-video[0].clientViewportHt:480\r\na=x-ss-general.encryptionEnabled:{encryption}\r\n")).await?;
         self.rtsp(launch, 2, "PLAY", "").await?;
         let session = self.h.sessions.lock().unwrap().active[&launch.id].clone();
         let client = Client::new(self.ports, launch.clone())?;
@@ -927,6 +946,104 @@ async fn host_enet_peer_reset_mid_stream_times_out_then_resumes() -> Result<()> 
     h.empty().await?;
     let launch = h.launch(0, true).await?;
     let (session, client) = h.play(&launch).await?;
+    h.end(&session, client).await?;
+    h.finish().await
+}
+
+/// A microphone client as Apollo's: offered in DESCRIBE, set up and played
+/// as `streamid=mic`, its encrypted packets taken for its own session only.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn microphone_packets_reach_only_the_session_that_set_them_up() -> Result<()> {
+    let h = Harness::new(10_000, 1).await?;
+    let launch = h.launch(0, false).await?;
+    let describe = h.rtsp(&launch, 10, "DESCRIBE", "").await?;
+    assert!(
+        describe.contains(&format!(
+            "m=audio {} RTP/AVP 96\r\na=rtpmap:96 opus/48000/1\r\n",
+            h.ports.mic
+        )),
+        "{describe}"
+    );
+    // Loopback is a LAN client: encryption optional, the microphone requested.
+    assert!(
+        describe.contains("encryptionSupported:13\r\n"),
+        "{describe}"
+    );
+    assert!(describe.contains("encryptionRequested:9\r\n"), "{describe}");
+    let setup = h
+        .rtsp_at(&launch, 11, "SETUP", "streamid=mic/0/0", "")
+        .await?;
+    assert!(
+        setup.contains(&format!("Transport: server_port={}\r\n", h.ports.mic)),
+        "{setup}"
+    );
+    let (session, client) = h.play_encrypted(&launch, mic::ENCRYPTION).await?;
+    assert!(session.config.mic);
+    // A client that plays each stream on its own plays the microphone last.
+    h.rtsp_at(&launch, 12, "PLAY", "streamid=mic", "").await?;
+    let counters = h
+        .media
+        .as_ref()
+        .unwrap()
+        .mic
+        .clone()
+        .expect("microphone port bound");
+    let socket = UdpSocket::bind("127.0.0.1:0")?;
+    let send = |datagram: Vec<u8>| socket.send_to(&datagram, address(h.ports.mic));
+    for sequence in 0..5 {
+        send(mic::seal(
+            &launch.key,
+            launch.key_id,
+            sequence,
+            0,
+            &[0xf8, 0xff, 0xfe],
+        ))?;
+    }
+    send(mic::seal(
+        &[0; 16],
+        launch.key_id,
+        5,
+        0,
+        &[0xf8, 0xff, 0xfe],
+    ))?;
+    until("microphone packets accepted and refused", WAIT, || {
+        counters.accepted.load(Ordering::Acquire) == 5
+            && counters.refused.load(Ordering::Acquire) == 1
+    })
+    .await;
+    h.end(&session, client).await?;
+    // Without a microphone SETUP, the next session's packets are refused.
+    let launch = h.launch(0, false).await?;
+    let (session, client) = h.play_encrypted(&launch, mic::ENCRYPTION).await?;
+    assert!(!session.config.mic);
+    send(mic::seal(
+        &launch.key,
+        launch.key_id,
+        0,
+        0,
+        &[0xf8, 0xff, 0xfe],
+    ))?;
+    until(
+        "microphone packet of a session without one refused",
+        WAIT,
+        || counters.refused.load(Ordering::Acquire) == 2,
+    )
+    .await;
+    assert_eq!(counters.accepted.load(Ordering::Acquire), 5);
+    h.end(&session, client).await?;
+    // A client that would send it in the clear is not taken.
+    let launch = h.launch(0, false).await?;
+    h.rtsp_at(&launch, 11, "SETUP", "streamid=mic", "").await?;
+    let (session, client) = h.play_encrypted(&launch, 0).await?;
+    assert!(!session.config.mic);
+    assert!(
+        session
+            .launch
+            .warnings
+            .snapshot()
+            .iter()
+            .any(|w| w.code == "microphone"),
+    );
     h.end(&session, client).await?;
     h.finish().await
 }

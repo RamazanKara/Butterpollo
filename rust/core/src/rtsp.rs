@@ -138,6 +138,10 @@ pub struct Negotiated {
     pub video_qos: bool,
     #[serde(default)]
     pub audio_qos: bool,
+    /// The client set up the microphone stream (`streamid=mic`) and
+    /// encrypts it.
+    #[serde(default)]
+    pub mic: bool,
 }
 impl Default for Negotiated {
     fn default() -> Self {
@@ -167,6 +171,7 @@ impl Default for Negotiated {
             reliable_control: 13,
             video_qos: true,
             audio_qos: true,
+            mic: false,
         }
     }
 }
@@ -287,21 +292,34 @@ impl Negotiated {
         {
             bail!("unsupported audio layout");
         }
-        if self.encryption & !7 != 0 {
+        if self.encryption & !(7 | crate::mic::ENCRYPTION) != 0 {
             bail!("unsupported encryption flags");
         }
         Ok(())
     }
 }
+/// The `DESCRIBE` answer. `mic` is set when the host takes a client's
+/// microphone: its encryption is then supported and requested, and the
+/// caller ends the answer with `mic::sdp`, whose `m=` line must come last.
 pub fn describe(
     feature_flags: u32,
-    encryption: u32,
+    supported: u32,
+    requested: u32,
     hevc: bool,
     av1: bool,
     pyrowave: bool,
+    mic: bool,
 ) -> String {
+    let (supported, requested) = if mic {
+        (
+            supported | crate::mic::ENCRYPTION,
+            requested | crate::mic::ENCRYPTION,
+        )
+    } else {
+        (supported, requested)
+    };
     let mut s = format!(
-        "a=x-ss-general.featureFlags:{feature_flags}\r\na=x-ss-general.encryptionSupported:7\r\na=x-ss-general.encryptionRequested:{encryption}\r\n"
+        "a=x-ss-general.featureFlags:{feature_flags}\r\na=x-ss-general.encryptionSupported:{supported}\r\na=x-ss-general.encryptionRequested:{requested}\r\n"
     );
     if hevc {
         s.push_str("sprop-parameter-sets=AAAAAU\r\n");
@@ -389,8 +407,23 @@ mod tests {
                 .pyrowave_records
         );
         assert!(
-            describe(0, 0, true, true, true).contains("a=x-ss-pyrowave.bitstream:186f0393\r\n")
+            describe(0, 7, 0, true, true, true, false)
+                .contains("a=x-ss-pyrowave.bitstream:186f0393\r\n")
         );
+    }
+    #[test]
+    fn the_microphone_is_offered_encrypted_only_when_the_host_takes_it() {
+        let without = describe(0, 5, 1, false, false, false, false);
+        assert!(without.contains("encryptionSupported:5\r\n"));
+        assert!(without.contains("encryptionRequested:1\r\n"));
+        let with = describe(0, 7, 7, false, false, false, true);
+        assert!(with.contains("encryptionSupported:15\r\n"));
+        assert!(with.contains("encryptionRequested:15\r\n"));
+        // A client that encrypts its microphone negotiates bit 8.
+        let n = Negotiated::from_sdp(b"a=x-ss-general.encryptionEnabled:15\n").unwrap();
+        assert_eq!(n.encryption, 15);
+        assert!(!n.mic, "only a microphone SETUP turns it on");
+        assert!(Negotiated::from_sdp(b"a=x-ss-general.encryptionEnabled:16\n").is_err());
     }
     #[test]
     fn qos_tags_follow_the_client() {

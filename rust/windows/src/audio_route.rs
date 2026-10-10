@@ -201,11 +201,14 @@ impl Policy {
     }
 }
 fn defaults() -> Result<[Option<String>; 3]> {
+    defaults_for(eRender)
+}
+fn defaults_for(flow: EDataFlow) -> Result<[Option<String>; 3]> {
     let enumerator = enumerator()?;
     // SAFETY: `enumerator` is a live interface and device_id only needs a live IMMDevice.
     Ok(ROLES.map(|role| unsafe {
         enumerator
-            .GetDefaultAudioEndpoint(eRender, role)
+            .GetDefaultAudioEndpoint(flow, role)
             .ok()
             .and_then(|d| device_id(&d).ok())
     }))
@@ -373,6 +376,62 @@ fn try_install_steam(config: &Config, endpoints: &[Endpoint]) -> Result<bool> {
         DiInstallDriverW(None, PCWSTR(file.as_ptr()), DIIRFLAG_FORCE_INF, None)?;
     }
     Ok(true)
+}
+/// The playback side of Steam Streaming Microphone: what is played there,
+/// apps record from "Microphone (Steam Streaming Microphone)".
+pub fn steam_microphone(endpoints: &[Endpoint]) -> Option<&Endpoint> {
+    endpoints.iter().find(|endpoint| {
+        [&endpoint.name, &endpoint.adapter].iter().any(|n| {
+            n.to_ascii_lowercase()
+                .contains("steam streaming microphone")
+        })
+    })
+}
+/// The default playback and recording devices before a driver install.
+pub struct SavedDefaults([[Option<String>; 3]; 2]);
+impl SavedDefaults {
+    /// Puts back defaults Windows moved to a device that arrived since.
+    pub fn restore(&self) -> Result<()> {
+        let policy = Policy::new()?;
+        for (flow, saved) in [eRender, eCapture].into_iter().zip(&self.0) {
+            for ((role, now), before) in ROLES.into_iter().zip(defaults_for(flow)?).zip(saved) {
+                if let Some(before) = before
+                    && now.as_ref() != Some(before)
+                {
+                    policy.set_default(before, role)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+/// Install Steam Streaming Microphone when Steam provides it, as with the
+/// speakers. Returns the defaults from before, to put back once its
+/// endpoints arrive: Windows can make a new device the default, and the
+/// host does not choose the PC's microphone or speakers. None when the
+/// driver was not installed.
+pub fn install_steam_microphone(config: &Config) -> Result<Option<SavedDefaults>> {
+    if !config.boolean("install_steam_audio_drivers", true) {
+        return Ok(None);
+    }
+    let Some(directory) = std::env::var_os("CommonProgramFiles(x86)") else {
+        return Ok(None);
+    };
+    let inf =
+        PathBuf::from(directory).join("Steam/drivers/Windows10/x64/SteamStreamingMicrophone.inf");
+    if !inf.is_file() {
+        return Ok(None);
+    }
+    let saved = SavedDefaults([defaults_for(eRender)?, defaults_for(eCapture)?]);
+    let file = to_wide(&inf.to_string_lossy());
+    // SAFETY: `file` is NUL-terminated and outlives the call.
+    unsafe {
+        use windows::Win32::Devices::DeviceAndDriverInstallation::{
+            DIIRFLAG_FORCE_INF, DiInstallDriverW,
+        };
+        DiInstallDriverW(None, PCWSTR(file.as_ptr()), DIIRFLAG_FORCE_INF, None)?;
+    }
+    Ok(Some(saved))
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Sample {
@@ -835,6 +894,32 @@ mod tests {
             ..pending
         };
         assert_eq!(originals(current.clone(), Some(&capture_only)), current);
+    }
+    #[test]
+    fn the_steam_microphone_is_found_by_its_adapter_not_the_speakers() {
+        let endpoint = |name: &str, adapter: &str| Endpoint {
+            id: name.into(),
+            name: name.into(),
+            description: "Speakers".into(),
+            adapter: adapter.into(),
+            default: false,
+            virtual_sink: false,
+        };
+        let endpoints = [
+            endpoint(
+                "Speakers (Steam Streaming Speakers)",
+                "Steam Streaming Speakers",
+            ),
+            endpoint(
+                "Speakers (Steam Streaming Microphone)",
+                "Steam Streaming Microphone",
+            ),
+        ];
+        assert_eq!(
+            steam_microphone(&endpoints).unwrap().id,
+            "Speakers (Steam Streaming Microphone)"
+        );
+        assert!(steam_microphone(&endpoints[..1]).is_none());
     }
     #[test]
     fn sinks_match_by_id_name_description_or_adapter() {

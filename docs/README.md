@@ -11,6 +11,7 @@ Rubylight is a Windows game-streaming host written in Rust, built around Radeon 
 | **[Getting started](getting-started.md)** | Installer or portable setup, profile migration, pairing, your first stream and choosing a client. |
 | **[Configuration](configuration.md)** | Capture, codecs, HDR, virtual displays, frame limiting, overrides and updates. |
 | **[Troubleshooting](troubleshooting.md)** | Pairing, black screens, HDR colour, smoothness, RTSS and useful support reports. |
+| [Microphone](microphone.md) | Talking through the PC from a streaming device, and the protocol for client developers. |
 
 ## Understand Rubylight
 

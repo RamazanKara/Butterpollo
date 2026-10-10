@@ -2,6 +2,7 @@ mod console;
 mod display_session;
 mod lossless;
 mod maintenance;
+mod mic;
 mod network;
 mod nvhttp;
 mod playnite;

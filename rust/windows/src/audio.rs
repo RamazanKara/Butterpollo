@@ -387,6 +387,110 @@ impl Drop for Opus {
     }
 }
 
+type DecoderCreate = unsafe extern "C" fn(i32, i32, *mut i32) -> *mut c_void;
+type Decode = unsafe extern "C" fn(*mut c_void, *const u8, i32, *mut f32, i32, i32) -> i32;
+type PacketSamples = unsafe extern "C" fn(*const c_void, *const u8, i32) -> i32;
+/// Longest Opus frame, 120 ms at 48 kHz.
+const MAX_OPUS_FRAMES: usize = 5760;
+/// A mono 48 kHz Opus decoder, for a client's microphone.
+pub struct OpusDecoder {
+    state: *mut c_void,
+    decode: Decode,
+    samples: PacketSamples,
+    ctl: Ctl,
+    destroy: Destroy,
+    _library: libloading::Library,
+    /// The last frame's length, for concealing the next one.
+    frames: usize,
+}
+// SAFETY: the decoder state is used only through `&mut self`.
+unsafe impl Send for OpusDecoder {}
+impl OpusDecoder {
+    pub fn new(directory: &Path) -> Result<Self> {
+        // SAFETY: the symbol types match libopus, and `library` is kept in `Self` with its
+        // function pointers.
+        unsafe {
+            let path = directory.join("libopus-0.dll");
+            let library = libloading::Library::new(&path)
+                .with_context(|| format!("loading {}", path.display()))?;
+            let create = *library.get::<DecoderCreate>(b"opus_decoder_create\0")?;
+            let decode = *library.get::<Decode>(b"opus_decode_float\0")?;
+            let samples = *library.get::<PacketSamples>(b"opus_decoder_get_nb_samples\0")?;
+            let ctl = *library.get::<Ctl>(b"opus_decoder_ctl\0")?;
+            let destroy = *library.get::<Destroy>(b"opus_decoder_destroy\0")?;
+            let mut error = 0;
+            let state = create(48000, 1, &mut error);
+            if error != 0 || state.is_null() {
+                bail!("Opus decoder initialization failed: {error}");
+            }
+            Ok(Self {
+                state,
+                decode,
+                samples,
+                ctl,
+                destroy,
+                _library: library,
+                frames: 960,
+            })
+        }
+    }
+    /// Forgets the previous speech, for a stream that starts again.
+    pub fn reset(&mut self) {
+        // SAFETY: `self.state` is a live decoder; OPUS_RESET_STATE takes no argument.
+        unsafe {
+            (self.ctl)(self.state, 4028);
+        }
+    }
+    /// Appends a frame to `out` and returns its length: `packet` decoded,
+    /// the frame before it from its in-band FEC when `fec` is set, or a
+    /// concealed frame when there is no packet.
+    pub fn decode(
+        &mut self,
+        packet: Option<&[u8]>,
+        fec: bool,
+        out: &mut Vec<f32>,
+    ) -> Result<usize> {
+        let (data, length) = packet.map_or((std::ptr::null(), 0), |p| (p.as_ptr(), p.len() as i32));
+        let frames = match packet {
+            // SAFETY: `self.state` is a live decoder and `data` is readable for `length` bytes.
+            Some(_) => match unsafe { (self.samples)(self.state, data, length) } {
+                n if n > 0 && (n as usize) <= MAX_OPUS_FRAMES => n as usize,
+                n => bail!("invalid Opus packet ({n})"),
+            },
+            None => self.frames,
+        };
+        let start = out.len();
+        out.resize(start + frames, 0.);
+        // SAFETY: `self.state` is a live decoder, `data` is null or readable for `length` bytes,
+        // and `out` has room for `frames` mono samples after `start`.
+        let n = unsafe {
+            (self.decode)(
+                self.state,
+                data,
+                length,
+                out[start..].as_mut_ptr(),
+                frames as i32,
+                i32::from(fec),
+            )
+        };
+        if n < 0 {
+            out.truncate(start);
+            bail!("Opus decoding error {n}");
+        }
+        out.truncate(start + n as usize);
+        self.frames = n as usize;
+        Ok(n as usize)
+    }
+}
+impl Drop for OpusDecoder {
+    fn drop(&mut self) {
+        // SAFETY: `self.state` came from opus_decoder_create and is destroyed once, here.
+        unsafe {
+            (self.destroy)(self.state);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

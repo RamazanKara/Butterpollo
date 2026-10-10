@@ -639,6 +639,8 @@ impl Tagged {
 pub struct Media {
     video: Arc<UdpSocket>,
     audio: Arc<UdpSocket>,
+    /// The microphone receiver's counts; None when its port could not be bound.
+    pub(crate) mic: Option<Arc<crate::mic::Counters>>,
     peers: Mutex<HashMap<(String, bool), SocketAddr>>,
     captures: Mutex<HashMap<CaptureKey, Weak<Source>>>,
     control_port: u16,
@@ -772,9 +774,17 @@ impl Media {
         butterpollo_windows::net::configure_udp(&audio)?;
         video.set_nonblocking(true)?;
         audio.set_nonblocking(true)?;
+        // A microphone port taken by another program only costs the microphone.
+        let mic = crate::network::udp((bind, ports.mic).into())
+            .and_then(|socket| crate::mic::spawn(h.clone(), socket))
+            .inspect_err(|error| {
+                tracing::warn!(port = ports.mic, error = %format!("{error:#}"), "client microphones unavailable")
+            })
+            .ok();
         let m = Arc::new(Self {
             video: Arc::new(video),
             audio: Arc::new(audio),
+            mic,
             peers: Mutex::new(HashMap::new()),
             captures: Mutex::new(HashMap::new()),
             control_port: ports.control,

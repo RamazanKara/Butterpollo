@@ -537,6 +537,7 @@ pub fn override_allowed(key: &str) -> bool {
         "audio_sink_capture_only",
         "virtual_sink",
         "stream_audio",
+        "stream_mic",
         "adapter_name",
         "adapter_pnp_id",
         "dd_configuration_option",
@@ -755,6 +756,7 @@ pub struct Ports {
     pub video: u16,
     pub control: u16,
     pub audio: u16,
+    pub mic: u16,
     pub rtsp: u16,
 }
 impl Ports {
@@ -766,6 +768,7 @@ impl Ports {
             video: n + 9,
             control: n + 10,
             audio: n + 11,
+            mic: n + crate::mic::PORT_OFFSET,
             rtsp: n + 21,
         }
     }
