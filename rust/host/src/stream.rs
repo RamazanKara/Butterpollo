@@ -226,6 +226,9 @@ impl EncoderRecovery {
         Ok(Some(output))
     }
 }
+/// How long after an AMF reference-invalidation recovery the session sends a
+/// keyframe anyway, in case the client's decoder could not follow it.
+const RFI_CONFIRM_KEYFRAME: Duration = Duration::from_secs(1);
 /// Backoff only after reopening fails; resource release is acknowledged.
 const RECOVERY_RETRY: Duration = Duration::from_millis(150);
 /// How long capture waits for the stream's display to come back before it
@@ -1379,6 +1382,8 @@ impl Media {
                     let mut quit_scan_due = Instant::now() + Duration::from_secs(1);
                     let mut profile_due = Instant::now();
                     let mut metadata_due = Instant::now() + Duration::from_secs(1);
+                    // A keyframe a while after an AMF reference-invalidation recovery.
+                    let mut confirm_keyframe: Option<Instant> = None;
                     let mut timing_due = Instant::now() + Duration::from_secs(5);
                     // As in Vibepollo, an unset minimum is 20 for every codec,
                     // PyroWave too: its old default of the full stream rate
@@ -1997,12 +2002,23 @@ impl Media {
                                 metadata_due = Instant::now() + Duration::from_secs(1);
                             }
                             let invalidation = s.invalidation.lock().unwrap().take();
-                            if let Some((first, last)) = invalidation
-                                && !active.invalidate_ref_frames(first, last)
-                            {
-                                s.request_idr();
+                            if let Some((first, last)) = invalidation {
+                                if !active.invalidate_ref_frames(first, last) {
+                                    s.request_idr();
+                                } else if active.backend() == "amf" {
+                                    // A decoder that cannot follow the long-term
+                                    // reference stays frozen, and Moonlight does not
+                                    // ask again: a keyframe a second later bounds that.
+                                    confirm_keyframe.get_or_insert(Instant::now() + RFI_CONFIRM_KEYFRAME);
+                                }
+                            }
+                            if confirm_keyframe.is_some_and(|at| Instant::now() >= at) {
+                                s.idr.store(true, Ordering::Release);
                             }
                             let idr = s.idr.swap(false, Ordering::AcqRel);
+                            if idr {
+                                confirm_keyframe = None;
+                            }
                             let recovering = idr || invalidation.is_some();
                             let bitrate = s.bitrate.load(Ordering::Acquire);
                             let converted = truehdr.is_some()

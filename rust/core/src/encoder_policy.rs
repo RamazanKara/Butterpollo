@@ -54,11 +54,22 @@ pub fn amf_intra_refresh(stream: &Negotiated) -> bool {
 /// AMF keeps LTR anchors alongside the rolling short-term reference. The
 /// decoder's negotiated budget includes both; zero means it imposed no limit.
 /// In particular, Moonlight's one-reference AVC mode cannot retain LTR anchors.
+/// The long-term references `amd_ltr_frames` asks AMF to keep for reference
+/// invalidation, before the client's budget. Never for HEVC: on 2026-10-10
+/// the test client's d3d11va HEVC decoder rejected the first frame after an
+/// invalidation ("Error constructing the frame RPS") and every picture after
+/// it, without asking for a keyframe, while AV1 recovered every time.
+pub fn amf_ltr_requested(config: &Config, codec: u8) -> usize {
+    if codec == 1 {
+        return 0;
+    }
+    config.integer("amd_ltr_frames", 0).clamp(0, 4) as usize
+}
 pub fn amf_ltr_frames(config: &Config, stream: &Negotiated) -> usize {
     if stream.intra_refresh {
         return 0;
     }
-    let requested = config.integer("amd_ltr_frames", 0).clamp(0, 4) as usize;
+    let requested = amf_ltr_requested(config, stream.codec);
     if stream.references == 0 {
         requested
     } else {
@@ -760,7 +771,7 @@ mod tests {
                     ..Default::default()
                 };
                 let count = amf_ltr_frames(&config, &stream);
-                assert_eq!(count, expected_ltr);
+                assert_eq!(count, if codec == 1 { 0 } else { expected_ltr });
                 assert!(count < references as usize);
                 let properties = amf(&config, &stream).unwrap();
                 assert!(properties.iter().any(|property| {
@@ -770,6 +781,22 @@ mod tests {
                 }));
             }
         }
+    }
+
+    #[test]
+    fn amf_hevc_never_keeps_long_term_references() {
+        for text in ["", "amd_ltr_frames=1\n", "amd_ltr_frames=4\n"] {
+            let config = Config::parse(text).unwrap();
+            let stream = Negotiated {
+                codec: 1,
+                ..Default::default()
+            };
+            assert_eq!(amf_ltr_requested(&config, 1), 0);
+            assert_eq!(amf_ltr_frames(&config, &stream), 0);
+        }
+        let config = Config::parse("amd_ltr_frames=4\n").unwrap();
+        assert_eq!(amf_ltr_requested(&config, 0), 4);
+        assert_eq!(amf_ltr_requested(&config, 2), 4);
     }
 
     #[test]

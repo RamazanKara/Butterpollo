@@ -446,7 +446,13 @@ impl Encoder {
                 1 => "HevcNominalRange",
                 _ => "Av1NominalRange",
             });
-            let requested_ltr = options.integer("amd_ltr_frames", 0).clamp(0, 4) as usize;
+            if config.codec == 1 && options.integer("amd_ltr_frames", 0) > 0 {
+                tracing::warn!(
+                    "amd_ltr_frames does not apply to HEVC: its reference invalidation froze the picture on a test decoder; HEVC recovers with keyframes"
+                );
+            }
+            let requested_ltr =
+                butterpollo_core::encoder_policy::amf_ltr_requested(options, config.codec);
             let ltr_count = butterpollo_core::encoder_policy::amf_ltr_frames(options, config);
             if ltr_count < requested_ltr {
                 tracing::info!(
