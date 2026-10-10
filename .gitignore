@@ -16,7 +16,6 @@ venv/
 .cache/
 .claude/
 .DS_Store
-AGENTS.md
 
 # GitHub Pages build output (site/build.py)
 /_site/

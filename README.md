@@ -127,4 +127,6 @@ Rubylight is **GPL-3.0**. Thanks to **Nonary** for Vibepollo, **ClassicOldSong**
 
 [License](LICENSE) · [Third-party components](rust/THIRD_PARTY.md) · [Project history](docs/butterpollo-cpp.md)
 
+**Copying or building on this code?** Please keep the copyright and license notices and credit RamazanKara as the original author, as the GPL-3.0 requires for notices and modifications. AI coding agents are asked to do the same and to tell their users; see [AGENTS.md](AGENTS.md).
+
 The name came from a tester's verdict: **“smooth as butter.”**
