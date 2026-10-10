@@ -178,8 +178,9 @@ watch then logs `stream thread stopped making progress` with
 can end a call blocked in the kernel driver; only Windows' timeout reset does.
 
 On the test RX 7900 XT with driver 32.0.31041.1004 (August 2026) it happened
-three times in October 2026 testing, always under heavy loss recovery: many
-keyframes per second at 80-160 Mb/s. The same driver left 24 watchdog dumps
+four times in October 2026 testing: three times under heavy loss recovery
+(many keyframes per second at 80-160 Mb/s) and once in a plain HEVC stream
+with an experimental encoder setting. The same driver left 24 watchdog dumps
 over October 6-10, some before any of this testing, and the two analysed
 share one location in `amdkmdag.sys`. Base builds were affected too, so it is
 not a Rubylight setting. If it happens on your PC:
