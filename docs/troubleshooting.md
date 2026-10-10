@@ -59,7 +59,7 @@ Separate the host's HDR source, the negotiated stream and the client's display o
 - Confirm the game's HDR setting and the receiving display's HDR mode. For a comparison between two clients, keep the codec, scene and host display the same; AV1 HDR on one device versus HEVC SDR on another is not an equivalent check.
 - Report whether black levels, mid-grey menus, bright highlights or colour saturation are wrong. Include the client app/version, device and display model, codec, stream resolution/rate and the host log time.
 
-The Xbox HDR colour-appearance report remains under investigation. A TV detecting HDR10 does not by itself prove correct colour rendering. rc.10's native HEVC/AV1 tests verify FP16 capture, ten-bit BT.2020/PQ decoding and reference pixels; they do not calibrate the TV or validate every client's output. See the [native HDR evidence](../rust/PERFORMANCE.md#final-native-virtual-hdr-pixels-excluding-physical-panel-calibration).
+On Moonlight for Xbox, hosts before 2.0.1 left HDR washed out and too bright, often with no HDR badge on the TV ([#11](https://github.com/RamazanKara/Rubylight/issues/11)); update the host. A TV detecting HDR10 does not by itself prove correct colour rendering. rc.10's native HEVC/AV1 tests verify FP16 capture, ten-bit BT.2020/PQ decoding and reference pixels; they do not calibrate the TV or validate every client's output. See the [native HDR evidence](../rust/PERFORMANCE.md#final-native-virtual-hdr-pixels-excluding-physical-panel-calibration).
 
 ## Audio cuts out or lags
 
