@@ -537,6 +537,18 @@ int main(int argc,char**argv){
 #ifdef BUTTERPOLLO_PYROWAVE
     if(requested_format&VIDEO_FORMAT_MASK_PYROWAVE)requested_hdr=(requested_format&VIDEO_FORMAT_MASK_10BIT)!=0;
 #endif
+    /* Moonlight for Xbox (State/MoonlightClient.cpp): H.264 and HEVC offered
+     * together, plus Main10 with HDR on; audio-only encryption; 1392-byte
+     * packets; BT.601 limited range. Its moonlight-common-c fork also asks for
+     * intra refresh: build against that fork for the full request. */
+    const char *profile=getenv("BUTTERPOLLO_TEST_CLIENT_PROFILE");
+    int xbox=profile&&strcmp(profile,"xbox")==0;
+    if(profile&&!xbox){fprintf(stderr,"BUTTERPOLLO_TEST_CLIENT_PROFILE must be xbox\n");return 2;}
+    if(xbox){
+        if(requested_format&~(VIDEO_FORMAT_H264|VIDEO_FORMAT_H265|VIDEO_FORMAT_H265_MAIN10)){fprintf(stderr,"The Xbox profile offers H.264 and HEVC only\n");return 2;}
+        if(requested_format!=VIDEO_FORMAT_H264)config.supportedVideoFormats=VIDEO_FORMAT_H264|VIDEO_FORMAT_H265|(requested_format&VIDEO_FORMAT_H265_MAIN10);
+        config.encryptionFlags=ENCFLG_AUDIO;config.packetSize=1392;config.colorSpace=COLORSPACE_REC_601;config.colorRange=COLOR_RANGE_LIMITED;
+    }
     const char *hdr_expectation=getenv("BUTTERPOLLO_TEST_EXPECT_HDR_CONTROL");
     if(hdr_expectation){
         if(strcmp(hdr_expectation,"auto")==0)expected_hdr_control=requested_hdr;
@@ -577,6 +589,8 @@ int main(int argc,char**argv){
     }
     if(argc>3)config.width=atoi(argv[3]);if(argc>4)config.height=atoi(argv[4]);if(argc>5)config.fps=atoi(argv[5]);if(argc>7)config.bitrate=atoi(argv[7]);
     if(argc>8)decoder_threads=atoi(argv[8]);requested_width=config.width;requested_height=config.height;
+    /* The Xbox app sends its TV's refresh, such as 5994 on a 59.94 Hz mode. */
+    if(getenv("BUTTERPOLLO_TEST_REFRESH_X100"))config.clientRefreshRateX100=atoi(getenv("BUTTERPOLLO_TEST_REFRESH_X100"));
     if(config.width<2||config.width>8192||config.height<2||config.height>8192||config.fps<1||config.fps>240||duration<0||duration>3500||decoder_threads<1||decoder_threads>16)return 2;
     printf("DECODER threads=%d\n",decoder_threads);
     for(int i=0;i<16;i++)config.remoteInputAesKey[i]=(char)i;config.remoteInputAesIv[3]=123;
@@ -599,6 +613,11 @@ int main(int argc,char**argv){
 #endif
     /* Declare reference frame invalidation like Moonlight's hardware decoders, so a lost frame is recovered without a keyframe when the host supports it. */
     if(getenv("BUTTERPOLLO_TEST_RFI")&&strcmp(getenv("BUTTERPOLLO_TEST_RFI"),"1")==0)video.capabilities|=CAPABILITY_REFERENCE_FRAME_INVALIDATION_AVC|CAPABILITY_REFERENCE_FRAME_INVALIDATION_HEVC|CAPABILITY_REFERENCE_FRAME_INVALIDATION_AV1;
+    int intra_refresh=0;
+#ifdef CAPABILITY_INTRA_REFRESH
+    if(xbox){video.capabilities|=CAPABILITY_INTRA_REFRESH;intra_refresh=1;}
+#endif
+    if(xbox)printf("CLIENT_PROFILE xbox formats=0x%x encryption=%d packet_size=%d refresh_x100=%d intra_refresh=%d\n",config.supportedVideoFormats,config.encryptionFlags,config.packetSize,config.clientRefreshRateX100,intra_refresh);
     AUDIO_RENDERER_CALLBACKS audio;LiInitializeAudioCallbacks(&audio);audio.init=audio_init;audio.decodeAndPlaySample=audio_frame;audio.capabilities=CAPABILITY_DIRECT_SUBMIT;
     int result=LiStartConnection(&server,&config,&listener,&video,&audio,NULL,0,NULL,0);
     if(result){printf("CONNECT FAILED %d\n",result);return 1;}
