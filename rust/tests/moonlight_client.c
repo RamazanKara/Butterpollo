@@ -342,6 +342,11 @@ static int video_frame(PDECODE_UNIT unit){
     // missing HDR SEI here does not mean it was absent from the host bitstream.
     const char *dump=getenv("BUTTERPOLLO_TEST_FIRST_FRAME");
     if(dump&&atomic_load(&frames)==0){FILE *file=fopen(dump,"wb");if(!file||fwrite(packet->data,1,packet->size,file)!=(size_t)packet->size)atomic_fetch_add(&failures,1);if(file)fclose(file);}
+    // Every access unit as received, appended as an elementary stream, for a
+    // header trace (ffmpeg -bsf:v trace_headers) of a recovery the decoder rejects.
+    static FILE *bitstream;
+    if(!bitstream&&getenv("BUTTERPOLLO_TEST_BITSTREAM"))bitstream=fopen(getenv("BUTTERPOLLO_TEST_BITSTREAM"),"wb");
+    if(bitstream&&complete){fwrite(packet->data,1,packet->size,bitstream);fflush(bitstream);}
     int received=AVERROR(EAGAIN);
 #ifdef BUTTERPOLLO_PYROWAVE
     if(pyro_decoder){
