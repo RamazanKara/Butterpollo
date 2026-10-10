@@ -165,6 +165,8 @@ impl GpuProbe {
                     return;
                 }
             };
+            let output = &display;
+            tracing::info!(display = %output, stream_id = %stream, "GPU stall probe opened");
             loop {
                 thread::sleep(PROBE_EVERY);
                 let Some(probe) = weak.upgrade() else { return };
