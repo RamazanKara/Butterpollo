@@ -516,3 +516,49 @@ fn a_large_minimum_parity_fits_the_fec_percentage_field() {
         }
     }
 }
+#[test]
+fn block_layout_matches_the_packets_each_frame_is_sent_as() {
+    for (packet_size, fec_percent, min_fec) in
+        [(1392, 20, 2), (1024, 0, 0), (1392, 50, 6), (512, 10, 1)]
+    {
+        let mut p = VideoPacketizer {
+            sequence: 0,
+            iv_counter: 0,
+            frame: 1,
+            packet_size,
+            fec_percent,
+            min_fec,
+            key: None,
+        };
+        for size in [
+            1, 100, 1376, 1377, 40_000, 290_000, 1_180_000, 1_400_000, 3_000_000,
+        ] {
+            let Ok(packets) = p.encode(&vec![7; size], false, 0, 0) else {
+                assert!(size > (packet_size - 16) * 4092 - 8);
+                continue;
+            };
+            let mut sent: Vec<(usize, usize)> = Vec::new();
+            for packet in &packets {
+                let block = usize::from((packet[27] >> 4) & 3);
+                let data = (u32::from_le_bytes(packet[28..32].try_into().unwrap()) >> 22) as usize;
+                if sent.len() == block {
+                    sent.push((data, 0));
+                }
+                sent[block].1 += 1;
+            }
+            let sent: Vec<_> = sent
+                .into_iter()
+                .map(|(data, packets)| (data, packets - data))
+                .collect();
+            assert_eq!(
+                p.block_layout(size),
+                sent,
+                "size {size} packet {packet_size} fec {fec_percent}"
+            );
+            assert_eq!(
+                sent.iter().map(|(d, f)| d + f).sum::<usize>(),
+                packets.len()
+            );
+        }
+    }
+}

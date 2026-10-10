@@ -447,6 +447,24 @@ mod tests {
         assert!(!session.idr.load(Ordering::Acquire));
     }
     #[test]
+    fn send_loss_recovery_forces_a_keyframe_without_counting_a_client_request() {
+        for codec in 0..=3 {
+            let session = Session::new(
+                launch("send-loss", Role::Stream),
+                Negotiated {
+                    codec,
+                    ..Default::default()
+                },
+            );
+            session.idr.store(false, Ordering::Release);
+            session.request_send_loss_recovery();
+            // PyroWave frames are all intra; nothing to force.
+            assert_eq!(session.idr.load(Ordering::Acquire), codec != 3);
+            assert_eq!(session.stats.idr_requests.load(Ordering::Relaxed), 0);
+            assert_eq!(session.info()["send_loss_recoveries"], 1);
+        }
+    }
+    #[test]
     fn inter_frame_recovery_keeps_invalidation_ranges_and_idr_fallback() {
         for codec in 0..=2 {
             let session = Session::new(
@@ -606,6 +624,9 @@ pub struct Stats {
     pub bytes: AtomicU64,
     pub idr_requests: AtomicU64,
     pub reference_invalidations: AtomicU64,
+    /// Keyframes the host started itself after it failed to send a frame
+    /// that FEC can repair; not counted in `idr_requests`.
+    pub send_loss_recoveries: AtomicU64,
     pub latency_us: AtomicU64,
     pub frames_replaced: AtomicU64,
     /// Last frame offered to the video socket, plus one; zero means none yet.
@@ -681,6 +702,17 @@ impl<P, A> Session<P, A> {
             self.wake_recovery();
         }
     }
+    /// The host could not send enough of a frame for the client to rebuild
+    /// it, so the next frame is a keyframe. Moonlight, waiting for one,
+    /// then recovers on that frame and sends no request of its own.
+    pub fn request_send_loss_recovery(&self) {
+        self.stats
+            .send_loss_recoveries
+            .fetch_add(1, Ordering::Relaxed);
+        if self.config.codec != 3 {
+            self.idr.store(true, Ordering::Release);
+        }
+    }
     pub fn request_invalidation(&self, first: u64, last: u64) {
         self.stats
             .reference_invalidations
@@ -718,7 +750,7 @@ impl<P, A> Session<P, A> {
     pub fn info(&self) -> serde_json::Value {
         let mut warnings = self.launch.warnings.snapshot();
         warnings.extend(self.capture_warnings.read().unwrap().snapshot());
-        serde_json::json!({"warnings":warnings,"encoder":*self.encoder.read().unwrap(),"uuid":self.launch.client.uuid,"device_name":self.launch.client.name,"width":self.config.width,"height":self.config.height,"fps":self.config.fps,"video_format":self.config.codec,"hdr":self.config.hdr,"vrr":self.config.vrr_low_latency,"encoder_bitrate_kbps":self.bitrate.load(Ordering::Relaxed),"pyrowave_minimum_kbps":(self.config.codec == 3).then(|| crate::pyrowave::minimum_kbps(self.config.width, self.config.height, self.config.fps_millihz())),"pyrowave_recommended_kbps":(self.config.codec == 3).then(|| crate::pyrowave::recommended_kbps(self.config.width, self.config.height, self.config.fps_millihz())),"audio_channels":self.config.audio_channels,"state":if self.stopping(){"STOPPING"}else{"RUNNING"},"frames_sent":self.stats.frames.load(Ordering::Relaxed),"frames_replaced":self.stats.frames_replaced.load(Ordering::Relaxed),"packets_sent":self.stats.packets.load(Ordering::Relaxed),"bytes_sent":self.stats.bytes.load(Ordering::Relaxed),"idr_requests":self.stats.idr_requests.load(Ordering::Relaxed),"reference_invalidations":self.stats.reference_invalidations.load(Ordering::Relaxed),"encode_latency_ms":self.stats.latency_us.load(Ordering::Relaxed) as f64/1000.,"performance":self.stats.performance.lock().unwrap().snapshot(Instant::now()),"uptime_seconds":self.started.elapsed().as_secs_f64(),"role":self.launch.role})
+        serde_json::json!({"warnings":warnings,"encoder":*self.encoder.read().unwrap(),"uuid":self.launch.client.uuid,"device_name":self.launch.client.name,"width":self.config.width,"height":self.config.height,"fps":self.config.fps,"video_format":self.config.codec,"hdr":self.config.hdr,"vrr":self.config.vrr_low_latency,"encoder_bitrate_kbps":self.bitrate.load(Ordering::Relaxed),"pyrowave_minimum_kbps":(self.config.codec == 3).then(|| crate::pyrowave::minimum_kbps(self.config.width, self.config.height, self.config.fps_millihz())),"pyrowave_recommended_kbps":(self.config.codec == 3).then(|| crate::pyrowave::recommended_kbps(self.config.width, self.config.height, self.config.fps_millihz())),"audio_channels":self.config.audio_channels,"state":if self.stopping(){"STOPPING"}else{"RUNNING"},"frames_sent":self.stats.frames.load(Ordering::Relaxed),"frames_replaced":self.stats.frames_replaced.load(Ordering::Relaxed),"packets_sent":self.stats.packets.load(Ordering::Relaxed),"bytes_sent":self.stats.bytes.load(Ordering::Relaxed),"idr_requests":self.stats.idr_requests.load(Ordering::Relaxed),"reference_invalidations":self.stats.reference_invalidations.load(Ordering::Relaxed),"send_loss_recoveries":self.stats.send_loss_recoveries.load(Ordering::Relaxed),"encode_latency_ms":self.stats.latency_us.load(Ordering::Relaxed) as f64/1000.,"performance":self.stats.performance.lock().unwrap().snapshot(Instant::now()),"uptime_seconds":self.started.elapsed().as_secs_f64(),"role":self.launch.role})
     }
 }
 pub struct Sessions<P = (), A = ()> {
