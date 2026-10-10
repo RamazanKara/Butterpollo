@@ -5,6 +5,31 @@ without reducing features or picture quality. Opus took over from Codex in the
 evening of October 2. Performance acceptance on the customer's own sessions is
 still open; the measured fixture results below are local loopback evidence.
 
+## October 10 item 5: the video sender thread, on paced links only
+
+The October 9 sender thread (encode and send overlap on their own threads)
+cut p95 by 1.8 ms under a 160 Mb/s pacing cap but added 1.8 ms on the default
+800 Mb/s wired path. It now starts only when the pacer rate is within 4x the
+stream bitrate (`network_pacing::paced`): a `pacing_max_bitrate_kbps` cap or
+a wireless route (2x bitrate). Wired streams keep the inline send path
+unchanged. `video_send_thread = false` turns it off. The send-loss recovery
+above runs on both paths.
+
+Host A/B, 2026-10-10 (RX 7900 XT, loopback): A = `be942ba`, B = `1984b63`.
+
+| | A | B |
+| --- | --- | --- |
+| 160 Mb/s cap: picture-age p95, ms | 19.4 | 16.0 |
+| 160 Mb/s cap: claim-wait p95, ms | 4.26 | 1.04 |
+| Default wired: picture age | equal (inline path in both) | |
+| 80 ms outage every 1.5 s: stalls | equal | |
+
+Watch item: on the paced path the recovery keyframe's p95 is 2.2 ms later
+(95% CI +0.1 to +4.3 ms). One B run failed "pictures missing"; the host
+reads it as fixture variance. Reconnect and client kill
+pass, 0 decode errors. Build check: 160 host tests, `clippy -D warnings`
+clean. Ships.
+
 ## October 10 Wi-Fi wave 2: a keyframe right after a frame the host could not send
 
 On a host whose own Wi-Fi drops out (the October 9 user report: a Legion Go
