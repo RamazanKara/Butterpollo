@@ -986,3 +986,76 @@ fn test_send_outage_follows_its_schedule_and_rejects_bad_values() {
         assert_eq!(SendOutage::parse(bad), None, "{bad}");
     }
 }
+
+#[test]
+fn send_loss_is_unrecoverable_only_beyond_a_blocks_parity() {
+    // Two blocks of 10 data and 2 parity packets, sent in batches of 8.
+    let mut loss = SendLoss::new(vec![(10, 2), (10, 2)]);
+    assert!(!loss.sent(8, 0));
+    // 2 refused within the first block: FEC still repairs it.
+    assert!(!loss.sent(4, 2));
+    // Packets 12-19 belong to the second block only.
+    assert!(!loss.sent(8, 2));
+    assert!(loss.sent(4, 1));
+    assert!(loss.unrecoverable());
+
+    // A whole batch refused across both blocks loses the frame.
+    let mut loss = SendLoss::new(vec![(10, 2), (10, 2)]);
+    assert!(loss.sent(24, 24));
+
+    // A batch that spans the boundary is charged to both blocks.
+    let mut loss = SendLoss::new(vec![(10, 2), (10, 2)]);
+    assert!(!loss.sent(10, 0));
+    assert!(!loss.sent(4, 2));
+    assert!(loss.sent(4, 1));
+
+    // Without parity any refused packet loses the frame.
+    let mut loss = SendLoss::new(vec![(3, 0)]);
+    assert!(!loss.sent(2, 0));
+    assert!(loss.sent(1, 1));
+
+    // Batches beyond the layout, as with a stale layout, change nothing.
+    let mut loss = SendLoss::new(vec![(2, 1)]);
+    assert!(!loss.sent(3, 0));
+    assert!(!loss.sent(5, 5));
+}
+
+#[test]
+fn send_loss_keyframes_back_off_only_when_part_of_a_frame_got_through() {
+    let start = Instant::now();
+    let period = Duration::from_micros(8333);
+    let at = |ms: u64| start + Duration::from_millis(ms);
+    let mut recovery = SendLossRecovery::default();
+    // A radio outage: every frame refused from its first packet. Each next
+    // frame is a keyframe, so the first one through after it recovers.
+    for ms in [0, 8, 16, 25, 33, 41, 50, 58, 66, 75, 83] {
+        assert!(recovery.lost(at(ms), period, false), "{ms}");
+    }
+    // Congestion: the forced keyframe got partly in and was lost anyway.
+    assert!(!recovery.lost(at(91), period, true));
+    assert!(!recovery.lost(at(122), period, true));
+    // After the hold another loss starts one again.
+    assert!(recovery.lost(at(123), period, true));
+    // A keyframe sent whole ends the hold; a P-frame does not.
+    recovery.delivered(false);
+    assert!(!recovery.lost(at(130), period, true));
+    recovery.delivered(true);
+    assert!(recovery.lost(at(131), period, true));
+    // At 30 fps the hold is four periods.
+    let mut slow = SendLossRecovery::default();
+    let period = Duration::from_micros(33_333);
+    assert!(slow.lost(at(0), period, true));
+    assert!(!slow.lost(at(130), period, true));
+    assert!(slow.lost(at(134), period, true));
+}
+
+#[test]
+fn send_loss_knows_whether_any_packet_reached_the_socket() {
+    let mut loss = SendLoss::new(vec![(10, 2)]);
+    assert!(loss.sent(8, 8));
+    assert!(!loss.reached_socket());
+    let mut loss = SendLoss::new(vec![(10, 2)]);
+    assert!(!loss.sent(8, 0));
+    assert!(loss.sent(4, 4));
+    assert!(loss.reached_socket());
+}
