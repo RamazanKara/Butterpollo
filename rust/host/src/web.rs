@@ -230,6 +230,7 @@ fn token_catalog() -> Vec<auth::Scope> {
         ("/api/updates", &["GET"][..]),
         ("/api/updates/check", &["POST"][..]),
         ("/api/updates/install", &["POST"][..]),
+        ("/api/updates/install_now", &["POST"][..]),
         ("/api/updates/cancel", &["POST"][..]),
         ("/api/covers/upload", &["POST"][..]),
         ("/api/covers/[0-9]+", &["GET"][..]),
@@ -787,6 +788,7 @@ pub(crate) async fn api(
         Ok(match (method.as_str(), path) {
             ("GET", "/api/updates")
             | ("POST", "/api/updates/install")
+            | ("POST", "/api/updates/install_now")
             | ("POST", "/api/updates/cancel")
             | ("POST", "/api/updates/check") => maintenance::handle(&h, method.as_str(), path)?,
             ("GET", "/api/health/crashdump")

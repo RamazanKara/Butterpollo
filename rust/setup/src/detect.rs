@@ -249,6 +249,27 @@ pub fn install_dir(found: &Found, requested: Option<PathBuf>) -> PathBuf {
         .or_else(|| found.butterpollo.as_ref().and_then(|p| p.location.clone()))
         .unwrap_or_else(|| crate::system::program_files().join("Rubylight"))
 }
+/// Whether setup may install somewhere else. As with Vibepollo, only a new
+/// installation can choose; an installed Rubylight is updated where it is,
+/// so a failed update can be put back.
+pub fn folder_choosable(found: &Found) -> bool {
+    found.service_install.is_none() && found.butterpollo.is_none()
+}
+/// The folder to install into when the user picked `picked`: the folder
+/// itself when it is empty or holds Rubylight, else a Rubylight folder in it,
+/// so that picking D:\ or D:\Games never fills or locks down that folder.
+pub fn chosen_folder(picked: &std::path::Path) -> PathBuf {
+    let usable = picked.parent().is_some()
+        && match std::fs::read_dir(picked) {
+            Ok(mut entries) => entries.next().is_none() || picked.join("manifest.json").is_file(),
+            Err(_) => !picked.exists(),
+        };
+    if usable {
+        picked.to_path_buf()
+    } else {
+        picked.join("Rubylight")
+    }
+}
 /// A short description for the confirmation dialog.
 pub fn summary(found: &Found, install: &std::path::Path) -> String {
     let mut lines = Vec::new();
@@ -284,6 +305,25 @@ pub fn summary(found: &Found, install: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_picked_folder_is_used_only_when_empty_or_already_rubylight() {
+        let root = tempfile::tempdir().unwrap();
+        let empty = root.path().join("empty");
+        std::fs::create_dir(&empty).unwrap();
+        assert_eq!(chosen_folder(&empty), empty);
+        let missing = root.path().join("new");
+        assert_eq!(chosen_folder(&missing), missing);
+        let games = root.path().join("games");
+        std::fs::create_dir(&games).unwrap();
+        std::fs::write(games.join("game.exe"), b"").unwrap();
+        assert_eq!(chosen_folder(&games), games.join("Rubylight"));
+        let ours = root.path().join("ours");
+        std::fs::create_dir(&ours).unwrap();
+        std::fs::write(ours.join("manifest.json"), b"[]").unwrap();
+        assert_eq!(chosen_folder(&ours), ours);
+        let drive = std::path::Path::new("C:\\");
+        assert_eq!(chosen_folder(drive), drive.join("Rubylight"));
+    }
     #[test]
     fn upgrades_and_reinstalls_are_allowed_but_downgrades_are_not() {
         for (installed, incoming) in [

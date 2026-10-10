@@ -103,7 +103,7 @@ An optional [Moonlight 6.2.0 source patch](compatibility/moonlight-6.2.0/README.
 
 ## Updates
 
-[Configuration](../docs/configuration.md) describes the notify-first controls and idle-install policy. The updater requires the installed service, verifies the official GitHub installer's advertised size and SHA-256 digest, then waits for one minute without active/pending streams, remote monitors or host apps.
+[Configuration](../docs/configuration.md) describes the notify-first controls and idle-install policy. The updater requires the installed service, verifies the official GitHub installer's advertised size and SHA-256 digest, then waits for one minute without active/pending streams, remote monitors or host apps. **Install now** skips that wait and runs setup with `--end-streams`; automatic updates always wait.
 
 Setup backs up replaced package files, verifies that the requested host version starts and restores those files on copying or startup failure. A failed version is not retried automatically; the console offers a manual retry. Recovery records stay under the service profile's `updates` directory.
 

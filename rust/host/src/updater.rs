@@ -156,7 +156,10 @@ pub fn busy(h: &Shared) -> bool {
     busy || h.current_app.lock().unwrap().is_some() || !h.monitors.lock().unwrap().is_empty()
 }
 
-pub fn queue(h: &Shared, automatic: bool) -> Result<()> {
+/// Queue the latest release. `immediately` is the user's "Install now": it does not
+/// wait for the host to be idle and ends a running stream, which the client
+/// can start again once Rubylight is back. Automatic updates always wait.
+pub fn queue(h: &Shared, automatic: bool, immediately: bool) -> Result<()> {
     if !supported(h) {
         bail!("Install Rubylight as a Windows service to use in-app updates");
     }
@@ -168,6 +171,11 @@ pub fn queue(h: &Shared, automatic: bool) -> Result<()> {
         state["phase"].as_str(),
         Some("waiting" | "downloading" | "ready" | "installing")
     ) {
+        // "Install now" on an update already waiting for an idle host.
+        if immediately && state["phase"] != "installing" {
+            state["now"] = json!(true);
+            state["automatic"] = json!(false);
+        }
         return Ok(());
     }
     if state["check_failed"] == true {
@@ -203,6 +211,7 @@ pub fn queue(h: &Shared, automatic: bool) -> Result<()> {
     state["phase"] = json!("waiting");
     state["queued_version"] = json!(candidate.version);
     state["automatic"] = json!(automatic);
+    state["now"] = json!(immediately && !automatic);
     state["idle_since"] = json!(0);
     state["error"] = Value::Null;
     Ok(())
@@ -214,6 +223,7 @@ pub fn cancel(h: &Shared) -> Result<()> {
         bail!("Installation has already started");
     }
     state["phase"] = json!("idle");
+    state["now"] = json!(false);
     // A generation token prevents a cancelled download from publishing its result.
     state["download_id"] = Value::Null;
     state["queued_version"] = Value::Null;
@@ -262,16 +272,22 @@ pub fn poll(h: &Shared) {
     if state["phase"] != phase {
         return;
     }
-    if is_busy {
-        state["idle_since"] = json!(0);
-        return;
+    let install_now = state["now"] == true;
+    if !install_now {
+        if is_busy {
+            state["idle_since"] = json!(0);
+            return;
+        }
+        let idle_since = state["idle_since"].as_u64().unwrap_or(0);
+        if idle_since == 0 {
+            state["idle_since"] = json!(now());
+            return;
+        }
+        if now().saturating_sub(idle_since) < IDLE_SECONDS {
+            return;
+        }
     }
-    let idle_since = state["idle_since"].as_u64().unwrap_or(0);
-    if idle_since == 0 {
-        state["idle_since"] = json!(now());
-        return;
-    }
-    if now().saturating_sub(idle_since) < IDLE_SECONDS || phase == "downloading" {
+    if phase == "downloading" {
         return;
     }
     if phase == "waiting" {
@@ -347,7 +363,9 @@ pub fn poll(h: &Shared) {
             // The installer must survive the service stopping its host job.
             command
                 .creation_flags(0x01000000 | 0x08000000)
-                .args(["--quiet", "--update", "--install-dir"])
+                .args(["--quiet", "--update"])
+                .args(install_now.then_some("--end-streams"))
+                .arg("--install-dir")
                 .arg(install)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
@@ -457,7 +475,9 @@ async fn transfer(
     candidate: &Installer,
     path: &std::path::Path,
 ) -> Result<PathBuf> {
-    if busy(h) {
+    // A download for "Install now" carries on beside the stream.
+    let paused = || busy(h) && h.updates.lock().unwrap()["now"] != true;
+    if paused() {
         return Err(DownloadPaused.into());
     }
     let mut response = client(Duration::from_secs(600))?
@@ -473,7 +493,7 @@ async fn transfer(
     let mut size = 0;
     let mut hash = Sha256::new();
     while let Some(chunk) = response.chunk().await? {
-        if busy(h) {
+        if paused() {
             return Err(DownloadPaused.into());
         }
         if h.updates.lock().unwrap()["download_id"] != id {
@@ -584,6 +604,35 @@ mod tests {
         }
     }
     #[test]
+    fn install_now_does_not_wait_for_an_idle_host() {
+        let f = Fixture::new();
+        let h = &f.host;
+        h.sessions
+            .lock()
+            .unwrap()
+            .queue(launch(butterpollo_core::session::Role::Stream))
+            .unwrap();
+        *h.updates.lock().unwrap() = json!({"phase":"ready","idle_since":0,"now":true});
+        poll(h);
+        // Past the idle gate, straight to the installer; this test host is
+        // no installed service, so that step fails.
+        let state = h.updates.lock().unwrap();
+        assert_eq!(state["phase"], "failed");
+        assert!(
+            state["error"]
+                .as_str()
+                .unwrap()
+                .contains("installed Windows service"),
+            "{state}"
+        );
+        drop(state);
+        // Without it the busy host keeps the update waiting.
+        *h.updates.lock().unwrap() = json!({"phase":"ready","idle_since":0});
+        poll(h);
+        assert_eq!(h.updates.lock().unwrap()["phase"], "ready");
+        assert_eq!(h.updates.lock().unwrap()["idle_since"], 0);
+    }
+    #[test]
     fn cancellation_invalidates_a_download_and_stops_automatic_requeue() {
         let f = Fixture::new();
         let h = &f.host;
@@ -612,7 +661,7 @@ mod tests {
             );
         }
         assert!(!status(h)["install_supported"].as_bool().unwrap());
-        assert!(queue(h, false).is_err());
+        assert!(queue(h, false, false).is_err());
     }
     #[tokio::test]
     #[ignore = "downloads the official public installer; never executes it"]

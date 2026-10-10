@@ -62,6 +62,7 @@ pub(crate) fn route(fields: &Fields) -> Result<(Method, String), String> {
         "crash-dismiss" => (Method::POST, "/api/health/crashdump/dismiss"),
         "check-update" => (Method::POST, "/api/updates/check"),
         "install-update" => (Method::POST, "/api/updates/install"),
+        "install-update-now" => (Method::POST, "/api/updates/install_now"),
         "cancel-update" => (Method::POST, "/api/updates/cancel"),
         "restart" => (Method::POST, "/api/restart"),
         _ => return Err("This console action is not available.".into()),

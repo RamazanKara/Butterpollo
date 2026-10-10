@@ -406,6 +406,8 @@ export interface UpdatesState {
   auto_update: boolean;
   phase?: 'idle' | 'waiting' | 'downloading' | 'ready' | 'installing' | 'failed';
   queued_version?: string | null;
+  /** Install now: does not wait for an idle host and ends a running stream. */
+  now?: boolean;
   downloaded_bytes?: number;
   download_size?: number;
   error?: string | null;
@@ -547,6 +549,7 @@ export const api = {
     state: () => get<UpdatesState>('/api/updates'),
     check: () => post<Ok>('/api/updates/check'),
     install: () => post<Ok>('/api/updates/install'),
+    installNow: () => post<Ok>('/api/updates/install_now'),
     cancel: () => post<Ok>('/api/updates/cancel'),
   },
   tokens: {

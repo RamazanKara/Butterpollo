@@ -43,7 +43,7 @@
       }
     }
   }
-  async function act(action: 'check' | 'install' | 'cancel') {
+  async function act(action: 'check' | 'install' | 'installNow' | 'cancel') {
     acting = true;
     try { await api.updates[action](); await load(); }
     catch (error) { failed('Update request failed', error); }
@@ -71,13 +71,15 @@
         <dt>Last checked</dt><dd>{updates.checked_at ? ago(updates.checked_at) : 'Never'}</dd>
         <dt>Automatic installation</dt><dd>{updates.auto_update ? 'On — installs when idle' : 'Off — notify me first'}</dd>
       </dl>
-      <p class="muted">Updates wait for streams, pending connections and host apps to stop, then install after one minute of idle time. Settings and paired devices stay in place.</p>
+      <p class="muted"><strong>Install when idle</strong> waits for streams, pending connections and host apps to stop, then installs after one minute of idle time. <strong>Install now</strong> installs right away, even from inside a stream: the stream ends and games started from Moonlight close, and you can connect again once Rubylight has restarted. Settings and paired devices stay in place.</p>
       <a href="/settings/general">Change update settings</a>
       {#if !updates.install_supported}<p class="notice">In-app installation requires the installed Windows service. Use the release page for portable builds.</p>{/if}
       {#if updates.check_failed}<p class="notice warn" role="alert">The last check failed. {updates.check_error || 'Check that this PC can reach GitHub.'}</p>{/if}
       {#if loadError}<p class="notice warn" role="alert">Could not refresh update status: {loadError}</p>{/if}
-      {#if updates.phase === 'waiting' || updates.phase === 'ready'}
-        <p class="notice" role="status">{updates.queued_version} is queued. Waiting for the host to be idle. Disconnect devices and close the running app to continue.</p>
+      {#if (updates.phase === 'waiting' || updates.phase === 'ready') && updates.now}
+        <p class="notice" role="status">Installing {updates.queued_version} now…</p>
+      {:else if updates.phase === 'waiting' || updates.phase === 'ready'}
+        <p class="notice" role="status">{updates.queued_version} is queued. Waiting for the host to be idle. Disconnect devices and close the running app to continue, or choose Install now.</p>
       {:else if updates.phase === 'downloading'}
         <p class="notice" role="status">Downloading {updates.queued_version}: {progress}%</p>
         <progress max="100" value={progress} aria-label="Update download">{progress}%</progress>
@@ -100,9 +102,11 @@
       <div class="row">
         <Button icon="refresh" busy={acting || updates.checking} disabled={queued} onclick={() => act('check')}>Check now</Button>
         {#if queued && updates.phase !== 'installing'}
+          {#if !updates.now}<Button disabled={acting} onclick={() => act('installNow')}>Install now</Button>{/if}
           <Button disabled={acting} onclick={() => act('cancel')}>Cancel update</Button>
         {:else if available && updates.install_supported && !queued}
           <Button disabled={acting} onclick={() => act('install')}>Install when idle</Button>
+          <Button disabled={acting} onclick={() => act('installNow')}>Install now</Button>
         {/if}
       </div>
     </div>

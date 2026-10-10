@@ -949,6 +949,24 @@ pub fn remove_file_later(path: &Path) {
 pub fn program_data() -> PathBuf {
     PathBuf::from(std::env::var_os("ProgramData").unwrap_or_else(|| "C:\\ProgramData".into()))
 }
+/// Whether `path` is on a fixed drive of this PC (C:\, D:\), where the
+/// service can run from; not a network share, mapped drive or USB stick.
+pub fn local_drive(path: &Path) -> bool {
+    const DRIVE_FIXED: u32 = 3;
+    use std::path::{Component, Prefix};
+    let Some(Component::Prefix(prefix)) = path.components().next() else {
+        return false;
+    };
+    let letter = match prefix.kind() {
+        Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => letter,
+        _ => return false,
+    };
+    let root = wide(&format!("{}:\\", char::from(letter)));
+    // SAFETY: `root` is NUL-terminated UTF-16 that outlives the call.
+    unsafe {
+        windows::Win32::Storage::FileSystem::GetDriveTypeW(PCWSTR(root.as_ptr())) == DRIVE_FIXED
+    }
+}
 pub fn program_files() -> PathBuf {
     PathBuf::from(std::env::var_os("ProgramFiles").unwrap_or_else(|| "C:\\Program Files".into()))
 }

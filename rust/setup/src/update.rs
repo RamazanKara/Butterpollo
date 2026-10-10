@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-pub fn run(folder: &Path, start: bool, progress: &Progress) -> Result<()> {
+pub fn run(folder: &Path, start: bool, end_streams: bool, progress: &Progress) -> Result<()> {
     detect::scan().check_version()?;
     let profile = install::profile();
     let result = profile.join("update-result.json");
@@ -30,7 +30,7 @@ pub fn run(folder: &Path, start: bool, progress: &Progress) -> Result<()> {
         .context("Another update is already running")?;
     // The new backup must hold one whole version, not what an interrupted
     // update left.
-    install::ensure_idle(install::probe(&profile))?;
+    install::ensure_idle(install::probe(&profile), end_streams)?;
     recover_or_supersede(&result)?;
     let work = profile.join("updates").join(format!(
         "transaction-{}-{}",
@@ -58,7 +58,7 @@ pub fn run(folder: &Path, start: bool, progress: &Progress) -> Result<()> {
         .map(|e| e.path.clone())
         .chain(["manifest.json".into(), "uninstall.exe".into()])
         .collect::<BTreeSet<_>>();
-    install::ensure_idle(install::probe(&profile))?;
+    install::ensure_idle(install::probe(&profile), end_streams)?;
     write_result(&result, "installing", None)?;
     progress.set("Stopping Rubylight…");
     stop_for_update(

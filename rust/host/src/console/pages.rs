@@ -977,6 +977,14 @@ async fn maintenance(
                 "Install when idle",
             )
             + &button(
+                "install-update-now",
+                csrf,
+                "/maintenance",
+                "",
+                "",
+                "Install now",
+            )
+            + &button(
                 "cancel-update",
                 csrf,
                 "/maintenance",
@@ -985,7 +993,7 @@ async fn maintenance(
                 "Cancel queued update",
             )
             + &format!(
-                "</div><p>Updates wait until streams and host apps stop. Automatic installation is off by default; enable it in Settings.</p>{update_status}",
+                "</div><p>Install when idle waits until streams and host apps stop. Install now ends a running stream and closes games started from Moonlight; connect again once Rubylight has restarted. Automatic installation is off by default and always waits; enable it in Settings.</p>{update_status}",
             )),
     );
     let mut crash_content = if crash["available"] == true {

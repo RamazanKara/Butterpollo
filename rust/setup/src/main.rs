@@ -4,7 +4,7 @@
 //! devices, apps and drivers are kept), and removes Rubylight again.
 //!
 //! butterpollo-setup.exe [--quiet] [--install-dir <folder>] [--no-gamepad-driver]
-//!                       [--no-display-driver] [--no-start]
+//!                       [--no-display-driver] [--no-start] [--end-streams]
 //! butterpollo-setup.exe --uninstall [--quiet] [--factory-reset] [--remove-drivers]
 //! butterpollo-setup.exe --repair-drivers (the service runs this one)
 #![warn(clippy::undocumented_unsafe_blocks)]
@@ -38,6 +38,9 @@ struct Arguments {
     no_gamepad_driver: bool,
     no_display_driver: bool,
     no_start: bool,
+    /// Install even while the host streams, ending the stream. Without it a
+    /// quiet setup refuses; the setup window asks instead.
+    end_streams: bool,
     factory_reset: bool,
     remove_drivers: bool,
     /// The service found no virtual display driver: set it up again.
@@ -64,6 +67,7 @@ fn arguments() -> Result<Arguments, String> {
             "--no-gamepad-driver" => parsed.no_gamepad_driver = true,
             "--no-display-driver" => parsed.no_display_driver = true,
             "--no-start" => parsed.no_start = true,
+            "--end-streams" => parsed.end_streams = true,
             "--factory-reset" => parsed.factory_reset = true,
             "--remove-drivers" => parsed.remove_drivers = true,
             "--repair-drivers" => parsed.repair_drivers = true,
@@ -80,8 +84,9 @@ fn arguments() -> Result<Arguments, String> {
     }
     Ok(parsed)
 }
-const USAGE: &str = "butterpollo-setup.exe [--quiet] [--install-dir <folder>] [--no-gamepad-driver] [--no-display-driver] [--no-start]\n\
+const USAGE: &str = "butterpollo-setup.exe [--quiet] [--install-dir <folder>] [--no-gamepad-driver] [--no-display-driver] [--no-start] [--end-streams]\n\
 butterpollo-setup.exe --uninstall [--quiet] [--factory-reset] [--remove-drivers]\n\n\
+A quiet setup refuses to install while Rubylight is streaming; --end-streams ends the stream instead, and the client can reconnect once setup has finished.\n\n\
 Exit codes: 0 done, 3010 done but Windows must restart, 1223 cancelled, 1 failed.";
 
 fn main() {
@@ -146,8 +151,9 @@ fn main() {
         match args.install_dir.as_ref() {
             Some(folder) if args.quiet && !args.uninstall => {
                 let folder = folder.clone();
+                let end_streams = args.end_streams;
                 match ui::progress(TITLE, "Updating Rubylight", true, move |progress| {
-                    update::run(&folder, true, &progress)?;
+                    update::run(&folder, true, end_streams, &progress)?;
                     // As a reinstall does. In-app updates never set the
                     // drivers up, so hosts updated from the console since
                     // rc.22 had none.
@@ -157,6 +163,12 @@ fn main() {
                     // shows from their first install; bring them up to date.
                     if let Err(error) = install::refresh_service_name() {
                         notes.push(format!("The service name could not be updated: {error:#}"));
+                    }
+                    if let Err(error) = install::secure_install(&folder) {
+                        notes.push(format!(
+                            "The permissions of {} could not be restricted: {error:#}",
+                            folder.display()
+                        ));
                     }
                     install::refresh_entries(&folder, &mut notes);
                     install::install_drivers(
@@ -192,27 +204,59 @@ fn main() {
 
 fn run_install(args: &Arguments) -> i32 {
     let found = detect::scan();
-    let folder = detect::install_dir(&found, args.install_dir.clone());
+    let mut folder = detect::install_dir(&found, args.install_dir.clone());
     let mut gamepad_driver = !args.no_gamepad_driver;
+    let mut end_streams = args.end_streams;
     if !args.quiet {
-        let choice = ui::ask(
-            TITLE,
-            &format!("Install Rubylight {}", env!("CARGO_PKG_VERSION")),
-            &detect::summary(&found, &folder),
-            "Install",
-            (!args.no_gamepad_driver)
-                .then_some(("Install the virtual gamepad driver for controllers", true)),
-        );
-        if !choice.accepted {
-            return 1223;
+        // Updating from inside a stream is fine: the stream ends while
+        // Rubylight restarts and the client connects again afterwards, as
+        // with Vibepollo's installer.
+        let streaming = install::streaming(&install::profile());
+        let choosable = args.install_dir.is_none() && detect::folder_choosable(&found);
+        loop {
+            let mut text = detect::summary(&found, &folder);
+            if streaming {
+                text.push_str("\n\nRubylight is streaming. Installing ends the stream and closes games started from Moonlight; connect again when setup has finished.");
+            }
+            let choice = ui::ask(
+                TITLE,
+                &format!("Install Rubylight {}", env!("CARGO_PKG_VERSION")),
+                &text,
+                "Install",
+                choosable.then_some("Change folder…"),
+                (!args.no_gamepad_driver).then_some((
+                    "Install the virtual gamepad driver for controllers",
+                    gamepad_driver,
+                )),
+            );
+            gamepad_driver = !args.no_gamepad_driver && choice.checked;
+            if choice.other {
+                if let Some(picked) = ui::pick_folder("Choose where to install Rubylight", &folder)
+                {
+                    if system::local_drive(&picked) {
+                        folder = detect::chosen_folder(&picked);
+                    } else {
+                        ui::message_box(
+                            TITLE,
+                            "Choose a folder on a drive of this PC. The Rubylight service cannot run from a network or removable drive.",
+                        );
+                    }
+                }
+                continue;
+            }
+            if !choice.accepted {
+                return 1223;
+            }
+            end_streams |= streaming;
+            break;
         }
-        gamepad_driver = !args.no_gamepad_driver && choice.checked;
     }
     let options = install::Options {
         install_dir: Some(folder),
         gamepad_driver,
         display_driver: !args.no_display_driver,
         start: !args.no_start,
+        end_streams,
     };
     let result = ui::progress(TITLE, "Installing Rubylight", args.quiet, move |progress| {
         install::install(&options, &progress)
@@ -262,6 +306,7 @@ fn run_uninstall(args: &Arguments) -> i32 {
             "Remove Rubylight?",
             "Streaming stops and the Rubylight service is removed. The virtual display and gamepad drivers stay installed.",
             "Remove",
+            None,
             Some((
                 "Also delete settings, paired devices and logs",
                 args.factory_reset,

@@ -93,7 +93,7 @@ pub fn trigger_update(h: &Shared, tell: bool) {
                         notify_update(&latest);
                     }
                     let automatic = h.config.read().unwrap().boolean("auto_update", false);
-                    if automatic && let Err(error) = crate::updater::queue(&h, true) {
+                    if automatic && let Err(error) = crate::updater::queue(&h, true, false) {
                         tracing::warn!(%error, "automatic update could not be queued");
                     }
                 }

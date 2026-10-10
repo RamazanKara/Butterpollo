@@ -19,6 +19,9 @@ pub struct Options {
     pub gamepad_driver: bool,
     pub display_driver: bool,
     pub start: bool,
+    /// End active streams instead of refusing to install. The user chose
+    /// this; tests and automatic updates never set it.
+    pub end_streams: bool,
 }
 pub struct Outcome {
     pub install: PathBuf,
@@ -164,9 +167,15 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
             SERVICE_DESCRIPTION,
             &install.join("butterpollo-service.exe"),
         )?;
-        crate::update::run(&install, options.start, progress)?;
+        crate::update::run(&install, options.start, options.end_streams, progress)?;
         // A reinstall also repairs the profile's permissions and the firewall
         // rule, as it did before.
+        if let Err(error) = secure_install(&install) {
+            notes.push(format!(
+                "The permissions of {} could not be restricted: {error:#}",
+                install.display()
+            ));
+        }
         if let Err(error) = secure_profile(&profile) {
             notes.push(format!(
                 "The permissions of {} could not be restricted: {error:#}",
@@ -212,7 +221,7 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
             }
         })
         .unwrap_or_else(|| profile.clone());
-    ensure_idle(probe(&active_profile))?;
+    ensure_idle(probe(&active_profile), options.end_streams)?;
     progress.set("Stopping the streaming host…");
     // Until the previous host is removed, a failure starts again exactly the
     // services that were running.
@@ -286,6 +295,8 @@ pub fn install(options: &Options, progress: &Progress) -> Result<Outcome> {
     }
 
     progress.set("Installing files…");
+    std::fs::create_dir_all(&install)?;
+    secure_install(&install)?;
     copy_package(&staging, &install, &entries)?;
     payload::write_stub(&install.join("uninstall.exe"))?;
 
@@ -804,7 +815,7 @@ pub fn repair_drivers(progress: &Progress) -> Result<bool> {
     let Some(_turn) = driver_lock(Duration::ZERO) else {
         return Ok(false);
     };
-    ensure_idle(probe(&profile))?;
+    ensure_idle(probe(&profile), false)?;
     std::fs::write(
         &record,
         serde_json::to_vec(&serde_json::json!({"version": version, "unix": now}))?,
@@ -921,14 +932,53 @@ pub(crate) fn register(install: &Path, entries: &[payload::Entry]) -> Result<()>
         ],
     )
 }
+/// The service runs as SYSTEM from the install folder. Program Files lets
+/// only administrators change it; a folder elsewhere (D:\Rubylight) would
+/// let any user replace its programs, so it gets the same rights.
+pub(crate) fn secure_install(install: &Path) -> Result<()> {
+    if under_program_files(install) {
+        return Ok(());
+    }
+    system::restrict(install, true)
+}
+/// Whether `install` is inside Program Files, whose permissions already
+/// keep users from changing the programs.
+fn under_program_files(install: &Path) -> bool {
+    let folder = system::win32_path(&canonical_prefix(install))
+        .map(|path| path.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    [
+        std::env::var_os("ProgramFiles"),
+        std::env::var_os("ProgramW6432"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|root| system::win32_path(&canonical_prefix(Path::new(&root))).ok())
+    .any(|root| {
+        let root = root.to_string_lossy().trim_end_matches('\\').to_lowercase();
+        folder.starts_with(&format!("{root}\\"))
+    })
+}
+/// Whether the host at `profile`'s address reports a stream, a queued
+/// launch or a running app.
+pub(crate) fn streaming(profile: &Path) -> bool {
+    serverinfo(probe(profile)).is_ok_and(|response| check_idle(&response).is_err())
+}
 /// Refuse to stop a host that reports a stream, a queued launch or a running
-/// app. A host that cannot say is stopped as before: none is running (Windows
-/// refuses a closed loopback port only after about two seconds), it is
-/// Vibepollo, Apollo or Sunshine, or it was asked on a LAN bind_address,
-/// where a Rust host leaves its counts blank.
-pub(crate) fn ensure_idle(address: SocketAddr) -> Result<()> {
+/// app, unless the user chose to end them (`end_streams`). A host that cannot
+/// say is stopped as before: none is running (Windows refuses a closed
+/// loopback port only after about two seconds), it is Vibepollo, Apollo or
+/// Sunshine, or it was asked on a LAN bind_address, where a Rust host leaves
+/// its counts blank.
+pub(crate) fn ensure_idle(address: SocketAddr, end_streams: bool) -> Result<()> {
     match serverinfo(address) {
-        Ok(response) => check_idle(&response),
+        Ok(response) => match check_idle(&response) {
+            Err(_) if end_streams => {
+                line("the host is streaming; ending the stream as asked");
+                Ok(())
+            }
+            result => result,
+        },
         Err(error) => {
             line(format!("no host status at {address} ({error}); continuing"));
             Ok(())
@@ -1121,24 +1171,29 @@ mod tests {
     fn a_stopped_or_unresponsive_host_does_not_block_setup() -> Result<()> {
         // Windows refuses a closed loopback port only after about two seconds.
         let closed = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
-        ensure_idle(closed)?;
+        ensure_idle(closed, false)?;
         let silent = std::net::TcpListener::bind("127.0.0.1:0")?;
-        ensure_idle(silent.local_addr()?)?;
-        // A busy host is still refused over a real connection.
+        ensure_idle(silent.local_addr()?, false)?;
+        // A busy host is still refused over a real connection, unless the
+        // user chose to end its stream.
         let busy = std::net::TcpListener::bind("127.0.0.1:0")?;
         let address = busy.local_addr()?;
         let server = std::thread::spawn(move || -> std::io::Result<()> {
             use std::io::{Read, Write};
-            let (mut socket, _) = busy.accept()?;
-            let mut request = Vec::new();
-            while !request.ends_with(b"\r\n\r\n") {
-                let mut byte = [0];
-                socket.read_exact(&mut byte)?;
-                request.push(byte[0]);
+            for _ in 0..2 {
+                let (mut socket, _) = busy.accept()?;
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    socket.read_exact(&mut byte)?;
+                    request.push(byte[0]);
+                }
+                socket.write_all(b"HTTP/1.1 200 OK\r\n\r\n<root><RustHostSessionCount>1</RustHostSessionCount></root>")?;
             }
-            socket.write_all(b"HTTP/1.1 200 OK\r\n\r\n<root><RustHostSessionCount>1</RustHostSessionCount></root>")
+            Ok(())
         });
-        assert!(ensure_idle(address).is_err());
+        assert!(ensure_idle(address, false).is_err());
+        ensure_idle(address, true)?;
         server.join().unwrap()?;
         Ok(())
     }

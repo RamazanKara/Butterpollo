@@ -68,14 +68,18 @@ pub fn message_box(title: &str, text: &str) {
 
 pub struct Choice {
     pub accepted: bool,
+    /// The second button was chosen instead.
+    pub other: bool,
     pub checked: bool,
 }
-/// A question with a confirming button, Cancel and an optional checkbox.
+/// A question with a confirming button, an optional second button, Cancel
+/// and an optional checkbox.
 pub fn ask(
     title: &str,
     heading: &str,
     text: &str,
     confirm: &str,
+    other: Option<&str>,
     checkbox: Option<(&str, bool)>,
 ) -> Choice {
     let Some(dialog) = task_dialog() else {
@@ -87,6 +91,7 @@ pub fn ask(
         let answer = unsafe { MessageBoxW(None, &body, &caption, MB_YESNO | MB_ICONQUESTION) };
         return Choice {
             accepted: answer == IDYES,
+            other: false,
             checked: checkbox.is_some_and(|(_, checked)| checked),
         };
     };
@@ -94,11 +99,18 @@ pub fn ask(
     let heading = HSTRING::from(heading);
     let text = HSTRING::from(text);
     let confirm = HSTRING::from(confirm);
+    let other = other.map(HSTRING::from);
     let label = checkbox.map(|(label, _)| HSTRING::from(label));
-    let buttons = [TASKDIALOG_BUTTON {
+    let mut buttons = vec![TASKDIALOG_BUTTON {
         nButtonID: IDOK.0,
         pszButtonText: PCWSTR(confirm.as_ptr()),
     }];
+    if let Some(other) = &other {
+        buttons.push(TASKDIALOG_BUTTON {
+            nButtonID: OTHER_BUTTON,
+            pszButtonText: PCWSTR(other.as_ptr()),
+        });
+    }
     let mut flags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
     if checkbox.is_some_and(|(_, checked)| checked) {
         flags |= TDF_VERIFICATION_FLAG_CHECKED;
@@ -127,7 +139,44 @@ pub fn ask(
     let result = unsafe { dialog(&config, &mut button, std::ptr::null_mut(), &mut checked) };
     Choice {
         accepted: result.is_ok() && button == IDOK.0,
+        other: result.is_ok() && button == OTHER_BUTTON,
         checked: checked.as_bool(),
+    }
+}
+const OTHER_BUTTON: i32 = 101;
+
+/// The Windows folder picker, opened at `start` or its nearest existing
+/// parent. None when cancelled.
+pub fn pick_folder(title: &str, start: &std::path::Path) -> Option<std::path::PathBuf> {
+    use windows::Win32::System::Com::*;
+    use windows::Win32::UI::Shell::*;
+    // SAFETY: COM is initialised on this thread before the dialog is used and released after it is dropped; the path string the dialog returns is freed with CoTaskMemFree once copied.
+    unsafe {
+        let initialized = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
+        let picked = (|| -> windows::core::Result<std::path::PathBuf> {
+            let dialog: IFileOpenDialog =
+                CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
+            dialog.SetOptions(
+                dialog.GetOptions()? | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST,
+            )?;
+            dialog.SetTitle(&HSTRING::from(title))?;
+            if let Some(existing) = start.ancestors().find(|folder| folder.is_dir()) {
+                let item: windows::core::Result<IShellItem> =
+                    SHCreateItemFromParsingName(&HSTRING::from(existing.as_os_str()), None);
+                if let Ok(item) = item {
+                    let _ = dialog.SetFolder(&item);
+                }
+            }
+            dialog.Show(None)?;
+            let name = dialog.GetResult()?.GetDisplayName(SIGDN_FILESYSPATH)?;
+            let path = std::path::PathBuf::from(name.to_string().unwrap_or_default());
+            CoTaskMemFree(Some(name.0 as *const _));
+            Ok(path)
+        })();
+        if initialized {
+            CoUninitialize();
+        }
+        picked.ok().filter(|path| !path.as_os_str().is_empty())
     }
 }
 
