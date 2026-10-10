@@ -982,7 +982,22 @@ fn test_send_outage_follows_its_schedule_and_rejects_bad_values() {
     assert!(!outage.active(start, at(1580)));
     assert!(outage.active(start, at(3020)));
     assert!(!outage.active(start, at(2999)));
-    for bad in ["", "80", "80:80", "10:0", "x:5", "1500:-1", "1500:80:1"] {
+    assert!(!outage.in_air());
+    let air = SendOutage::parse("1500:80:air").unwrap();
+    assert!(air.in_air());
+    assert!(air.active(start, at(1500)));
+    assert!(!air.active(start, at(1580)));
+    for bad in [
+        "",
+        "80",
+        "80:80",
+        "10:0",
+        "x:5",
+        "1500:-1",
+        "1500:80:1",
+        "1500:80:air:1",
+        "80:80:air",
+    ] {
         assert_eq!(SendOutage::parse(bad), None, "{bad}");
     }
 }

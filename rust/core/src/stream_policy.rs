@@ -505,21 +505,37 @@ impl SendLossRecovery {
     }
 }
 /// Test-only radio outage on the host's video socket, from
-/// `BUTTERPOLLO_TEST_SEND_OUTAGE=every_ms:length_ms`: for `length` of every
-/// `every`, starting one `every` into the stream, each video datagram is
+/// `BUTTERPOLLO_TEST_SEND_OUTAGE=every_ms:length_ms[:air]`: for `length` of
+/// every `every`, starting one `every` into the stream, each video datagram is
 /// refused as by a full socket. Loopback never loses packets, so this is how
-/// a host A/B exercises recovery from a host-side Wi-Fi dropout.
+/// a host A/B exercises recovery from a host-side Wi-Fi dropout. With `:air`
+/// the datagrams are lost after the socket instead, as on a client's Wi-Fi:
+/// the host counts them sent and only the client notices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SendOutage {
     every: Duration,
     length: Duration,
+    air: bool,
 }
 impl SendOutage {
     pub fn parse(value: &str) -> Option<Self> {
-        let (every, length) = value.trim().split_once(':')?;
-        let every = Duration::from_millis(every.trim().parse().ok()?);
-        let length = Duration::from_millis(length.trim().parse().ok()?);
-        (length > Duration::ZERO && every > length).then_some(Self { every, length })
+        let mut fields = value.trim().split(':').map(str::trim);
+        let every = Duration::from_millis(fields.next()?.parse().ok()?);
+        let length = Duration::from_millis(fields.next()?.parse().ok()?);
+        let air = match fields.next() {
+            None => false,
+            Some("air") => true,
+            Some(_) => return None,
+        };
+        (fields.next().is_none() && length > Duration::ZERO && every > length).then_some(Self {
+            every,
+            length,
+            air,
+        })
+    }
+    /// Lost in the air: the host sent it and does not know it was lost.
+    pub fn in_air(&self) -> bool {
+        self.air
     }
     pub fn from_env() -> Option<Self> {
         let outage = Self::parse(&std::env::var("BUTTERPOLLO_TEST_SEND_OUTAGE").ok()?);
@@ -527,7 +543,8 @@ impl SendOutage {
             tracing::warn!(
                 every_ms = outage.every.as_millis(),
                 length_ms = outage.length.as_millis(),
-                "BUTTERPOLLO_TEST_SEND_OUTAGE refuses video datagrams on a schedule; unset it outside tests"
+                air = outage.air,
+                "BUTTERPOLLO_TEST_SEND_OUTAGE drops video datagrams on a schedule; unset it outside tests"
             );
         }
         outage

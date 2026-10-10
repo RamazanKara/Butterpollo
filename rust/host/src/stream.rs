@@ -1544,11 +1544,14 @@ impl Media {
                                     butterpollo_windows::net::Batch::count(remaining, budget);
                                 let send_started = trace_send.then(Instant::now);
                                 let refused = batch.dropped;
-                                let bytes = if send_outage.is_some_and(|outage| outage.active(start, Instant::now())) {
-                                    batch.refuse(count);
-                                    0
-                                } else {
-                                    batch.send(&m.video, &remaining[..count], peer)?
+                                let bytes = match send_outage.filter(|outage| outage.active(start, Instant::now())) {
+                                    // Lost after the socket: counted as sent, only the client sees it.
+                                    Some(outage) if outage.in_air() => remaining[..count].iter().map(Vec::len).sum(),
+                                    Some(_) => {
+                                        batch.refuse(count);
+                                        0
+                                    }
+                                    None => batch.send(&m.video, &remaining[..count], peer)?,
                                 };
                                 if let Some(send_started) = send_started {
                                     let finished = Instant::now();
