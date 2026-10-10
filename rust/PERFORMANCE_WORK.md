@@ -5,6 +5,30 @@ without reducing features or picture quality. Opus took over from Codex in the
 evening of October 2. Performance acceptance on the customer's own sessions is
 still open; the measured fixture results below are local loopback evidence.
 
+## October 10 HEVC reference invalidation after short losses: not shipped
+
+The HEVC freeze above needs a long loss. H.265 8.3.1 derives a picture's
+order count from the previous picture's and reads a step of more than half
+the range as going backwards. AMF's range is 16, so after the 11-frame loss
+the recovery frame (12 after the last picture) was placed before its
+long-term reference, which then resolved to a missing picture. A branch
+(`7ff31be`, `58fa344`) kept HEVC long-term references and invalidated only
+when the recovery frame was at most 8 frames after the last picture, else a
+keyframe. The native fixture passed: HEVC recovered 4-frame losses and took
+a keyframe for an 8-frame loss (recovery 9 after), AV1 recovered both.
+
+Host A/B against `02509c0`, HEVC 2560x1440 at 120 fps, 80 Mb/s, 160 Mb/s
+cap, no outage: B delivered 103.8 unique pictures/s against 119.6, picture
+age mean 14.6 against 8.8 ms (p95 18.4 against 9.5). The repeat B run
+stopped after 14 s in a fourth VIDEO_ENGINE_TIMEOUT (0x141,
+`WATCHDOG-20261010-1020.dmp`) after `slow encoder call AMF QueryOutput
+3000 ms`; the GPU recovered without a reboot. The earlier steady-state pair
+with HEVC long-term references (`9438e9c`, set by config) was within noise,
+so the cost is not settled, but a steady-state loss and a hang on the first
+two runs fail the ship bar. HEVC keeps keyframe recovery; HEVC long-term
+references stay off. Not retried: marking long-term references only after a
+loss report cannot work, since recovery needs an anchor from before the loss.
+
 ## October 10 AMD reference invalidation, AV1 only
 
 Moonlight can recover a lost frame by reference invalidation: the host
