@@ -491,7 +491,12 @@ pub fn artwork(appid: u32, library: &Path, roots: &[PathBuf]) -> Artwork {
         .or_else(|| nested(&images("library_600x900_2x")))
         .or_else(|| flat(&caches, &images("_library_600x900")))
         .or_else(|| nested(&images("library_600x900")))
-        .or_else(|| hashed(&images("library_capsule")))
+        .or_else(|| {
+            // Older hashed folders hold library_capsule, newer apps library_600x900.
+            let mut names = images("library_capsule").to_vec();
+            names.extend(images("library_600x900"));
+            hashed(&names)
+        })
         .or_else(|| flat(&grids, &grid(&["p.png", "p.jpg", "_p.png", "_p.jpg"])));
     let header = flat(&caches, &images("_header"))
         .or_else(|| nested(&images("header")))
@@ -501,6 +506,27 @@ pub fn artwork(appid: u32, library: &Path, roots: &[PathBuf]) -> Artwork {
         .or_else(|| nested(&images("icon")))
         .or_else(|| flat(&grids, &grid(&["_icon.png", "_icon.jpg", ".png"])));
     (portrait, header, icon)
+}
+
+/// Steam's store portrait at its fixed CDN path. Newer apps publish it only
+/// under the content-hash folder, see [`hashed_store_portrait_url`].
+pub fn store_portrait_url(appid: u32) -> String {
+    format!(
+        "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/{appid}/library_600x900_2x.jpg"
+    )
+}
+/// The CDN's 2x portrait in the same content-hash folder as a cached
+/// `<appid>/<40 hex>/library_600x900.*` or `library_capsule.*`, as Steam
+/// serves it for apps without a fixed-path portrait.
+pub fn hashed_store_portrait_url(appid: u32, local: &Path) -> Option<String> {
+    let hash = local.parent()?.file_name()?.to_str()?;
+    let stem = local.file_stem()?.to_str()?;
+    let hex = hash.len() == 40 && hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    (hex && matches!(stem, "library_600x900" | "library_capsule")).then(|| {
+        format!(
+            "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/{appid}/{hash}/{stem}_2x.jpg"
+        )
+    })
 }
 
 /// The Steam settings (`steam_*` keys, Vibepollo's defaults).
@@ -1018,6 +1044,52 @@ fn normalized(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn newer_apps_find_their_portrait_in_the_hashed_folder_and_on_the_cdn() {
+        let root = std::env::temp_dir().join(format!("rubylight-steam-art-{}", std::process::id()));
+        let hash = "0123456789abcdef0123456789abcdef01234567";
+        let folder = root
+            .join("appcache")
+            .join("librarycache")
+            .join("2050650")
+            .join(hash);
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("library_600x900.jpg"), b"jpg").unwrap();
+        let (portrait, _, _) = artwork(2050650, &root, &[]);
+        let portrait = portrait.unwrap();
+        assert_eq!(portrait, folder.join("library_600x900.jpg"));
+        assert_eq!(
+            hashed_store_portrait_url(2050650, &portrait).as_deref(),
+            Some(
+                "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/2050650/0123456789abcdef0123456789abcdef01234567/library_600x900_2x.jpg"
+            )
+        );
+        let capsule = folder.join("library_capsule.png");
+        assert!(
+            hashed_store_portrait_url(7, &capsule)
+                .unwrap()
+                .ends_with(&format!("/7/{hash}/library_capsule_2x.jpg"))
+        );
+        // Not a content hash, or not a portrait: keep to the fixed path.
+        assert_eq!(
+            hashed_store_portrait_url(7, Path::new("cache/7/library_600x900.jpg")),
+            None
+        );
+        assert_eq!(
+            hashed_store_portrait_url(7, &folder.join("library_header.jpg")),
+            None
+        );
+        assert_eq!(
+            hashed_store_portrait_url(
+                7,
+                &folder
+                    .with_file_name("ABCDEF0123456789ABCDEF0123456789ABCDEF01")
+                    .join("library_600x900.jpg")
+            ),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
     #[test]
     fn text_vdf_reads_library_folders_and_manifests() {
         let folders = Vdf::parse(

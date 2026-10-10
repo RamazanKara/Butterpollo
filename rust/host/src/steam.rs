@@ -93,7 +93,7 @@ fn cover(h: &Shared, game: &Game) -> Option<PathBuf> {
     let small = source.as_deref().is_none_or(|path| {
         butterpollo_windows::image::dimensions(path).is_ok_and(|(w, h)| w < 600 || h < 900)
     });
-    if small && let Some(download) = store_portrait(&folder, game.appid) {
+    if small && let Some(download) = store_portrait(&folder, game.appid, source.as_deref()) {
         source = Some(download);
     }
     let Some(source) = source else {
@@ -126,9 +126,10 @@ fn cover(h: &Shared, game: &Game) -> Option<PathBuf> {
         }
     }
 }
-/// Steam's portrait store image, downloaded once into the covers folder. A
+/// Steam's portrait store image, downloaded once into the covers folder. When
+/// the fixed CDN path fails, the hashed folder of the local cover is tried. A
 /// failed download is not retried for ten minutes.
-fn store_portrait(folder: &Path, appid: u32) -> Option<PathBuf> {
+fn store_portrait(folder: &Path, appid: u32, local: Option<&Path>) -> Option<PathBuf> {
     let file = folder.join(format!("steam_{appid}_600x900_2x.jpg"));
     let valid = |path: &Path| {
         butterpollo_windows::image::dimensions(path).is_ok_and(|(w, h)| w >= 600 && h >= 900)
@@ -143,10 +144,7 @@ fn store_portrait(folder: &Path, appid: u32) -> Option<PathBuf> {
     {
         return None;
     }
-    let url = format!(
-        "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/{appid}/library_600x900_2x.jpg"
-    );
-    let download = || -> Result<Vec<u8>> {
+    let download = |url: &str| -> Result<Vec<u8>> {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(3))
@@ -154,7 +152,7 @@ fn store_portrait(folder: &Path, appid: u32) -> Option<PathBuf> {
             .user_agent("Rubylight-Steam-Artwork/1.0")
             .build()?;
         tokio::runtime::Handle::current().block_on(async {
-            let response = client.get(&url).send().await?.error_for_status()?;
+            let response = client.get(url).send().await?.error_for_status()?;
             if response.content_length().is_some_and(|n| n > 16 << 20) {
                 bail!("Steam artwork is too large");
             }
@@ -165,7 +163,12 @@ fn store_portrait(folder: &Path, appid: u32) -> Option<PathBuf> {
             Ok(bytes.to_vec())
         })
     };
-    let result = download().and_then(|bytes| {
+    let hashed = local.and_then(|path| steam::hashed_store_portrait_url(appid, path));
+    let bytes = download(&steam::store_portrait_url(appid)).or_else(|error| match &hashed {
+        Some(url) => download(url),
+        None => Err(error),
+    });
+    let result = bytes.and_then(|bytes| {
         std::fs::create_dir_all(folder)?;
         butterpollo_core::state::atomic_write(&file, &bytes)?;
         if !valid(&file) {
