@@ -9,9 +9,10 @@ Rubylight, called Butterpollo until rc.29, is written in Rust: host, native help
 ## New in 2.0.1
 
 - **AV1 recovery without a keyframe is now on for upgraded hosts too.** 2.0.0 turned it on by default (`amd_ltr_frames` 4), but a host whose settings had been saved by an earlier console could carry the old default, `amd_ltr_frames = 0`, which kept it off. On the first start of 2.0.1, a saved 0 is taken for that old default and removed from `sunshine.conf`, so the new default applies; the log says so. Setting it to 0 again turns the recovery off for good. Found on the test host, where the upgraded settings kept a 0 from October 8 and a real AV1 stream logged no long-term reference recovery. Today's console saves only the settings you change, never defaults.
+- **One copy less per frame on the service host.** Windows Graphics Capture runs in a helper in your user session, which hands each frame over in a shared texture; the host copied that into a texture of its own before converting it for the encoder. On AMD the conversion now reads the helper's texture directly, and the helper gets it back once the conversion is done. On the RX 7900 XT host at 1440p120 AV1, picture age fell from 10.07 to 9.84 ms and host time from 2.84 to 2.77 ms on average over three pairs of runs, with every picture complete and decoded; reconnecting, killing the client and a 2-minute stream were clean. `wgc_helper_zero_copy = false` brings the copy back.
 - **No more "amd_ltr_frames applies to AV1 only" warning at every start.** The startup encoder check asked H.264 and HEVC for long-term references and warned each time. The warning now appears only when you set `amd_ltr_frames` yourself and stream H.264 or HEVC.
 
-  Both have unit tests.
+  Both fixes have unit tests.
 
 ## New in 2.0.0
 
