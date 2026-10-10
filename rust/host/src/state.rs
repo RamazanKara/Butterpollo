@@ -241,6 +241,21 @@ impl Host {
         {
             paired.document["root"]["shared_virtual_display_guid"] = id.into();
         }
+        // Once per host: a saved amd_ltr_frames = 0 from before 2.0.0 is
+        // that release's old default, not a choice; drop it from the file
+        // too, so the console shows the current default.
+        let upgraded = &mut paired.document["root"]["amd_ltr_frames_upgraded"];
+        if upgraded.as_bool() != Some(true) {
+            let mut stored = Config::load(&config_path)?;
+            if stored.upgrade_ltr_default(false) {
+                butterpollo_core::state::atomic_write(&config_path, stored.text().as_bytes())?;
+                config.upgrade_ltr_default(false);
+                tracing::info!(
+                    "amd_ltr_frames = 0, the default before 2.0.0, was removed from sunshine.conf: AV1 now recovers lost frames without a keyframe. Set it to 0 again to turn that off"
+                );
+            }
+            *upgraded = true.into();
+        }
         paired.save(&paired_path)?;
         let identity = Identity::load(&certificate, &key)?;
         let credentials = Credentials::load(&credentials_path)?;
@@ -395,8 +410,9 @@ impl Host {
                 h.codec_probe_requested.store(false, Ordering::Release);
                 h.probing_codecs.store(true, Ordering::Release);
                 let mut config = h.config.read().unwrap().clone();
-                // Probe the driver's ability independently of the stream's opt-in.
-                config.values.insert("amd_ltr_frames".into(), "4".into());
+                // Probe the driver's ability independently of the stream's
+                // opt-in: the default asks for long-term references in AV1.
+                config.values.remove("amd_ltr_frames");
                 let result = h.probe_codecs_once(&config, retrying);
                 retrying = true;
                 let Some((flags, error, retry_pyrowave)) =

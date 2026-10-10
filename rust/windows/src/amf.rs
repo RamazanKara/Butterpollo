@@ -446,7 +446,13 @@ impl Encoder {
                 1 => "HevcNominalRange",
                 _ => "Av1NominalRange",
             });
-            if config.codec != 2 && options.integer("amd_ltr_frames", 0) > 0 {
+            // Only for a value the user set: the default asks for long-term
+            // references in AV1 alone, and every H.264 and HEVC probe at
+            // startup warned otherwise.
+            if config.codec != 2
+                && options.values.contains_key("amd_ltr_frames")
+                && options.integer("amd_ltr_frames", 0) > 0
+            {
                 tracing::warn!(
                     "amd_ltr_frames applies to AV1 only: H.264 and HEVC reference invalidation froze the picture on a test decoder, so they recover with keyframes"
                 );

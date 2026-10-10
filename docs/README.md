@@ -1,6 +1,6 @@
 # Rubylight documentation
 
-[Rubylight](../README.md) · [Download 2.0.0](https://github.com/RamazanKara/Rubylight/releases/tag/2.0.0) · [Release notes](../rust/RELEASE_NOTES.md)
+[Rubylight](../README.md) · [Download 2.0.1](https://github.com/RamazanKara/Rubylight/releases/tag/2.0.1) · [Release notes](../rust/RELEASE_NOTES.md)
 
 Rubylight is a Windows game-streaming host written in Rust, built around Radeon compute and Moonlight. Start with the setup guide, then choose the details that matter to your stream.
 

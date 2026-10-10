@@ -250,6 +250,23 @@ impl Config {
     pub fn ports(&self) -> Result<Ports> {
         Ok(Ports::from_base(self.port()?))
     }
+    /// Before 2.0.0 `amd_ltr_frames` defaulted to 0, and a console save
+    /// could write that default into sunshine.conf, which kept AV1's
+    /// recovery without a keyframe off after the upgrade. Until `upgraded`,
+    /// a saved 0 is taken for that old default and dropped, so the current
+    /// one applies; a 0 saved after the upgrade stays. Returns whether the
+    /// saved value was dropped.
+    pub fn upgrade_ltr_default(&mut self, upgraded: bool) -> bool {
+        let old_default = !upgraded
+            && self
+                .values
+                .get("amd_ltr_frames")
+                .is_some_and(|value| parse_integer(value) == Some(0));
+        if old_default {
+            self.values.remove("amd_ltr_frames");
+        }
+        old_default
+    }
     pub fn text(&self) -> String {
         self.values
             .iter()
@@ -755,6 +772,24 @@ impl Ports {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_saved_ltr_zero_from_before_2_0_0_gives_way_to_the_new_default_once() {
+        let mut config = super::Config::parse("amd_ltr_frames = 0\nport = 47989\n").unwrap();
+        assert!(config.upgrade_ltr_default(false));
+        assert!(!config.values.contains_key("amd_ltr_frames"));
+        assert_eq!(config.integer("port", 0), 47989);
+        // Chosen after the upgrade, 0 stays off.
+        let mut config = super::Config::parse("amd_ltr_frames = 0\n").unwrap();
+        assert!(!config.upgrade_ltr_default(true));
+        assert_eq!(config.integer("amd_ltr_frames", 4), 0);
+        // Other values are the user's own.
+        for text in ["", "amd_ltr_frames = 1\n", "amd_ltr_frames = 4\n"] {
+            let mut config = super::Config::parse(text).unwrap();
+            let before = config.values.clone();
+            assert!(!config.upgrade_ltr_default(false), "{text}");
+            assert_eq!(config.values, before);
+        }
+    }
     #[test]
     fn overrides_allow_stream_input_display_and_encoder_keys_but_not_host_settings() {
         for key in [
