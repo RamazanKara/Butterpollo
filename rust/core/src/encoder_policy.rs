@@ -51,33 +51,36 @@ pub fn amf_intra_refresh(stream: &Negotiated) -> bool {
     stream.intra_refresh && !(stream.codec == 0 && stream.references == 1)
 }
 
-/// AMF keeps LTR anchors alongside the rolling short-term reference. The
-/// decoder's negotiated budget includes both; zero means it imposed no limit.
-/// In particular, Moonlight's one-reference AVC mode cannot retain LTR anchors.
-/// Long-term references AMF keeps when `amd_ltr_frames` is unset. They let a
-/// client that lost frames recover with a small frame predicted from an older
-/// one instead of a keyframe: under 80 ms air outages at 1440p120 AV1 that
-/// frame was 15.5 KB against a 127 KB keyframe, and stalls 6.4 ms shorter.
+/// Long-term references AMF keeps for AV1 when `amd_ltr_frames` is unset.
+/// They let a client that lost frames recover with a small frame predicted
+/// from an older one instead of a keyframe: under 80 ms air outages at
+/// 1440p120 AV1 that frame was 15.5 KB against a 127 KB keyframe, and stalls
+/// about 7 ms shorter, with every frame decoded.
 pub const AMF_LTR_DEFAULT: i64 = 4;
 /// Whether AMF tells clients it recovers by reference invalidation. The offer
-/// comes before the client picks a codec; an HEVC stream, which keeps no
-/// long-term references, answers an invalidation with a keyframe.
+/// comes before the client picks a codec; an H.264 or HEVC stream, which
+/// keeps no long-term references, answers an invalidation with a keyframe.
 pub fn amf_offers_invalidation(config: &Config) -> bool {
     config.integer("amd_ltr_frames", AMF_LTR_DEFAULT) > 0
 }
 /// The long-term references `amd_ltr_frames` asks AMF to keep for reference
-/// invalidation, before the client's budget. Never for HEVC: on 2026-10-10
-/// the test client's d3d11va HEVC decoder rejected the first frame after an
-/// invalidation ("Error constructing the frame RPS") and every picture after
-/// it, without asking for a keyframe, while AV1 recovered every time.
+/// invalidation, before the client's budget: AV1 only. On 2026-10-10, under
+/// air outages with the test client's d3d11va decoder, the first HEVC frame
+/// after an invalidation was rejected ("Error constructing the frame RPS"),
+/// and every picture after it: AMF's four-bit POC wraps every 16 frames and
+/// the long-term reference it names resolves to a missing picture after a
+/// longer loss. H.264 kept showing pictures seconds old until the end of the
+/// run. Neither decoder asked for a keyframe.
 pub fn amf_ltr_requested(config: &Config, codec: u8) -> usize {
-    if codec == 1 {
+    if codec != 2 {
         return 0;
     }
     config
         .integer("amd_ltr_frames", AMF_LTR_DEFAULT)
         .clamp(0, 4) as usize
 }
+/// AMF keeps LTR anchors alongside the rolling short-term reference. The
+/// decoder's negotiated budget includes both; zero means it imposed no limit.
 pub fn amf_ltr_frames(config: &Config, stream: &Negotiated) -> usize {
     if stream.intra_refresh {
         return 0;
@@ -784,7 +787,7 @@ mod tests {
                     ..Default::default()
                 };
                 let count = amf_ltr_frames(&config, &stream);
-                assert_eq!(count, if codec == 1 { 0 } else { expected_ltr });
+                assert_eq!(count, if codec == 2 { expected_ltr } else { 0 });
                 assert!(count < references as usize);
                 let properties = amf(&config, &stream).unwrap();
                 assert!(properties.iter().any(|property| {
@@ -797,33 +800,32 @@ mod tests {
     }
 
     #[test]
-    fn amf_hevc_never_keeps_long_term_references() {
+    fn amf_h264_and_hevc_never_keep_long_term_references() {
         for text in ["", "amd_ltr_frames=1\n", "amd_ltr_frames=4\n"] {
             let config = Config::parse(text).unwrap();
-            let stream = Negotiated {
-                codec: 1,
-                ..Default::default()
-            };
-            assert_eq!(amf_ltr_requested(&config, 1), 0);
-            assert_eq!(amf_ltr_frames(&config, &stream), 0);
+            for codec in [0, 1] {
+                let stream = Negotiated {
+                    codec,
+                    ..Default::default()
+                };
+                assert_eq!(amf_ltr_requested(&config, codec), 0);
+                assert_eq!(amf_ltr_frames(&config, &stream), 0);
+            }
         }
-        let config = Config::parse("amd_ltr_frames=4\n").unwrap();
-        assert_eq!(amf_ltr_requested(&config, 0), 4);
-        assert_eq!(amf_ltr_requested(&config, 2), 4);
+        let config = Config::parse("amd_ltr_frames=1\n").unwrap();
+        assert_eq!(amf_ltr_requested(&config, 2), 1);
     }
 
     #[test]
     fn amf_offers_invalidation_with_four_anchors_unless_turned_off() {
         let unset = Config::default();
         assert!(amf_offers_invalidation(&unset));
-        for codec in [0, 2] {
-            assert_eq!(amf_ltr_requested(&unset, codec), 4);
-            let stream = Negotiated {
-                codec,
-                ..Default::default()
-            };
-            assert_eq!(amf_ltr_frames(&unset, &stream), 4);
-        }
+        assert_eq!(amf_ltr_requested(&unset, 2), 4);
+        let av1 = Negotiated {
+            codec: 2,
+            ..Default::default()
+        };
+        assert_eq!(amf_ltr_frames(&unset, &av1), 4);
         let off = Config::parse("amd_ltr_frames=0\n").unwrap();
         assert!(!amf_offers_invalidation(&off));
         assert_eq!(amf_ltr_requested(&off, 2), 0);
@@ -880,7 +882,10 @@ mod tests {
 
     #[test]
     fn amf_ltr_preserves_unrestricted_clients_and_explicit_disable() {
-        let stream = Negotiated::default();
+        let stream = Negotiated {
+            codec: 2,
+            ..Default::default()
+        };
         for (requested, expected) in [(-1, 0), (0, 0), (1, 1), (4, 4), (99, 4)] {
             let config = Config::parse(&format!("amd_ltr_frames={requested}\n")).unwrap();
             assert_eq!(amf_ltr_frames(&config, &stream), expected);

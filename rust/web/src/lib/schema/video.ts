@@ -784,7 +784,7 @@ const amd: Setting[] = [
     key: 'amd_ltr_frames',
     label: 'Long-term reference frames',
     description:
-      'Frames the encoder keeps as long-term references, so a client that lost packets recovers with a small frame instead of a full keyframe. H.264 and AV1 only; HEVC always recovers with a keyframe. 0 turns it off.',
+      'Frames the encoder keeps as long-term references, so a client that lost packets recovers with a small frame instead of a full keyframe. AV1 only; H.264 and HEVC always recover with a keyframe. 0 turns it off.',
     category: 'encoders',
     group: 'AMD AMF',
     control: { kind: 'number', min: 0, max: 4, step: 1, unit: 'frames' },

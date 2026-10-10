@@ -371,7 +371,7 @@
     "amd_lowlatency_mode": "AMF Low-Latency Mode",
     "amd_lowlatency_mode_desc": "Controls the experimental native AMF low-latency mode. Auto leaves the driver default unchanged.",
     "amd_ltr_frames": "AMF Long-Term Reference Frames",
-    "amd_ltr_frames_desc": "Long-term reference frames for loss recovery without a full keyframe (H.264 and AV1; HEVC always uses keyframes). Default 4; 0 turns it off.",
+    "amd_ltr_frames_desc": "Long-term reference frames for loss recovery without a full keyframe (AV1 only; H.264 and HEVC always use keyframes). Default 4; 0 turns it off.",
     "amd_preanalysis": "AMF Preanalysis",
     "amd_preanalysis_desc": "This enables rate-control preanalysis, which may increase quality at the expense of increased encoding latency.",
     "amd_quality": "AMF Quality",
