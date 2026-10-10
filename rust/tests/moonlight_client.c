@@ -556,6 +556,9 @@ int main(int argc,char**argv){
         else if(strcmp(hdr_expectation,"1")==0)expected_hdr_control=1;
         else{fprintf(stderr,"BUTTERPOLLO_TEST_EXPECT_HDR_CONTROL must be auto, 0 or 1\n");return 2;}
     }
+    /* Moonlight for Xbox sets the TV's HDMI mode on every HDR message, so a
+     * stream whose display metadata never changes must send exactly one. */
+    int expected_hdr_messages=getenv("BUTTERPOLLO_TEST_EXPECT_HDR_CONTROL_COUNT")?atoi(getenv("BUTTERPOLLO_TEST_EXPECT_HDR_CONTROL_COUNT")):0;
     int duration=argc>6?atoi(argv[6]):0;
     if(getenv("BUTTERPOLLO_TEST_WARMUP_SECONDS"))warmup_seconds=atof(getenv("BUTTERPOLLO_TEST_WARMUP_SECONDS"));
     idr_probe_count=parse_idr_probe(getenv("BUTTERPOLLO_TEST_IDR_PROBE"));
@@ -644,12 +647,13 @@ int main(int argc,char**argv){
 #ifdef BUTTERPOLLO_PYROWAVE
     if(pyro_decoder)printf("PYROWAVE framing=records bitstream=%s encrypted=1 record_frames=%u partial_frames=%u hdr_frames=%u\n",PYROWAVE_BITSTREAM_ID,record_frames,partial_frames,hdr_frames);
 #endif
-    int hdr_control_valid=expected_hdr_control<0||(atomic_load(&hdr_notifications)>0&&atomic_load(&hdr_control_mismatches)==0&&atomic_load(&hdr_invalid_metadata)==0);
-    printf("HDR_CONTROL_RESULT {\"checked\":%s,\"expected_enabled\":%d,\"notifications\":%d,\"enabled_notifications\":%d,\"disabled_notifications\":%d,\"mismatches\":%d,\"invalid_metadata\":%d,\"passed\":%s}\n",
-           expected_hdr_control>=0?"true":"false",expected_hdr_control,atomic_load(&hdr_notifications),
+    int hdr_control_valid=(expected_hdr_control<0||(atomic_load(&hdr_notifications)>0&&atomic_load(&hdr_control_mismatches)==0&&atomic_load(&hdr_invalid_metadata)==0))
+        &&(!expected_hdr_messages||atomic_load(&hdr_notifications)==expected_hdr_messages);
+    printf("HDR_CONTROL_RESULT {\"checked\":%s,\"expected_enabled\":%d,\"expected_notifications\":%d,\"notifications\":%d,\"enabled_notifications\":%d,\"disabled_notifications\":%d,\"mismatches\":%d,\"invalid_metadata\":%d,\"passed\":%s}\n",
+           expected_hdr_control>=0||expected_hdr_messages?"true":"false",expected_hdr_control,expected_hdr_messages,atomic_load(&hdr_notifications),
            atomic_load(&hdr_enabled_notifications),atomic_load(&hdr_disabled_notifications),
            atomic_load(&hdr_control_mismatches),atomic_load(&hdr_invalid_metadata),hdr_control_valid?"true":"false");
-    if(!hdr_control_valid){fprintf(stderr,"HDR control expectation failed: missing/wrong mode notification or invalid HDR metadata\n");atomic_fetch_add(&failures,1);}
+    if(!hdr_control_valid){fprintf(stderr,"HDR control expectation failed: missing, extra or wrong mode notification, or invalid HDR metadata\n");atomic_fetch_add(&failures,1);}
     printf("RESULT frames=%d decoded_frames=%d audio_packets=%d failures=%d\n",atomic_load(&frames),atomic_load(&decoded_frames),atomic_load(&audio_packets),atomic_load(&failures));
     printf("PICTURE_CONTENT frames_with_luma_contrast=%d\n",atomic_load(&detailed_frames));
     if(timing_csv)fclose(timing_csv);

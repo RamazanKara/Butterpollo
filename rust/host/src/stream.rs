@@ -1165,7 +1165,7 @@ impl Media {
             );
         }
         let metadata = first.gpu.hdr_metadata();
-        *s.hdr_metadata.write().unwrap() = metadata;
+        *s.hdr_metadata.write().unwrap() = Some(metadata);
         if let Some(encoder) = encoder.as_mut() {
             encoder.set_hdr_metadata(metadata);
         }
@@ -1997,7 +1997,7 @@ impl Media {
                             }
                             if Instant::now() >= metadata_due {
                                 let metadata = image.gpu.hdr_metadata();
-                                *s.hdr_metadata.write().unwrap() = metadata;
+                                *s.hdr_metadata.write().unwrap() = Some(metadata);
                                 active.set_hdr_metadata(metadata);
                                 metadata_due = Instant::now() + Duration::from_secs(1);
                             }
@@ -2668,9 +2668,14 @@ impl Media {
                         remove.push(*peer_id);
                         continue;
                     }
-                    let metadata = s.hdr_metadata.read().unwrap().wire(s.config.hdr);
-                    if p.hdr_metadata != Some(metadata)
-                        && !s.output.read().unwrap().is_empty()
+                    // Sent once the encoder has the display's metadata, as
+                    // Sunshine does, and again only if it changes. Moonlight
+                    // for Xbox sets the TV's HDMI mode on every message, so an
+                    // earlier one with placeholder values switched it twice
+                    // (issue #11).
+                    let metadata = s.hdr_metadata.read().unwrap().map(|m| m.wire(s.config.hdr));
+                    if let Some(metadata) = metadata
+                        && p.hdr_metadata != Some(metadata)
                         && let Ok(message) = p.encrypt(&s, 0x010e, &metadata)
                         && host
                             .peer_mut(*peer_id)

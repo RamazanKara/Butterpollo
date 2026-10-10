@@ -649,7 +649,9 @@ pub struct Session<P = (), A = ()> {
     pub stats: Stats,
     pub started: Instant,
     pub output: std::sync::RwLock<String>,
-    pub hdr_metadata: std::sync::RwLock<crate::hdr::Metadata>,
+    /// The display's HDR metadata, once the encoder has it. Clients are told
+    /// the HDR state only then, so they hear it once with the real values.
+    pub hdr_metadata: std::sync::RwLock<Option<crate::hdr::Metadata>>,
 }
 impl<P, A> Session<P, A> {
     pub fn new(launch: Launch<P, A>, config: Negotiated) -> Arc<Self> {
