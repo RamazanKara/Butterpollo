@@ -18,6 +18,22 @@ use std::{
     time::{Duration, Instant},
 };
 use windows::core::Interface;
+/// A call this slow held the stream thread: a stalled VCN or compute queue
+/// blocks inside the driver, where nothing can time it out.
+const SLOW_CALL: Duration = Duration::from_millis(50);
+fn timed<T>(call: &'static str, run: impl FnOnce() -> T) -> T {
+    let started = Instant::now();
+    let result = run();
+    let elapsed = started.elapsed();
+    if elapsed >= SLOW_CALL {
+        tracing::warn!(
+            call,
+            elapsed_ms = elapsed.as_millis() as u64,
+            "slow encoder call"
+        );
+    }
+    result
+}
 pub(crate) fn check(n: AMF_RESULT) -> Result<()> {
     if n != AMF_RESULT_AMF_OK {
         bail!("AMF error {n}");
@@ -1097,7 +1113,9 @@ impl Encoder {
                 return Ok(output);
             }
             let mut data = ptr::null_mut();
-            let code = ((*(*self.component).pVtbl).QueryOutput.unwrap())(self.component, &mut data);
+            let code = timed("AMF QueryOutput", || {
+                ((*(*self.component).pVtbl).QueryOutput.unwrap())(self.component, &mut data)
+            });
             self.last_query = Some(code);
             if code == AMF_RESULT_AMF_REPEAT
                 || code == AMF_RESULT_AMF_EOF
@@ -1399,7 +1417,7 @@ impl Encoder {
         let source = (image.width, image.height, image.pixel);
         let (surface, converted) = if let Some(input) = self.compute.as_mut() {
             let compute = input.converter.compute().clone();
-            let texture = compute.open(&image.texture)?;
+            let texture = timed("compute open", || compute.open(&image.texture))?;
             let pointer = image
                 .cursor
                 .as_ref()
@@ -1411,16 +1429,20 @@ impl Encoder {
                 self.luminance,
                 image.cursor.as_ref(),
             );
-            let converted = input.converter.convert(
-                &texture,
-                crate::compute::format(image.pixel),
-                pointer.as_ref(),
-                image.ready.as_ref(),
-            )?;
-            gpu::synchronize(&converted.texture, &converted.fence, converted.value)?;
-            let surface = input
-                .context
-                .wrap(&converted.texture, &mut self.ownership)?;
+            let converted = timed("compute conversion", || {
+                input.converter.convert(
+                    &texture,
+                    crate::compute::format(image.pixel),
+                    pointer.as_ref(),
+                    image.ready.as_ref(),
+                )
+            })?;
+            timed("conversion fence wait", || {
+                gpu::synchronize(&converted.texture, &converted.fence, converted.value)
+            })?;
+            let surface = timed("AMF surface wrap", || {
+                input.context.wrap(&converted.texture, &mut self.ownership)
+            })?;
             (surface, None)
         } else {
             if self
@@ -1435,11 +1457,12 @@ impl Encoder {
                 .unwrap()
                 .color
                 .set_luminance(self.luminance);
-            let (surface, texture) = self.gpu_convert.as_mut().unwrap().convert(
-                self.context,
-                image,
-                &mut self.ownership,
-            )?;
+            let (surface, texture) = timed("graphics conversion", || {
+                self.gpu_convert
+                    .as_mut()
+                    .unwrap()
+                    .convert(self.context, image, &mut self.ownership)
+            })?;
             (surface, Some(texture))
         };
         self.set_bitrate(bitrate)?;
@@ -1465,10 +1488,12 @@ impl Encoder {
             let plan = self.prepare_surface(surface.0, idr)?;
             let deadline = Instant::now() + Duration::from_millis(100);
             loop {
-                let result = ((*(*self.component).pVtbl).SubmitInput.unwrap())(
-                    self.component,
-                    surface.0.cast(),
-                );
+                let result = timed("AMF SubmitInput", || {
+                    ((*(*self.component).pVtbl).SubmitInput.unwrap())(
+                        self.component,
+                        surface.0.cast(),
+                    )
+                });
                 self.last_submit = Some(result);
                 if result != AMF_RESULT_AMF_INPUT_FULL {
                     check(result)?;

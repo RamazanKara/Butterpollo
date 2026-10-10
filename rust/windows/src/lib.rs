@@ -33,6 +33,7 @@ pub mod firewall;
 pub mod foreground;
 mod gpu_color;
 pub mod gpu_priority;
+pub mod gpu_probe;
 pub mod hdr_profile;
 pub mod hotkey;
 pub mod image;

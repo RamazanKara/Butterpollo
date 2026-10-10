@@ -111,6 +111,7 @@ struct EncoderRecovery {
     backlog_since: Option<Instant>,
     recreations: u32,
     device_loss: Option<DeviceLost>,
+    progress: Option<Arc<crate::stall_watch::Progress>>,
     #[cfg(any(debug_assertions, test))]
     stall: crate::soak_fault::EncoderStall,
 }
@@ -158,6 +159,9 @@ impl EncoderRecovery {
         let Some(active) = encoder.as_mut() else {
             return Ok(vec![]);
         };
+        if let Some(progress) = &self.progress {
+            progress.mark(crate::stall_watch::Phase::Output);
+        }
         match active.poll() {
             Ok(output) => self.output(output, now),
             Err(error) => {
@@ -975,6 +979,7 @@ impl Media {
                         }
                     };
                     let _ = started_tx.send(Ok(()));
+                    let progress = crate::stall_watch::register("capture", &output, None);
                     let mut check_target = Instant::now();
                     let mut user_desktop = kind == "wgc"
                         && butterpollo_windows::capture::wgc_desktop_available();
@@ -994,6 +999,7 @@ impl Media {
                             let returned = on_primary && butterpollo_windows::capture::display_present(&next.0);
                             if worker.take_device_restart()? || next != target || return_to_wgc || returned {
                                 let lost = std::mem::replace(&mut capture, Capture::Closed);
+                                progress.mark(crate::stall_watch::Phase::Reopen);
                                 (capture, on_primary, target) = match reopen(lost, &next) {
                                     Ok(capture) => capture,
                                     Err(_) if worker_stop.load(Ordering::Acquire) => return Ok(()),
@@ -1007,6 +1013,7 @@ impl Media {
                         if let Some(signal) = capture.frame_signal() {
                             signal.reset()?;
                         }
+                        progress.mark(crate::stall_watch::Phase::Capture);
                         let captured = (|| {
                             #[cfg(debug_assertions)]
                             crate::soak_fault::check("DXGI_ERROR_ACCESS_LOST")?;
@@ -1042,6 +1049,7 @@ impl Media {
                                     capture_warnings.set("capture_recovery", format!("Capture interrupted ({e:#}); reopening capture, with a frozen picture until frames resume. If this repeats, keep the display mode stable and check the WGC helper and graphics driver."));
                                 }
                                 let lost = std::mem::replace(&mut capture, Capture::Closed);
+                                progress.mark(crate::stall_watch::Phase::Reopen);
                                 (capture, on_primary, target) = match reopen(lost, &target) {
                                     Ok(capture) => capture,
                                     Err(_) if worker_stop.load(Ordering::Acquire) => return Ok(()),
@@ -1349,8 +1357,17 @@ impl Media {
                     let mut last_stamp = start;
                     let mut live_at = due;
                     let mut rebuild_encoder = false;
+                    // Where this thread is, should it stop making progress.
+                    let progress = crate::stall_watch::register(
+                        "session",
+                        &s.launch.id,
+                        Some(crate::stall_watch::GpuProbe::start(&output, &s.launch.id)),
+                    );
                     // Since when encoding has failed without a frame getting through.
-                    let mut recovery = EncoderRecovery::default();
+                    let mut recovery = EncoderRecovery {
+                        progress: Some(progress.clone()),
+                        ..Default::default()
+                    };
                     // Separate encoder failures in this session, each counted once.
                     let (mut failures, mut counted_failure) = (0u32, None);
                     let mut runtime_config = c.clone();
@@ -1416,6 +1433,7 @@ impl Media {
                                            call_latency: Duration,
                                            source: &Source|
                      -> Result<()> {
+                        progress.mark(crate::stall_watch::Phase::Send);
                         if !output.is_empty() {
                             s.launch.warnings.clear("encoder_recovery");
                             source.device_recovered(&source.warnings);
@@ -1584,6 +1602,7 @@ impl Media {
                     };
                     (|| -> Result<()> {
                         while !s.stopping() && !h.stop.load(Ordering::Acquire) {
+                            progress.mark(crate::stall_watch::Phase::Loop);
                             if let Some(sender) = video_sender.get() { sender.backlog()?; }
                             if let Some(loss) = recovery.device_loss.take() {
                                 latest.latest.device_lost(loss, &latest.warnings, Instant::now())?;
@@ -1712,6 +1731,7 @@ impl Media {
                                     }
                                 }
                             }
+                            progress.mark(crate::stall_watch::Phase::Picture);
                             let image = latest.wait_for_frame(&timer, &capture_wake, Instant::now() + period.min(Duration::from_millis(50)))?;
                             let Some(image) = image else {
                                 // The capture is being re-created on a new device.
@@ -1883,6 +1903,7 @@ impl Media {
                                         s.launch.warnings.set("encoder_compute_recovery", "Compute conversion disabled after repeated encoder failures; using the graphics queue for the rest of this session. A busy game can delay frames; lower game GPU load or update the AMD driver, then reconnect to retry compute.");
                                     }
                                 }
+                                progress.mark(crate::stall_watch::Phase::EncoderCreate);
                                 match Encoder::new_gpu_reported(
                                     &s.config,
                                     pinned_backend.unwrap_or(c.get("encoder", "auto")),
@@ -2002,6 +2023,7 @@ impl Media {
                             let mut presented_image = image.as_ref().clone();
                             if !fresh { presented_image.captured = Instant::now(); }
                             let transformed = if converted { truehdr.as_mut().map(|filter| filter.apply_gpu(&presented_image)).transpose() } else { Ok(None) };
+                            progress.mark(crate::stall_watch::Phase::Encode);
                             let encoded = (|| -> Result<Vec<butterpollo_windows::encoder::Encoded>> {
                                 #[cfg(debug_assertions)]
                                 crate::soak_fault::check("encoder failure")?;

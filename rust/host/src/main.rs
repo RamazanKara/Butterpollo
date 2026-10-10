@@ -12,6 +12,7 @@ mod rtsp_server;
 mod runtime;
 #[cfg(any(debug_assertions, test))]
 mod soak_fault;
+mod stall_watch;
 mod state;
 mod steam;
 mod stream;

@@ -49,6 +49,7 @@ pub mod remote;
 pub mod rtsp;
 pub mod rtx_policy;
 pub mod session;
+pub mod stall_watch;
 pub mod state;
 pub mod steam;
 pub mod steam_deck;
