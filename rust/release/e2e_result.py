@@ -96,7 +96,10 @@ def capture_integrity(log, requested_capture=None, requested_source=None):
 
 
 def evaluate(client, rc, codec, mode, vrr=False, tone_log='', host_frames=None, recovery=0, host_log='',
-             requested_capture=None, requested_source=None):
+             requested_capture=None, requested_source=None, claim_trace=True):
+    """claim_trace: the host ran with pacing=trace. Without it (a diagnostic
+    run's own RUST_LOG) the claim check is reported as not measured instead of
+    failing as missing."""
     def find(pattern, cast=float):
         match = re.search(pattern, client, re.MULTILINE)
         return cast(match.group(1)) if match else None
@@ -146,11 +149,14 @@ def evaluate(client, rc, codec, mode, vrr=False, tone_log='', host_frames=None, 
             recovery_p95_ms=find(r'^IDR_PROBE .*?p95_ms=([0-9.]+)'),
             recovery_max_ms=find(r'^IDR_PROBE .*?max_ms=([0-9.]+)'),
         )
-        encodes = claims(host_log)
-        result.update(host_claims=len(encodes) or None,
-                      host_pictures_encoded_again=sum(not new for *_, new in encodes) if encodes else None)
+        if claim_trace:
+            encodes = claims(host_log)
+            result.update(host_claims=len(encodes) or None,
+                          host_pictures_encoded_again=sum(not new for *_, new in encodes) if encodes else None)
     failures = []
     missing = [key for key, value in result.items() if value is None]
+    if recovery and not claim_trace:
+        result.update(host_claims=None, host_pictures_encoded_again=None)
     # Older conventional-codec fixtures lack picture age; report it without
     # changing their acceptance rules. PyroWave still requires it above.
     result.update({f'picture_age_{key}': find(r'^PICTURE_AGE .*?' + key + r'=([0-9.]+)', cast)

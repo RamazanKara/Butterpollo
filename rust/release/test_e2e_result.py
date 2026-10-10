@@ -221,6 +221,11 @@ class ReleaseMeasurements(unittest.TestCase):
         self.assertTrue(any('unchanged picture again' in f for f in again['failures']), again['failures'])
         untraced = check(moving, 'INFO stream timings fps=60\n')
         self.assertTrue(any('host_claims' in f for f in untraced['failures']), untraced['failures'])
+        # A run whose RUST_LOG left out the trace is judged on the rest.
+        unasked = evaluate(moving, 0, 'hevc', '1280x720x60', recovery=16,
+                           host_log='INFO stream timings fps=60\n', claim_trace=False)
+        self.assertTrue(unasked['passed'], unasked['failures'])
+        self.assertIsNone(unasked['host_claims'])
         for before, after, failure in (
                 ('samples=16 mean', 'samples=15 mean', 'no decoded keyframe'),
                 ('decoded=16', 'decoded=15', 'no decoded keyframe'),

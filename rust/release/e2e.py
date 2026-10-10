@@ -23,7 +23,8 @@ stream rate repeats and skips some pictures by itself.
 
 --motion-at-rate: the same strip, minimum frame rate and trace without
 requests, the control for --recovery. BUTTERPOLLO_E2E_RUST_LOG replaces the
-host's RUST_LOG.
+host's RUST_LOG; without pacing=trace in it the claim check is reported as
+not measured (host_claims null) instead of failing.
 """
 import argparse, json, pathlib, subprocess, sys, time
 import xml.etree.ElementTree as ET
@@ -114,7 +115,8 @@ result = evaluate(client, rc, args.codec, args.mode, args.vrr, recovery=args.rec
                   requested_capture=config['capture'], requested_source=requested_source,
                   host_log=log.read_text(errors='replace') if log.exists() else '',
                   tone_log=(case / 'tone.log').read_text(errors='replace'),
-                  host_frames=host_frames(case / 'receiver'))
+                  host_frames=host_frames(case / 'receiver'),
+                  claim_trace='pacing=trace' in env.get('RUST_LOG', ''))
 (case / 'result.json').write_text(json.dumps(result, indent=2))
 print(json.dumps(result))
 sys.exit(0 if result['passed'] else 1)
