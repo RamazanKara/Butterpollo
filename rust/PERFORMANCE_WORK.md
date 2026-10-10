@@ -148,10 +148,80 @@ native 1968x2184 HDR or Wi-Fi measurement that shows a picture-age gain
 before it ships. To ship it without items 3 and 4, the cherry-pick needs the
 conflict resolution in `73181d10`.
 
-Branch `codex/verified` = `74c0d3cf` + `3605c124` (item 1) + this
-section. Its checks: `fmt --check`, `test --workspace` (616 passed,
-0 failed, 46 ignored), `clippy --workspace --all-targets -D warnings` and
-the 50 Python harness tests passed.
+Items 1 and this section reached main as `10c8cea0` and `d68fc79d`.
+
+### Follow-up, October 9-10: item 2 fixed, item 5 settled
+
+**Item 2: ships.** The extended HDR test now passes on the RX 7900 XT for
+HEVC and AV1, both ranges, compute on and off, refs 1 and 4, and defaults and
+options. It now requires absence of the content light level only on a fresh
+encoder's first IDR. After a change it accepts the SEI/OBU at 0/0, which
+means unknown, and fails on any stale non-zero level. The scaling test was
+renamed to what it covers, and the invalidation check has a comment.
+
+`codex/verified` is main plus `91add468` and the test fix. Its checks:
+
+- the ignored GPU test, with `BUTTERPOLLO_TEST_FFPROBE`
+- `fmt --check`
+- `test --workspace`: 619 passed, 0 failed, 46 ignored
+- `clippy --workspace --all-targets -D warnings`
+- 50 Python tests
+
+All passed.
+
+**Item 5: needs more.** It wins on a paced link but regresses the default
+wired path. The comparison was paired A/B with the noise source: the
+standalone sender variant (`73181d10`) against its exact base (`3605c124`,
+the same tree as item 1 on `74c0d3cf`). The runs are 35 s, alternating,
+`--recovery 20`. The CIs are 95%, from a bootstrap over pairs.
+
+| Cell (HEVC 5120x1440@120, 80 Mb/s) | Pairs | Picture age p95 diff, ms | p99 diff, ms | Claim-wait p95, base to sender | Fresh claims/s diff | Receiver unique fps diff |
+| --- | --- | --- | --- | --- | --- | --- |
+| b, pacing capped at 160 Mb/s | 13 | -1.81 [-3.33, -0.26] | -1.38 [-2.41, -0.35] | 3.85 to 1.17 ms | +0.77 [+0.54, +1.05] | +1.48 [+0.43, +2.52] |
+| a, default 800 Mb/s pacing | 11 | +1.84 [+0.35, +3.34] | +1.12 [-0.44, +2.62] | 1.61 to 3.02 ms | +0.12 [-0.23, +0.46] | -2.11 [-4.61, -0.31] |
+
+Picture-age p50 and mean are unchanged in both cells, with differences
+within ±0.4 ms.
+
+- Cell b: 63% of the base's claims waited behind the inline send, against
+  0.5% with the sender. The longest claim gap fell from 39.3 to 29.4 ms.
+- Cell a: the sender's p95 is worse beyond noise, and fewer distinct
+  pictures reach the receiver. Two of its 11 runs failed e2e gates (gaps,
+  repeats), against none for the base.
+- Host latency is +0.07 ms (cell b) and +0.03 ms (cell a). It now includes
+  the handoff to the sender thread.
+
+So it fails the non-inferiority bar on the owner's default wired path. One
+plausible cause, not yet confirmed: the claim gate now counts the frame
+being sent (`encoding + sending >= 2`), so on a fast link it can defer a
+claim that the inline path would have made right after a 0.5 ms send.
+
+Stability of the sender build:
+
+- 0 decode errors, 0 drops and 0 reorders in every run.
+- The queue never exceeded 1 pending and 1 sending.
+- 20/20 keyframes were decoded in each cell-a and cell-b run.
+- Reconnect and client-kill passed.
+- A 10-minute soak at default pacing passed: 72,089 frames all decoded,
+  1100/1100 keyframes, `queue_wait` p99 at most 0.06 ms in every minute,
+  and host overhead flat. The e2e harness flagged this run only because the
+  32 MiB host log had rotated and the startup lines were gone; the stream
+  itself was healthy.
+- A second 10-minute soak, at 160 Mb/s with 1100 keyframe requests, ended
+  at 23:33 with an RX 7900 XT driver timeout. That was
+  VIDEO_ENGINE_TIMEOUT_DETECTED (0x141) in `amdkmdag.sys`, the same
+  signature as the 02:47 timeout on the unmodified base build (see
+  `research/tdr`). The host reported the device loss, waited 30 s and
+  ended the stream cleanly.
+
+After the reboot, 12 guarded runs (3 pairs per cell, at most 3 min each,
+aborting on any audio stall over 100 ms, device loss, stall or new
+watchdog dump) had no abort and no new dump.
+
+The sender should not ship as is. Next step: make it neutral on fast links
+before re-measuring cell a. One option is to use it only when pacing is
+close to the bitrate, as on Wi-Fi routes or with `pacing_max_bitrate_kbps`;
+another is to count only pending, not sending, frames in the claim gate.
 
 ## October 9 user report: constant jitter, and recovery requests
 
