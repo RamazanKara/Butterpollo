@@ -1190,8 +1190,12 @@ lose the metadata that was present on the wire; a dump is not sufficient to
 accuse the host of omitting SEI. The client's renderer/decoder can use the
 separate control metadata; actual tone mapping is client-specific.
 
-`stream.rs` sends encrypted reliable ENet control type **0x010e** once an
-output is selected, and again whenever the 27-byte metadata payload changes.
+`stream.rs` sends encrypted reliable ENet control type **0x010e** once the
+encoder is configured with the display's metadata, and again whenever the
+27-byte metadata payload changes. Sunshine also sends it once. It used to go
+out as soon as an output was selected, with placeholder metadata, then again
+with the real values; Moonlight for Xbox sets the TV's HDMI mode on every
+message, so it switched twice (issue #11).
 `Metadata::wire` and Moonlight `ControlStream.c` agree exactly:
 
 | Payload offsets | Field | Representation |
