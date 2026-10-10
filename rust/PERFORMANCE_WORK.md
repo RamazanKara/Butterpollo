@@ -5,6 +5,18 @@ without reducing features or picture quality. Opus took over from Codex in the
 evening of October 2. Performance acceptance on the customer's own sessions is
 still open; the measured fixture results below are local loopback evidence.
 
+## October 10 AV1 entropy-context (CDF) update: no default change
+
+Hidden settings `amd_av1_cdf_update` and `amd_av1_cdf_frame_end` (f546589)
+set AMF's Av1CdfUpdate and Av1CdfFrameEndUpdateMode for an offline sweep on
+the RX 7900 XT. The driver's defaults are already update on and frame-end
+mode 1. Update off cost 5-10% more bytes at the same request with PSNR
+0.03-0.66 dB lower and VMAF about unchanged. Frame-end mode 0 was at best
++0.024 VMAF with encode p99 within 0.3 ms either way; mode 2 is rejected
+(AMF error 4). VMAF was saturated (98.4-99.8) and AMF undershot the
+requested bitrate (35-55 Mb/s actual), so nothing here beats the driver.
+The settings stay hidden for experiments; the defaults don't change.
+
 ## October 10 per-frame send-wait budget: not built
 
 The idea (triage L7/N2): a batch that finds the video socket full waits up
