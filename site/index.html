@@ -186,9 +186,10 @@
     <ul class="results">
       <li><b>Radeon RX 7900 XT</b> as the host for every measurement above, and a <b>Radeon 780M laptop</b> over Wi-Fi as the client.</li>
       <li><b>RX 9070 XT, RX 6900 XT and Radeon 890M:</b> user reports and logs from real setups, including a Legion Go host on Wi-Fi; fixes shipped from them.</li>
-      <li><b>Moonlight for Xbox</b> streaming HDR at 3840×2160, 120 Hz, an <b>Android phone</b> at 1968×2184, 120 Hz HDR, and a streaming session from a <b>locked Windows VM</b> confirmed by a user.</li>
+      <li><b>Moonlight for Xbox</b> streaming HDR at 3840×2160, 120 Hz, an <b>Android phone</b> at 1968×2184, 120 Hz HDR, and streaming while Windows is locked, which the owner tested on the secure desktop and a user confirmed from a <b>locked Windows VM</b>.</li>
+      <li><b>Kubernetes pods with various GPU configurations:</b> extensive testing by the owner, outside the recorded runs above.</li>
     </ul>
-    <p class="note">Known issues, kept short: on one AMD driver version the encoder occasionally hung during heavy loss recovery and Windows reset the GPU (<a href="docs/troubleshooting.html#the-picture-freezes-and-the-gpu-resets-during-a-stream">what to do</a>), and a second client joining causes a hitch of about a second in the first stream. NVIDIA and Intel encoders are included but not yet run on hardware. <a href="rust/PARITY.html#where-it-has-been-tested">What was tested where</a></p>
+    <p class="note">Known issues, kept short: on one AMD driver version the encoder occasionally hung during heavy loss recovery and Windows reset the GPU (<a href="docs/troubleshooting.html#the-picture-freezes-and-the-gpu-resets-during-a-stream">what to do</a>), and a second client joining causes a hitch of about a second in the first stream. NVIDIA and Intel encoders are included, but no measurements are recorded for them. <a href="rust/PARITY.html#where-it-has-been-tested">What was tested where</a></p>
     <p><a class="more" href="docs/performance.html">All performance results and what each number means</a></p>
   </div>
 </section>

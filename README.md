@@ -36,7 +36,7 @@ Rubylight is not here to win a big userbase. There is no growth plan and no camp
 
 Rubylight began as a fork of [Vibepollo](https://github.com/Nonary/Vibepollo), whose native AMF encoder came from the same author ([#342](https://github.com/Nonary/Vibepollo/pull/342)), and rebuilds the host in Rust around the Radeon frame path. Anything that works out here is GPL-3.0 for Vibepollo to take.
 
-**On NVIDIA, use Vibepollo.** Rubylight is built and tested on Radeon. It includes an NVENC encoder, which has not been run on NVIDIA hardware yet.
+**On NVIDIA, use Vibepollo.** Rubylight is built and tested on Radeon. It includes an NVENC encoder, but Radeon is where the measurements and tuning are.
 
 | What you get | How it helps |
 | --- | --- |
@@ -141,13 +141,14 @@ Standard Moonlight clients use H.264, HEVC or AV1. **Moonlight PC 6.2.0** is tes
 | **Radeon 890M** (Legion Go, host on Wi-Fi) | A user's logs, which led to the send-outage recovery in 2.0.0 |
 | **Xbox** (Moonlight for Xbox) | HDR streaming at 3840×2160, 120 Hz, HEVC; the HDR switching problem ([#11](https://github.com/RamazanKara/Rubylight/issues/11)) is fixed in 2.0.1 |
 | **Android phone** | Streaming at 1968×2184, 120 Hz, HDR |
-| **Windows locked** | A user confirmed streaming and signing in from a locked VM with no monitor ([#6](https://github.com/RamazanKara/Rubylight/issues/6)) |
+| **Windows locked, and the secure desktop** | Tested by the owner, and a user confirmed streaming and signing in from a locked VM with no monitor ([#6](https://github.com/RamazanKara/Rubylight/issues/6)) |
+| **Kubernetes pods with various GPU configurations** | Extensive testing by the owner, outside the recorded sessions above |
 
 ## Known issues
 
 - **AMD driver video engine timeout.** On AMD driver 32.0.31041.1004, the encoder occasionally hung inside a driver call during heavy loss recovery, and Windows reset the GPU. It also happened on earlier Rubylight builds, so it is not a Rubylight setting. [What to do →](docs/troubleshooting.md#the-picture-freezes-and-the-gpu-resets-during-a-stream)
 - **A short hitch when a second client joins.** Creating another client's virtual display makes Windows' compositor pause the first stream for about a second. It happens once, when the client joins.
-- **NVIDIA and Intel encoders** are included but not yet run on hardware, which is why Rubylight points NVIDIA owners to Vibepollo.
+- **NVIDIA and Intel encoders** are included, but this repository records no measurements for them, which is why Rubylight points NVIDIA owners to Vibepollo.
 
 [Full compatibility list and what each item was tested with →](rust/PARITY.md)
 
