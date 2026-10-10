@@ -5,6 +5,46 @@ without reducing features or picture quality. Opus took over from Codex in the
 evening of October 2. Performance acceptance on the customer's own sessions is
 still open; the measured fixture results below are local loopback evidence.
 
+## October 10 AMD reference invalidation, AV1 only
+
+Moonlight can recover a lost frame by reference invalidation: the host
+encodes the next frame from an older long-term reference instead of sending
+a keyframe. AMF offered it only with `amd_ltr_frames` set (default 0).
+Fixture: 2560x1440 at 120 fps, 80 Mb/s under a 160 Mb/s pacing cap, an 80 ms
+outage every 1.5 s lost after the socket
+(`BUTTERPOLLO_TEST_SEND_OUTAGE=1500:80:air`, so only the client notices),
+test client with `BUTTERPOLLO_TEST_RFI=1`.
+
+| AV1 | keyframe recovery | invalidation |
+| --- | --- | --- |
+| Stall mean / p95, set 1 | 106.0 / 106.5 ms | 99.6 / 100.2 ms |
+| Stall mean / p95, set 2 | 103.4 / 106.5 ms | 96.4 / 100.0 ms |
+| Stall mean / p95, set 3 | 96.1 / 99.6 ms | 91.7 / 92.9 ms |
+| Recovery frame | 98-127 KB | 15.5-24.6 KB |
+| Steady state (no outage) | picture age 9.35 ms, encode 2.90 ms, 17.8 KB | 9.32 ms, 2.88 ms, 17.8 KB |
+
+Every AV1 frame decoded. HEVC and H.264 did not survive it. After the first
+HEVC invalidation the client's d3d11va decoder rejected every later picture
+("Error constructing the frame RPS") for 58 s without asking for a keyframe.
+The header trace shows why: AMF writes a four-bit POC (it wraps every 16
+frames), and after an 11-frame loss the long-term reference it names
+resolves to a missing picture. H.264 kept showing pictures up to 2.5 s old
+for the rest of each run.
+
+Shipped (`b78f853`, `7c84750`, `204ecdd`): `amd_ltr_frames` defaults to 4 and
+applies to AV1 only. H.264 and HEVC answer an invalidation with a keyframe.
+After any AMF invalidation recovery a keyframe follows one second later, so
+a decoder that cannot follow it is frozen for about a second, not until the
+next loss.
+
+The first H.264 run of the last set, on the base build (no invalidation
+offered, so plain keyframe recovery), ended in a third RX 7900 XT
+VIDEO_ENGINE_TIMEOUT (0x141). The stall watch logged the session thread
+stuck in its encode call with the GPU query probe answering; the call never
+returned. All three timeouts (02:47 and 23:33 on October 9, 07:21 on October
+10) came under keyframe-heavy recovery at high bitrate, two of them on base
+builds. A call blocked in the kernel driver cannot be ended by the host.
+
 ## October 10 item 5: the video sender thread, on paced links only
 
 The October 9 sender thread (encode and send overlap on their own threads)
