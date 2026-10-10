@@ -5,6 +5,27 @@ without reducing features or picture quality. Opus took over from Codex in the
 evening of October 2. Performance acceptance on the customer's own sessions is
 still open; the measured fixture results below are local loopback evidence.
 
+## October 10 PyroWave SDK 1.0 and a high-priority encode queue: host A/B pending
+
+PyroWave moves from `186f0393` (API 0.6) to `502a3b52` (API 1.0,
+`libpyrowave-shared-1.dll`). The per-frame bitstream is the one upstream
+froze as v1 on 2026-10-03: the quantizer, dequantizer and block-packing
+shaders are unchanged, `pyrowave_common.hpp` only renames two enums and adds
+an on-disk header, and the decoder only gains an opt-in range scale. So
+Vibepollo 2.0 clients and Rubylight Android keep decoding it, and the host
+still advertises bitstream `186f0393`. Vibepollo's encoder buffer-pool patch
+is dropped because upstream now pools those buffers per frame context; the
+4:4:4 sizing and short-block patches still apply. Upstream also fixes an
+out-of-bounds read in the RDO analysis shader (efb6230).
+
+New in 1.0 is a global priority for the Vulkan compute queue. The encode
+queue now asks for HIGH, or REALTIME when `compute_queue_realtime` is on,
+the same policy as the D3D12 copy and conversion queue, and falls back to
+the default when the driver refuses. The log line "PyroWave encode queue
+priority" records what was granted. Still to measure on the host:
+PyroWave encode time and picture age, MEDIUM against HIGH, idle and beside
+`gpu_load`.
+
 ## October 10 WGC helper textures read in place: on by default
 
 On the service host WGC runs in a helper in the user's session, which

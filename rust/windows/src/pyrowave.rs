@@ -32,16 +32,16 @@ macro_rules! api {
         struct Api { $($name:$ty,)* _dll:libloading::Library }
         impl Api {
             fn load() -> Result<Arc<Self>> {
-                let path=std::env::current_exe()?.parent().context("executable directory unavailable")?.join("libpyrowave-shared-0.dll");
+                let path=std::env::current_exe()?.parent().context("executable directory unavailable")?.join("libpyrowave-shared-1.dll");
                 // SAFETY: `dll` moves into the Api, keeping every copied symbol loaded; each
-                // matches the 0.6 C header, and the version is checked below.
+                // matches the 1.0 C header, and the version is checked below.
                 unsafe {
                     let dll=libloading::Library::new(&path).with_context(||format!("loading {}",path.display()))?;
                     $(let $name=*dll.get::<$ty>(concat!("pyrowave_",stringify!($name),"\0").as_bytes())?;)*
                     let api=Self { $($name,)* _dll:dll };
                     let (mut major,mut minor,mut patch)=(0,0,0);
                     (api.get_api_version)(&mut major,&mut minor,&mut patch);
-                    if (major,minor)!=(0,6) { bail!("unsupported PyroWave ABI {major}.{minor}.{patch}; expected 0.6"); }
+                    if major!=1 { bail!("unsupported PyroWave ABI {major}.{minor}.{patch}; expected 1.x"); }
                     Ok(Arc::new(api))
                 }
             }
@@ -50,13 +50,14 @@ macro_rules! api {
 }
 api! {
     get_api_version:unsafe extern "C" fn(*mut u32,*mut u32,*mut u32),
-    create_device_by_compat:unsafe extern "C" fn(u32,u32,*const p::pyrowave_uuid,*const p::pyrowave_uuid,*const p::pyrowave_luid,*mut p::pyrowave_device)->p::pyrowave_result,
+    create_device_by_compat:unsafe extern "C" fn(u32,u32,*const p::pyrowave_uuid,*const p::pyrowave_uuid,*const p::pyrowave_luid,p::VkQueueGlobalPriority,*mut p::pyrowave_device)->p::pyrowave_result,
+    device_get_global_priority:unsafe extern "C" fn(p::pyrowave_device)->p::VkQueueGlobalPriority,
     device_set_queue_type:unsafe extern "C" fn(p::pyrowave_device,p::VkQueueFlagBits)->p::pyrowave_result,
     device_confirm_interop_support:unsafe extern "C" fn(p::pyrowave_device)->bool,
     device_destroy:unsafe extern "C" fn(p::pyrowave_device),
     encoder_create:unsafe extern "C" fn(*const p::pyrowave_encoder_create_info,*mut p::pyrowave_encoder)->p::pyrowave_result,
     encoder_destroy:unsafe extern "C" fn(p::pyrowave_encoder),
-    encoder_encode_gpu_synchronous:unsafe extern "C" fn(p::pyrowave_encoder,*const p::pyrowave_gpu_sync_operation,*const p::pyrowave_gpu_sync_operation,*const p::pyrowave_gpu_buffers,*const p::pyrowave_rate_control)->p::pyrowave_result,
+    encoder_encode_gpu:unsafe extern "C" fn(p::pyrowave_encoder,*const p::pyrowave_gpu_sync_operation,*const p::pyrowave_gpu_sync_operation,*const p::pyrowave_gpu_buffers,*const p::pyrowave_rate_control)->p::pyrowave_result,
     encoder_compute_num_packets_with_padding:unsafe extern "C" fn(p::pyrowave_encoder,usize,usize,*mut usize)->p::pyrowave_result,
     encoder_get_mapped_raw_bitstream:unsafe extern "C" fn(p::pyrowave_encoder,*mut *const c_void,*mut usize,*mut *const c_void,*mut usize)->p::pyrowave_result,
     encoder_packetize_with_padding:unsafe extern "C" fn(p::pyrowave_encoder,*mut p::pyrowave_packet,usize,usize,*mut usize,*mut c_void,usize)->p::pyrowave_result,
@@ -341,15 +342,40 @@ impl Encoder {
         // SAFETY: `luid` and `info` are live locals, and `s` owns the device and encoder, which
         // Drop destroys.
         unsafe {
-            let result = (s.api.create_device_by_compat)(
-                0,
-                0,
-                ptr::null(),
-                ptr::null(),
-                &luid,
-                &mut s.device,
-            );
+            // The encode queue runs ahead of the game's work, as the D3D12 copy and
+            // conversion queue does: high priority, realtime only when
+            // compute_queue_realtime asks for it. A driver that refuses the
+            // priority gets the default one.
+            let wanted = if crate::compute::realtime() {
+                p::VkQueueGlobalPriority_VK_QUEUE_GLOBAL_PRIORITY_REALTIME
+            } else {
+                p::VkQueueGlobalPriority_VK_QUEUE_GLOBAL_PRIORITY_HIGH
+            };
+            let mut result = p::pyrowave_result_PYROWAVE_ERROR_GENERIC;
+            for priority in [
+                wanted,
+                p::VkQueueGlobalPriority_VK_QUEUE_GLOBAL_PRIORITY_MEDIUM,
+            ] {
+                result = (s.api.create_device_by_compat)(
+                    0,
+                    0,
+                    ptr::null(),
+                    ptr::null(),
+                    &luid,
+                    priority,
+                    &mut s.device,
+                );
+                if result == p::pyrowave_result_PYROWAVE_SUCCESS {
+                    break;
+                }
+            }
             check(result)?;
+            let granted = (s.api.device_get_global_priority)(s.device);
+            tracing::info!(
+                requested = wanted,
+                granted,
+                "PyroWave encode queue priority"
+            );
             if !(s.api.device_confirm_interop_support)(s.device) {
                 bail!("Vulkan device cannot import D3D11 textures and fences");
             }
@@ -487,7 +513,7 @@ impl Encoder {
                     self.interop[2].view,
                 ],
             };
-            check((self.api.encoder_encode_gpu_synchronous)(
+            check((self.api.encoder_encode_gpu)(
                 self.encoder,
                 &acquire,
                 &release,

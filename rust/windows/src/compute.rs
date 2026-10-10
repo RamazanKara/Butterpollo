@@ -138,6 +138,9 @@ static REALTIME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::
 pub fn set_realtime(enabled: bool) {
     REALTIME.store(enabled, std::sync::atomic::Ordering::Relaxed);
 }
+pub fn realtime() -> bool {
+    REALTIME.load(std::sync::atomic::Ordering::Relaxed)
+}
 /// A compute queue at the highest allowed priority Windows grants this process.
 fn compute_queue(device: &ID3D12Device) -> Result<(ID3D12CommandQueue, i32)> {
     let realtime = REALTIME.load(std::sync::atomic::Ordering::Relaxed);

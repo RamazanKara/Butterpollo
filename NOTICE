@@ -15,7 +15,7 @@ RTX Video SDK is governed by NVIDIA's SDK license terms.
 
 PyroWave
 
-Windows builds with PyroWave support ship libpyrowave-shared-0.dll, built from
+Windows builds with PyroWave support ship libpyrowave-shared-1.dll, built from
 https://github.com/Themaister/pyrowave together with the parts of Granite
 (https://github.com/Themaister/Granite) and volk (https://github.com/zeux/volk) it
 links. All three are MIT licensed; their license texts are installed under

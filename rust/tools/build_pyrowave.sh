@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Build and install the PyroWave C API (libpyrowave-shared-0.dll) with MSYS2 UCRT64 MinGW-w64.
+# Build and install the PyroWave C API (libpyrowave-shared-1.dll) with MSYS2 UCRT64 MinGW-w64.
 #
 # Usage (MSYS2 UCRT64 shell):
 #   rust/tools/build_pyrowave.sh [commit] [prefix]
 #     commit  full SHA of https://github.com/Themaister/pyrowave
-#             (default: the commit pinned below; its bitstream matches the PyroWave
-#             Moonlight clients)
+#             (default: the commit pinned below; API 1.0, wire-compatible with
+#             the 186f0393 bitstream the PyroWave Moonlight clients decode)
 #     prefix  install prefix (default: $PWD/pyrowave-install)
 #
 # Environment:
@@ -18,7 +18,7 @@
 # also need Vulkan headers >= 1.4 (mingw-w64-ucrt-x86_64-vulkan-headers). The DLL
 # loads vulkan-1.dll at runtime through volk, so no Vulkan loader is linked.
 #
-# The prefix gets bin/libpyrowave-shared-0.dll, lib/libpyrowave-shared.dll.a,
+# The prefix gets bin/libpyrowave-shared-1.dll, lib/libpyrowave-shared.dll.a,
 # include/pyrowave/pyrowave.h, share/pyrowave-shared/cmake (imported target
 # pyrowave-shared) and share/licenses/pyrowave (MIT notices of PyroWave, Granite
 # and volk). Re-runnable: the checkout is moved to the requested commit and the
@@ -26,7 +26,7 @@
 
 set -euo pipefail
 
-PINNED_COMMIT=186f0393b77f7755953b5ecde994bb1cec2e4155
+PINNED_COMMIT=502a3b52a39312ab82c85b1e2fc0e746faee91a4
 COMMIT=${1:-$PINNED_COMMIT}
 PREFIX=${2:-$PWD/pyrowave-install}
 WORKDIR=${PYROWAVE_WORKDIR:-$PWD/pyrowave-work}
@@ -109,13 +109,14 @@ cp "$SRC/LICENSE" "$LICENSE_DIR/LICENSE"
 cp "$SRC/Granite/LICENSE" "$LICENSE_DIR/LICENSE.Granite"
 cp "$SRC/Granite/third_party/volk/LICENSE.md" "$LICENSE_DIR/LICENSE.volk.md"
 
+PATCHES=$(for patch in "$PATCH_DIR"/*.patch; do basename "$patch" .patch; done | paste -sd,)
 API_VERSION=$(sed -n 's/^#define PYROWAVE_API_VERSION_\(MAJOR\|MINOR\|PATCH\) \([0-9]*\)$/\2/p' "$SRC/pyrowave.h" | paste -sd.)
 mkdir -p "$PREFIX/share/pyrowave-shared"
 cat > "$PREFIX/share/pyrowave-shared/build-info.txt" <<EOF
 pyrowave_commit=$PYROWAVE_SHA
 granite_commit=$GRANITE_SHA
 api_version=$API_VERSION
-patches=0001-encoder-buffer-pool,0002-payload-data-444-sizing,0003-decoder-reject-short-block
+patches=$PATCHES
 compiler=$(gcc --version | head -n1)
 cmake=$(cmake --version | head -n1)
 EOF

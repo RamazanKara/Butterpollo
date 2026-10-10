@@ -281,7 +281,11 @@ static int video_setup(int format,int width,int height,int rate,void*context,int
     if(format != requested_format){fprintf(stderr,"Codec fallback: requested=%d negotiated=%d\n",requested_format,format);return -1;}
 #ifdef BUTTERPOLLO_PYROWAVE
     if(format&VIDEO_FORMAT_MASK_PYROWAVE){
-        if(width!=requested_width||height!=requested_height||pyrowave_create_device_by_compat(0,0,NULL,NULL,NULL,&pyro_device))return -1;
+        if(width!=requested_width||height!=requested_height||pyrowave_create_device_by_compat(0,0,NULL,NULL,NULL,
+#if PYROWAVE_API_VERSION_MAJOR>=1
+            VK_QUEUE_GLOBAL_PRIORITY_MEDIUM,
+#endif
+            &pyro_device))return -1;
         pyrowave_decoder_create_info info={.device=pyro_device,.width=width,.height=height,
             .chroma=(format&VIDEO_FORMAT_MASK_YUV444)!=0,.fragment_path=false};
         printf("DECODER codec=pyrowave bitstream=%s readback_bits=8\n",PYROWAVE_BITSTREAM_ID);

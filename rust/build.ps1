@@ -47,13 +47,13 @@ if ($FetchDependencies) {
         $FfmpegRoot = (Get-ChildItem -LiteralPath $directory -Filter avcodec.h -Recurse | Select-Object -First 1).Directory.Parent.Parent.FullName
     }
     if (!$PyrowaveRoot) {
-        $PyrowaveRoot = Join-Path $Dependencies 'pyrowave-186f0393'
+        $PyrowaveRoot = Join-Path $Dependencies 'pyrowave-502a3b52'
         $cygpath = "$MsysRoot\usr\bin\cygpath.exe"
         $prefix = & $cygpath -u $PyrowaveRoot
         $buildScript = & $cygpath -u (Join-Path $repo 'rust\tools\build_pyrowave.sh')
         $env:PYROWAVE_WORKDIR = & $cygpath -u (Join-Path $Dependencies 'pyrowave-work')
         $env:MSYSTEM = 'UCRT64'
-        & "$MsysRoot\usr\bin\bash.exe" $buildScript '186f0393b77f7755953b5ecde994bb1cec2e4155' $prefix
+        & "$MsysRoot\usr\bin\bash.exe" $buildScript '502a3b52a39312ab82c85b1e2fc0e746faee91a4' $prefix
         Assert-NativeExit 'PyroWave SDK build'
     }
     if (!$SkipTrueHdr -and !$NvidiaRoot) {
@@ -94,12 +94,12 @@ $pyrowaveInfo = Join-Path $PyrowaveRoot 'share\pyrowave-shared\build-info.txt'
 if (!(Test-Path -LiteralPath $pyrowaveInfo)) { throw 'PyroWave SDK build-info.txt is missing; rebuild using -FetchDependencies' }
 $pyrowaveIdentity = Get-Content -LiteralPath $pyrowaveInfo -Raw
 foreach ($identity in @(
-    'pyrowave_commit=186f0393b77f7755953b5ecde994bb1cec2e4155',
-    'granite_commit=b6cffd5ce81f540f0855e6778428483e14763d9b',
-    'patches=0001-encoder-buffer-pool,0002-payload-data-444-sizing,0003-decoder-reject-short-block'
+    'pyrowave_commit=502a3b52a39312ab82c85b1e2fc0e746faee91a4',
+    'granite_commit=fb178c8080d163419e8d20f10715c61c53c1ec9b',
+    'patches=0002-payload-data-444-sizing,0003-decoder-reject-short-block'
 )) {
     if ($pyrowaveIdentity -notmatch ('(?m)^' + [regex]::Escape($identity) + '\r?$')) {
-        throw "PyroWave SDK does not match Vibepollo 2.0: expected $identity. Rebuild using -FetchDependencies without -PyrowaveRoot."
+        throw "PyroWave SDK does not match the pinned build: expected $identity. Rebuild using -FetchDependencies without -PyrowaveRoot."
     }
 }
 $env:BUTTERPOLLO_FFMPEG_ROOT = $FfmpegRoot
@@ -128,11 +128,11 @@ try {
     & cargo $toolchain @protocolArgs
     Assert-NativeExit 'Rust protocol performance probe build'
     $output = Join-Path $TargetDirectory $profile
-    $runtimeDlls = @('libopus-0.dll','libvpl-2.dll','libstdc++-6.dll','libgcc_s_seh-1.dll','libwinpthread-1.dll','libpyrowave-shared-0.dll')
-    foreach ($dll in $runtimeDlls | Where-Object { $_ -ne 'libpyrowave-shared-0.dll' }) {
+    $runtimeDlls = @('libopus-0.dll','libvpl-2.dll','libstdc++-6.dll','libgcc_s_seh-1.dll','libwinpthread-1.dll','libpyrowave-shared-1.dll')
+    foreach ($dll in $runtimeDlls | Where-Object { $_ -ne 'libpyrowave-shared-1.dll' }) {
         Copy-Item -LiteralPath (Join-Path "$MsysRoot\ucrt64\bin" $dll) -Destination $output
     }
-    Copy-Item -LiteralPath (Join-Path $PyrowaveRoot 'bin\libpyrowave-shared-0.dll') -Destination $output
+    Copy-Item -LiteralPath (Join-Path $PyrowaveRoot 'bin\libpyrowave-shared-1.dll') -Destination $output
     if (!$SkipTrueHdr) {
         if (!$NvidiaRoot) { throw 'NVIDIA SDK path is required for the TrueHDR adapter' }
         $env:NV_RTX_VIDEO_SDK = $NvidiaRoot

@@ -28,7 +28,7 @@ macro_rules! decoder_api {
         struct DecoderApi { $($name: $ty,)* }
         impl DecoderApi {
             unsafe fn load(dll: &libloading::Library) -> Result<Self> {
-                // SAFETY: Each symbol matches its 0.6 C signature, and callers keep `dll` loaded
+                // SAFETY: Each symbol matches its 1.0 C signature, and callers keep `dll` loaded
                 // inside the shared Api.
                 Ok(Self { $($name: unsafe {
                     *dll.get::<$ty>(concat!("pyrowave_", stringify!($name), "\0").as_bytes())?
@@ -87,6 +87,7 @@ impl Decoder {
                 ptr::null(),
                 ptr::null(),
                 &luid,
+                p::VkQueueGlobalPriority_VK_QUEUE_GLOBAL_PRIORITY_MEDIUM,
                 &mut s.device,
             ))?;
             check((s.calls.decoder_create)(

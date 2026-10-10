@@ -75,7 +75,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=BUTTERPOLLO_VULKAN_INCLUDE");
     let pyro = PathBuf::from(
         env::var("BUTTERPOLLO_PYROWAVE_ROOT")
-            .expect("set BUTTERPOLLO_PYROWAVE_ROOT to the pinned PyroWave 0.6 SDK"),
+            .expect("set BUTTERPOLLO_PYROWAVE_ROOT to the pinned PyroWave 1.0 SDK"),
     );
     let vulkan = env::var("BUTTERPOLLO_VULKAN_INCLUDE")
         .expect("set BUTTERPOLLO_VULKAN_INCLUDE to Vulkan's include directory");
