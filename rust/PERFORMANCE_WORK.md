@@ -5,6 +5,25 @@ without reducing features or picture quality. Opus took over from Codex in the
 evening of October 2. Performance acceptance on the customer's own sessions is
 still open; the measured fixture results below are local loopback evidence.
 
+## October 10 MMCSS boost on the media threads: not shipped
+
+`Priority::new` registers a thread with MMCSS and then sets
+THREAD_PRIORITY_ABOVE_NORMAL, which cancels the boost (14 instead of 18).
+The input threads dropped that call in October (`Priority::input`, 3.5 ms
+to 17 us wake p50 beside TIME_CRITICAL spinners). Giving capture, encode,
+send and audio the same (4b88b6a, research item L2) made the stream worse
+with no load. Host ABBA, HEVC 2560x1440 at 120 fps, 50 Mb/s, A = `c7e258a`:
+picture-age mean 12.5 (A) against 14.3 ms (B), p95 15.4 / 18.3 against
+17.9 / 18.9 ms; unique fps and host mean equal, 0 decode errors. An earlier
+no-load round agreed (11.7 against 13.1 ms). Loaded pairs were not run:
+TIME_CRITICAL spinners on every core freeze the desktop of an occupied PC.
+
+Likely cause, not measured: every media thread ends its waits in a short
+spin (`Timer::until`, and `until_precise` yielding for 600 us), and at the
+MMCSS level of DWM's compositor those spins can hold a core the compositor
+or the game wants. A boost for these threads needs spin-free waits first.
+Dropped; the media threads keep `Priority::new`.
+
 ## October 10 HEVC reference invalidation after short losses: not shipped
 
 The HEVC freeze above needs a long loss. H.265 8.3.1 derives a picture's
