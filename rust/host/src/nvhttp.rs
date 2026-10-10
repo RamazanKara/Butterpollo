@@ -1222,18 +1222,16 @@ fn prepare_launch_display(
     if launch.role == Role::Stream {
         // Reuse only this client's own retained display; another
         // client streaming the same app keeps its display.
-        let retained = h
-            .app_display
-            .lock()
-            .unwrap()
-            .get(&launch.client.uuid)
-            .map(|(lease, _)| lease.clone());
-        if let Some(lease) = retained
-            && lease.matches(&stream)
-        {
-            return lease.resume(&h.directory, &config, launch.warnings.clone());
+        let retained = crate::state::take_retained(
+            &mut h.app_display.lock().unwrap(),
+            &launch.client.uuid,
+            |lease| lease.matches(&stream),
+        );
+        match retained {
+            Ok(lease) => return lease.resume(&h.directory, &config, launch.warnings.clone()),
+            // Dropped here, after the lock: releasing restores Windows.
+            Err(released) => drop(released),
         }
-        h.app_display.lock().unwrap().remove(&launch.client.uuid);
     }
     crate::display_session::prepare_stream(h, launch, &stream, &config)
 }

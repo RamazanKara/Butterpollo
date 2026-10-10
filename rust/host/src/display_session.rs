@@ -1061,6 +1061,41 @@ mod tests {
     use std::sync::mpsc;
 
     #[test]
+    fn a_retained_display_matches_only_the_exact_mode_it_was_made_for() {
+        let made = Negotiated {
+            width: 2560,
+            height: 1440,
+            fps: 120,
+            hdr: true,
+            ..Default::default()
+        };
+        assert_eq!(stream_mode(&made), stream_mode(&made.clone()));
+        for other in [
+            Negotiated {
+                width: 1920,
+                ..made.clone()
+            },
+            Negotiated {
+                fps: 60,
+                ..made.clone()
+            },
+            Negotiated {
+                rate_millihz: 119_880,
+                ..made.clone()
+            },
+            Negotiated {
+                hdr: false,
+                ..made.clone()
+            },
+            Negotiated {
+                vrr_low_latency: true,
+                ..made.clone()
+            },
+        ] {
+            assert_ne!(stream_mode(&made), stream_mode(&other));
+        }
+    }
+    #[test]
     fn virtual_display_mode_keeps_device_app_host_precedence_and_legacy_global_inheritance() {
         let config = Config::parse("virtual_display_mode=shared").unwrap();
         let mut client: butterpollo_core::state::Client =

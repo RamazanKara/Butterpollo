@@ -113,6 +113,21 @@ pub struct PendingPin {
 }
 /// A client's display lease and when it last stopped being streamed.
 pub type RetainedDisplay = (Arc<crate::display_session::Ready>, Option<Instant>);
+/// The display a stream launch resumes: only this client's own retained
+/// display, and only in the mode it asks for. Reuse leaves the entry (and the
+/// display) untouched; a retained display in another mode is removed and
+/// handed back so the caller drops it, restoring Windows, outside the lock.
+pub fn take_retained<L: Clone>(
+    displays: &mut BTreeMap<String, (L, Option<Instant>)>,
+    client: &str,
+    matches: impl FnOnce(&L) -> bool,
+) -> Result<L, Option<L>> {
+    match displays.get(client) {
+        Some((lease, _)) if matches(lease) => Ok(lease.clone()),
+        Some(_) => Err(displays.remove(client).map(|(lease, _)| lease)),
+        None => Err(None),
+    }
+}
 pub struct Host {
     #[cfg(test)]
     pub reconnect_fixture: Option<Arc<crate::stream::reconnect_tests::Fixture>>,
@@ -792,6 +807,60 @@ fn load_library(path: &std::path::Path, default: Value) -> Result<Value> {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_rejoin_in_the_same_mode_reuses_the_clients_own_display_untouched() {
+        use super::take_retained;
+        use std::collections::BTreeMap;
+        use std::sync::Arc;
+        use std::time::Instant;
+        let paused = Some(Instant::now());
+        let mine = Arc::new((2560, 1440, 120_000, true));
+        let theirs = Arc::new((2560, 1440, 120_000, true));
+        let mut displays = BTreeMap::from([
+            ("me".to_string(), (mine.clone(), paused)),
+            ("other".to_string(), (theirs.clone(), None)),
+        ]);
+        let same = |lease: &Arc<(u32, u32, u32, bool)>| **lease == (2560, 1440, 120_000, true);
+
+        // The same client in the same mode gets the very display it had, and
+        // the retained entry stays as it was: nothing is created or released.
+        let reused = take_retained(&mut displays, "me", same).unwrap();
+        assert!(Arc::ptr_eq(&reused, &mine));
+        assert_eq!(displays.len(), 2);
+        assert!(Arc::ptr_eq(&displays["me"].0, &mine));
+        assert_eq!(displays["me"].1, paused);
+        drop(reused);
+        // Rejoining again still finds it.
+        assert!(Arc::ptr_eq(
+            &take_retained(&mut displays, "me", same).unwrap(),
+            &mine
+        ));
+
+        // A client with nothing retained never takes another client's display.
+        assert_eq!(take_retained(&mut displays, "new", same), Err(None));
+        assert!(Arc::ptr_eq(&displays["other"].0, &theirs));
+        assert!(Arc::ptr_eq(&displays["me"].0, &mine));
+    }
+    #[test]
+    fn a_rejoin_in_another_mode_releases_only_the_clients_own_display() {
+        use super::take_retained;
+        use std::collections::BTreeMap;
+        use std::sync::Arc;
+        let mine = Arc::new((2560, 1440, 120_000, true));
+        let theirs = Arc::new((2560, 1440, 120_000, true));
+        let mut displays = BTreeMap::from([
+            ("me".to_string(), (mine.clone(), None)),
+            ("other".to_string(), (theirs.clone(), None)),
+        ]);
+        let sdr = |lease: &Arc<(u32, u32, u32, bool)>| **lease == (2560, 1440, 120_000, false);
+        let released = take_retained(&mut displays, "me", sdr)
+            .unwrap_err()
+            .unwrap();
+        assert!(Arc::ptr_eq(&released, &mine));
+        assert!(!displays.contains_key("me"));
+        assert!(Arc::ptr_eq(&displays["other"].0, &theirs));
+        assert_eq!(take_retained(&mut displays, "me", sdr), Err(None));
+    }
     #[test]
     fn host_load_reuses_the_shared_virtual_display_guid_without_replacing_an_existing_one() {
         use super::test_support::Fixture;
