@@ -42,6 +42,14 @@ pub fn pyrowave_rate_bps(
     }
 }
 
+/// Whether video is paced near the stream bitrate: at most four times it,
+/// as on a confirmed wireless route (twice), a `pacing_max_bitrate_kbps`
+/// cap or a slow wired link. A frame then takes a quarter of a period or
+/// more on the wire, and a keyframe several periods.
+pub fn paced(bps: u64, stream_kbps: u32) -> bool {
+    bps <= u64::from(stream_kbps).saturating_mul(4000)
+}
+
 pub fn report_rate(
     warnings: &crate::session::Warnings,
     bps: u64,
@@ -133,6 +141,20 @@ mod tests {
             200_000,
         );
         assert!(warnings.snapshot().is_empty());
+    }
+
+    #[test]
+    fn only_rates_near_the_bitrate_count_as_paced() {
+        // Default wired ceiling at the owner's 80 Mb/s: not paced.
+        assert!(!paced(rate_bps(0, 80_000, 0, false), 80_000));
+        assert!(!paced(rate_bps(0, 80_000, 2_500_000_000, false), 80_000));
+        // A 160 Mb/s cap, a wireless route, a 100 Mb/s link: paced.
+        assert!(paced(rate_bps(160_000, 80_000, 0, false), 80_000));
+        assert!(paced(rate_bps(0, 50_000, 0, true), 50_000));
+        assert!(paced(rate_bps(0, 50_000, 100_000_000, false), 50_000));
+        assert!(paced(320_000_000, 80_000));
+        assert!(!paced(320_000_001, 80_000));
+        assert!(!paced(1, 0));
     }
 
     #[test]

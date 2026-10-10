@@ -1399,6 +1399,12 @@ impl Media {
                     let mut reported_pacing = None;
                     let mut fec_reported = None;
                     let send_outage = butterpollo_core::stream_policy::SendOutage::from_env();
+                    // On a link paced near the stream bitrate, sending a frame
+                    // takes a good part of a period; a sender thread lets the
+                    // next picture be claimed meanwhile. On a fast link the
+                    // inline send is shorter than the handoff costs.
+                    let video_sender = std::cell::OnceCell::<crate::video_send::Sender>::new();
+                    let mut sender_decided = false;
                     let mut send_loss = butterpollo_core::stream_policy::SendLossRecovery::default();
                     let batch_kb = match c.integer("video_max_batch_size_kb", 64) {
                         16 => 16,
@@ -1415,6 +1421,26 @@ impl Media {
                             source.device_recovered(&source.warnings);
                         }
                         if let Some(sender) = &pyrowave_sender { return sender.submit(output,peer,call_latency); }
+                        if !sender_decided {
+                            sender_decided = true;
+                            let route = *link.get_or_insert_with(|| butterpollo_windows::net::routed_link(peer));
+                            let bps = butterpollo_core::network_pacing::rate_bps(
+                                c.integer("pacing_max_bitrate_kbps", 0),
+                                s.bitrate.load(Ordering::Relaxed),
+                                route.bps,
+                                route.wireless,
+                            );
+                            // Only before the first frame: the sender numbers
+                            // frames and packets from the start.
+                            if packetizer.frame == 1
+                                && c.boolean("video_send_thread", true)
+                                && butterpollo_core::network_pacing::paced(bps, s.bitrate.load(Ordering::Relaxed))
+                            {
+                                let _ = video_sender.set(crate::video_send::Sender::new(m.video.clone(), s.clone(), c.clone(), h.clone(), start, prepared.capture() == "wgc")?);
+                                tracing::info!(pacing_bps = bps, bitrate_kbps = s.bitrate.load(Ordering::Relaxed), "video frames are sent on their own thread: pacing is near the stream bitrate");
+                            }
+                        }
+                        if let Some(sender) = video_sender.get() { return sender.submit(output, peer, call_latency); }
                         let polled = Instant::now();
                         let micros = |d: Duration| d.as_micros().min(u128::from(u64::MAX)) as u64;
                         for frame in output {
@@ -1558,6 +1584,7 @@ impl Media {
                     };
                     (|| -> Result<()> {
                         while !s.stopping() && !h.stop.load(Ordering::Acquire) {
+                            if let Some(sender) = video_sender.get() { sender.backlog()?; }
                             if let Some(loss) = recovery.device_loss.take() {
                                 latest.latest.device_lost(loss, &latest.warnings, Instant::now())?;
                                 encoder = None;
@@ -1776,9 +1803,20 @@ impl Media {
                             // A picture claimed while the encoder is behind only
                             // waits in its queue: take its output first, then
                             // claim the newest picture.
-                            if !rebuild_encoder
-                                && encoder.as_ref().is_some_and(|e| recovery.backlog(e) >= ENCODER_BACKLOG)
-                            {
+                            // A frame still being sent on a paced link counts too.
+                            let sending = video_sender.get().map_or(Ok(0), |sender| sender.backlog())?;
+                            let encoding = encoder.as_ref().map_or(0, |e| recovery.backlog(e));
+                            if !rebuild_encoder && encoding + sending >= ENCODER_BACKLOG {
+                                if encoding < ENCODER_BACKLOG {
+                                    // Network occupancy must not start encoder stall recovery.
+                                    recovery.backlog_since = None;
+                                    if encoder.as_ref().is_some_and(|e| recovery.pending(e)) {
+                                        send_frames(recovery.collect(&mut encoder, &s.launch.warnings, Instant::now)?, peer, Duration::ZERO, latest)?;
+                                    } else {
+                                        timer.until(Instant::now() + OUTPUT_POLL);
+                                    }
+                                    continue;
+                                }
                                 // An encoder that returns nothing for 250 ms is
                                 // recreated, as a queue that never drained was;
                                 // a shorter stall on a saturated GPU only makes the
@@ -1878,7 +1916,10 @@ impl Media {
                                 .as_mut()
                                 .expect("a missing encoder is rebuilt above");
                             if rebuilt {
-                                active.set_next_frame(next_wire_frame.get());
+                                active.set_next_frame(match video_sender.get() {
+                                    Some(sender) => sender.next_wire_frame()?,
+                                    None => next_wire_frame.get(),
+                                });
                             }
                             let begin = Instant::now();
                             if tracing::enabled!(target: "pacing", tracing::Level::TRACE) {
