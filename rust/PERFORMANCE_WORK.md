@@ -5,6 +5,23 @@ without reducing features or picture quality. Opus took over from Codex in the
 evening of October 2. Performance acceptance on the customer's own sessions is
 still open; the measured fixture results below are local loopback evidence.
 
+## October 10 per-frame send-wait budget: not built
+
+The idea (triage L7/N2): a batch that finds the video socket full waits up
+to 4 ms (`writable` in `net.rs`), so a frame should share one wait budget of
+a frame period instead of 4 ms per batch. Counting with the real FEC layout
+and batch sizes (packet size 1392, 20% FEC, Wi-Fi pacing at twice the
+bitrate, wired at the 800 Mbps ceiling), a frame on a socket that stays full
+is already abandoned by send-loss after its first refused batch: one 4 ms
+wait for every P-frame from 20 Mbps up and every keyframe from 150 Mbps up,
+wired at any bitrate. Only keyframes on a Wi-Fi host at 10-80 Mbps take
+2-9 refused batches (8-36 ms); a budget would cut that to about one period,
+and only during a host radio outage long enough to fill the 1 MiB socket
+buffer (about 100 ms or more). Under congestion, where the wait finds room,
+a budget would turn late frames into lost frames and keyframes. Not worth
+a host cycle; the draft (543614c, with a `:full` mode for
+`BUTTERPOLLO_TEST_SEND_OUTAGE`) was not merged.
+
 ## October 10 MMCSS boost on the media threads: not shipped
 
 `Priority::new` registers a thread with MMCSS and then sets
