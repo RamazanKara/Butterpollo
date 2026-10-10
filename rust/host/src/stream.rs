@@ -1398,6 +1398,7 @@ impl Media {
                     let mut link_due = Instant::now();
                     let mut reported_pacing = None;
                     let mut fec_reported = None;
+                    let send_outage = butterpollo_core::stream_policy::SendOutage::from_env();
                     let batch_kb = match c.integer("video_max_batch_size_kb", 64) {
                         16 => 16,
                         32 => 32,
@@ -1495,7 +1496,12 @@ impl Media {
                                 let count =
                                     butterpollo_windows::net::Batch::count(remaining, budget);
                                 let send_started = trace_send.then(Instant::now);
-                                let bytes = batch.send(&m.video, &remaining[..count], peer)?;
+                                let bytes = if send_outage.is_some_and(|outage| outage.active(start, Instant::now())) {
+                                    batch.refuse(count);
+                                    0
+                                } else {
+                                    batch.send(&m.video, &remaining[..count], peer)?
+                                };
                                 if let Some(send_started) = send_started {
                                     let finished = Instant::now();
                                     first_send.get_or_insert(send_started);

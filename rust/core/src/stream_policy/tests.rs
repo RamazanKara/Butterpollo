@@ -968,3 +968,21 @@ fn a_faster_source_is_claimed_at_the_stream_rate_not_above_it() {
         );
     }
 }
+
+#[test]
+fn test_send_outage_follows_its_schedule_and_rejects_bad_values() {
+    let outage = SendOutage::parse(" 1500 : 80 ").unwrap();
+    let start = Instant::now();
+    let at = |ms: u64| start + Duration::from_millis(ms);
+    // Nothing during the first interval, so the stream starts cleanly.
+    assert!(!outage.active(start, at(0)));
+    assert!(!outage.active(start, at(1499)));
+    assert!(outage.active(start, at(1500)));
+    assert!(outage.active(start, at(1579)));
+    assert!(!outage.active(start, at(1580)));
+    assert!(outage.active(start, at(3020)));
+    assert!(!outage.active(start, at(2999)));
+    for bad in ["", "80", "80:80", "10:0", "x:5", "1500:-1", "1500:80:1"] {
+        assert_eq!(SendOutage::parse(bad), None, "{bad}");
+    }
+}

@@ -415,6 +415,41 @@ pub fn reencode_at(
 pub fn counts_toward_rate(fresh: bool, recovery: bool) -> bool {
     fresh || !recovery
 }
+/// Test-only radio outage on the host's video socket, from
+/// `BUTTERPOLLO_TEST_SEND_OUTAGE=every_ms:length_ms`: for `length` of every
+/// `every`, starting one `every` into the stream, each video datagram is
+/// refused as by a full socket. Loopback never loses packets, so this is how
+/// a host A/B exercises recovery from a host-side Wi-Fi dropout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SendOutage {
+    every: Duration,
+    length: Duration,
+}
+impl SendOutage {
+    pub fn parse(value: &str) -> Option<Self> {
+        let (every, length) = value.trim().split_once(':')?;
+        let every = Duration::from_millis(every.trim().parse().ok()?);
+        let length = Duration::from_millis(length.trim().parse().ok()?);
+        (length > Duration::ZERO && every > length).then_some(Self { every, length })
+    }
+    pub fn from_env() -> Option<Self> {
+        let outage = Self::parse(&std::env::var("BUTTERPOLLO_TEST_SEND_OUTAGE").ok()?);
+        if let Some(outage) = outage {
+            tracing::warn!(
+                every_ms = outage.every.as_millis(),
+                length_ms = outage.length.as_millis(),
+                "BUTTERPOLLO_TEST_SEND_OUTAGE refuses video datagrams on a schedule; unset it outside tests"
+            );
+        }
+        outage
+    }
+    pub fn active(&self, started: Instant, now: Instant) -> bool {
+        let elapsed = now.saturating_duration_since(started);
+        elapsed >= self.every
+            && Duration::from_nanos((elapsed.as_nanos() % self.every.as_nanos()) as u64)
+                < self.length
+    }
+}
 /// An HDR request stays HDR when RTX HDR converts an SDR source for it;
 /// otherwise `prefer_sdr_10bit` streams it as ten-bit SDR. As in Vibepollo
 /// 2.0, RTX HDR needs the client to ask for HDR and the retired

@@ -600,6 +600,11 @@ impl Batch {
             self.reported = Some(std::time::Instant::now());
         }
     }
+    /// Count datagrams as refused by a full socket without sending them,
+    /// for `BUTTERPOLLO_TEST_SEND_OUTAGE`.
+    pub fn refuse(&mut self, count: usize) {
+        self.dropped(count, WSAEWOULDBLOCK);
+    }
     /// Bytes handed to Winsock. Datagrams that hit a transient error are
     /// dropped, as Vibepollo does, rather than ending the stream.
     pub fn send(
